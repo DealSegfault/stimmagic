@@ -211,3 +211,122 @@ class TestSynthesizeMissingToolResults:
         ]
         _synthesize_missing_tool_results(messages)
         assert messages[-1]["content"] == INTERRUPTED_TOOL_RESULT
+
+
+class TestOrphanedToolResults:
+    """
+    A server restart can persist a tool result LATE — after the user has already
+    sent the next message. Nothing is missing, so a synthesize-only pass sees a
+    valid history, but the stray result matches no preceding call and the
+    provider 400s the whole conversation on every subsequent turn.
+    """
+
+    _assistant_batch = staticmethod(TestSynthesizeMissingToolResults._assistant_batch)
+    _tool_result = staticmethod(TestSynthesizeMissingToolResults._tool_result)
+
+    def test_late_result_after_user_message_is_dropped(self):
+        from agent.v2.conversation import (
+            INTERRUPTED_TOOL_RESULT,
+            _repair_tool_call_pairing,
+        )
+
+        # The shape observed in the field: ask_user is called, the user answers
+        # in a plain message instead, work continues, and the interrupted tool's
+        # result lands much later.
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "build the grid"},
+            self._assistant_batch("ask1"),
+            {"role": "user", "content": "it's a mixed model grid"},
+            self._assistant_batch("bash1"),
+            self._tool_result("bash1"),
+            {"role": "assistant", "content": "verified"},
+            self._tool_result("ask1"),          # <- lands late, orphaned
+            {"role": "user", "content": "looks right"},
+        ]
+        _repair_tool_call_pairing(messages)
+
+        roles = [m["role"] for m in messages]
+        assert roles == [
+            "system", "user", "assistant", "tool", "user",
+            "assistant", "tool", "assistant", "user",
+        ]
+        # The orphan is gone...
+        assert not any(
+            m["role"] == "tool" and m["tool_call_id"] == "ask1" and m["content"] == "ok"
+            for m in messages
+        )
+        # ...and its call is answered in place instead.
+        assert messages[3] == {
+            "role": "tool",
+            "tool_call_id": "ask1",
+            "content": INTERRUPTED_TOOL_RESULT,
+        }
+
+    def test_every_call_is_answered_and_every_result_is_claimed(self):
+        """The invariant the provider actually enforces."""
+        from agent.v2.conversation import _repair_tool_call_pairing
+
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "go"},
+            self._assistant_batch("a", "b"),
+            self._tool_result("a"),
+            {"role": "user", "content": "interrupted"},
+            self._tool_result("b"),
+            self._tool_result("ghost"),
+            {"role": "assistant", "content": "done"},
+        ]
+        _repair_tool_call_pairing(messages)
+
+        pending = set()
+        for msg in messages:
+            if msg["role"] == "tool":
+                assert msg["tool_call_id"] in pending, "unclaimed tool result"
+                pending.discard(msg["tool_call_id"])
+                continue
+            assert not pending, f"unanswered tool calls: {pending}"
+            if msg["role"] == "assistant" and msg.get("tool_calls"):
+                pending = {c["id"] for c in msg["tool_calls"]}
+        assert not pending
+
+    def test_result_before_any_call_is_dropped(self):
+        from agent.v2.conversation import _repair_tool_call_pairing
+
+        messages = [
+            {"role": "system", "content": "s"},
+            self._tool_result("t1"),
+            {"role": "user", "content": "go"},
+        ]
+        _repair_tool_call_pairing(messages)
+        assert [m["role"] for m in messages] == ["system", "user"]
+
+    def test_wellformed_history_is_untouched(self):
+        from agent.v2.conversation import _repair_tool_call_pairing
+
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "go"},
+            self._assistant_batch("t1", "t2"),
+            self._tool_result("t1"),
+            self._tool_result("t2"),
+            {"role": "assistant", "content": "done"},
+        ]
+        before = [dict(m) for m in messages]
+        _repair_tool_call_pairing(messages)
+        assert messages == before
+
+    def test_repair_is_idempotent(self):
+        from agent.v2.conversation import _repair_tool_call_pairing
+
+        messages = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "go"},
+            self._assistant_batch("t1"),
+            {"role": "user", "content": "interrupted"},
+            self._tool_result("t1"),
+        ]
+        _repair_tool_call_pairing(messages)
+        once = [dict(m) for m in messages]
+        _repair_tool_call_pairing(messages)
+        assert messages == once

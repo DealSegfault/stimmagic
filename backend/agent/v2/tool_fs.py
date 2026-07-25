@@ -48,7 +48,7 @@ ENUM_INLINE_THRESHOLD = 100
 # Bumped whenever stub *rendering* changes (not just the catalog). Folded into the
 # materialization fingerprint so a logic change refreshes already-cached .stimma/
 # trees, instead of waiting for a provider/schema change to invalidate them.
-_RENDERER_VERSION = 2
+_RENDERER_VERSION = 3
 
 # Params the model should not fill in unprompted. Shown in the signature with
 # their default, grouped under one docstring line rather than hidden — the agent
@@ -298,18 +298,30 @@ def _render_params(
     for name, prop in sorted(items, key=sort_key):
         if not isinstance(prop, dict):
             prop = {}
-        # nested enums (e.g. loras.path) live under items.properties
         own_stem = handle_enums(prop, name)
         inline = own_stem is None
-        # Walk one level into array items for nested enum spill detection.
-        nested_ref = ""
+
+        # Walk one level into array items. Nested enums (e.g. loras[].path) can
+        # never reach the annotation — an array of objects renders as list[dict],
+        # which has nowhere to carry them — so they are documented instead. Every
+        # nested enum gets surfaced: spilled ones as a file pointer, small ones
+        # inline. A nested enum that is neither is invisible to the caller, who
+        # then has no way to discover the tool's valid values at all.
+        nested_notes: list[str] = []
         items_schema = prop.get("items")
         if isinstance(items_schema, dict):
             for sub_name, sub_prop in (items_schema.get("properties") or {}).items():
-                if isinstance(sub_prop, dict):
-                    sub_stem = handle_enums(sub_prop, f"{name}.{sub_name}")
-                    if sub_stem and not nested_ref:
-                        nested_ref = sub_stem
+                if not isinstance(sub_prop, dict):
+                    continue
+                sub_enum = sub_prop.get("enum")
+                if not (isinstance(sub_enum, list) and sub_enum):
+                    continue
+                sub_stem = handle_enums(sub_prop, f"{name}.{sub_name}")
+                if sub_stem:
+                    note = f"see .stimma/enums/{sub_stem}.txt (grep it)"
+                else:
+                    note = "one of " + ", ".join(repr(str(v)) for v in sub_enum)
+                nested_notes.append(f"{name}[].{sub_name}: {note}")
 
         annotation = _py_type_for(prop, name, enum_inline=inline)
         is_required = name in required
@@ -337,8 +349,8 @@ def _render_params(
         if not inline and own_stem:
             ref = f"see .stimma/enums/{own_stem}.txt (grep it)"
             doc = f"{doc + '. ' if doc else ''}{ref}"
-        elif nested_ref:
-            doc = f"{doc + '. ' if doc else ''}see .stimma/enums/{nested_ref}.txt (grep it)"
+        if nested_notes:
+            doc = f"{doc + '. ' if doc else ''}" + "; ".join(nested_notes)
 
         params.append(
             _RenderedParam(

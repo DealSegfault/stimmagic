@@ -1510,6 +1510,216 @@ class StimmaSDK:
             "cell_count": len(normalized),
         }
 
+    async def _load_sweep(self, grid: dict[str, Any] | int) -> dict[str, Any]:
+        """Read an existing sweep back into headers + a row-major id matrix."""
+        from database import MediaItem
+        from sqlalchemy import select as _select
+
+        grid_id = grid.get("media_id") if isinstance(grid, dict) else int(grid)
+        if grid_id is None:
+            raise ValueError("grid dict has no media_id")
+
+        row = await self.session.execute(
+            _select(MediaItem).where(MediaItem.id == grid_id)
+        )
+        item = row.scalar_one_or_none()
+        if item is None:
+            raise ValueError(f"No media item {grid_id}")
+        if item.file_format != "stimmagrid.json":
+            raise ValueError(
+                f"Media {grid_id} is a {item.file_format}, not a parameter sweep"
+            )
+
+        content = json.loads(item.raw_metadata or "{}")
+        rows = int(content.get("rows") or 0)
+        cols = int(content.get("cols") or 0)
+        if not rows or not cols:
+            raise ValueError(f"Grid {grid_id} has no usable rows/cols")
+
+        # Cells store paths, not ids. The generation record keeps the ids in
+        # row-major order, so prefer it and fall back to a path lookup.
+        ids: list[int] = []
+        try:
+            gen = json.loads(item.generation_metadata or "{}")
+            ids = [
+                s["media_id"]
+                for s in (gen.get("source_inputs") or [])
+                if s.get("role") == "cell" and s.get("media_id") is not None
+            ]
+        except (ValueError, TypeError, KeyError):
+            ids = []
+
+        if len(ids) != rows * cols:
+            paths = [c.get("path") for c in content.get("cells") or []]
+            found = await self.session.execute(
+                _select(MediaItem.id, MediaItem.file_path).where(
+                    MediaItem.file_path.in_([p for p in paths if p])
+                )
+            )
+            by_path = {fp: mid for mid, fp in found.all()}
+            ids = [by_path.get(p) for p in paths]
+            if len(ids) != rows * cols or any(i is None for i in ids):
+                raise ValueError(
+                    f"Could not recover all {rows * cols} cells of grid {grid_id} — "
+                    "rebuild it with create_parameter_sweep instead."
+                )
+
+        return {
+            "media_id": grid_id,
+            "title": content.get("title") or "",
+            "description": content.get("description") or "",
+            "rows": rows,
+            "cols": cols,
+            "row_headers": list(content.get("row_headers") or []),
+            "col_headers": list(content.get("col_headers") or []),
+            "matrix": [ids[r * cols:(r + 1) * cols] for r in range(rows)],
+        }
+
+    async def extend_parameter_sweep(
+        self,
+        grid: dict[str, Any] | int,
+        *,
+        add_cols: dict[str, Sequence[ToolResult | int]] | None = None,
+        add_rows: dict[str, Sequence[ToolResult | int]] | None = None,
+        replace_cols: dict[str, Sequence[ToolResult | int]] | None = None,
+        replace_rows: dict[str, Sequence[ToolResult | int]] | None = None,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Add or replace whole rows/columns of an existing parameter sweep.
+
+        Use this instead of re-listing every cell by hand when a sweep grows a
+        new axis value or one row needs regenerating. Existing cells are carried
+        over by reading them back off the grid, so a 56-cell sweep gaining seven
+        columns only requires the 56 new cells — never a hand-transcribed list of
+        the old ones, where a single transposed id silently mislabels the result.
+
+        Each argument maps a header to that row's/column's cells, in the order
+        the opposite axis already has. Column entries must be one per existing
+        row; row entries one per existing column. Replacements are matched on
+        header text and must already exist; additions must not.
+
+            grid = await stimma.create_parameter_sweep(...)      # 8x7
+            grid = await stimma.extend_parameter_sweep(
+                grid,
+                add_cols={"Dropstock 1400": cells_1400},         # 8 cells
+                replace_rows={"Skatepark ledge": skatepark_row}, # 7 cells (now 8)
+            )
+
+        Returns the same dict shape as create_parameter_sweep, for the NEW grid;
+        the original is left untouched.
+        """
+        base = await self._load_sweep(grid)
+        row_headers = list(base["row_headers"])
+        col_headers = list(base["col_headers"])
+        matrix = [list(r) for r in base["matrix"]]
+
+        def ids_of(cells: Sequence[ToolResult | int], expected: int, label: str) -> list[int]:
+            out: list[int] = []
+            for c in cells:
+                if isinstance(c, ToolResult):
+                    if c.media_id is None:
+                        raise ValueError(
+                            f"{label}: a ToolResult has no media_id — was it saved?"
+                        )
+                    out.append(c.media_id)
+                elif isinstance(c, int):
+                    out.append(c)
+                else:
+                    raise TypeError(f"{label}: expected ToolResult or int, got {type(c)}")
+            if len(out) != expected:
+                raise ValueError(f"{label}: expected {expected} cells, got {len(out)}")
+            return out
+
+        # Replacements first, against the original geometry.
+        for header, cells in (replace_rows or {}).items():
+            if header not in row_headers:
+                raise ValueError(
+                    f"replace_rows: no row {header!r}. Rows are: {row_headers}"
+                )
+            got = ids_of(cells, len(col_headers), f"replace_rows[{header!r}]")
+            matrix[row_headers.index(header)] = got
+
+        for header, cells in (replace_cols or {}).items():
+            if header not in col_headers:
+                raise ValueError(
+                    f"replace_cols: no column {header!r}. Columns are: {col_headers}"
+                )
+            ci = col_headers.index(header)
+            got = ids_of(cells, len(row_headers), f"replace_cols[{header!r}]")
+            for ri, mid in enumerate(got):
+                matrix[ri][ci] = mid
+
+        for header, cells in (add_cols or {}).items():
+            if header in col_headers:
+                raise ValueError(
+                    f"add_cols: column {header!r} already exists — use replace_cols."
+                )
+            got = ids_of(cells, len(row_headers), f"add_cols[{header!r}]")
+            col_headers.append(header)
+            for ri, mid in enumerate(got):
+                matrix[ri].append(mid)
+
+        for header, cells in (add_rows or {}).items():
+            if header in row_headers:
+                raise ValueError(
+                    f"add_rows: row {header!r} already exists — use replace_rows."
+                )
+            got = ids_of(cells, len(col_headers), f"add_rows[{header!r}]")
+            row_headers.append(header)
+            matrix.append(got)
+
+        return await self.create_parameter_sweep(
+            media_ids=[mid for row in matrix for mid in row],
+            rows=len(row_headers),
+            cols=len(col_headers),
+            row_headers=row_headers,
+            col_headers=col_headers,
+            title=title if title is not None else base["title"],
+            description=description if description is not None else base["description"],
+        )
+
+    async def refresh_catalog(self) -> dict[str, Any]:
+        """Re-read the tool catalog from every provider and rewrite `.stimma/`.
+
+        The `.stimma/` tree is a snapshot taken when the turn started — reading
+        an enum file does not refresh it. If a model, LoRA, or checkpoint was
+        added since (a training run writing new checkpoints, say), call this and
+        then re-read the file. It forces providers to re-enumerate rather than
+        trusting their own change detection, so it also covers a provider whose
+        cache went stale on its side.
+
+        Returns {"tools": int, "changed": [str], "enums": [str]} — `changed`
+        lists enum files whose contents differ from before the refresh.
+        """
+        from providers.registry import ProviderRegistry
+        from .tool_fs import materialize_tool_fs
+
+        root = Path(self.workspace_dir) / ".stimma"
+        before = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in sorted((root / "enums").glob("*.txt"))
+        } if (root / "enums").is_dir() else {}
+
+        registry = ProviderRegistry.get_instance()
+        await registry.refresh_tools(force_refresh=True)
+        materialize_tool_fs(registry, self.workspace_dir)
+
+        after = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in sorted((root / "enums").glob("*.txt"))
+        } if (root / "enums").is_dir() else {}
+
+        changed = sorted(
+            name for name in set(before) | set(after)
+            if before.get(name) != after.get(name)
+        )
+        return {
+            "tools": len(registry.list_all_tools()),
+            "changed": changed,
+            "enums": sorted(after),
+        }
+
     # Backward compat aliases
     async def assemble_parameter_grid(self, *args, **kwargs):
         return await self.create_parameter_sweep(*args, **kwargs)

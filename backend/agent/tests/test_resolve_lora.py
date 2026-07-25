@@ -1,7 +1,11 @@
 """Tests for LoRA name normalization and matching in unified.py."""
 
 import pytest
-from agent.tools.stp_utils import _normalize_lora_name, _find_lora_match
+from agent.tools.stp_utils import (
+    AmbiguousLoraError,
+    _find_lora_match,
+    _normalize_lora_name,
+)
 from collections import defaultdict
 
 
@@ -97,14 +101,58 @@ class TestTier3Substring:
 
 
 # ---------------------------------------------------------------------------
-# _find_lora_match — tier 4 (fuzzy)
+# No fuzzy tier — a typo must fail, not silently resolve to a neighbour
 # ---------------------------------------------------------------------------
 
-class TestTier4Fuzzy:
-    def test_fuzzy_close_match(self):
-        path, tier = _match("anim_style", ["styles/anime_style_v2.safetensors"])
-        assert path == "styles/anime_style_v2.safetensors"
-        assert tier == 4
+class TestNoFuzzyFallback:
+    def test_typo_does_not_resolve(self):
+        """A near-miss with no substring relation matches nothing."""
+        assert _match("anim_styl", ["styles/anime_style_v2.safetensors"]) is None
+
+    def test_checkpoint_family_typo_does_not_swap_siblings(self):
+        """
+        The regression this guards: a mistyped training-step number must never
+        resolve to a different checkpoint. Every sibling scores ~0.95 under any
+        similarity metric, so a fuzzy match silently invalidates the sweep.
+        """
+        available = [
+            f"lora_v1/lora_v1_{step:09d}.safetensors"
+            for step in range(200, 2801, 200)
+        ]
+        # 10 digits instead of 9 — the exact shape of a zero-padding bug.
+        assert _match("lora_v1_0000001400.safetensors", available) is None
+
+    def test_valid_checkpoint_still_resolves_exactly(self):
+        available = [
+            f"lora_v1/lora_v1_{step:09d}.safetensors"
+            for step in range(200, 2801, 200)
+        ]
+        path, tier = _match("lora_v1_000001400.safetensors", available)
+        assert path == "lora_v1/lora_v1_000001400.safetensors"
+        assert tier == 1
+
+
+# ---------------------------------------------------------------------------
+# Ambiguity is an error, not a coin flip
+# ---------------------------------------------------------------------------
+
+class TestAmbiguity:
+    def test_multi_substring_match_raises(self):
+        available = ["styles/anime_v1.safetensors", "styles/anime_v2.safetensors"]
+        with pytest.raises(AmbiguousLoraError) as exc:
+            _match("anime", available)
+        assert set(exc.value.candidates) == set(available)
+
+    def test_identical_names_different_dirs_raises(self):
+        """Same basename in two directories is genuinely ambiguous."""
+        available = ["a/style.safetensors", "b/style.safetensors"]
+        with pytest.raises(AmbiguousLoraError):
+            _match("style", available)
+
+    def test_ambiguity_message_lists_candidates(self):
+        available = ["a/style.safetensors", "b/style.safetensors"]
+        with pytest.raises(AmbiguousLoraError, match="ambiguous"):
+            _match("style", available)
 
 
 # ---------------------------------------------------------------------------
@@ -115,24 +163,6 @@ class TestEdgeCases:
     def test_no_match(self):
         result = _match("nonexistent", ["styles/anime.safetensors"])
         assert result is None
-
-    def test_multi_match_picks_best_fuzzy(self):
-        """When multiple matches exist at substring tier, fuzzy picks the best one."""
-        available = ["styles/anime_v1.safetensors", "styles/anime_v2.safetensors"]
-        result = _match("anime", available)
-        assert result is not None
-        path, tier = result
-        # Both are equally good substring matches, so tier 3 has 2 results
-        # and it falls through to tier 4 (fuzzy) which picks one
-        assert path in available
-
-    def test_identical_names_different_dirs(self):
-        """Two loras with identical normalized names in different dirs still resolve."""
-        available = ["a/style.safetensors", "b/style.safetensors"]
-        result = _match("style", available)
-        assert result is not None
-        path, tier = result
-        assert path in available
 
     def test_verbatim_path_passthrough(self):
         """A full path that exists verbatim should match at tier 1."""

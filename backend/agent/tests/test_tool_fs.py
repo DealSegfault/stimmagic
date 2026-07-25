@@ -61,6 +61,31 @@ def _t2i_schema(extra_loras: int = 0):
     return schema
 
 
+def _small_lora_schema():
+    """A LoRA catalog too small to spill — the shape that used to vanish."""
+    schema = _t2i_schema()
+    schema["properties"]["loras"] = {
+        "type": "array",
+        "description": "LoRAs to apply",
+        "items": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "enum": [
+                        "styles/alpha.safetensors",
+                        "styles/beta.safetensors",
+                        "styles/gamma.safetensors",
+                    ],
+                },
+                "blend": {"type": "string", "enum": ["add", "concat"]},
+                "weight": {"type": "number", "default": 1.0},
+            },
+        },
+    }
+    return schema
+
+
 def _registry():
     return FakeRegistry(
         tools=[
@@ -82,6 +107,16 @@ def _registry():
                     description="Model with a huge lora catalog.",
                     task_types=["text-to-image", "image-to-image"],
                     parameter_schema=_t2i_schema(extra_loras=5000),
+                ),
+            ),
+            (
+                "comfyui:small-lora-model",
+                None,
+                FakeDescriptor(
+                    name="Small Lora Model",
+                    description="Model with a handful of loras.",
+                    task_types=["text-to-image"],
+                    parameter_schema=_small_lora_schema(),
                 ),
             ),
             (
@@ -229,6 +264,33 @@ def test_large_enum_spills_to_file_not_signature():
     assert len(values) == 5000
     # The docstring's grep hint must point at the file that actually gets written.
     assert f".stimma/enums/{stem}.txt" in text
+
+
+def test_small_nested_enum_is_inlined_in_docstring():
+    """
+    A nested enum below the spill threshold has nowhere to go: an array of
+    objects renders as `list[dict]`, so the annotation cannot carry it, and it
+    is too small to spill to a file. It must appear in the docstring, or the
+    caller has no way to discover the tool's valid values at all.
+    """
+    m = tool_fs.build_manifest(_registry())
+    binding = m.by_module["text_to_image"]["small_lora_model"]
+    text, spills = tool_fs.render_tool_stub(binding, enum_threshold=100)
+
+    assert not spills, "3 options should not spill to a file"
+    assert "loras[].path: one of" in text
+    for path in ("styles/alpha.safetensors", "styles/beta.safetensors"):
+        assert repr(path) in text, f"{path} must be discoverable in the stub"
+    ast.parse(text)
+
+
+def test_every_nested_enum_is_surfaced_not_just_the_first():
+    """Two nested enums on one param must both be documented."""
+    m = tool_fs.build_manifest(_registry())
+    binding = m.by_module["text_to_image"]["small_lora_model"]
+    text, _ = tool_fs.render_tool_stub(binding, enum_threshold=100)
+    assert "loras[].path:" in text
+    assert "loras[].blend:" in text
 
 
 def test_materialize_writes_tree_and_is_idempotent(tmp_path: Path):

@@ -8,7 +8,7 @@ Used by v2 agent tools (call_tool, discover).
 import os
 import re
 from collections import defaultdict
-from difflib import SequenceMatcher
+from difflib import get_close_matches
 from typing import List, Dict, Any, Optional, Tuple
 
 from core.logging import get_logger
@@ -35,19 +35,43 @@ def _normalize_lora_name(s: str) -> str:
     return s
 
 
+class AmbiguousLoraError(ValueError):
+    """A LoRA query matched more than one available path at the same tier."""
+
+    def __init__(self, query: str, candidates: List[str]):
+        self.query = query
+        self.candidates = candidates
+        shown = ", ".join(repr(c) for c in candidates[:8])
+        more = f" (and {len(candidates) - 8} more)" if len(candidates) > 8 else ""
+        super().__init__(
+            f"LoRA {query!r} is ambiguous — it matches {len(candidates)} available "
+            f"paths: {shown}{more}. Pass the full path verbatim."
+        )
+
+
 def _find_lora_match(
     query: str,
     available_loras: List[str],
     normalized_index: Dict[str, List[str]],
 ) -> Optional[Tuple[str, int]]:
     """
-    Find the best matching LoRA path for a query string using a 4-tier cascade.
+    Find the LoRA path a query unambiguously identifies, using a 3-tier cascade.
 
-    Returns (matched_path, tier) or None if no match found.
+    Returns (matched_path, tier), or None if nothing matched.
     Tier 1: exact endswith + extension fallback
     Tier 2: normalized exact match
     Tier 3: normalized substring (query in name or name in query)
-    Tier 4: fuzzy SequenceMatcher with substring bonus
+
+    Every tier requires a UNIQUE match. Multiple matches raise AmbiguousLoraError
+    rather than picking one, and a query that matches nothing returns None rather
+    than falling back to a nearest neighbour.
+
+    There is deliberately no fuzzy tier. Checkpoint families differ only in a step
+    number (``lora_v1_000001400`` vs ``lora_v1_000000400``), so any similarity
+    metric scores every sibling near-identically. A fuzzy match there does not
+    recover from a typo — it silently swaps one checkpoint for another and
+    invalidates the comparison the caller was making. Guessing wrong is strictly
+    worse than failing, so unmatched queries must raise.
     """
     filename = os.path.basename(query)
 
@@ -60,12 +84,16 @@ def _find_lora_match(
                 break
     if len(matches) == 1:
         return matches[0], 1
+    if matches:
+        raise AmbiguousLoraError(query, sorted(matches))
 
     # --- Tier 2: Normalized exact match ---
     norm_query = _normalize_lora_name(query)
     tier2 = normalized_index.get(norm_query, [])
     if len(tier2) == 1:
         return tier2[0], 2
+    if tier2:
+        raise AmbiguousLoraError(query, sorted(tier2))
 
     # --- Tier 3: Normalized substring (query ⊂ name or name ⊂ query) ---
     tier3 = []
@@ -74,25 +102,8 @@ def _find_lora_match(
             tier3.extend(paths)
     if len(tier3) == 1:
         return tier3[0], 3
-
-    # --- Tier 4: Fuzzy matching with SequenceMatcher ---
-    best_path = None
-    best_score = 0.0
-    for norm_name, paths in normalized_index.items():
-        base_ratio = SequenceMatcher(None, norm_query, norm_name).ratio()
-        # Substring bonus: if one is contained in the other, boost the score
-        bonus = 0.3 if (norm_query in norm_name or norm_name in norm_query) else 0.0
-        score = base_ratio + bonus
-        if score > best_score:
-            best_score = score
-            best_path = paths[0]
-    if best_score > 0.6 and best_path:
-        return best_path, 4
-
-    # --- Multi-match fallback: pick first from earliest tier that had results ---
-    for tier_matches in (matches, tier2, tier3):
-        if tier_matches:
-            return tier_matches[0], -1  # -1 signals multi-match fallback
+    if tier3:
+        raise AmbiguousLoraError(query, sorted(tier3))
 
     return None
 
@@ -101,11 +112,13 @@ def _resolve_lora_paths(tool_id: str, loras: List[Dict[str, Any]]) -> List[Dict[
     """
     Resolve short LoRA filenames to full paths using a multi-tier matching cascade.
 
-    Matching tiers (first unique match wins):
+    Matching tiers (each requires a unique match):
     1. Exact endswith + extension fallback
     2. Normalized exact (case/separator insensitive)
     3. Normalized substring
-    4. Fuzzy SequenceMatcher (ratio > 0.6 with substring bonus)
+
+    Raises ValueError if a name matches nothing, and AmbiguousLoraError if it
+    matches several. Never substitutes a near neighbour — see _find_lora_match.
 
     Args:
         tool_id: The tool ID to query for available LoRAs
@@ -160,26 +173,29 @@ def _resolve_lora_paths(tool_id: str, loras: List[Dict[str, Any]]) -> List[Dict[
         result = _find_lora_match(original_path, available_loras, normalized_index)
 
         if result is None:
-            raise ValueError(
-                f"LoRA '{original_path}' not found in the {len(available_loras)} available LoRAs for this tool. "
-                f"Check the LoRA name and try again."
+            # Suggestions go in the message only — never auto-applied. A near
+            # neighbour is a hint for the caller, not a substitute for the
+            # thing they asked for.
+            near = get_close_matches(original_path, available_loras, n=5, cutoff=0.5)
+            hint = (
+                " Closest available: " + ", ".join(repr(p) for p in near) + "."
+                if near
+                else ""
             )
-        else:
-            resolved_path, tier = result
-            if tier == -1:
-                log.warning(
-                    f"[resolve_lora_paths] Multiple matches for '{original_path}', "
-                    f"using first: '{resolved_path}'"
-                )
-            else:
-                log.info(
-                    f"[resolve_lora_paths] Resolved '{original_path}' -> '{resolved_path}' "
-                    f"(tier {tier})"
-                )
-            resolved_loras.append({
-                "path": resolved_path,
-                "weight": lora.get("weight", 1.0),
-            })
+            raise ValueError(
+                f"LoRA '{original_path}' not found among the {len(available_loras)} "
+                f"LoRAs available for this tool.{hint}"
+            )
+
+        resolved_path, tier = result
+        log.info(
+            f"[resolve_lora_paths] Resolved '{original_path}' -> '{resolved_path}' "
+            f"(tier {tier})"
+        )
+        resolved_loras.append({
+            "path": resolved_path,
+            "weight": lora.get("weight", 1.0),
+        })
 
     return resolved_loras
 

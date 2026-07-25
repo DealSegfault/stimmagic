@@ -117,22 +117,20 @@ async def build_messages(
         if msg is not None:
             messages.append(msg)
 
-    # Safety net: if first non-system message is an orphaned tool result,
-    # prepend a synthetic user message so the LLM gets a valid conversation.
-    if len(messages) > 1 and messages[1].get("role") == "tool":
-        messages.insert(1, {"role": "user", "content": "(continued)"})
-
-    # Safety net: an interrupt can kill a turn after the tool_call item was
-    # persisted but before its tool_result was. Providers reject the whole
-    # conversation when an assistant tool_use has no matching result, bricking
-    # every later turn, so synthesize results for the missing ids.
-    _synthesize_missing_tool_results(messages)
+    # Safety net: an interrupt or server restart can break the pairing between
+    # tool calls and their results. Providers reject the whole conversation for
+    # either half of that, bricking every later turn.
+    _repair_tool_call_pairing(messages)
 
     # Token budget: drop middle messages if history exceeds budget.
     # Preserves first + last turns so the prefix stays anchored for caching.
     pre_tokens = _estimate_tokens(messages)
     budget = compute_history_budget(max_context_tokens, pre_tokens["system"], overhead_tokens)
     messages = _apply_token_budget(messages, budget=budget, correction=correction)
+    # Trimming cuts on user-turn boundaries, so it should not split a call from
+    # its result — but this is the last thing that touches the list before it
+    # reaches the provider, and re-running it is cheap and idempotent.
+    _repair_tool_call_pairing(messages)
     post_tokens = _estimate_tokens(messages)
 
     adjusted_total = int(post_tokens["total"] * correction)
@@ -161,6 +159,56 @@ async def build_messages(
 INTERRUPTED_TOOL_RESULT = (
     "[Tool execution was interrupted before completing. No result was recorded.]"
 )
+
+
+def _repair_tool_call_pairing(messages: List[Dict[str, Any]]) -> None:
+    """Make every tool call/result pair well-formed. Mutates in place.
+
+    Providers require each assistant tool call to be answered by a tool result
+    in the immediately following run of messages — and reject a tool result
+    that no such call issued. Both halves break in practice:
+
+    * A turn killed after the tool_call item was persisted but before its
+      result leaves a call with no answer.
+    * A server restart can persist the result LATE, after the user has already
+      sent another message. The result then sits far from its call, matching
+      nothing that precedes it. Its own call, meanwhile, reads as unanswered.
+
+    The second case is the nastier one: nothing is missing, so a synthesize-only
+    pass sees a valid-looking history and the provider still 400s on the stray
+    result. So drop first, then fill — in that order, or the late result would
+    count as an answer and its call would be left bare.
+
+    Both are permanent once persisted: the same malformed history is rebuilt on
+    every subsequent turn, so the chat stays bricked until it is repaired here.
+    """
+    _drop_orphaned_tool_results(messages)
+    _synthesize_missing_tool_results(messages)
+
+
+def _drop_orphaned_tool_results(messages: List[Dict[str, Any]]) -> None:
+    """Drop tool results that the preceding assistant message did not ask for."""
+    kept: List[Dict[str, Any]] = []
+    pending: set = set()
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            call_id = msg.get("tool_call_id")
+            if call_id in pending:
+                pending.discard(call_id)
+                kept.append(msg)
+            else:
+                log.warning(
+                    f"Dropping orphaned tool result (tool_call_id={call_id!r}) — "
+                    "no immediately preceding assistant message issued it."
+                )
+            continue
+        if role == "assistant" and msg.get("tool_calls"):
+            pending = {c.get("id") or "" for c in msg["tool_calls"]}
+        else:
+            pending = set()
+        kept.append(msg)
+    messages[:] = kept
 
 
 def _synthesize_missing_tool_results(messages: List[Dict[str, Any]]) -> None:

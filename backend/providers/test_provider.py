@@ -88,7 +88,7 @@ _STANDARD_DIMENSIONS = [
 # LoRA stack input, matching the {path, weight} shape call_tool/params_from
 # emit (see agent/v2/tools/library.py _normalize_loras_for_input). The path
 # enum is how tools advertise their available LoRAs — _resolve_lora_paths
-# fuzzy-matches short names ("inkwash") against it, like real tools.
+# resolves short names ("inkwash") against it, like real tools.
 _LORAS_SCHEMA = {
     "type": "array",
     "default": [],
