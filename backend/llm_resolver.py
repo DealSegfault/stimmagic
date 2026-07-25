@@ -307,9 +307,36 @@ def set_catalog_cache(entries: list[dict]) -> None:
             'max_context_tokens': int(e.get('max_context_tokens') or _FALLBACK_CONTEXT),
             'reasoning': e.get('reasoning') or {},
             'is_default': bool(e.get('is_default')),
+            # The name the user sees in the model picker. Anything reporting
+            # which model is answering has to use this — the resolved alias
+            # (`agent-opus`) is a routing detail and means nothing to a reader.
+            'name': e.get('name') or '',
+            'canonical_model_id': e.get('canonical_model_id') or '',
         }
         for e in entries
     }
+
+
+def model_display_name(slug: Optional[str]) -> Optional[str]:
+    """Human-readable name for a model slug, as shown in the model picker.
+
+    Falls back to the user-facing part of the slug when the catalog has no entry
+    — a provider-qualified id is still far more legible than the routing alias
+    that ends up in ``LLMEndpointConfig.model``.
+    """
+    if not slug:
+        return None
+    entry = _lookup_catalog(slug) or {}
+    name = entry.get('name')
+    if name:
+        return name
+    for provider in getattr(get_settings(), 'llm_providers', []):
+        for model in getattr(provider, 'models', []) or []:
+            if model.id == slug:
+                return getattr(model, 'name', None) or model.id
+    if slug in ('auto', 'local'):
+        return None
+    return slug.split(':', 1)[-1] or slug
 
 
 def get_known_catalog_slugs() -> set[str]:

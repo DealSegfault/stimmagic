@@ -66,8 +66,8 @@ def build_skills_reminder(
     return "\n".join(lines)
 
 
-def build_model_identity_reminder(model: str, model_slug: Optional[str] = None) -> Optional[str]:
-    """Tell the agent which model it is running as.
+def build_model_identity_reminder(model_slug: Optional[str]) -> Optional[str]:
+    """Tell the agent which model it is running as, by the name the user sees.
 
     Nothing else in the prompt says this, so the agent has no way to know its own
     capability ceiling. Skills that depend on a particular class of model — vector
@@ -75,17 +75,22 @@ def build_model_identity_reminder(model: str, model_slug: Optional[str] = None) 
     until the render — can then say so to the user instead of silently doing a
     worse job.
 
+    The *display name* is what goes in here, not ``LLMEndpointConfig.model``. That
+    field holds a routing alias like ``agent-opus``, which an agent cannot match
+    against a skill's list of model names and will misread as "some other model".
+
     Stated as a fact, with no instruction attached. What to do about it belongs to
     whatever skill actually cares.
     """
-    if not model:
+    from llm_resolver import model_display_name
+
+    name = model_display_name(model_slug)
+    if not name:
         return None
-    line = f"You are running as model `{model}`"
-    if model_slug and model_slug != model:
-        line += f" (configured as `{model_slug}`)"
     return (
         "<system-reminder>\n"
-        f"{line}.\n"
+        f"You are running as {name}. This is the model the user picked in the "
+        "composer, and they can change it there.\n"
         "</system-reminder>"
     )
 

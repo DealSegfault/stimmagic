@@ -121,6 +121,17 @@ export function useMediaApi() {
     return `${getAPIBase()}/media/by-hash/${fileHashOrMediaId}/file?profile=${profileId}`
   }
 
+  // SVG documents render through an <img>, which cannot send the X-Profile-ID
+  // header the profile middleware requires — so the URL carries its database in
+  // the path, same as thumbnails and files.
+  function getSvgDocumentUrl(mediaId) {
+    const dbGuid = getCurrentDbGuid()
+    if (dbGuid) {
+      return `${getAPIBase()}/db/${dbGuid}/media/${mediaId}/svg`
+    }
+    return `${getAPIBase()}/media/${mediaId}/svg?profile=${getCurrentProfileId()}`
+  }
+
   function getMseLoopUrls(fileHash) {
     const dbGuid = getCurrentDbGuid()
     if (dbGuid) {
@@ -581,6 +592,7 @@ export function useMediaApi() {
     getFilterCounts,
     getThumbnailUrl,
     getMediaFileUrl,
+    getSvgDocumentUrl,
     getMseLoopUrls,
     getProgressStream,
     // Markers

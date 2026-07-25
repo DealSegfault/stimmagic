@@ -1350,6 +1350,9 @@ async def _run_agentic_loop_inner(
         )
         if skills_reminder:
             system_reminders.append(skills_reminder)
+        model_reminder = build_model_identity_reminder(effective_model_slug)
+        if model_reminder:
+            system_reminders.append(model_reminder)
         if pending_stall_nudge:
             system_reminders.append(pending_stall_nudge)
             pending_stall_nudge = None
@@ -1366,11 +1369,6 @@ async def _run_agentic_loop_inner(
         # we don't leave a dangling "thinking.." if no model is configured.
         llm_config = await get_chat_llm_config(effective_model_slug, role='agent')
         turn_stats["llm_config"] = llm_config
-
-        # Appended after resolution because nothing earlier knows the model.
-        model_reminder = build_model_identity_reminder(llm_config.model, effective_model_slug)
-        if model_reminder:
-            system_reminders.append(model_reminder)
 
         # The tools schema counts as prompt input at the provider but isn't in
         # the messages list — budget for it or small windows overflow.

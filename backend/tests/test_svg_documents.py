@@ -368,6 +368,41 @@ class TestServing:
         assert data["node_count"] == 2
         assert any("font" in w for w in data["warnings"])
 
+    async def test_serves_by_db_guid_without_a_profile_header(
+        self, client: AsyncClient, db_session, tmp_path
+    ):
+        """The viewer's <img> cannot send X-Profile-ID, so the db_guid form must work.
+
+        Hitting the plain /media/{id}/svg route from an <img> was the original bug:
+        the profile middleware 400s it, and the browser shows a broken image.
+        """
+        from database_registry import get_database_registry
+
+        svg_file = tmp_path / "byguid.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+            item = await create_media_item(
+                session, materialize_asset=True, file_path=svg_file, file_format="svg"
+            )
+            await session.commit()
+
+        db_guid = get_database_registry().get_database("default").db_guid
+        response = await client.get(
+            f"/api/db/{db_guid}/media/{item.id}/svg",
+            headers={"X-Profile-ID": ""},
+        )
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert "<circle" in response.text
+
+    async def test_plain_route_needs_a_profile(self, client: AsyncClient):
+        """Documents why the db_guid twin exists at all."""
+        from httpx import ASGITransport, AsyncClient as RawClient
+
+        raw = RawClient(transport=client._transport, base_url="http://test")
+        response = await raw.get("/api/media/1/svg")
+        assert response.status_code == 400
+
     async def test_rejects_non_svg_media(self, client: AsyncClient, db_session, tmp_path):
         async with db_session() as session:
 

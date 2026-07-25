@@ -130,6 +130,8 @@ Stick with a working tool unless the user asks to switch.
 
 Use `run_code` for one-off logic, batching, PIL/numpy, or `stimma` SDK work, and `run_file` to run a script you wrote. \
 Use `bash` for CLI tools (ffmpeg, ImageMagick). \
+To rasterize an SVG, use `view_image` or `stimma.rasterize_svg` — never a command-line \
+converter like `rsvg-convert` or `inkscape`, which are absent on most machines. \
 For locating things in an image, view it and estimate the box with your own eyes (view_image states the native pixel \
 size — express coordinates in that frame). When a task needs *pixel-accurate* regions: `stimma.detect_faces(media_id)` \
 for photographic faces, or the `detect-objects` catalog tool (SAM3, subject as a short noun phrase) for arbitrary \

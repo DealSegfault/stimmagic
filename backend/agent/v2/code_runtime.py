@@ -845,6 +845,63 @@ class StimmaSDK:
         from .image_adjust import FILTER_NAMES
         return list(FILTER_NAMES)
 
+    async def rasterize_svg(
+        self,
+        svg,
+        *,
+        width: int | None = None,
+        height: int | None = None,
+        out=None,
+    ):
+        """Rasterize an SVG to a PIL Image (or write a PNG when ``out`` is given).
+
+        ``svg`` is a workspace path or SVG markup. ``width``/``height`` default to
+        the document's own size; passing one derives the other from the aspect
+        ratio.
+
+        This is the renderer behind thumbnails, `view_image`, PNG export and the
+        icon bundles — a real browser engine. Use it rather than shelling out to
+        `rsvg-convert`, `inkscape` or `magick`: those are not installed on users'
+        machines, and even where they are, they rasterize differently from what
+        the app will actually ship, so you would be checking your work against
+        something other than the deliverable.
+        """
+        from utils.svg_doc import intrinsic_size, parse_svg
+        from utils.ui_render import render_svg_document
+
+        text = str(svg)
+        if "<svg" not in text:
+            svg_path = self._resolve_path(text)
+            if not svg_path.is_file():
+                raise FileNotFoundError(f"SVG not found in workspace: {text}")
+            text = svg_path.read_text(encoding="utf-8-sig")
+
+        native_w, native_h = intrinsic_size(parse_svg(text))
+        if width and not height:
+            height = max(1, round(width * native_h / native_w))
+        elif height and not width:
+            width = max(1, round(height * native_w / native_h))
+        elif not width and not height:
+            width, height = native_w, native_h
+
+        png_bytes = await render_svg_document(
+            text,
+            int(width),
+            int(height),
+            wait_for_client_timeout_s=10.0,
+            queue_timeout_s=30.0,
+        )
+
+        if out is not None:
+            out_path = self._resolve_path(str(out))
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(png_bytes)
+            return out_path
+
+        img = Image.open(io.BytesIO(png_bytes))
+        img.load()
+        return img
+
     async def ffmpeg(self, *args, timeout: float = 600.0, check: bool = True) -> AVToolResult:
         """Run ffmpeg in the chat workspace (concat, trim, remux, extract frames...).
 

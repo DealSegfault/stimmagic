@@ -204,6 +204,27 @@ generation provider.""",
         group="image",
         is_async=False,
     ),
+    "rasterize_svg": SDKMethodHelp(
+        name="rasterize_svg",
+        signature="await stimma.rasterize_svg(svg, *, width=None, height=None, out=None) -> Image | Path",
+        summary="Render an SVG to pixels with the app's real browser engine.",
+        details="""\
+`svg` is a workspace path or SVG markup. Returns a PIL Image, or the written
+path when `out` is given. Size defaults to the document's own; pass one of
+width/height and the other follows the aspect ratio.
+
+This is the same renderer behind thumbnails, view_image, PNG export and the
+icon bundles. Do not shell out to rsvg-convert, inkscape or magick instead:
+they are not installed on users' machines, and where they are they rasterize
+differently from what the app ships — so you would be checking your work
+against something other than the deliverable.
+
+Example — check a mark at icon size:
+  small = await stimma.rasterize_svg("mark.svg", width=16)
+  print(small.size, small.getbbox())""",
+        group="image",
+        is_async=True,
+    ),
     "ffmpeg": SDKMethodHelp(
         name="ffmpeg",
         signature="await stimma.ffmpeg(*args, timeout=600.0, check=True) -> AVToolResult",

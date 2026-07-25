@@ -28,6 +28,8 @@
             class="block"
             :alt="`SVG document, ${naturalWidth} by ${naturalHeight}`"
             draggable="false"
+            @error="imageFailed = true"
+            @load="imageFailed = false"
           />
         </div>
       </div>
@@ -63,7 +65,14 @@
       </div>
 
       <div
-        v-if="warnings.length"
+        v-if="imageFailed"
+        class="flex-shrink-0 px-4 pb-3 text-xs text-content-secondary text-center"
+      >
+        The document could not be rendered.
+      </div>
+
+      <div
+        v-else-if="warnings.length"
         class="flex-shrink-0 px-4 pb-3 text-xs text-content-tertiary max-w-xl text-center"
       >
         {{ warnings.join(' · ') }}
@@ -76,6 +85,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
 import { getApiBase } from '../../apiConfig'
+import { useMediaApi } from '../../composables/useMediaApi'
 
 const props = defineProps({
   mediaId: {
@@ -106,13 +116,18 @@ const naturalHeight = ref(0)
 const warnings = ref([])
 const zoom = ref('fit')
 const background = ref('checker')
+const imageFailed = ref(false)
 
 const containerRef = ref(null)
 const containerWidth = ref(0)
 const containerHeight = ref(0)
 let resizeObserver = null
 
-const documentUrl = computed(() => `${getApiBase()}/media/${props.mediaId}/svg`)
+const { getSvgDocumentUrl } = useMediaApi()
+
+// Built by useMediaApi, not by hand: an <img> cannot send the X-Profile-ID
+// header, so the URL has to carry its database in the path.
+const documentUrl = computed(() => getSvgDocumentUrl(props.mediaId))
 
 const backgroundClass = computed(() => ({
   checker: 'bg-checker',
@@ -168,6 +183,7 @@ async function loadInfo() {
   loading.value = true
   error.value = null
   warnings.value = []
+  imageFailed.value = false
   try {
     const { data } = await axios.get(`${getApiBase()}/media/${props.mediaId}/svg-info`)
     naturalWidth.value = data.width

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.logging import get_logger
 from database import MediaItem
 from core.dependencies import get_db_session
+from routes.media_files import get_db_session_by_guid
 from utils.http_headers import content_disposition
 from utils.svg_doc import (
     SvgParseError,
@@ -166,6 +167,23 @@ def _base_name(item: MediaItem, media_id: int) -> str:
 @router.get("/media/{media_id}/svg")
 async def get_svg_document(media_id: int, session: AsyncSession = Depends(get_db_session)):
     """Serve the sanitized SVG for rendering."""
+    _item, clean = await _load_svg(media_id, session)
+    return Response(content=clean, media_type="image/svg+xml", headers=SVG_RENDER_HEADERS)
+
+
+@router.get("/db/{db_guid}/media/{media_id}/svg")
+async def get_svg_document_by_db_guid(
+    db_guid: str,
+    media_id: int,
+    session: AsyncSession = Depends(get_db_session_by_guid),
+):
+    """Serve the sanitized SVG addressed by db_guid.
+
+    This is the form the viewer uses. An ``<img>`` cannot send the
+    ``X-Profile-ID`` (or PIN) header the profile middleware requires, so any URL
+    that lands in an image element has to carry its database in the path — the
+    same reason the thumbnail and file endpoints have db_guid twins.
+    """
     _item, clean = await _load_svg(media_id, session)
     return Response(content=clean, media_type="image/svg+xml", headers=SVG_RENDER_HEADERS)
 
