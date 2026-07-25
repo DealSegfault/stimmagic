@@ -181,7 +181,7 @@ def test_branded_provider_contracts_match_current_model_series():
     anthropic = branded_models("anthropic", "anthropic-test")
     assert [model.model_id for model in anthropic] == [
         "claude-sonnet-5",
-        "claude-opus-4-8",
+        "claude-opus-5",
         "claude-fable-5",
         "claude-haiku-4-5-20251001",
     ]

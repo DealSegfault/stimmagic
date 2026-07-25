@@ -130,7 +130,7 @@ def test_anthropic_native_request_replays_exact_signed_blocks():
         {"type": "tool_use", "id": "toolu_1", "name": "lookup_weather", "input": {"city": "Boston"}},
     ]
     body = _to_anthropic_request(
-        "claude-opus-4-8",
+        "claude-opus-5",
         [
             {"role": "system", "content": "Be concise."},
             {"role": "user", "content": "Weather?"},
@@ -263,9 +263,9 @@ def test_anthropic_response_keeps_native_state_for_persistence():
         {"type": "tool_use", "id": "toolu_1", "name": "lookup_weather", "input": {"city": "Boston"}},
     ]
     normalized = _normalize_response(_anthropic_to_chat({
-        "id": "msg_1", "model": "claude-opus-4-8", "content": blocks,
+        "id": "msg_1", "model": "claude-opus-5", "content": blocks,
         "stop_reason": "tool_use", "usage": {"input_tokens": 12, "output_tokens": 8},
-    }, "claude-opus-4-8"))
+    }, "claude-opus-5"))
 
     assert normalized.thinking == "Need weather."
     assert normalized.provider_state == {"kind": "anthropic_message", "content": blocks}

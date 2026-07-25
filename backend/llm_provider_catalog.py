@@ -81,10 +81,10 @@ BRANDED_MODELS: dict[str, list[dict[str, Any]]] = {
             ),
         },
         {
-            "model_id": "claude-opus-4-8", "name": "Claude Opus 4.8", "context": 1_000_000,
+            "model_id": "claude-opus-5", "name": "Claude Opus 5", "context": 1_000_000,
             "reasoning": _reasoning(
                 "optional", ["off", "low", "medium", "high", "xhigh", "max"],
-                "high", "off", "anthropic_adaptive_optional",
+                "high", "off", "anthropic_adaptive_default",
                 {"off": "off", "low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "max"},
             ),
         },

@@ -15,6 +15,14 @@ from cloud_runtime import env_cloud_base_url
 LEGACY_LLM_MODEL_SLUGS = {
     "agent-max": "stimma:minimax-m3",
     "default": "stimma:minimax-m3",
+    "stimma:claude-opus-4.8": "stimma:claude-opus-5",
+}
+
+# Reasoning levels each replacement model accepts, used when migrating a saved
+# per-slug reasoning selection off a retired alias.
+LEGACY_LLM_REASONING_LEVELS = {
+    "stimma:minimax-m3": {"off", "high"},
+    "stimma:claude-opus-5": {"off", "low", "medium", "high", "xhigh", "max"},
 }
 
 def generate_profile_id() -> str:
@@ -736,9 +744,11 @@ def _migrate_legacy_llm_model_slugs(config_file: Path) -> bool:
             if legacy_slug not in reasoning_levels:
                 continue
             legacy_level = reasoning_levels.pop(legacy_slug)
-            # MiniMax exposes off/high. Preserve a compatible selection, but do
-            # not let an obsolete alias overwrite an explicit new-model choice.
-            if replacement not in reasoning_levels and legacy_level in {"off", "high"}:
+            # Carry the selection over only if the replacement model exposes
+            # that level (MiniMax is off/high; Opus 5 has Opus 4.8's full set),
+            # and never let an obsolete alias overwrite an explicit new choice.
+            carryable = LEGACY_LLM_REASONING_LEVELS.get(replacement, {"off", "high"})
+            if replacement not in reasoning_levels and legacy_level in carryable:
                 reasoning_levels[replacement] = legacy_level
             changed = True
 
