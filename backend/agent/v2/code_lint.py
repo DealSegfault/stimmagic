@@ -19,7 +19,7 @@ from typing import Any
 # Used to give specific "use this outside run_code" guidance instead of
 # a generic "method doesn't exist" error.
 AGENT_ONLY_TOOLS = frozenset({
-    "create_layout", "bash", "view_image", "ask_user",
+    "create_layout", "create_svg", "bash", "view_image", "ask_user",
     "browse_web",
     "skill", "notepad",
 })

@@ -93,6 +93,138 @@
               </div>
             </template>
 
+            <!-- Vector (SVG) sections -->
+            <template v-if="mediaCategory === 'vector'">
+              <template v-if="format === 'png'">
+                <div class="border-t border-edge-subtle" />
+
+                <div class="flex items-center justify-between">
+                  <label class="text-xs font-semibold text-content-secondary">Size</label>
+                  <div class="flex gap-1">
+                    <button
+                      v-for="opt in layoutScaleOptions"
+                      :key="opt.value"
+                      @click="selectLayoutScale(opt.value)"
+                      :class="[
+                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                        layoutScaleMode === opt.value
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
+                      ]"
+                    >
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                </div>
+
+                <div class="h-8 flex items-center">
+                  <template v-if="layoutScaleMode === 'custom'">
+                    <input
+                      v-model.number="layoutCustomWidth"
+                      type="number"
+                      min="16"
+                      max="4096"
+                      step="1"
+                      class="w-24 px-2.5 py-1 bg-surface-overlay border border-surface-raised rounded text-content-secondary text-xs focus:outline-none focus:border-accent"
+                    >
+                    <span class="text-xs text-content-tertiary mx-1.5">&times;</span>
+                    <span class="text-xs text-content-secondary tabular-nums">{{ layoutDerivedHeight }}</span>
+                    <span class="text-xs text-content-tertiary ml-1.5">px</span>
+                  </template>
+                  <template v-else>
+                    <span class="text-xs text-content-secondary tabular-nums">{{ layoutOutputWidth }} &times; {{ layoutOutputHeight }}</span>
+                    <span class="text-xs text-content-tertiary ml-1.5">px</span>
+                  </template>
+                </div>
+              </template>
+
+              <template v-else-if="format === 'png-set'">
+                <div class="border-t border-edge-subtle" />
+
+                <div class="flex items-start justify-between gap-3">
+                  <label class="text-xs font-semibold text-content-secondary pt-1">Sizes</label>
+                  <div class="flex flex-wrap gap-1 justify-end">
+                    <button
+                      v-for="size in PNG_SET_SIZES"
+                      :key="size"
+                      @click="togglePngSetSize(size)"
+                      :class="[
+                        'px-2 py-1 rounded text-xs font-medium tabular-nums transition-colors',
+                        pngSetSizes.includes(size)
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
+                      ]"
+                    >
+                      {{ size }}
+                    </button>
+                  </div>
+                </div>
+              </template>
+
+              <template v-else-if="format === 'html'">
+                <div class="border-t border-edge-subtle" />
+
+                <div class="flex items-center justify-between">
+                  <label class="text-xs font-semibold text-content-secondary">Form</label>
+                  <div class="flex gap-1">
+                    <button
+                      v-for="opt in CODE_VARIANTS"
+                      :key="opt.value"
+                      @click="codeVariant = opt.value"
+                      :class="[
+                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                        codeVariant === opt.value
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
+                      ]"
+                    >
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                </div>
+
+                <p class="text-xs text-content-tertiary">{{ codeVariantHint }}</p>
+              </template>
+
+              <template v-else-if="format === 'icon'">
+                <div class="border-t border-edge-subtle" />
+
+                <div class="flex items-center justify-between">
+                  <label class="text-xs font-semibold text-content-secondary">Platform</label>
+                  <div class="flex flex-wrap gap-1 justify-end">
+                    <button
+                      v-for="opt in ICON_PLATFORMS"
+                      :key="opt.value"
+                      @click="iconPlatform = opt.value"
+                      :class="[
+                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+                        iconPlatform === opt.value
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
+                      ]"
+                    >
+                      {{ opt.label }}
+                    </button>
+                  </div>
+                </div>
+
+                <p class="text-xs text-content-tertiary">{{ iconPlatformHint }}</p>
+              </template>
+
+              <template v-else-if="format === 'svg'">
+                <div class="border-t border-edge-subtle" />
+
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input
+                    v-model="svgOptimize"
+                    type="checkbox"
+                    class="w-3.5 h-3.5 rounded border-surface-raised bg-surface-overlay accent-accent"
+                  >
+                  <span class="text-xs text-content-secondary">Collapse whitespace and drop editor attributes</span>
+                </label>
+              </template>
+            </template>
+
             <!-- Resize section (images) -->
             <template v-if="mediaCategory === 'image'">
               <div class="border-t border-edge-subtle" />
@@ -257,6 +389,7 @@ const scalePercent = ref(50)
 const stripMetadata = ref(false)
 const videoResolution = ref('original')
 const exporting = ref(false)
+const copied = ref(false)
 
 // Layout-specific state
 const layoutScaleMode = ref('2x')
@@ -264,6 +397,28 @@ const layoutCustomWidth = ref(1600)
 const layoutFetchedWidth = ref(0)
 const layoutFetchedHeight = ref(0)
 const layoutDimsLoading = ref(false)
+
+// Vector-specific state
+const svgOptimize = ref(false)
+const codeVariant = ref('inline')
+const iconPlatform = ref('icon-macos')
+const pngSetSizes = ref([16, 32, 64, 128, 256, 512, 1024])
+
+const PNG_SET_SIZES = [16, 24, 32, 48, 64, 128, 180, 256, 512, 1024]
+
+const CODE_VARIANTS = [
+  { label: 'Inline', value: 'inline' },
+  { label: 'Data URI', value: 'data-uri' },
+  { label: 'Sprite', value: 'symbol' },
+]
+
+const ICON_PLATFORMS = [
+  { label: 'macOS', value: 'icon-macos' },
+  { label: 'Windows', value: 'icon-windows' },
+  { label: 'iOS', value: 'icon-ios' },
+  { label: 'Android', value: 'icon-android' },
+  { label: 'Web', value: 'icon-web' },
+]
 
 // --- Computed ---
 
@@ -278,6 +433,7 @@ const mediaCategory = computed(() => {
   for (const item of props.mediaItems) {
     const fmt = (item.file_format || '').toLowerCase()
     if (fmt === 'stimmalayout') categories.add('layout')
+    else if (fmt === 'svg') categories.add('vector')
     else if (IMAGE_FORMATS.includes(fmt)) categories.add('image')
     else if (VIDEO_FORMATS.includes(fmt)) categories.add('video')
     else if (AUDIO_FORMATS.includes(fmt)) categories.add('audio')
@@ -291,6 +447,9 @@ const mediaCategory = computed(() => {
 // Layout dimensions — prefer fetched from HTML, fall back to DB, then defaults
 const layoutNativeWidth = computed(() => {
   if (layoutFetchedWidth.value > 0) return layoutFetchedWidth.value
+  if (mediaCategory.value === 'vector' && props.mediaItems.length > 0) {
+    return props.mediaItems[0].width || 512
+  }
   if (mediaCategory.value !== 'layout' || props.mediaItems.length === 0) return 800
   const item = props.mediaItems[0]
   return item.width || 800
@@ -298,6 +457,9 @@ const layoutNativeWidth = computed(() => {
 
 const layoutNativeHeight = computed(() => {
   if (layoutFetchedHeight.value > 0) return layoutFetchedHeight.value
+  if (mediaCategory.value === 'vector' && props.mediaItems.length > 0) {
+    return props.mediaItems[0].height || 512
+  }
   if (mediaCategory.value !== 'layout' || props.mediaItems.length === 0) return 600
   const item = props.mediaItems[0]
   return item.height || 600
@@ -358,6 +520,17 @@ const layoutDerivedHeight = computed(() => {
 })
 
 const availableFormats = computed(() => {
+  if (mediaCategory.value === 'vector') {
+    return [
+      { label: 'SVG', value: 'svg' },
+      { label: 'PNG', value: 'png' },
+      { label: 'PNG set', value: 'png-set' },
+      { label: 'PDF', value: 'pdf' },
+      { label: 'Code', value: 'html' },
+      { label: 'App icon', value: 'icon' },
+    ]
+  }
+
   if (mediaCategory.value === 'layout') {
     return [
       { label: 'PDF', value: 'pdf' },
@@ -401,8 +574,26 @@ const videoResolutions = [
   { label: '720p', value: '720' },
 ]
 
+const codeVariantHint = computed(() => ({
+  'inline': 'Themeable — currentColor and CSS reach inside it.',
+  'data-uri': 'Isolated — no CSS from the page can touch it.',
+  'symbol': 'Define once, reference many times.',
+}[codeVariant.value]))
+
+const iconPlatformHint = computed(() => ({
+  'icon-macos': 'One .icns file, 32 through 1024px.',
+  'icon-windows': 'One .ico file, 16 through 256px.',
+  'icon-ios': 'AppIcon.appiconset with Contents.json. Flattened — iOS rejects alpha.',
+  'icon-android': 'mipmap densities plus adaptive-icon layers and the Play Store icon.',
+  'icon-web': 'favicon.ico, PNGs, site.webmanifest, and the <link> block.',
+}[iconPlatform.value]))
+
+// Code goes to the clipboard: downloading a snippet you are about to paste is
+// the wrong shape.
+const isClipboardExport = computed(() => mediaCategory.value === 'vector' && format.value === 'html')
+
 const isOriginalExport = computed(() => {
-  if (mediaCategory.value === 'layout') return false
+  if (mediaCategory.value === 'layout' || mediaCategory.value === 'vector') return false
   return format.value === 'original'
     && resizeMode.value === 'none'
     && !stripMetadata.value
@@ -410,17 +601,34 @@ const isOriginalExport = computed(() => {
 })
 
 const exportButtonLabel = computed(() => {
+  if (isClipboardExport.value) return copied.value ? 'Copied' : 'Copy'
   const count = props.mediaIds.length
   if (count <= 1) return 'Export'
   return `Export ${count}`
 })
+
+function togglePngSetSize(size) {
+  const next = new Set(pngSetSizes.value)
+  if (next.has(size)) next.delete(size)
+  else next.add(size)
+  pngSetSizes.value = [...next].sort((a, b) => a - b)
+}
 
 // Reset state when modal opens
 watch(() => props.show, (newVal) => {
   if (newVal) {
     layoutFetchedWidth.value = 0
     layoutFetchedHeight.value = 0
-    if (mediaCategory.value === 'layout') {
+    copied.value = false
+    if (mediaCategory.value === 'vector') {
+      format.value = 'svg'
+      svgOptimize.value = false
+      codeVariant.value = 'inline'
+      iconPlatform.value = 'icon-macos'
+      pngSetSizes.value = [16, 32, 64, 128, 256, 512, 1024]
+      layoutScaleMode.value = '1x'
+      layoutCustomWidth.value = layoutNativeWidth.value
+    } else if (mediaCategory.value === 'layout') {
       format.value = 'pdf'
       layoutScaleMode.value = '2x'
       fetchLayoutDimensions().then(() => {
@@ -447,7 +655,9 @@ async function handleExport() {
   exporting.value = true
 
   try {
-    if (mediaCategory.value === 'layout') {
+    if (mediaCategory.value === 'vector') {
+      await handleVectorExport()
+    } else if (mediaCategory.value === 'layout') {
       await handleLayoutExport()
     } else if (isOriginalExport.value) {
       // No conversion needed - use existing download path
@@ -504,12 +714,52 @@ async function handleExport() {
     }
 
     emit('exported')
-    emit('close')
+    if (!isClipboardExport.value) emit('close')
   } catch (error) {
     console.error('[ExportModal] Export failed:', error)
   } finally {
     exporting.value = false
   }
+}
+
+async function handleVectorExport() {
+  const mediaId = props.mediaIds[0]
+  const body = { format: format.value === 'icon' ? iconPlatform.value : format.value }
+
+  if (format.value === 'svg') {
+    body.optimize = svgOptimize.value
+  } else if (format.value === 'png') {
+    if (layoutScaleMode.value === 'custom') body.width = layoutCustomWidth.value
+    else body.scale = layoutScaleNumber.value
+  } else if (format.value === 'png-set') {
+    if (pngSetSizes.value.length === 0) throw new Error('Pick at least one size')
+    body.sizes = pngSetSizes.value
+  } else if (format.value === 'html') {
+    body.variant = codeVariant.value
+  }
+
+  if (format.value === 'html') {
+    const response = await axios.post(`${getApiBase()}/media/${mediaId}/svg-export`, body)
+    await navigator.clipboard.writeText(response.data)
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 1500)
+    return
+  }
+
+  const response = await axios.post(
+    `${getApiBase()}/media/${mediaId}/svg-export`,
+    body,
+    { responseType: 'blob' }
+  )
+
+  const contentDisposition = response.headers['content-disposition'] || response.headers.get?.('content-disposition')
+  let filename = 'svg-export'
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="([^"]+)"/)
+    if (match) filename = match[1]
+  }
+
+  await downloadFromResponse(response.data, filename)
 }
 
 async function handleLayoutExport() {

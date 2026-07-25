@@ -66,6 +66,30 @@ def build_skills_reminder(
     return "\n".join(lines)
 
 
+def build_model_identity_reminder(model: str, model_slug: Optional[str] = None) -> Optional[str]:
+    """Tell the agent which model it is running as.
+
+    Nothing else in the prompt says this, so the agent has no way to know its own
+    capability ceiling. Skills that depend on a particular class of model — vector
+    authoring, for instance, which is coordinate reasoning with no visual feedback
+    until the render — can then say so to the user instead of silently doing a
+    worse job.
+
+    Stated as a fact, with no instruction attached. What to do about it belongs to
+    whatever skill actually cares.
+    """
+    if not model:
+        return None
+    line = f"You are running as model `{model}`"
+    if model_slug and model_slug != model:
+        line += f" (configured as `{model_slug}`)"
+    return (
+        "<system-reminder>\n"
+        f"{line}.\n"
+        "</system-reminder>"
+    )
+
+
 async def build_artifact_context_reminder(
     session: AsyncSession,
     artifact_context: Optional[dict],

@@ -11,7 +11,7 @@ MAX_CONTENT_LINES = 500
 
 # Binary-ish extensions to skip
 _BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
     ".ico", ".pdf", ".zip", ".gz", ".tar", ".7z",
     ".mp3", ".mp4", ".wav", ".avi", ".mov",
     ".woff", ".woff2", ".ttf", ".otf", ".eot",

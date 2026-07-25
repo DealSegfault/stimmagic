@@ -163,6 +163,7 @@ from routes import (
     settings,
     share,
     stimpack_marketplace,
+    svg_media,
     tags,
     telemetry,
     tools,
@@ -199,6 +200,7 @@ app.include_router(generation.router)
 app.include_router(postprocessing.router)
 app.include_router(processing.router)
 app.include_router(media_files.router)
+app.include_router(svg_media.router)
 app.include_router(preferences.router)
 app.include_router(projects.router)
 app.include_router(flows.router)

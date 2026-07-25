@@ -110,10 +110,11 @@
 
         <div
           class="relative flex-1 min-h-0 rounded-media overflow-hidden"
-          :class="heroKind !== 'layout' ? 'cursor-zoom-in' : ''"
-          @click="heroKind !== 'layout' && $emit('open-slideshow', viewedRevision.media_id)"
+          :class="heroHasOwnControls ? '' : 'cursor-zoom-in'"
+          @click="!heroHasOwnControls && $emit('open-slideshow', viewedRevision.media_id)"
         >
           <LayoutViewer v-if="heroKind === 'layout'" :media-id="viewedRevision.media_id" class="w-full h-full" />
+          <SvgViewer v-else-if="heroKind === 'vector'" :media-id="viewedRevision.media_id" class="w-full h-full" />
           <video
             v-else-if="heroKind === 'video'"
             :key="viewedRevision.media_id"
@@ -158,6 +159,7 @@ import {
 } from '@heroicons/vue/24/outline'
 import { MediaImage } from '../media'
 import LayoutViewer from '../viewers/LayoutViewer.vue'
+import SvgViewer from '../viewers/SvgViewer.vue'
 import { useMediaApi } from '../../composables/useMediaApi'
 import { getMediaType } from '../../utils/mediaTypes'
 import type { ArtifactRevision } from '../../composables/useArtifactStage'
@@ -203,8 +205,13 @@ const heroKind = computed(() => {
   return getMediaType({ file_format: props.viewedRevision.file_format })
 })
 
+// These viewers own zoom and background controls of their own, so a click
+// inside them must not also punch through to the slideshow.
+const heroHasOwnControls = computed(() => heroKind.value === 'layout' || heroKind.value === 'vector')
+
 const kindLabel = computed(() => {
   const kind = heroKind.value
+  if (kind === 'vector') return 'SVG'
   return kind.charAt(0).toUpperCase() + kind.slice(1)
 })
 

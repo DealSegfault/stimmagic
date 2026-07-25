@@ -28,7 +28,7 @@ from delete_operations import (
 from models.api_models import BulkDeleteRequest, MediaListResponse, MediaItemResponse, BulkTrashRequest
 from utils.query_builder import (
     build_filtered_query,
-    IMAGE_FORMATS, VIDEO_FORMATS, AUDIO_FORMATS, TEXT_FORMATS,
+    IMAGE_FORMATS, VIDEO_FORMATS, AUDIO_FORMATS, TEXT_FORMATS, VECTOR_FORMATS,
     SET_FORMATS, GRID_FORMATS, LAYOUT_FORMATS, STRUCTURED_FORMATS,
     RESOLUTION_MAP,
 )
@@ -413,6 +413,7 @@ async def get_trash_filter_counts(
         'videos': VIDEO_FORMATS,
         'audio': AUDIO_FORMATS,
         'text': TEXT_FORMATS,
+        'vectors': VECTOR_FORMATS,
         'sets': SET_FORMATS,
         'grids': GRID_FORMATS,
         'layouts': LAYOUT_FORMATS,

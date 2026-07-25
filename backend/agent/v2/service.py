@@ -1148,6 +1148,7 @@ async def _run_agentic_loop_inner(
     from .stimpacks import list_skills
     from .system_reminders import (
         build_artifact_context_reminder,
+        build_model_identity_reminder,
         build_skills_reminder,
         build_user_program_edit_reminder,
     )
@@ -1365,6 +1366,11 @@ async def _run_agentic_loop_inner(
         # we don't leave a dangling "thinking.." if no model is configured.
         llm_config = await get_chat_llm_config(effective_model_slug, role='agent')
         turn_stats["llm_config"] = llm_config
+
+        # Appended after resolution because nothing earlier knows the model.
+        model_reminder = build_model_identity_reminder(llm_config.model, effective_model_slug)
+        if model_reminder:
+            system_reminders.append(model_reminder)
 
         # The tools schema counts as prompt input at the provider but isn't in
         # the messages list — budget for it or small windows overflow.

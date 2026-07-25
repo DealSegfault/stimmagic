@@ -1114,45 +1114,122 @@ async def _generate_layout_preview(
         return None
 
 
-# Result of an on-demand layout thumbnail render. "transient" means the UI
+async def _generate_svg_preview(
+    file_path: str,
+    size: int,
+    *,
+    wait_for_client_timeout_s: float = 0.25,
+    queue_timeout_s: float = 0.25,
+    render_timeout_s: float = 30.0,
+    raise_transient: bool = False,
+) -> Optional[Image.Image]:
+    """Render an .svg document to a PIL image via the connected UI client.
+
+    Same UI-render RPC as layouts, and the same transient-vs-failed contract.
+    Alpha is preserved: transparency is the normal state for an icon or logo,
+    and flattening it here would be a lie about the document.
+    """
+    from pathlib import Path as PathLib
+
+    from utils.svg_doc import intrinsic_size, parse_svg, read_svg_file
+
+    svg_path = PathLib(file_path)
+    if not svg_path.is_file():
+        return None
+
+    try:
+        from utils.ui_render import (
+            LayoutRenderBusy,
+            LayoutRenderUnavailable,
+            render_svg_document,
+        )
+        svg_text = read_svg_file(svg_path)
+        width, height = intrinsic_size(parse_svg(svg_text))
+        png_bytes = await render_svg_document(
+            svg_text,
+            width,
+            height,
+            wait_for_client_timeout_s=wait_for_client_timeout_s,
+            render_timeout_s=render_timeout_s,
+            queue_timeout_s=queue_timeout_s,
+            target_long_side=size,
+        )
+        img = Image.open(io.BytesIO(png_bytes))
+        img.load()
+        img.thumbnail((size, size), Image.LANCZOS)
+        return img
+    except (LayoutRenderBusy, LayoutRenderUnavailable) as e:
+        log.debug(f"Skipped SVG preview for {file_path}: {e}")
+        if raise_transient:
+            raise
+        return None
+    except Exception as e:
+        log.warning(f"Failed to generate SVG preview for {file_path}: {e}")
+        return None
+
+
+# Formats whose thumbnails are rasterized by the connected UI client rather than
+# in the sync thread pool. Both hand HTML to a real browser engine over the WS.
+UI_RENDERED_FORMATS = {'stimmalayout', 'svg'}
+
+# Result of an on-demand UI-rendered thumbnail. "transient" means the UI
 # renderer was busy or not yet connected — the same content will render fine
 # moments later, so the caller should tell the client to retry rather than
 # surface a hard error.
-LAYOUT_THUMB_OK = "ok"
-LAYOUT_THUMB_TRANSIENT = "transient"
-LAYOUT_THUMB_FAILED = "failed"
+UI_THUMB_OK = "ok"
+UI_THUMB_TRANSIENT = "transient"
+UI_THUMB_FAILED = "failed"
 
 
-async def _generate_layout_thumbnail_to_cache(
-    file_path: str, cache_path: Path, size: int, palette=None,
+async def _generate_ui_rendered_thumbnail_to_cache(
+    file_path: str, file_format: str, cache_path: Path, size: int, palette=None,
 ) -> str:
-    """Render a layout bundle and save a JPEG thumbnail to ``cache_path``.
+    """Render a layout bundle or SVG document and cache the thumbnail.
 
-    Returns one of ``LAYOUT_THUMB_{OK,TRANSIENT,FAILED}``. ``TRANSIENT`` means
-    the render slot/UI client was momentarily unavailable (e.g. right after the
-    layout is created, while the agent is still rendering) — retrying shortly
+    Returns one of ``UI_THUMB_{OK,TRANSIENT,FAILED}``. ``TRANSIENT`` means the
+    render slot/UI client was momentarily unavailable (e.g. right after the
+    document is created, while the agent is still rendering) — retrying shortly
     will succeed. We wait a little longer here than the agent-vision path since
     a thumbnail GET can afford to block briefly for the slot.
+
+    Layouts flatten to JPEG (they always paint a full opaque canvas). SVGs save
+    as PNG so alpha survives — an icon on a transparent ground is the norm, and
+    the tile's checkerboard treatment depends on it.
     """
     from utils.ui_render import LayoutRenderBusy, LayoutRenderUnavailable
 
+    is_svg = file_format.lower() == 'svg'
     try:
-        img = await _generate_layout_preview(
-            file_path,
-            size,
-            palette=palette,
-            wait_for_client_timeout_s=2.0,
-            queue_timeout_s=5.0,
-            raise_transient=True,
-        )
+        if is_svg:
+            img = await _generate_svg_preview(
+                file_path,
+                size,
+                wait_for_client_timeout_s=2.0,
+                queue_timeout_s=5.0,
+                raise_transient=True,
+            )
+        else:
+            img = await _generate_layout_preview(
+                file_path,
+                size,
+                palette=palette,
+                wait_for_client_timeout_s=2.0,
+                queue_timeout_s=5.0,
+                raise_transient=True,
+            )
     except (LayoutRenderBusy, LayoutRenderUnavailable):
-        return LAYOUT_THUMB_TRANSIENT
+        return UI_THUMB_TRANSIENT
     if img is None:
-        return LAYOUT_THUMB_FAILED
-    if img.mode not in ('RGB',):
-        img = img.convert('RGB')
-    _atomic_save(img, cache_path, 'JPEG', quality=85, optimize=True)
-    return LAYOUT_THUMB_OK
+        return UI_THUMB_FAILED
+    if is_svg:
+        if img.mode != 'RGBA':
+            img = img.convert('RGBA')
+        _atomic_save(img, cache_path, 'PNG', optimize=True)
+    else:
+        if img.mode not in ('RGB',):
+            img = img.convert('RGB')
+        _atomic_save(img, cache_path, 'JPEG', quality=85, optimize=True)
+    return UI_THUMB_OK
 
 
 def _atomic_save(img: Image.Image, cache_path: Path, format: str, **kwargs):
@@ -1368,11 +1445,11 @@ def _generate_thumbnail_sync(
             _atomic_save(img, cache_path, 'JPEG', quality=85, optimize=True)
             return True
 
-        if format_lower == 'stimmalayout':
-            # Layouts route through the UI client (async) — callers must
-            # dispatch via _generate_layout_thumbnail_to_cache, not the sync path.
+        if format_lower in UI_RENDERED_FORMATS:
+            # These route through the UI client (async) — callers must dispatch
+            # via _generate_ui_rendered_thumbnail_to_cache, not the sync path.
             log.error(
-                "stimmalayout dispatched to sync thumbnail path; "
+                f"{format_lower} dispatched to sync thumbnail path; "
                 "this is a bug in the calling code"
             )
             return False
@@ -1610,7 +1687,8 @@ async def get_media_file(
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
-            'bmp': 'image/bmp'
+            'bmp': 'image/bmp',
+            'svg': 'image/svg+xml',
         }
         media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 
@@ -1694,7 +1772,8 @@ async def get_file_by_media_id(
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
-            'bmp': 'image/bmp'
+            'bmp': 'image/bmp',
+            'svg': 'image/svg+xml',
         }
         media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 
@@ -2029,7 +2108,7 @@ async def get_thumbnail(
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
-    if fmt_lower in ('md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
+    if fmt_lower in ('md', 'svg', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
         try:
             mtime_path = Path(file_path)
             if fmt_lower == 'stimmalayout':
@@ -2055,7 +2134,8 @@ async def get_thumbnail(
         return FileResponse(cache_path_jpg, media_type="image/jpeg", headers=cors_headers)
 
     # Determine if source might have transparency (PNG format)
-    might_have_alpha = file_format.lower() == 'png'
+    # SVG thumbnails keep their alpha (see _generate_ui_rendered_thumbnail_to_cache)
+    might_have_alpha = file_format.lower() in ('png', 'svg')
     cache_path = cache_path_png if might_have_alpha else cache_path_jpg
 
     # Ensure shard subdirectory exists
@@ -2066,16 +2146,16 @@ async def get_thumbnail(
 
     # Generate thumbnail. Layouts go through the async UI-render path; everything
     # else runs in the thread pool.
-    layout_status = None
+    ui_render_status = None
     if not _source_path_exists(file_path, file_format):
         raise HTTPException(status_code=404, detail="Asset file not found on disk")
     normalized_content = await _normalized_thumbnail_content(session, item)
     await session.rollback()
-    if file_format.lower() == 'stimmalayout':
-        layout_status = await _generate_layout_thumbnail_to_cache(
-            file_path, cache_path, size, palette=palette,
+    if file_format.lower() in UI_RENDERED_FORMATS:
+        ui_render_status = await _generate_ui_rendered_thumbnail_to_cache(
+            file_path, file_format, cache_path, size, palette=palette,
         )
-        success = layout_status == LAYOUT_THUMB_OK
+        success = ui_render_status == UI_THUMB_OK
     else:
         faces_data = await _get_faces_data(session, media_id) if mode == "crop" and face_count > 0 else None
         try:
@@ -2120,7 +2200,7 @@ async def get_thumbnail(
         if cache_path_jpg.exists():
             await _record_thumbnail_cache(session, media_id, cache_path_jpg)
             return FileResponse(cache_path_jpg, media_type="image/jpeg", headers=cors_headers)
-        if layout_status == LAYOUT_THUMB_TRANSIENT:
+        if ui_render_status == UI_THUMB_TRANSIENT:
             # UI renderer was busy/unconnected — the same layout will render
             # fine shortly. Signal a retry instead of a hard failure so the
             # client refetches rather than showing a permanent broken image.
@@ -2628,7 +2708,7 @@ async def get_thumbnail_by_db_guid(
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
-    if fmt_lower in ('md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
+    if fmt_lower in ('md', 'svg', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
         try:
             mtime_path = Path(file_path)
             if fmt_lower == 'stimmalayout':
@@ -2651,7 +2731,8 @@ async def get_thumbnail_by_db_guid(
         await _record_thumbnail_cache(session, media_id, cache_path_jpg)
         return FileResponse(cache_path_jpg, media_type="image/jpeg", headers=CACHE_HEADERS)
 
-    might_have_alpha = file_format.lower() == 'png'
+    # SVG thumbnails keep their alpha (see _generate_ui_rendered_thumbnail_to_cache)
+    might_have_alpha = file_format.lower() in ('png', 'svg')
     cache_path = cache_path_png if might_have_alpha else cache_path_jpg
 
     # Ensure shard subdirectory exists
@@ -2660,16 +2741,16 @@ async def get_thumbnail_by_db_guid(
     # Resolve palette for synthetic thumbnails
     palette = THEME_PALETTES.get(theme, THEME_PALETTES['dark'])
 
-    layout_status = None
+    ui_render_status = None
     if not _source_path_exists(file_path, file_format):
         raise HTTPException(status_code=404, detail="Asset file not found on disk")
     normalized_content = await _normalized_thumbnail_content(session, item)
     await session.rollback()
-    if file_format.lower() == 'stimmalayout':
-        layout_status = await _generate_layout_thumbnail_to_cache(
-            file_path, cache_path, size, palette=palette,
+    if file_format.lower() in UI_RENDERED_FORMATS:
+        ui_render_status = await _generate_ui_rendered_thumbnail_to_cache(
+            file_path, file_format, cache_path, size, palette=palette,
         )
-        success = layout_status == LAYOUT_THUMB_OK
+        success = ui_render_status == UI_THUMB_OK
     else:
         faces_data = await _get_faces_data(session, media_id) if mode == "crop" and face_count > 0 else None
         try:
@@ -2714,7 +2795,7 @@ async def get_thumbnail_by_db_guid(
         if cache_path_jpg.exists():
             await _record_thumbnail_cache(session, media_id, cache_path_jpg)
             return FileResponse(cache_path_jpg, media_type="image/jpeg", headers=CACHE_HEADERS)
-        if layout_status == LAYOUT_THUMB_TRANSIENT:
+        if ui_render_status == UI_THUMB_TRANSIENT:
             # UI renderer momentarily busy/unconnected — retryable, not a hard
             # failure. Client should refetch rather than show a broken image.
             raise HTTPException(
@@ -2817,7 +2898,8 @@ async def get_media_file_by_db_guid(
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
-            'bmp': 'image/bmp'
+            'bmp': 'image/bmp',
+            'svg': 'image/svg+xml',
         }
         media_type = format_map.get(fmt, 'application/octet-stream')
 
@@ -2885,7 +2967,8 @@ async def get_file_by_media_id_and_db_guid(
             'png': 'image/png',
             'gif': 'image/gif',
             'webp': 'image/webp',
-            'bmp': 'image/bmp'
+            'bmp': 'image/bmp',
+            'svg': 'image/svg+xml',
         }
         media_type = format_map.get(fmt, 'application/octet-stream')
 
@@ -2965,7 +3048,7 @@ async def get_thumbnail_path_by_media_id(
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
-    if fmt_lower in ('md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
+    if fmt_lower in ('md', 'svg', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout'):
         try:
             mtime_path = Path(file_path)
             if fmt_lower == 'stimmalayout':
@@ -2990,7 +3073,8 @@ async def get_thumbnail_path_by_media_id(
         return {"path": str(cache_path_jpg)}
 
     # Generate thumbnail
-    might_have_alpha = file_format.lower() == 'png'
+    # SVG thumbnails keep their alpha (see _generate_ui_rendered_thumbnail_to_cache)
+    might_have_alpha = file_format.lower() in ('png', 'svg')
     cache_path = cache_path_png if might_have_alpha else cache_path_jpg
 
     # Ensure shard subdirectory exists
@@ -3003,10 +3087,10 @@ async def get_thumbnail_path_by_media_id(
         raise HTTPException(status_code=404, detail="Asset file not found on disk")
     normalized_content = await _normalized_thumbnail_content(session, item)
     await session.rollback()
-    if file_format.lower() == 'stimmalayout':
-        success = await _generate_layout_thumbnail_to_cache(
-            file_path, cache_path, size, palette=palette,
-        ) == LAYOUT_THUMB_OK
+    if file_format.lower() in UI_RENDERED_FORMATS:
+        success = await _generate_ui_rendered_thumbnail_to_cache(
+            file_path, file_format, cache_path, size, palette=palette,
+        ) == UI_THUMB_OK
     else:
         faces_data = await _get_faces_data(session, media_id) if mode == "crop" and face_count > 0 else None
         try:
@@ -3166,7 +3250,8 @@ async def bulk_download_media(
                 'png': 'image/png',
                 'gif': 'image/gif',
                 'webp': 'image/webp',
-                'bmp': 'image/bmp'
+                'bmp': 'image/bmp',
+                'svg': 'image/svg+xml',
             }
             media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 

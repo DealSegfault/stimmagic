@@ -35,6 +35,7 @@ VIDEO_FORMATS = ['mp4', 'webm', 'mov', 'avi', 'mkv']  # Note: .ogg can be audio,
 IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
 AUDIO_FORMATS = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
 TEXT_FORMATS = ['md']
+VECTOR_FORMATS = ['svg']
 SET_FORMATS = ['stimmaset.json']
 GRID_FORMATS = ['stimmagrid.json']
 LAYOUT_FORMATS = ['stimmalayout']
@@ -44,10 +45,10 @@ LAYOUT_FORMATS = ['stimmalayout']
 COMPOSITE_FORMATS = SET_FORMATS + GRID_FORMATS
 
 # Atomic media: standalone files that don't contain other media
-ATOMIC_FORMATS = VIDEO_FORMATS + IMAGE_FORMATS + AUDIO_FORMATS + TEXT_FORMATS
+ATOMIC_FORMATS = VIDEO_FORMATS + IMAGE_FORMATS + AUDIO_FORMATS + TEXT_FORMATS + VECTOR_FORMATS
 
-# Structured = all non-binary formats (text + composite)
-STRUCTURED_FORMATS = TEXT_FORMATS + SET_FORMATS + GRID_FORMATS + LAYOUT_FORMATS
+# Structured = all non-binary formats (text + vector + composite)
+STRUCTURED_FORMATS = TEXT_FORMATS + VECTOR_FORMATS + SET_FORMATS + GRID_FORMATS + LAYOUT_FORMATS
 
 
 def is_composite_format(file_format: str) -> bool:
@@ -447,6 +448,8 @@ def build_filtered_query(
                     format_conditions.append(MediaItem.file_format.in_(AUDIO_FORMATS))
                 elif media_type_item == 'text':
                     format_conditions.append(MediaItem.file_format.in_(TEXT_FORMATS))
+                elif media_type_item == 'vectors':
+                    format_conditions.append(MediaItem.file_format.in_(VECTOR_FORMATS))
                 elif media_type_item == 'sets':
                     format_conditions.append(MediaItem.file_format.in_(SET_FORMATS))
                 elif media_type_item == 'grids':
@@ -470,6 +473,8 @@ def build_filtered_query(
                     query = query.where(~MediaItem.file_format.in_(AUDIO_FORMATS))
                 elif media_type_item == 'text':
                     query = query.where(~MediaItem.file_format.in_(TEXT_FORMATS))
+                elif media_type_item == 'vectors':
+                    query = query.where(~MediaItem.file_format.in_(VECTOR_FORMATS))
                 elif media_type_item == 'sets':
                     query = query.where(~MediaItem.file_format.in_(SET_FORMATS))
                 elif media_type_item == 'grids':

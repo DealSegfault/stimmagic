@@ -7,12 +7,13 @@ export const VIDEO_FORMATS = ['mp4', 'webm', 'mov', 'avi', 'mkv']
 export const IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
 export const AUDIO_FORMATS = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
 export const TEXT_FORMATS = ['md']
+export const VECTOR_FORMATS = ['svg']
 export const SET_FORMATS = ['stimmaset.json']
 export const GRID_FORMATS = ['stimmagrid.json']
 export const LAYOUT_FORMATS = ['stimmalayout']
-export const STRUCTURED_FORMATS = [...TEXT_FORMATS, ...SET_FORMATS, ...GRID_FORMATS, ...LAYOUT_FORMATS]
+export const STRUCTURED_FORMATS = [...TEXT_FORMATS, ...VECTOR_FORMATS, ...SET_FORMATS, ...GRID_FORMATS, ...LAYOUT_FORMATS]
 
-export type MediaType = 'image' | 'video' | 'audio' | 'text' | 'set' | 'grid' | 'layout'
+export type MediaType = 'image' | 'video' | 'audio' | 'text' | 'vector' | 'set' | 'grid' | 'layout'
 
 export interface MediaItem {
   file_format: string
@@ -26,6 +27,7 @@ export function getMediaType(item: MediaItem): MediaType {
   const format = item.file_format?.toLowerCase()
 
   if (format === 'md') return 'text'
+  if (format === 'svg') return 'vector'
   if (format === 'stimmaset.json') return 'set'
   if (format === 'stimmagrid.json') return 'grid'
   if (format === 'stimmalayout') return 'layout'
@@ -62,6 +64,10 @@ export function isLayout(item: MediaItem): boolean {
   return LAYOUT_FORMATS.includes(item.file_format?.toLowerCase())
 }
 
+export function isVector(item: MediaItem): boolean {
+  return VECTOR_FORMATS.includes(item.file_format?.toLowerCase())
+}
+
 export function isStructured(item: MediaItem): boolean {
   return STRUCTURED_FORMATS.includes(item.file_format?.toLowerCase())
 }
@@ -71,7 +77,7 @@ export function isStructured(item: MediaItem): boolean {
  */
 export function hasVisualContent(item: MediaItem): boolean {
   const type = getMediaType(item)
-  return type === 'image' || type === 'video' || type === 'layout'
+  return type === 'image' || type === 'video' || type === 'layout' || type === 'vector'
 }
 
 /**
@@ -128,6 +134,16 @@ export function getBadgeConfig(item: MediaItem): BadgeConfig | null {
         bgColor: 'bg-cyan-500/15',
         borderColor: 'border-cyan-500/50',
         label: 'Grid'
+      }
+    // Monochrome by intent: DESIGN.md §1.9 has type icons going monochrome, so a
+    // new type does not get a new hue.
+    case 'vector':
+      return {
+        icon: 'pen-tool',
+        color: 'text-gray-400',
+        bgColor: 'bg-gray-500/15',
+        borderColor: 'border-gray-500/50',
+        label: 'SVG'
       }
     case 'layout':
       return {

@@ -39,7 +39,8 @@ Keep media IDs and tool IDs internal — refer to tools by display name.
 **Medium**: Scenes, characters, artwork, photography → generate with a tool imported from `.stimma/tools/` (see *Your tools live in .stimma/* below). \
 Designed artifacts (business cards, posters, flyers, social posts, invitations) or anything with \
 readable text, headlines, data layouts, or typographic treatment → compose with `create_layout` (HTML/CSS). \
-Check system reminders for a relevant design skill before starting layout work. \
+Icons, logos, wordmarks, badges, or anything that must stay crisp at any size → author SVG with `create_svg`. \
+Check system reminders for a relevant design skill before starting layout or vector work. \
 Many outputs combine both: generate imagery first, then compose the final layout. \
 Text documents, articles, stories, notes, or "a doc" → write a `.md` file with `write_file`, \
 then `library(action="save", path="filename.md")` to save it to the library. \

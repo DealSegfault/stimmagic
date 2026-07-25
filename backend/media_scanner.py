@@ -17,13 +17,19 @@ VIDEO_EXTENSIONS = {'.mp4', '.webm', '.mov', '.avi', '.mkv', '.ogg'}
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg'}
 # Structured media types: markdown files (.md) and compound extensions (.stimmaset.json, etc.)
 TEXT_EXTENSIONS = {'.md'}
+VECTOR_EXTENSIONS = {'.svg'}  # Self-contained vector documents (single flat file)
 SET_EXTENSIONS = {'.stimmaset.json'}
 GRID_EXTENSIONS = {'.stimmagrid.json'}
 LAYOUT_EXTENSIONS = {'.stimmalayout'}  # Directory-based bundles (contains index.html + assets)
+# Compound-extension lookup set: only types whose extension is more than a plain
+# suffix need to be here, so .svg is deliberately absent.
 STRUCTURED_EXTENSIONS = TEXT_EXTENSIONS | SET_EXTENSIONS | GRID_EXTENSIONS | LAYOUT_EXTENSIONS
 
 # All supported extensions
-ALL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | STRUCTURED_EXTENSIONS
+ALL_EXTENSIONS = (
+    IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+    | VECTOR_EXTENSIONS | STRUCTURED_EXTENSIONS
+)
 
 
 def get_file_extension(file_path: Path) -> str:
@@ -451,6 +457,17 @@ def parse_markdown_frontmatter(file_path: Path) -> Optional[dict]:
         return None
 
 
+def get_svg_dimensions(file_path: Path) -> Tuple[int, int]:
+    """Read an SVG's nominal pixel size. Falls back to a square default."""
+    from utils.svg_doc import DEFAULT_SIZE, intrinsic_size, parse_svg, read_svg_file
+
+    try:
+        return intrinsic_size(parse_svg(read_svg_file(file_path)))
+    except Exception as e:
+        log.warning(f"Failed to read SVG dimensions from {file_path}: {e}")
+        return DEFAULT_SIZE, DEFAULT_SIZE
+
+
 def extract_metadata(file_path: Path) -> dict:
     """
     Extract metadata from a media file.
@@ -463,6 +480,7 @@ def extract_metadata(file_path: Path) -> dict:
     is_audio = ext in AUDIO_EXTENSIONS
     is_structured = ext in STRUCTURED_EXTENSIONS
     is_layout = ext in LAYOUT_EXTENSIONS
+    is_vector = ext in VECTOR_EXTENSIONS
 
     # Get file info — for directory-based media, use index.html
     if is_layout and file_path.is_dir():
@@ -501,6 +519,11 @@ def extract_metadata(file_path: Path) -> dict:
         audio_bitrate = audio_meta['bitrate']
         audio_codec = audio_meta['codec']
         has_alpha = False
+    elif is_vector:
+        # Vector documents carry a nominal pixel size (width/height, else viewBox)
+        # so grid tiles get the right aspect ratio. Transparency is the norm.
+        width, height = get_svg_dimensions(file_path)
+        has_alpha = True
     elif is_structured:
         # Parse structured media for raw_metadata storage
         import json

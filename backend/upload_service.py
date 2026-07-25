@@ -39,7 +39,12 @@ class UploadService:
     ALLOWED_VIDEO_EXTENSIONS = {'.mp4', '.webm', '.mov', '.avi', '.mkv'}
     # Mirrors media_scanner.AUDIO_EXTENSIONS
     ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg'}
-    ALLOWED_EXTENSIONS = ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS | ALLOWED_AUDIO_EXTENSIONS
+    # Mirrors media_scanner.VECTOR_EXTENSIONS
+    ALLOWED_VECTOR_EXTENSIONS = {'.svg'}
+    ALLOWED_EXTENSIONS = (
+        ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS
+        | ALLOWED_AUDIO_EXTENSIONS | ALLOWED_VECTOR_EXTENSIONS
+    )
 
     def __init__(self, profile_id: str = None):
         self.profile_id = profile_id or get_current_profile()
@@ -86,6 +91,25 @@ class UploadService:
         except Exception as e:
             log.warning(f"Failed to get image dimensions for {file_path}: {e}")
             return 0, 0, None
+
+    def _sanitize_svg_bytes(self, file_content: bytes) -> Tuple[bytes, Tuple[int, int]]:
+        """Return sanitized SVG bytes plus the document's nominal size.
+
+        An .svg media item is self-contained by invariant, and an upload is the
+        one path where arbitrary markup arrives — so it is normalized before it
+        is ever written. Doing this pre-write keeps the stored bytes, the content
+        hash, and the file size describing the same thing.
+        """
+        from utils.svg_doc import DEFAULT_SIZE, prepare_text
+
+        try:
+            clean, doc = prepare_text(file_content.decode('utf-8-sig'))
+            if doc.removed:
+                log.info(f"Sanitized uploaded SVG: removed {', '.join(doc.removed)}")
+            return clean.encode('utf-8'), (doc.width, doc.height)
+        except Exception as e:
+            log.warning(f"Failed to sanitize uploaded SVG: {e}")
+            return file_content, (DEFAULT_SIZE, DEFAULT_SIZE)
 
     def _get_video_dimensions(self, file_path: Path) -> Tuple[int, int]:
         """Get video dimensions using ffprobe."""
@@ -138,6 +162,12 @@ class UploadService:
         # Validate file type
         ext = self.validate_file(original_filename)
 
+        # Sanitize SVG before anything hashes or measures the bytes, so the
+        # stored file, its hash, and its size all describe the same document.
+        svg_size = None
+        if ext in self.ALLOWED_VECTOR_EXTENSIONS:
+            file_content, svg_size = self._sanitize_svg_bytes(file_content)
+
         # Media identity is per import/save operation. Byte deduplication happens
         # below Media at StorageObject, so identical uploads still produce
         # distinct provenance-bearing Media identities.
@@ -161,6 +191,7 @@ class UploadService:
             # Determine media kind
             is_video = ext in self.ALLOWED_VIDEO_EXTENSIONS
             is_audio = ext in self.ALLOWED_AUDIO_EXTENSIONS
+            is_vector = ext in self.ALLOWED_VECTOR_EXTENSIONS
             file_format = ext.lstrip('.')
 
             # Get dimensions (audio has none)
@@ -194,6 +225,11 @@ class UploadService:
             elif is_video:
                 width, height = self._get_video_dimensions(dest_path)
                 has_alpha = False
+            elif is_vector:
+                # Size came from the sanitize pass above. Uploads set
+                # metadata_status='completed', so nothing backfills this later.
+                width, height = svg_size
+                has_alpha = True
             else:
                 width, height, has_alpha = self._get_image_dimensions(dest_path)
 
@@ -203,7 +239,7 @@ class UploadService:
             raw_metadata = None
             extracted_prompt = None
             generation_metadata = None
-            if not is_video and not is_audio:
+            if not is_video and not is_audio and not is_vector:
                 try:
                     from exif_extractor import extract_prompt_from_exif, parse_external_metadata
                     raw_metadata, extracted_prompt = extract_prompt_from_exif(dest_path)

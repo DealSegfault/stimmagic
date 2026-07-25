@@ -58,6 +58,66 @@ async def _rasterize_layout(bundle_path: Path, max_side: int) -> Image.Image | N
         return None
 
 
+async def _rasterize_svg(svg_path: Path, max_side: int) -> Image.Image | None:
+    """Rasterize an .svg document to a PIL Image via the UI client.
+
+    Same transient-vs-failed contract as layouts: a busy renderer must not be
+    reported as a broken document, or the agent goes off editing correct markup.
+    """
+    from routes.media_files import _generate_svg_preview
+    from utils.ui_render import LayoutRenderBusy, LayoutRenderUnavailable
+    try:
+        return await _generate_svg_preview(
+            str(svg_path),
+            max_side,
+            wait_for_client_timeout_s=2.0,
+            queue_timeout_s=5.0,
+            render_timeout_s=30.0,
+            raise_transient=True,
+        )
+    except (LayoutRenderBusy, LayoutRenderUnavailable) as e:
+        log.debug(f"SVG render slot busy for {svg_path}: {e}")
+        raise _LayoutRenderBusyError(str(e)) from e
+    except Exception as e:
+        log.warning(f"Failed to rasterize SVG {svg_path}: {e}")
+        return None
+
+
+def _flatten_on_checkerboard(img: Image.Image, cell: int = 16) -> Image.Image:
+    """Composite a transparent render onto a checkerboard.
+
+    Vector artwork is usually transparent, and either flat ground fails: white
+    hides a white logo, black hides a black one. A checkerboard carries both
+    values, so the artwork is legible whatever its lightness — and the pattern
+    itself shows where the document is actually transparent.
+    """
+    if img.mode != "RGBA":
+        return img.convert("RGB")
+    w, h = img.size
+    board = Image.new("RGB", (w, h), (0xE8, 0xE8, 0xE8))
+    dark = Image.new("RGB", (cell, cell), (0xB4, 0xB4, 0xB4))
+    for y in range(0, h, cell):
+        for x in range(0, w, cell):
+            if ((x // cell) + (y // cell)) % 2:
+                board.paste(dark, (x, y))
+    board.paste(img, (0, 0), img)
+    return board
+
+
+def _copy_svg_to_workspace(svg_path: Path, workspace_dir: str) -> str | None:
+    """Copy an .svg into the workspace so the agent can read and edit the markup."""
+    ws = Path(workspace_dir)
+    dest = ws / svg_path.name
+    try:
+        if dest.exists() and dest.resolve() == svg_path.resolve():
+            return svg_path.name
+        shutil.copy2(str(svg_path), str(dest))
+        return dest.name
+    except OSError as e:
+        log.warning(f"Failed to copy SVG into workspace: {e}")
+        return None
+
+
 def _copy_layout_to_workspace(bundle_path: Path, workspace_dir: str) -> str | None:
     """Copy a .stimmalayout bundle into the workspace. Returns the workspace-relative bundle name."""
     ws = Path(workspace_dir)
@@ -168,6 +228,37 @@ async def view_image(path: str = None, media_id: int = None, detail: str = "low"
         if workspace_bundle:
             result_data["layout_source"] = f"{workspace_bundle}/index.html"
 
+        return json.dumps(result_data)
+
+    # Handle .svg documents — rasterize via UI client + copy to workspace
+    if resolved.is_file() and resolved.suffix.lower() == '.svg':
+        try:
+            img = await _rasterize_svg(resolved, max_side)
+        except _LayoutRenderBusyError:
+            return (
+                f"The renderer was busy and {resolved.name} did not render in time. "
+                f"This is transient — the document itself was not reported invalid. "
+                f"Wait a moment and view it again."
+            )
+        if img is None:
+            return f"Error: Failed to rasterize SVG {resolved.name}"
+
+        workspace_svg = None
+        if workspace_dir:
+            workspace_svg = _copy_svg_to_workspace(resolved, workspace_dir)
+
+        w, h = img.size
+        snapshot_path = write_agent_jpeg(_flatten_on_checkerboard(img))
+        result_data = {
+            "__view_image__": True,
+            "path": str(snapshot_path),
+            "size": [w, h],
+            "detail": detail,
+            "media_type": "image/jpeg",
+            "note": "Transparent areas show as a grey checkerboard, not as artwork.",
+        }
+        if workspace_svg:
+            result_data["svg_source"] = workspace_svg
         return json.dumps(result_data)
 
     cache_path = None

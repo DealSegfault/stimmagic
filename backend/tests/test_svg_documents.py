@@ -1,0 +1,544 @@
+"""Tests for the SVG document type.
+
+Covers the parts that are cheap to get wrong and expensive to notice:
+sanitization (this is a security boundary), size resolution (drives grid
+aspect ratios), format registration (an unregistered format silently
+classifies as an image), and the export toolkit's encoders.
+"""
+
+import io
+import json
+import zipfile
+from pathlib import Path
+
+import pytest
+from httpx import AsyncClient
+from PIL import Image
+
+from tests.helpers.media import create_media_item
+from utils import svg_doc
+
+SIMPLE = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">'
+    '<circle cx="12" cy="12" r="10" fill="currentColor"/></svg>'
+)
+
+
+class TestParsing:
+    def test_rejects_empty(self):
+        with pytest.raises(svg_doc.SvgParseError):
+            svg_doc.parse_svg("")
+
+    def test_rejects_malformed(self):
+        with pytest.raises(svg_doc.SvgParseError):
+            svg_doc.parse_svg("<svg><rect></svg>")
+
+    def test_rejects_non_svg_root(self):
+        with pytest.raises(svg_doc.SvgParseError) as exc:
+            svg_doc.parse_svg("<html><body/></html>")
+        assert "expected <svg>" in str(exc.value)
+
+    def test_strips_doctype(self):
+        """DOCTYPE is the entity-expansion surface; no legitimate SVG needs one."""
+        text = (
+            '<!DOCTYPE svg [<!ENTITY boom "aaaaaaaa">]>'
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4"><rect width="4" height="4"/></svg>'
+        )
+        clean, doc = svg_doc.prepare_text(text)
+        assert "DOCTYPE" not in clean
+        assert "ENTITY" not in clean
+        assert (doc.width, doc.height) == (4, 4)
+
+    def test_rejects_oversized(self):
+        with pytest.raises(svg_doc.SvgParseError):
+            svg_doc.parse_svg("<svg>" + "x" * (svg_doc.MAX_SVG_BYTES + 1) + "</svg>")
+
+
+class TestSizing:
+    def test_width_height_attributes(self):
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(SIMPLE)) == (24, 24)
+
+    def test_falls_back_to_viewbox(self):
+        text = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><rect/></svg>'
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(text)) == (100, 50)
+
+    def test_percentage_size_falls_back_to_viewbox(self):
+        """A percentage size is unresolvable without a viewport, so viewBox wins."""
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" '
+            'viewBox="0 0 32 16"><rect/></svg>'
+        )
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(text)) == (32, 16)
+
+    def test_absolute_units_convert_to_px(self):
+        text = '<svg xmlns="http://www.w3.org/2000/svg" width="1in" height="72pt"><rect/></svg>'
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(text)) == (96, 96)
+
+    def test_no_size_information_uses_default(self):
+        text = '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>'
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(text)) == (
+            svg_doc.DEFAULT_SIZE,
+            svg_doc.DEFAULT_SIZE,
+        )
+
+    def test_single_dimension_derives_the_other_from_viewbox(self):
+        text = '<svg xmlns="http://www.w3.org/2000/svg" width="200" viewBox="0 0 100 50"><rect/></svg>'
+        assert svg_doc.intrinsic_size(svg_doc.parse_svg(text)) == (200, 100)
+
+    def test_viewbox_is_normalized_onto_every_document(self):
+        text = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect/></svg>'
+        clean, _doc = svg_doc.prepare_text(text)
+        assert 'viewBox="0 0 40 20"' in clean
+
+
+class TestSanitize:
+    @pytest.mark.parametrize("hostile,gone", [
+        ('<script>alert(1)</script>', 'script'),
+        ('<foreignObject><div/></foreignObject>', 'foreignObject'),
+    ])
+    def test_removes_executable_elements(self, hostile, gone):
+        text = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4">{hostile}</svg>'
+        clean, doc = svg_doc.prepare_text(text)
+        assert gone not in clean
+        assert doc.removed
+
+    def test_removes_event_handlers(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4" onload="alert(1)">'
+            '<rect onclick="alert(2)"/></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "onload" not in clean
+        assert "onclick" not in clean
+
+    def test_removes_external_image(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4">'
+            '<image href="https://example.invalid/x.png" width="4" height="4"/></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "example.invalid" not in clean
+        assert "<image" not in clean
+
+    def test_keeps_data_uri_image(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4 4">'
+            '<image href="data:image/png;base64,AAA" width="4" height="4"/></svg>'
+        )
+        clean, doc = svg_doc.prepare_text(text)
+        assert "data:image/png" in clean
+        assert not doc.removed
+
+    def test_keeps_fragment_references(self):
+        """Gradients, masks, and <use> all depend on url(#id) — these must survive."""
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<defs><linearGradient id="g"><stop stop-color="#000"/></linearGradient></defs>'
+            '<rect fill="url(#g)" width="10" height="10"/></svg>'
+        )
+        clean, doc = svg_doc.prepare_text(text)
+        assert 'url(#g)' in clean
+        assert not doc.removed
+
+    def test_removes_external_url_reference(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<rect fill="url(https://example.invalid/g.svg#g)" width="10" height="10"/></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "example.invalid" not in clean
+
+    def test_removes_relative_url_reference(self):
+        """A bare relative ref is still external — it just looks harmless."""
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<rect fill="url(other.svg#g)" width="10" height="10"/></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "other.svg" not in clean
+
+    def test_removes_css_import_and_external_url(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><style>'
+            '@import url(https://example.invalid/a.css); .c{fill:url(remote.svg#p)}'
+            '</style></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "@import" not in clean
+        assert "example.invalid" not in clean
+        assert "remote.svg" not in clean
+
+    def test_removes_javascript_uri(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<a href="javascript:alert(1)"><rect width="4" height="4"/></a></svg>'
+        )
+        clean, _doc = svg_doc.prepare_text(text)
+        assert "javascript:" not in clean
+
+    def test_animation_is_kept_but_flagged(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            '<circle r="2"><animate attributeName="r" to="5"/></circle></svg>'
+        )
+        clean, doc = svg_doc.prepare_text(text)
+        assert "<animate" in clean
+        assert doc.is_animated
+
+    def test_unembedded_font_is_flagged(self):
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 20">'
+            '<text font-family="Helvetica Neue" x="0" y="10">Hi</text></svg>'
+        )
+        _clean, doc = svg_doc.prepare_text(text)
+        assert any("font" in w for w in doc.warnings)
+
+    def test_clean_document_round_trips_without_complaint(self):
+        clean, doc = svg_doc.prepare_text(SIMPLE)
+        assert not doc.removed
+        assert not doc.warnings
+        assert "currentColor" in clean
+        # Re-preparing a prepared document must be a no-op.
+        again, doc2 = svg_doc.prepare_text(clean)
+        assert again == clean
+        assert not doc2.removed
+
+
+class TestFormatRegistration:
+    def test_svg_is_a_recognized_scanner_extension(self):
+        from media_scanner import ALL_EXTENSIONS, get_file_extension, is_supported_extension
+
+        assert ".svg" in ALL_EXTENSIONS
+        assert is_supported_extension(Path("logo.svg"))
+        assert get_file_extension(Path("logo.svg")) == ".svg"
+
+    def test_svg_is_atomic_and_structured_not_composite(self):
+        from utils.query_builder import (
+            ATOMIC_FORMATS,
+            COMPOSITE_FORMATS,
+            STRUCTURED_FORMATS,
+            is_composite_format,
+        )
+
+        assert "svg" in ATOMIC_FORMATS
+        assert "svg" in STRUCTURED_FORMATS
+        assert "svg" not in COMPOSITE_FORMATS
+        assert not is_composite_format("svg")
+
+    def test_scanner_extracts_svg_dimensions(self, tmp_path):
+        from media_scanner import extract_metadata
+
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60"><rect/></svg>'
+        )
+        meta = extract_metadata(svg_file)
+        assert meta["file_format"] == "svg"
+        assert (meta["width"], meta["height"]) == (120, 60)
+        assert meta["has_alpha"] is True
+
+    def test_scanner_survives_a_broken_svg(self, tmp_path):
+        """A corrupt file must still index, at the default size, not crash the scan."""
+        from media_scanner import extract_metadata
+
+        svg_file = tmp_path / "broken.svg"
+        svg_file.write_text("<svg><this is not xml")
+        meta = extract_metadata(svg_file)
+        assert meta["file_format"] == "svg"
+        assert meta["width"] == svg_doc.DEFAULT_SIZE
+
+    def test_svg_thumbnails_never_take_the_sync_path(self):
+        """SVG rasterizes through the UI client, so the sync path must refuse it."""
+        from routes.media_files import UI_RENDERED_FORMATS
+
+        assert "svg" in UI_RENDERED_FORMATS
+        assert "stimmalayout" in UI_RENDERED_FORMATS
+
+
+class TestUploadSanitization:
+    def test_upload_sanitizes_before_hashing(self):
+        """The stored bytes, the hash, and the size must all describe one document."""
+        from upload_service import UploadService
+
+        service = UploadService(profile_id="test")
+        hostile = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">'
+            '<script>alert(1)</script><rect width="8" height="8"/></svg>'
+        ).encode()
+        clean_bytes, (w, h) = service._sanitize_svg_bytes(hostile)
+        assert b"script" not in clean_bytes
+        assert (w, h) == (8, 8)
+
+    def test_upload_accepts_svg(self):
+        from upload_service import UploadService
+
+        assert ".svg" in UploadService.ALLOWED_EXTENSIONS
+        assert UploadService(profile_id="test").validate_file("logo.svg") == ".svg"
+
+    def test_unparseable_upload_passes_through_unchanged(self):
+        from upload_service import UploadService
+
+        service = UploadService(profile_id="test")
+        junk = b"not an svg at all"
+        out, size = service._sanitize_svg_bytes(junk)
+        assert out == junk
+        assert size == (svg_doc.DEFAULT_SIZE, svg_doc.DEFAULT_SIZE)
+
+
+class TestFiltering:
+    async def test_vectors_media_type_filter(self, client: AsyncClient, db_session, tmp_path):
+        async with db_session() as session:
+
+            await create_media_item(session, materialize_asset=True, file_path=tmp_path / "a.svg", file_format="svg")
+
+            await create_media_item(session, materialize_asset=True, file_path=tmp_path / "b.png", file_format="png")
+
+            await session.commit()
+
+        response = await client.get("/api/media", params={"media_types": "vectors"})
+        assert response.status_code == 200
+        formats = {item["file_format"] for item in response.json()["items"]}
+        assert formats == {"svg"}
+
+    async def test_excluding_vectors_leaves_images(self, client: AsyncClient, db_session, tmp_path):
+        async with db_session() as session:
+
+            await create_media_item(session, materialize_asset=True, file_path=tmp_path / "a.svg", file_format="svg")
+
+            await create_media_item(session, materialize_asset=True, file_path=tmp_path / "b.png", file_format="png")
+
+            await session.commit()
+
+        response = await client.get("/api/media", params={"excluded_media_types": "vectors"})
+        assert response.status_code == 200
+        formats = {item["file_format"] for item in response.json()["items"]}
+        assert "svg" not in formats
+
+    async def test_vectors_are_not_swept_up_by_the_images_filter(
+        self, client: AsyncClient, db_session, tmp_path
+    ):
+        """The whole reason 'vector' is its own type: it must not read as an image."""
+        async with db_session() as session:
+
+            await create_media_item(session, materialize_asset=True, file_path=tmp_path / "a.svg", file_format="svg")
+
+            await session.commit()
+
+        response = await client.get("/api/media", params={"media_types": "images"})
+        assert response.status_code == 200
+        formats = {item["file_format"] for item in response.json()["items"]}
+        assert "svg" not in formats
+
+
+class TestServing:
+    async def test_serves_sanitized_document(self, client: AsyncClient, db_session, tmp_path):
+        """A file from a watched Source was never rewritten, so serving sanitizes."""
+        svg_file = tmp_path / "hostile.svg"
+        svg_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">'
+            '<script>alert(1)</script><rect width="8" height="8" fill="red"/></svg>'
+        )
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.get(f"/api/media/{item.id}/svg")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/svg+xml")
+        assert "default-src 'none'" in response.headers["content-security-policy"]
+        assert "script" not in response.text
+        assert "<rect" in response.text
+
+    async def test_info_reports_size_and_warnings(self, client: AsyncClient, db_session, tmp_path):
+        svg_file = tmp_path / "worded.svg"
+        svg_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40">'
+            '<text font-family="Futura" x="0" y="20">Acme</text></svg>'
+        )
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        data = (await client.get(f"/api/media/{item.id}/svg-info")).json()
+        assert (data["width"], data["height"]) == (200, 40)
+        assert data["node_count"] == 2
+        assert any("font" in w for w in data["warnings"])
+
+    async def test_rejects_non_svg_media(self, client: AsyncClient, db_session, tmp_path):
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=tmp_path / "a.png", file_format="png")
+
+            await session.commit()
+
+        response = await client.get(f"/api/media/{item.id}/svg")
+        assert response.status_code == 400
+
+
+class TestExport:
+    async def test_exports_the_source(self, client: AsyncClient, db_session, tmp_path):
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export", json={"format": "svg"}
+        )
+        assert response.status_code == 200
+        assert "<circle" in response.text
+
+    @pytest.mark.parametrize("variant,expected", [
+        ("inline", "<svg"),
+        ("data-uri", "data:image/svg+xml;base64,"),
+        ("symbol", "<use href=\"#mark\"/>"),
+    ])
+    async def test_code_variants(self, client: AsyncClient, db_session, tmp_path, variant, expected):
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export",
+            json={"format": "html", "variant": variant},
+        )
+        assert response.status_code == 200
+        assert expected in response.text
+
+    async def test_pdf_export(self, client: AsyncClient, db_session, tmp_path):
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export", json={"format": "pdf"}
+        )
+        assert response.status_code == 200
+        assert response.content.startswith(b"%PDF")
+
+    async def test_rejects_unknown_format(self, client: AsyncClient, db_session, tmp_path):
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export", json={"format": "tiff"}
+        )
+        assert response.status_code == 400
+
+    async def test_rejects_oversized_raster(self, client: AsyncClient, db_session, tmp_path):
+        svg_file = tmp_path / "mark.svg"
+        svg_file.write_text(SIMPLE)
+        async with db_session() as session:
+
+            item = await create_media_item(session, materialize_asset=True, file_path=svg_file, file_format="svg")
+
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export", json={"format": "png", "width": 99999}
+        )
+        assert response.status_code == 400
+
+
+class TestIconEncoders:
+    """The icon bundles must build on any platform — no iconutil, no macOS."""
+
+    @staticmethod
+    def _renders(sizes):
+        out = {}
+        for size in sizes:
+            img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            img.paste(Image.new("RGBA", (size // 2 or 1, size // 2 or 1), (10, 120, 120, 255)))
+            out[size] = img
+        return out
+
+    def test_icns_round_trips(self):
+        from routes.svg_media import ICON_TARGETS, _build_icns
+
+        payload = _build_icns(self._renders(ICON_TARGETS["icon-macos"]["sizes"]))
+        assert payload[:4] == b"icns"
+        Image.open(io.BytesIO(payload)).load()
+
+    def test_ico_contains_every_requested_size(self):
+        from routes.svg_media import ICON_TARGETS, _build_ico
+
+        sizes = ICON_TARGETS["icon-windows"]["sizes"]
+        payload = _build_ico(self._renders(sizes))
+        stored = Image.open(io.BytesIO(payload)).ico.sizes()
+        assert {(s, s) for s in sizes} == set(stored)
+
+    def test_ios_catalog_names_every_entry(self):
+        """A Contents.json entry with no filename is a broken asset catalog."""
+        from routes.svg_media import _IOS_ENTRIES, _ios_contents_json
+
+        name_for = {px: f"icon-{px}.png" for *_rest, px in _IOS_ENTRIES}
+        catalog = json.loads(_ios_contents_json(name_for))
+        assert catalog["images"]
+        assert all("filename" in entry for entry in catalog["images"])
+
+    def test_every_icon_target_renders_the_sizes_its_bundle_uses(self):
+        """The bundle builders index images[] directly — a missing size is a KeyError."""
+        from routes.svg_media import _ANDROID_DENSITIES, ICON_TARGETS, _IOS_ENTRIES
+
+        ios = set(ICON_TARGETS["icon-ios"]["sizes"])
+        assert {px for *_rest, px in _IOS_ENTRIES} <= ios
+
+        android = set(ICON_TARGETS["icon-android"]["sizes"])
+        assert {px for _d, px in _ANDROID_DENSITIES} | {432, 512} <= android
+
+        web = set(ICON_TARGETS["icon-web"]["sizes"])
+        assert {16, 32, 48, 180, 192, 512} <= web
+
+    def test_icns_only_asks_for_sizes_the_container_stores(self):
+        from routes.svg_media import ICON_TARGETS
+
+        assert set(ICON_TARGETS["icon-macos"]["sizes"]) <= {32, 64, 128, 256, 512, 1024}
+
+    def test_ico_stays_within_the_format_ceiling(self):
+        from routes.svg_media import ICON_TARGETS
+
+        assert max(ICON_TARGETS["icon-windows"]["sizes"]) <= 256
+
+
+class TestOptimize:
+    def test_drops_comments_and_collapses_whitespace(self):
+        from routes.svg_media import _optimize
+
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">\n'
+            '  <!-- editor note -->\n'
+            '  <rect width="10" height="10"/>\n'
+            '</svg>'
+        )
+        out = _optimize(text)
+        assert "editor note" not in out
+        assert "\n" not in out
+        assert '<rect width="10" height="10"' in out
+
+    def test_leaves_path_data_alone(self):
+        """Rounding coordinates is a fidelity judgement, not a mechanical win."""
+        from routes.svg_media import _optimize
+
+        d = "M1.23456 2.34567L9.87654 8.76543"
+        text = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="{d}"/></svg>'
+        assert d in _optimize(text)

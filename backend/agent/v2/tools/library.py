@@ -1363,9 +1363,20 @@ async def save_workspace_file(
         if ext == "jpg":
             ext = "jpeg"
 
-    # Get dimensions if it's an image (skip for layout bundles)
+    # Get dimensions. SVG is text, so PIL cannot open it — and it must land
+    # sanitized like every other SVG ingest path. Rewriting here, before the
+    # size and hash below, keeps the record describing the stored bytes.
     width, height = 0, 0
-    if not is_layout_bundle:
+    if ext == "svg":
+        from utils.svg_doc import DEFAULT_SIZE, prepare_text, read_svg_file
+        try:
+            clean, doc = prepare_text(read_svg_file(dest))
+            Path(dest).write_text(clean, encoding="utf-8")
+            width, height = doc.width, doc.height
+        except Exception as e:
+            log.warning(f"Failed to normalize SVG {dest}: {e}")
+            width, height = DEFAULT_SIZE, DEFAULT_SIZE
+    elif not is_layout_bundle:
         try:
             from utils.image_ops import open_oriented
             with open_oriented(dest) as img:
@@ -1385,7 +1396,7 @@ async def save_workspace_file(
 
     # Determine if this is non-visual media (audio, text, structured types)
     # Non-visual media should skip AI processing phases (CLIP, face detection, VLM)
-    _NON_VISUAL_FORMATS = {'md', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg',
+    _NON_VISUAL_FORMATS = {'md', 'svg', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg',
                            'stimmaset.json', 'stimmagrid.json', 'stimmalayout'}
     is_non_visual = ext in _NON_VISUAL_FORMATS or is_layout_bundle
 

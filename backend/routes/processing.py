@@ -794,6 +794,7 @@ async def get_filter_counts(
     image_formats = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
     audio_formats = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
     text_formats = ['md']
+    vector_formats = ['svg']
     set_formats = ['stimmaset.json']
     grid_formats = ['stimmagrid.json']
 
@@ -992,6 +993,31 @@ async def get_filter_counts(
     text_query = text_query.where(MediaItem.file_format.in_(text_formats))
     text_result = await session.execute(text_query)
     text_count = text_result.scalar()
+
+    # Vectors count
+    vectors_query = get_base_query()
+    vectors_query = build_filtered_query(
+        vectors_query,
+        caption_query=caption_query,
+        prompt_query=prompt_query,
+        resolutions=resolutions,
+        excluded_resolutions=excluded_resolutions,
+        keywords=keywords,
+        excluded_keywords=excluded_keywords,
+        folders=folders,
+        excluded_folders=excluded_folders,
+        is_generated=is_generated,
+        marker_ids=marker_ids,
+        excluded_marker_ids=excluded_marker_ids,
+        tag_ids=tag_ids,
+        excluded_tag_ids=excluded_tag_ids,
+        tool_ids=tool_ids,
+        excluded_tool_ids=excluded_tool_ids,
+        exclude_category='media_types'
+    )
+    vectors_query = vectors_query.where(MediaItem.file_format.in_(vector_formats))
+    vectors_result = await session.execute(vectors_query)
+    vectors_count = vectors_result.scalar()
 
     # Sets count
     sets_query = get_base_query()
@@ -1514,6 +1540,7 @@ async def get_filter_counts(
             "videos": videos_count,
             "audio": audio_count,
             "text": text_count,
+            "vectors": vectors_count,
             "sets": sets_count,
             "grids": grids_count,
             "layouts": layouts_count

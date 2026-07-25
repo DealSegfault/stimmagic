@@ -235,6 +235,61 @@ def _dpr_for_target(width: int, height: int | None, target_long_side: int | None
     return max(0.5, min(2.0, target_long_side / long_side))
 
 
+async def render_svg_document(
+    svg_text: str,
+    width: int,
+    height: int,
+    *,
+    wait_for_client_timeout_s: float = WAIT_FOR_CLIENT_TIMEOUT_S,
+    render_timeout_s: float = RENDER_TIMEOUT_S,
+    queue_timeout_s: float | None = None,
+    target_long_side: int | None = None,
+) -> bytes:
+    """Rasterize a self-contained SVG document to PNG bytes via the UI client.
+
+    The SVG is handed over as an *asset* and referenced by an ``<img>`` rather
+    than inlined into the body. Two reasons:
+
+    - It reuses the blob-URL path that is already proven for bundle images,
+      instead of nesting inline SVG inside modern-screenshot's foreignObject
+      clone (where WebKit drops content intermittently).
+    - An SVG in an ``<img>`` cannot reach webfonts or any other outside
+      resource — which is the same box the file is in everywhere else it will
+      ever be opened. So the thumbnail shows what the document actually is,
+      instead of flattering it with fonts only this app happens to have.
+
+    Background stays transparent; the caller composites.
+    """
+    html = svg_to_html_img(width, height)
+    assets = {_SVG_ASSET_NAME: base64.b64encode(svg_text.encode("utf-8")).decode("ascii")}
+    return await render_layout_via_ui(
+        html,
+        width=width,
+        height=height,
+        dpr=_dpr_for_target(width, height, target_long_side),
+        assets=assets,
+        wait_for_client_timeout_s=wait_for_client_timeout_s,
+        render_timeout_s=render_timeout_s,
+        queue_timeout_s=queue_timeout_s,
+    )
+
+
+_SVG_ASSET_NAME = "document.svg"
+
+
+def svg_to_html_img(width: int, height: int) -> str:
+    """Minimal HTML canvas holding a single ``<img>`` pointed at the SVG asset."""
+    return (
+        f'<!DOCTYPE html><html data-stimma-width="{width}" data-stimma-height="{height}">'
+        '<head><meta charset="utf-8"><style>'
+        'html,body{margin:0;padding:0;background:transparent;}'
+        f'body{{width:{width}px;height:{height}px;overflow:hidden;}}'
+        f'img{{display:block;width:{width}px;height:{height}px;}}'
+        '</style></head>'
+        f'<body><img src="{_SVG_ASSET_NAME}"></body></html>'
+    )
+
+
 async def render_layout_bundle(
     bundle_dir: Path,
     *,

@@ -65,7 +65,7 @@
                 <AppImage
                   :src="getThumbnailUrl(rowItem.file_hash, GRID_THUMBNAIL_SIZE)"
                   :alt="rowItem.vlm_caption || 'Media item'"
-                  :contain="rowItem.file_format === 'stimmalayout'"
+                  :contain="rowItem.file_format === 'stimmalayout' || rowItem.file_format === 'svg'"
                   :has-alpha="rowItem.has_alpha"
                   loading="eager"
                   queued
@@ -134,6 +134,11 @@
                   <!-- Layout icon (newspaper) -->
                   <svg v-else-if="getMediaType(rowItem) === 'layout'" class="w-4 h-4 flex-shrink-0 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 7.5h1.5m-1.5 3h1.5m-7.5 3h7.5m-7.5 3h7.5m3-9h3.375c.621 0 1.125.504 1.125 1.125V18a2.25 2.25 0 0 1-2.25 2.25M16.5 7.5V18a2.25 2.25 0 0 0 2.25 2.25M16.5 7.5V4.875c0-.621-.504-1.125-1.125-1.125H4.125C3.504 3.75 3 4.254 3 4.875V18a2.25 2.25 0 0 0 2.25 2.25h13.5M6 7.5h3v3H6v-3Z" />
+                  </svg>
+                  <!-- Vector icon (pen nib) -->
+                  <svg v-else-if="getMediaType(rowItem) === 'vector'" class="w-4 h-4 flex-shrink-0 text-zinc-300" fill="none" viewBox="0 0 24 24" stroke-width="1.75" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 20l4.5-1.5M4 20l1.5-4.5m0 0L15.44 5.56a2.25 2.25 0 0 1 3.182 0l.318.318a2.25 2.25 0 0 1 0 3.182L8.5 18.5m-3-3 3 3" />
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 7.5l3 3" />
                   </svg>
                   <!-- Count for set/grid -->
                   <span v-if="(getMediaType(rowItem) === 'set' || getMediaType(rowItem) === 'grid') && rowItem.member_count" class="text-xs font-semibold text-white leading-none whitespace-nowrap">
