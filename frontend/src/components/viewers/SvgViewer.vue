@@ -5,6 +5,10 @@
   page. An <img>-loaded SVG cannot execute script or fetch anything, so a file
   that arrived from a watched Source is inert here regardless of what it
   contains — and its ids and styles cannot collide with the app shell.
+
+  Clicks on the artwork are left to bubble so the host (the chat artifact stage)
+  can open the slideshow or a context menu. The control row below stops them, so
+  operating the controls never doubles as a click on the work.
 -->
 <template>
   <div
@@ -20,8 +24,8 @@
     </div>
 
     <template v-else>
-      <div class="flex-1 min-h-0 w-full flex items-center justify-center p-4">
-        <div :class="['overflow-hidden rounded-media', backgroundClass]" :style="stageStyle">
+      <div class="flex-1 min-h-0 w-full flex items-center justify-center p-4 overflow-auto custom-scrollbar">
+        <div :class="['flex-none overflow-hidden rounded-media', backgroundClass]" :style="stageStyle">
           <img
             :src="documentUrl"
             :style="imageStyle"
@@ -34,16 +38,68 @@
         </div>
       </div>
 
-      <div class="flex-shrink-0 flex items-center gap-4 px-4 pb-3 pt-1">
-        <div class="flex items-center gap-1">
+      <div
+        class="flex-shrink-0 flex items-center gap-3 px-4 pb-3 pt-1 cursor-default"
+        @click.stop
+        @contextmenu.stop
+        @pointerdown.stop
+        @wheel.stop
+      >
+        <!-- Scale picker: percentages for judging the design, pixel widths for
+             judging it at the size it will actually be used. -->
+        <div class="relative" ref="scaleMenuRef">
           <button
-            v-for="option in ZOOM_OPTIONS"
-            :key="option.value"
-            :class="toggleClass(zoom === option.value)"
-            @click="zoom = option.value"
+            type="button"
+            class="flex items-center gap-1 h-7 px-2.5 rounded border border-edge bg-overlay-subtle text-xs font-medium text-content-secondary hover:bg-overlay-hover hover:text-content transition-colors tabular-nums"
+            @click="showScaleMenu = !showScaleMenu"
           >
-            {{ option.label }}
+            {{ scaleLabel }}
+            <ChevronDownIcon class="w-3 h-3" />
           </button>
+
+          <div
+            v-if="showScaleMenu"
+            class="absolute bottom-full left-0 mb-1 w-44 max-h-80 overflow-y-auto bg-surface border border-edge-subtle rounded-lg shadow-xl z-menu py-1 custom-scrollbar"
+          >
+            <button
+              type="button"
+              class="w-full flex items-center px-2.5 py-1.5 text-left text-[11.5px] rounded-md transition-colors"
+              :class="scaleMode === 'fit' ? 'bg-accent/10 text-content' : 'text-content-secondary hover:bg-overlay-hover'"
+              @click="selectScale('fit')"
+            >
+              Fit to window
+            </button>
+
+            <div class="px-2.5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-content-muted">
+              Scale
+            </div>
+            <button
+              v-for="pct in PERCENT_STEPS"
+              :key="`pct-${pct}`"
+              type="button"
+              class="w-full flex items-center justify-between px-2.5 py-1.5 text-left text-[11.5px] rounded-md transition-colors tabular-nums"
+              :class="scaleMode === 'percent' && percentValue === pct ? 'bg-accent/10 text-content' : 'text-content-secondary hover:bg-overlay-hover'"
+              @click="selectScale('percent', pct)"
+            >
+              <span>{{ pct }}%</span>
+              <span class="text-[10px] text-content-muted">{{ Math.round(naturalWidth * pct / 100) }} px</span>
+            </button>
+
+            <div class="px-2.5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-content-muted">
+              Width
+            </div>
+            <button
+              v-for="px in PIXEL_STEPS"
+              :key="`px-${px}`"
+              type="button"
+              class="w-full flex items-center justify-between px-2.5 py-1.5 text-left text-[11.5px] rounded-md transition-colors tabular-nums"
+              :class="scaleMode === 'pixels' && pixelValue === px ? 'bg-accent/10 text-content' : 'text-content-secondary hover:bg-overlay-hover'"
+              @click="selectScale('pixels', px)"
+            >
+              <span>{{ px }} px</span>
+              <span class="text-[10px] text-content-muted">{{ PIXEL_HINTS[px] || '' }}</span>
+            </button>
+          </div>
         </div>
 
         <div class="w-px h-5 bg-edge"></div>
@@ -53,7 +109,7 @@
             v-for="option in BACKGROUND_OPTIONS"
             :key="option.value"
             :class="toggleClass(background === option.value)"
-            @click="background = option.value"
+            @click="selectBackground(option.value)"
           >
             {{ option.label }}
           </button>
@@ -84,8 +140,10 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import axios from 'axios'
+import { ChevronDownIcon } from '@heroicons/vue/24/outline'
 import { getApiBase } from '../../apiConfig'
 import { useMediaApi } from '../../composables/useMediaApi'
+import { makeProfileKey } from '../../utils/storageKeys'
 
 const props = defineProps({
   mediaId: {
@@ -94,11 +152,19 @@ const props = defineProps({
   },
 })
 
-const ZOOM_OPTIONS = [
-  { value: 'fit', label: 'Fit' },
-  { value: 1, label: '100%' },
-  { value: 2, label: '200%' },
-]
+// Percentages judge the design; pixel widths judge it at the size it ships at.
+// Both matter here, because a mark that reads at 512 can turn to mud at 16.
+const PERCENT_STEPS = [25, 50, 100, 200, 400, 800]
+const PIXEL_STEPS = [16, 24, 32, 48, 64, 128, 180, 256, 512, 1024]
+const PIXEL_HINTS = {
+  16: 'favicon',
+  24: 'UI icon',
+  32: 'favicon 2x',
+  48: 'toolbar',
+  180: 'apple touch',
+  512: 'store',
+  1024: 'app icon',
+}
 
 // Transparency is the normal state for an icon or a logo, so the ground is a
 // control rather than a fixed choice: a white mark and a black mark cannot both
@@ -109,14 +175,22 @@ const BACKGROUND_OPTIONS = [
   { value: 'dark', label: 'Dark' },
 ]
 
+const BACKGROUND_STORAGE_PART = 'background'
+
 const loading = ref(true)
 const error = ref(null)
 const naturalWidth = ref(0)
 const naturalHeight = ref(0)
 const warnings = ref([])
-const zoom = ref('fit')
-const background = ref('checker')
 const imageFailed = ref(false)
+
+const scaleMode = ref('fit')
+const percentValue = ref(100)
+const pixelValue = ref(256)
+const showScaleMenu = ref(false)
+const scaleMenuRef = ref(null)
+
+const background = ref('checker')
 
 const containerRef = ref(null)
 const containerWidth = ref(0)
@@ -135,6 +209,19 @@ const backgroundClass = computed(() => ({
   dark: 'bg-black',
 }[background.value]))
 
+function backgroundStorageKey() {
+  return makeProfileKey('svg-viewer', BACKGROUND_STORAGE_PART)
+}
+
+function selectBackground(value) {
+  background.value = value
+  try {
+    localStorage.setItem(backgroundStorageKey(), value)
+  } catch {
+    // A full or unavailable localStorage must not break the viewer.
+  }
+}
+
 function toggleClass(active) {
   const base = 'px-2.5 h-7 rounded text-xs font-medium transition-colors cursor-pointer'
   return active
@@ -142,10 +229,24 @@ function toggleClass(active) {
     : `${base} text-content-tertiary hover:text-content hover:bg-surface`
 }
 
+function selectScale(mode, value) {
+  scaleMode.value = mode
+  if (mode === 'percent') percentValue.value = value
+  if (mode === 'pixels') pixelValue.value = value
+  showScaleMenu.value = false
+}
+
+const scaleLabel = computed(() => {
+  if (scaleMode.value === 'percent') return `${percentValue.value}%`
+  if (scaleMode.value === 'pixels') return `${pixelValue.value} px`
+  return 'Fit'
+})
+
 const scale = computed(() => {
-  if (zoom.value !== 'fit') return zoom.value
-  if (!containerWidth.value || !containerHeight.value) return 1
   if (!naturalWidth.value || !naturalHeight.value) return 1
+  if (scaleMode.value === 'percent') return percentValue.value / 100
+  if (scaleMode.value === 'pixels') return pixelValue.value / naturalWidth.value
+  if (!containerWidth.value || !containerHeight.value) return 1
   // Padding allowance matches the p-4 on the stage wrapper.
   const available = Math.max(1, containerWidth.value - 32)
   const availableHeight = Math.max(1, containerHeight.value - 32)
@@ -165,7 +266,20 @@ const imageStyle = computed(() => ({
   height: `${renderHeight.value}px`,
 }))
 
+function onDocumentClick(event) {
+  if (scaleMenuRef.value && !scaleMenuRef.value.contains(event.target)) {
+    showScaleMenu.value = false
+  }
+}
+
 onMounted(() => {
+  try {
+    const saved = localStorage.getItem(backgroundStorageKey())
+    if (BACKGROUND_OPTIONS.some(o => o.value === saved)) background.value = saved
+  } catch {
+    // Ignore — the default ground is fine.
+  }
+
   resizeObserver = new ResizeObserver(entries => {
     for (const entry of entries) {
       containerWidth.value = entry.contentRect.width
@@ -173,10 +287,12 @@ onMounted(() => {
     }
   })
   if (containerRef.value) resizeObserver.observe(containerRef.value)
+  document.addEventListener('click', onDocumentClick)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  document.removeEventListener('click', onDocumentClick)
 })
 
 async function loadInfo() {

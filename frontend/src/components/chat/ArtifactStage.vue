@@ -2,9 +2,6 @@
   <div class="flex-1 min-w-0 bg-matte flex flex-col relative overflow-hidden">
     <!-- Header -->
     <div class="flex items-center gap-2.5 px-3.5 py-2 border-b border-edge-subtle bg-surface/60 flex-shrink-0">
-      <div class="w-6 h-6 rounded flex items-center justify-center bg-accent/15 border border-accent/40 text-accent flex-shrink-0">
-        <Square3Stack3DIcon class="w-3.5 h-3.5" />
-      </div>
       <div class="min-w-0">
         <div class="text-[12.5px] font-semibold text-content truncate">{{ asset?.title || 'Untitled' }}</div>
         <div class="text-[10.5px] text-content-muted">
@@ -109,9 +106,9 @@
         </button>
 
         <div
-          class="relative flex-1 min-h-0 rounded-media overflow-hidden"
-          :class="heroHasOwnControls ? '' : 'cursor-zoom-in'"
-          @click="!heroHasOwnControls && $emit('open-slideshow', viewedRevision.media_id)"
+          class="relative flex-1 min-h-0 rounded-media overflow-hidden cursor-zoom-in"
+          @click="$emit('open-slideshow', viewedRevision.media_id)"
+          @contextmenu="onHeroContextMenu"
         >
           <LayoutViewer v-if="heroKind === 'layout'" :media-id="viewedRevision.media_id" class="w-full h-full" />
           <SvgViewer v-else-if="heroKind === 'vector'" :media-id="viewedRevision.media_id" class="w-full h-full" />
@@ -136,9 +133,10 @@
           />
         </div>
 
-        <!-- Chip bar beneath the hero -->
-        <div class="flex-none flex items-center gap-1.5 py-2">
-          <div v-if="viewedRevision.width && viewedRevision.height" class="h-7 flex items-center px-2.5 bg-black/55 backdrop-blur-sm rounded text-[11px] font-mono text-white/80">
+        <!-- Chip bar beneath the hero. The vector viewer reports the document's
+             own size in its control row, so this would just say it twice. -->
+        <div v-if="showDimensionChip" class="flex-none flex items-center gap-1.5 py-2">
+          <div class="h-7 flex items-center px-2.5 bg-black/55 backdrop-blur-sm rounded text-[11px] font-mono text-white/80">
             {{ viewedRevision.width }} × {{ viewedRevision.height }}
           </div>
           <span class="flex-1"></span>
@@ -155,12 +153,12 @@ import {
   EllipsisHorizontalIcon,
   XMarkIcon,
   ArrowUpIcon,
-  Square3Stack3DIcon,
 } from '@heroicons/vue/24/outline'
 import { MediaImage } from '../media'
 import LayoutViewer from '../viewers/LayoutViewer.vue'
 import SvgViewer from '../viewers/SvgViewer.vue'
 import { useMediaApi } from '../../composables/useMediaApi'
+import { useMediaContextMenu } from '../../composables/useMediaContextMenu'
 import { getMediaType } from '../../utils/mediaTypes'
 import type { ArtifactRevision } from '../../composables/useArtifactStage'
 
@@ -184,6 +182,8 @@ const emit = defineEmits<{
 }>()
 
 const { getThumbnailUrl, getMediaFileUrl } = useMediaApi()
+// The <MediaContextMenu> itself is mounted once by ChatView.
+const contextMenu = useMediaContextMenu()
 
 const showVersionMenu = ref(false)
 const showOverflowMenu = ref(false)
@@ -205,9 +205,21 @@ const heroKind = computed(() => {
   return getMediaType({ file_format: props.viewedRevision.file_format })
 })
 
-// These viewers own zoom and background controls of their own, so a click
-// inside them must not also punch through to the slideshow.
-const heroHasOwnControls = computed(() => heroKind.value === 'layout' || heroKind.value === 'vector')
+const showDimensionChip = computed(() =>
+  heroKind.value !== 'vector' && !!props.viewedRevision?.width && !!props.viewedRevision?.height
+)
+
+function onHeroContextMenu(event: MouseEvent) {
+  const mediaId = props.viewedRevision?.media_id
+  if (!mediaId) return
+  contextMenu.show({
+    event,
+    mediaId,
+    mediaIds: [mediaId],
+    assetId: props.asset?.id,
+    assetIds: props.asset?.id ? [props.asset.id] : [],
+  })
+}
 
 const kindLabel = computed(() => {
   const kind = heroKind.value
