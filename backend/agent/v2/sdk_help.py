@@ -209,9 +209,10 @@ generation provider.""",
         signature="await stimma.rasterize_svg(svg, *, width=None, height=None, out=None) -> Image | Path",
         summary="Render an SVG to pixels with the app's real browser engine.",
         details="""\
-`svg` is a workspace path or SVG markup. Returns a PIL Image, or the written
-path when `out` is given. Size defaults to the document's own; pass one of
-width/height and the other follows the aspect ratio.
+`svg` is a workspace path or SVG markup. Returns a PIL Image at exactly the
+requested size (or the written path when `out` is given). Size defaults to the
+document's own; pass one of width/height and the other follows the aspect ratio.
+Warns on stdout if the document renders completely empty.
 
 This is the same renderer behind thumbnails, view_image, PNG export and the
 icon bundles. Do not shell out to rsvg-convert, inkscape or magick instead:

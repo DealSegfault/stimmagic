@@ -555,6 +555,92 @@ class TestIconEncoders:
         assert max(ICON_TARGETS["icon-windows"]["sizes"]) <= 256
 
 
+class TestRasterizeSvgSandbox:
+    """`stimma.rasterize_svg` is how the agent inspects its own work in run_code."""
+
+    @staticmethod
+    def _sdk(tmp_path):
+        from agent.v2.code_runtime import StimmaSDK
+
+        sdk = StimmaSDK.__new__(StimmaSDK)
+        sdk.workspace_dir = tmp_path
+        sdk.project_workspace_dir = None
+        return sdk
+
+    @staticmethod
+    def _fake_renderer(filled: bool):
+        """Stand in for the UI client, including its 2x supersampling."""
+        async def _render(text, w, h, **kwargs):
+            img = Image.new("RGBA", (w * 2, h * 2), (255, 0, 0, 255) if filled else (0, 0, 0, 0))
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return buf.getvalue()
+        return _render
+
+    SVG = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100" height="50">'
+        '<rect width="100" height="50" fill="red"/></svg>'
+    )
+
+    async def test_returns_the_requested_size_not_the_supersampled_one(self, tmp_path):
+        """`width=16` must mean 16 pixels — checking a mark at icon size is the point."""
+        from unittest.mock import patch
+
+        sdk = self._sdk(tmp_path)
+        with patch("utils.ui_render.render_svg_document", self._fake_renderer(True)):
+            assert (await sdk.rasterize_svg(self.SVG, width=16)).size == (16, 8)
+
+    async def test_defaults_to_the_documents_own_size(self, tmp_path):
+        from unittest.mock import patch
+
+        sdk = self._sdk(tmp_path)
+        with patch("utils.ui_render.render_svg_document", self._fake_renderer(True)):
+            assert (await sdk.rasterize_svg(self.SVG)).size == (100, 50)
+
+    async def test_one_dimension_derives_the_other(self, tmp_path):
+        from unittest.mock import patch
+
+        sdk = self._sdk(tmp_path)
+        with patch("utils.ui_render.render_svg_document", self._fake_renderer(True)):
+            assert (await sdk.rasterize_svg(self.SVG, height=100)).size == (200, 100)
+
+    async def test_written_file_is_also_the_requested_size(self, tmp_path):
+        from unittest.mock import patch
+
+        sdk = self._sdk(tmp_path)
+        with patch("utils.ui_render.render_svg_document", self._fake_renderer(True)):
+            out = await sdk.rasterize_svg(self.SVG, width=32, out="icon.png")
+        with Image.open(out) as written:
+            assert written.size == (32, 16)
+
+    async def test_warns_when_the_render_is_empty(self, tmp_path, capsys):
+        """A blank render is silent otherwise, and it is the characteristic failure."""
+        from unittest.mock import patch
+
+        sdk = self._sdk(tmp_path)
+        with patch("utils.ui_render.render_svg_document", self._fake_renderer(False)):
+            await sdk.rasterize_svg(self.SVG, width=64)
+        assert "rendered completely empty" in capsys.readouterr().out
+
+    async def test_missing_workspace_file_is_named(self, tmp_path):
+        sdk = self._sdk(tmp_path)
+        with pytest.raises(FileNotFoundError):
+            await sdk.rasterize_svg("nope.svg")
+
+
+class TestSandboxImportDenial:
+    def test_denial_names_what_is_importable(self):
+        """A dead end costs a round trip; a correction does not."""
+        from agent.v2.code_runtime import _import_denied_message
+
+        message = _import_denied_message("scipy")
+        assert "scipy" in message
+        assert "not allowed" in message
+        # The allow-list itself, so the model can pick an alternative in place.
+        assert "numpy" in message
+        assert "PIL" in message
+
+
 class TestOptimize:
     def test_drops_comments_and_collapses_whitespace(self):
         from routes.svg_media import _optimize

@@ -140,6 +140,19 @@ ALLOWED_MODULES_PROMPT_DESCRIPTION = (
 )
 
 
+def _import_denied_message(name: str) -> str:
+    """Denial message that also says what *is* importable.
+
+    The allow-list is in the run_code tool description too, but a denial is the
+    moment the boundary actually matters — repeating it here turns a dead end
+    into a correction the model can act on without another round trip.
+    """
+    return (
+        f"Import '{name}' is not allowed in run_code. "
+        f"{ALLOWED_MODULES_PROMPT_DESCRIPTION}"
+    )
+
+
 def _make_workspace_resolver(workspace_dir: Path, project_workspace_dir: Path | None = None):
     """Resolve a path against the workspace and enforce the workspace jail.
 
@@ -286,7 +299,7 @@ def _make_safe_import(
         top_level = name.split(".")[0]
         lib_dir = stimpack_modules.get(top_level) if stimpack_modules else None
         if lib_dir is None:
-            raise ImportError(f"Import '{name}' is not allowed in run_code")
+            raise ImportError(_import_denied_message(name))
         lib_dir_str = str(lib_dir)
         # Clear stale sys.modules entries for this stimpack module tree
         stale_keys = [k for k in _sys.modules if k == top_level or k.startswith(top_level + ".")]
@@ -334,7 +347,7 @@ def _make_safe_import(
             top_level = name.split(".")[0]
             if top_level in stimpack_modules:
                 return _load_stimpack_module(name)
-        raise ImportError(f"Import '{name}' is not allowed in run_code")
+        raise ImportError(_import_denied_message(name))
 
     return _safe_import
 
@@ -884,22 +897,44 @@ class StimmaSDK:
         elif not width and not height:
             width, height = native_w, native_h
 
+        width, height = int(width), int(height)
         png_bytes = await render_svg_document(
             text,
-            int(width),
-            int(height),
+            width,
+            height,
             wait_for_client_timeout_s=10.0,
             queue_timeout_s=30.0,
         )
 
+        # The renderer supersamples (2x device pixel ratio) for edge quality, so
+        # the raw PNG is larger than what was asked for. Downsample to the
+        # requested size: `width=16` has to mean 16 pixels, since checking a mark
+        # at icon size is the whole point of asking for one.
+        img = Image.open(io.BytesIO(png_bytes))
+        img.load()
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        if img.size != (width, height):
+            img = img.resize((width, height), Image.LANCZOS)
+
+        # A document that parses but draws nothing is the characteristic SVG
+        # failure, and it is silent — `create_svg` refuses to save one, so this
+        # path should not hand one back without a word either.
+        if img.getbbox() is None or img.getchannel("A").getextrema()[1] == 0:
+            print(
+                "[rasterize_svg] warning: the document rendered completely empty. "
+                "Usual causes: the viewBox does not contain the geometry, shapes "
+                "fall outside it, fill/stroke are unset, or a <clipPath>/<mask> "
+                "references something that is not a shape (a <use> pointing at a "
+                "<g> clips to nothing)."
+            )
+
         if out is not None:
             out_path = self._resolve_path(str(out))
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(png_bytes)
+            img.save(out_path, "PNG", optimize=True)
             return out_path
 
-        img = Image.open(io.BytesIO(png_bytes))
-        img.load()
         return img
 
     async def ffmpeg(self, *args, timeout: float = 600.0, check: bool = True) -> AVToolResult:
