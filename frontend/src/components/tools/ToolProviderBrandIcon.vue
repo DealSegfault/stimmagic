@@ -4,7 +4,7 @@
     class="flex h-10 w-10 shrink-0 items-center justify-center text-content-secondary"
     aria-hidden="true"
   >
-    <span class="h-7 w-7 bg-current [mask-image:url('/logo.png')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.png')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></span>
+    <span class="h-7 w-7 bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></span>
   </span>
   <span v-else-if="isComfy" class="flex h-10 w-10 shrink-0 items-center justify-center text-content-secondary" aria-hidden="true">
     <ComfyUIIcon class="h-8 w-8" />

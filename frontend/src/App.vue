@@ -2,7 +2,7 @@
   <!-- Keep the native startup screen in place until startup routing is resolved. -->
   <div v-if="startupPending" class="startup-screen">
     <div class="startup-drag-region" data-tauri-drag-region />
-    <img class="startup-logo" src="/logo.png" alt="Stimma" />
+    <img class="startup-logo" src="/logo.svg" alt="Stimma" />
   </div>
 
   <template v-else>

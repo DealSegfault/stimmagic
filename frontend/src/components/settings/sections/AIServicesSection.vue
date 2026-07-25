@@ -20,7 +20,7 @@
       <div class="divide-y divide-edge-subtle">
         <button type="button" class="group flex w-full items-center gap-4 px-1 py-3 text-left hover:bg-overlay-subtle" @click="cloudStatus === 'not_logged_in' ? handleCloudConnect() : cloudNeedsCredits ? openAddCredits() : openStimmaAccount()">
           <div class="flex h-9 w-9 shrink-0 items-center justify-center text-content-secondary" aria-hidden="true">
-            <div class="h-7 w-7 bg-current [mask-image:url('/logo.png')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.png')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
+            <div class="h-7 w-7 bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
           </div>
           <div class="min-w-0 flex-1">
             <div class="text-[13px] text-content">Stimma</div>
@@ -187,7 +187,7 @@
             <div v-else class="flex min-w-0 flex-1 items-center gap-3">
               <div v-if="activeProvider || activeManager === 'stimma'" class="flex h-9 w-9 shrink-0 items-center justify-center text-content-secondary" :aria-hidden="activeManager === 'stimma' ? true : undefined">
                 <ProviderBrandIcon v-if="activeProvider" :provider="activeProvider.kind" size="md" />
-                <div v-else class="h-7 w-7 bg-current [mask-image:url('/logo.png')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.png')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
+                <div v-else class="h-7 w-7 bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
               </div>
               <div class="min-w-0">
                 <h4 class="truncate text-[16px] font-semibold text-content">{{ modelAddStep === 'choose' ? 'Add a model' : managerTitle }}</h4>

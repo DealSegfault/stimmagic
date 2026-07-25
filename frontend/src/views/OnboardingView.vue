@@ -50,7 +50,7 @@
 
       <!-- Brand -->
       <div class="flex flex-col items-center gap-3.5 mb-[52px]">
-        <img src="/logo.png" alt="Stimma" class="w-14 h-14">
+        <img src="/logo.svg" alt="Stimma" class="w-14 h-14">
         <span class="text-content" style="font-size: 1.7rem; font-weight: 500; letter-spacing: 0.12em; line-height: 1;">stimma</span>
         <span class="text-[13px] text-content-tertiary">Your workshop for images, video, and design.</span>
       </div>

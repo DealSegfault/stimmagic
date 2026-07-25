@@ -53,7 +53,7 @@
             ]"
             title="Stimma (drag media here to attach)"
           >
-            <img src="/logo.png" class="w-3.5 h-3.5 flex-shrink-0" :class="{ 'logo-disconnected': !wsConnected }" alt="" />
+            <img src="/logo.svg" class="w-3.5 h-3.5 flex-shrink-0" :class="{ 'logo-disconnected': !wsConnected }" alt="" />
             <span class="font-brand lowercase tracking-[0.12em]">stimma</span>
           </button>
 

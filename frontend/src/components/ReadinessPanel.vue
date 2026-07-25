@@ -60,7 +60,7 @@
 
                 <!-- Stimma hub -->
                 <div class="relative w-[196px] self-center px-3 pb-3 pt-6 text-center">
-                  <img src="/logo.png" class="relative mx-auto h-16 w-16" alt="" />
+                  <img src="/logo.svg" class="relative mx-auto h-16 w-16" alt="" />
                   <div class="relative mt-3 font-brand text-[17px] font-medium lowercase tracking-[0.12em] text-content">stimma</div>
                 </div>
 
@@ -153,7 +153,7 @@
                     class="relative mx-auto flex h-[76px] w-[76px] items-center justify-center rounded-[19px] border border-transparent p-2 shadow-[0_0_42px_rgba(6,182,212,.18),0_14px_34px_rgba(0,0,0,.5)]"
                     :style="{ background: 'linear-gradient(#12151d,#12151d) padding-box, linear-gradient(135deg, rgba(13,148,136,.9), rgba(6,182,212,.8) 50%, rgba(99,102,241,.9)) border-box' }"
                   >
-                    <img src="/logo.png" class="h-full w-full" alt="" />
+                    <img src="/logo.svg" class="h-full w-full" alt="" />
                   </div>
                 </div>
                 <div class="relative mt-4 font-brand text-xl font-medium lowercase tracking-[0.12em] text-content">stimma</div>

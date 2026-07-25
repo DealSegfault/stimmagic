@@ -111,11 +111,11 @@
 <script setup>
 import { ref, computed, h, onMounted, onUnmounted } from 'vue'
 import { devModeRef } from '../../appConfig'
-// Monochrome Stimma pinwheel (logo.png as a currentColor mask), matching the
+// Monochrome Stimma pinwheel (logo.svg as a currentColor mask), matching the
 // treatment on the Generation Tools and Chat Models screens.
 const AccountIcon = () => h('span', {
   'aria-hidden': 'true',
-  class: "block bg-current [mask-image:url('/logo.png')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.png')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]",
+  class: "block bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]",
 })
 
 const props = defineProps({

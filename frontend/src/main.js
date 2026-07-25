@@ -32,7 +32,7 @@ function showLoadingScreen() {
 
   const logo = document.createElement('img')
   logo.className = 'startup-logo'
-  logo.src = '/logo.png'
+  logo.src = '/logo.svg'
   logo.alt = 'Stimma'
 
   screen.append(dragRegion, logo)

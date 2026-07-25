@@ -20,7 +20,23 @@ log = get_logger(__name__)
 # A document that parses but draws nothing is the characteristic SVG failure —
 # a bad viewBox, a shape outside the visible area, a fill matching the ground.
 # Rendering and checking for any marked pixel catches it before it ships.
-_BLANK_CHECK_SIZE = 128
+#
+# The same render also catches geometry that spills outside the viewBox, by
+# drawing on a deliberately oversized canvas: anything that would be clipped in
+# real use lands in the margin instead, where it can be seen. Clipping alone is
+# ambiguous — artwork flush with the edge looks identical to artwork running
+# past it — and a few units of overflow on a 1000-unit canvas is invisible to
+# the eye at any sane zoom, so this is a measurement, not something to look for.
+_CHECK_LONG_SIDE = 768
+_CHECK_MARGIN = 0.08          # canvas fraction added on every side
+_CHECK_INK_ALPHA = 8          # ignore antialiasing crumbs at the boundary
+_CHECK_INK_PIXELS = 12        # ...and a few stray pixels of them
+# Artwork sitting exactly on the boundary is a legitimate full-bleed design, and
+# its antialiased fringe lands a hair outside. Start counting a couple of pixels
+# further out so bleed reads as bleed. The cost is a detection floor of roughly
+# three units on a 1000-unit canvas — below that, the eye and the export agree it
+# does not matter anyway.
+_CHECK_EDGE_GUARD_PX = 2
 
 
 @tool(
@@ -98,7 +114,8 @@ async def create_svg(
         )
     notes.extend(doc.warnings)
 
-    blank_reason = await _render_check(clean, doc.width, doc.height)
+    blank_reason, render_warnings = await _render_check(doc.root, doc.width, doc.height)
+    notes.extend(render_warnings)
     if blank_reason:
         return (
             f"Error: the SVG renders blank ({blank_reason}). Common causes: the viewBox does "
@@ -149,8 +166,30 @@ def _safe_stem(title: str | None) -> str | None:
     return stem[:48] or None
 
 
-async def _render_check(svg_text: str, width: int, height: int) -> str | None:
-    """Return a reason string if the document renders blank, else None.
+def _expanded_document(root) -> tuple[str, float]:
+    """Serialize a copy of the document with its viewBox widened by the margin.
+
+    Returns the markup and the fraction of the widened canvas that the *original*
+    viewBox occupies on each side, so the caller knows where the margin starts.
+    """
+    import copy
+    import re as _re
+
+    from utils.svg_doc import serialize
+
+    clone = copy.deepcopy(root)
+    x, y, w, h = (float(v) for v in _re.split(r"[\s,]+", clone.get("viewBox").strip()))
+    m = _CHECK_MARGIN
+    clone.set("viewBox", f"{x - w * m} {y - h * m} {w * (1 + 2 * m)} {h * (1 + 2 * m)}")
+    # width/height must not constrain the widened box.
+    for attr in ("width", "height"):
+        if clone.get(attr) is not None:
+            del clone.attrib[attr]
+    return serialize(clone), m / (1 + 2 * m)
+
+
+async def _render_check(root, width: int, height: int) -> tuple[str | None, list[str]]:
+    """Inspect the document by rendering it. Returns (blank_reason, warnings).
 
     A render that cannot run at all (no UI client, renderer busy) is not a
     failure of the document, so it passes — blocking a save on renderer
@@ -166,9 +205,15 @@ async def _render_check(svg_text: str, width: int, height: int) -> str | None:
         render_svg_document,
     )
 
-    scale = _BLANK_CHECK_SIZE / max(width, height)
-    check_w = max(1, min(width, int(round(width * scale)) or 1))
-    check_h = max(1, min(height, int(round(height * scale)) or 1))
+    try:
+        svg_text, margin_fraction = _expanded_document(root)
+    except Exception as e:
+        log.warning(f"Could not build the expanded check document: {e}")
+        return None, []
+
+    scale = _CHECK_LONG_SIDE / max(width, height)
+    check_w = max(8, int(round(width * scale)))
+    check_h = max(8, int(round(height * scale)))
 
     try:
         png_bytes = await render_svg_document(
@@ -179,24 +224,59 @@ async def _render_check(svg_text: str, width: int, height: int) -> str | None:
             queue_timeout_s=5.0,
         )
     except (LayoutRenderBusy, LayoutRenderUnavailable) as e:
-        log.debug(f"Skipped blank check for SVG: {e}")
-        return None
+        log.debug(f"Skipped render check for SVG: {e}")
+        return None, []
     except Exception as e:
-        return f"render failed: {e}"
+        return f"render failed: {e}", []
 
     try:
         img = Image.open(io.BytesIO(png_bytes))
         img.load()
         if img.mode != "RGBA":
             img = img.convert("RGBA")
-        if img.getbbox() is None:
-            return "nothing was drawn"
-        alpha_max = img.getchannel("A").getextrema()[1]
-        if alpha_max == 0:
-            return "every pixel is fully transparent"
+        alpha = img.getchannel("A")
+        if img.getbbox() is None or alpha.getextrema()[1] == 0:
+            return "nothing was drawn", []
+        return None, _overflow_warnings(alpha, margin_fraction)
     except Exception as e:
-        log.warning(f"Blank check could not inspect the render: {e}")
-    return None
+        log.warning(f"Render check could not inspect the render: {e}")
+    return None, []
+
+
+def _overflow_warnings(alpha, margin_fraction: float) -> list[str]:
+    """Name the sides where ink landed outside the declared viewBox."""
+    w, h = alpha.size
+    inset_x = int(round(w * margin_fraction))
+    inset_y = int(round(h * margin_fraction))
+    if inset_x < 1 or inset_y < 1:
+        return []
+
+    guard = _CHECK_EDGE_GUARD_PX
+    band_x = inset_x - guard
+    band_y = inset_y - guard
+    if band_x < 1 or band_y < 1:
+        return []
+
+    ink = alpha.point(lambda v: 255 if v >= _CHECK_INK_ALPHA else 0)
+    bands = {
+        "left": (0, 0, band_x, h),
+        "right": (w - band_x, 0, w, h),
+        "top": (0, 0, w, band_y),
+        "bottom": (0, h - band_y, w, h),
+    }
+    spilled = [
+        side for side, box in bands.items()
+        if sum(ink.crop(box).point(lambda v: 1 if v else 0).getdata()) > _CHECK_INK_PIXELS
+    ]
+    if not spilled:
+        return []
+    return [
+        "Geometry extends past the viewBox on the "
+        + ", ".join(spilled)
+        + f" — it will be clipped wherever this renders. Strokes are centered on the "
+        "path, so a shape flush with the edge loses half its stroke width. Move it in, "
+        "or widen the viewBox."
+    ]
 
 
 async def _save_to_library(

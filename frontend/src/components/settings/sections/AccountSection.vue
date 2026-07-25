@@ -15,7 +15,7 @@
 
     <div v-else-if="!user" class="min-h-[60vh] flex items-start justify-center pt-10">
       <div class="w-full max-w-[640px] text-center">
-        <img src="/logo.png" alt="" aria-hidden="true" class="mx-auto mb-7 h-[72px] w-[72px]" />
+        <img src="/logo.svg" alt="" aria-hidden="true" class="mx-auto mb-7 h-[72px] w-[72px]" />
         <h3 class="text-[26px] font-semibold tracking-tight text-content">Sign in to Stimma</h3>
         <p class="mx-auto mt-2.5 mb-14 max-w-[420px] text-sm leading-6 text-content-secondary">
           Stimma doesn’t require an account — sign in when you want it connected.
@@ -77,7 +77,7 @@
     <!-- Signed in state -->
     <div v-else class="max-w-[680px]">
       <header class="flex items-center gap-4">
-        <img src="/logo.png" alt="" aria-hidden="true" class="h-12 w-12 shrink-0" />
+        <img src="/logo.svg" alt="" aria-hidden="true" class="h-12 w-12 shrink-0" />
         <div class="min-w-0">
           <h2 class="text-[22px] font-semibold tracking-tight text-content">Stimma Account</h2>
           <p class="mt-0.5 truncate text-[13.5px] text-content-tertiary">{{ user.email }}</p>
