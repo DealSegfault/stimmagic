@@ -37,16 +37,44 @@ from tests.helpers.media import create_test_media, create_media_item
 from tests.helpers.ws import MockWebSocketManager
 
 
-async def wait_for_delete_operation(client: AsyncClient, operation_id: int, timeout: float = 5.0):
-    deadline = asyncio.get_running_loop().time() + timeout
+# These tests assert what deletion *does*, not how fast it does it, so the
+# deadline only exists to stop a wedged worker from hanging the suite. It used
+# to be 5s, which is five ticks of the worker's own 1s idle poll — thin enough
+# that a loaded CI runner losing the SQLite writer race a couple of times reads
+# as a correctness failure. Waiting longer costs nothing when the test passes:
+# the loop returns the moment the status flips.
+DELETE_OPERATION_TIMEOUT = 30.0
+
+
+async def wait_for_delete_operation(
+    client: AsyncClient, operation_id: int, timeout: float = DELETE_OPERATION_TIMEOUT
+):
+    started = asyncio.get_running_loop().time()
+    deadline = started + timeout
+    last: dict | None = None
     while asyncio.get_running_loop().time() < deadline:
         response = await client.get(f"/api/delete-operations/{operation_id}")
         assert response.status_code == 200
-        data = response.json()
-        if data["status"] in {"completed", "failed"}:
-            return data
+        last = response.json()
+        if last["status"] in {"completed", "failed"}:
+            return last
         await asyncio.sleep(0.05)
-    raise AssertionError(f"Delete operation {operation_id} did not finish in time")
+
+    # Say where it got to. "Did not finish in time" is indistinguishable between
+    # a slow runner and a worker that stalled on item 3 of 40, and the next
+    # person to see this failure should not have to guess which.
+    elapsed = asyncio.get_running_loop().time() - started
+    if last is None:
+        detail = "never returned a payload"
+    else:
+        detail = (
+            f"last status={last.get('status')!r} "
+            f"processed={last.get('processed_items')}/{last.get('total_items')} "
+            f"rate={last.get('rate_items_per_sec')} error={last.get('error')!r}"
+        )
+    raise AssertionError(
+        f"Delete operation {operation_id} did not finish within {elapsed:.1f}s — {detail}"
+    )
 
 
 async def wait_for_delete_operations(client: AsyncClient, payload: dict):
