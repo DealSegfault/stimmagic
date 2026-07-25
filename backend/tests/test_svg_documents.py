@@ -628,6 +628,98 @@ class TestRasterizeSvgSandbox:
             await sdk.rasterize_svg("nope.svg")
 
 
+class TestViewBoxOverflowCheck:
+    """`create_svg` measures whether geometry spills outside the viewBox.
+
+    Small overflow is invisible at fit-to-window and clipping alone is ambiguous
+    — artwork flush with the edge looks the same as artwork running past it — so
+    the check renders on a widened canvas where the spill has somewhere to land.
+    """
+
+    @staticmethod
+    def _renderer():
+        """Rasterize <circle> honouring the viewBox, so geometry maps honestly."""
+        import xml.etree.ElementTree as ET
+
+        from PIL import ImageDraw
+
+        async def _render(text, w, h, **kwargs):
+            root = ET.fromstring(text)
+            vb = [float(v) for v in root.get("viewBox").split()]
+            img = Image.new("RGBA", (w * 2, h * 2), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            sx, sy = (w * 2) / vb[2], (h * 2) / vb[3]
+            for el in root.iter():
+                if el.tag.endswith("circle"):
+                    cx, cy, r = (float(el.get(k)) for k in ("cx", "cy", "r"))
+                    draw.ellipse(
+                        [(cx - r - vb[0]) * sx, (cy - r - vb[1]) * sy,
+                         (cx + r - vb[0]) * sx, (cy + r - vb[1]) * sy],
+                        fill=(255, 0, 0, 255),
+                    )
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            return buf.getvalue()
+        return _render
+
+    async def _check(self, body):
+        from unittest.mock import patch
+
+        from agent.v2.tools.create_svg import _render_check
+
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" '
+            f'width="1000" height="1000">{body}</svg>'
+        )
+        _clean, doc = svg_doc.prepare_text(text)
+        with patch("utils.ui_render.render_svg_document", self._renderer()):
+            return await _render_check(doc.root, doc.width, doc.height)
+
+    async def test_artwork_well_inside_is_quiet(self):
+        _blank, warnings = await self._check('<circle cx="500" cy="500" r="400"/>')
+        assert warnings == []
+
+    async def test_full_bleed_is_not_flagged(self):
+        """Artwork exactly on the boundary is a design choice, not a mistake."""
+        _blank, warnings = await self._check('<circle cx="500" cy="500" r="500"/>')
+        assert warnings == []
+
+    async def test_overflow_is_reported(self):
+        _blank, warnings = await self._check('<circle cx="500" cy="500" r="510"/>')
+        assert warnings and "extends past the viewBox" in warnings[0]
+
+    @pytest.mark.parametrize("body,side", [
+        ('<circle cx="520" cy="500" r="500"/>', "right"),
+        ('<circle cx="480" cy="500" r="500"/>', "left"),
+        ('<circle cx="500" cy="520" r="500"/>', "bottom"),
+        ('<circle cx="500" cy="480" r="500"/>', "top"),
+    ])
+    async def test_names_the_side_that_spills(self, body, side):
+        """Naming the side is the difference between a hint and a fix."""
+        _blank, warnings = await self._check(body)
+        assert warnings
+        named = warnings[0].split(" on the ")[1].split(" —")[0]
+        assert side in named
+
+    async def test_blank_document_still_reported(self):
+        _blank, _warnings = await self._check('<circle cx="500" cy="500" r="0"/>')
+        assert _blank == "nothing was drawn"
+
+    async def test_renderer_unavailable_does_not_block_the_save(self):
+        from unittest.mock import patch
+
+        from agent.v2.tools.create_svg import _render_check
+        from utils.ui_render import LayoutRenderUnavailable
+
+        async def _unavailable(*a, **k):
+            raise LayoutRenderUnavailable("no client")
+
+        _clean, doc = svg_doc.prepare_text(SIMPLE)
+        with patch("utils.ui_render.render_svg_document", _unavailable):
+            blank, warnings = await _render_check(doc.root, doc.width, doc.height)
+        assert blank is None and warnings == []
+
+
 class TestSandboxImportDenial:
     def test_denial_names_what_is_importable(self):
         """A dead end costs a round trip; a correction does not."""
