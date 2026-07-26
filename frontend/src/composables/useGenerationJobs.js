@@ -331,6 +331,7 @@ export function useGenerationJobs(options = {}) {
 
       // Extract inline media data from jobs response (avoids N+1 queries)
       for (const job of jobs.value) {
+        warnIfForeignJob(job, 'loadJobs')
         if (job.result_media_id && job.result_file_hash) {
           mediaHashes.value[job.result_media_id] = job.result_file_hash
 
@@ -373,8 +374,24 @@ export function useGenerationJobs(options = {}) {
     }
   }
 
+  // This feed is instance-scoped: loadJobs filters server-side and every job
+  // broadcast carries its owning instance. A job that still lands here owned by
+  // a different instance bypassed both filters — name it and its entry path
+  // instead of silently rendering another tool's result in this strip.
+  function warnIfForeignJob(job, via) {
+    const owner = job?.generator_instance_id
+    if (!generatorInstanceId || !owner || owner === generatorInstanceId) return
+    console.warn(`[useGenerationJobs] foreign job in feed via ${via}`, {
+      job_id: job.id,
+      tool_id: job.tool_id,
+      owner,
+      feed: generatorInstanceId,
+      result_media_id: job.result_media_id
+    })
+  }
+
   // Check if an event matches our filters
-  function matchesFilters(data) {
+  function matchesFilters(data, via = 'ws') {
     // Check profile filter - only show jobs for current profile
     const currentProfile = getCurrentProfileId()
     if (data.job?.profile_id && data.job.profile_id !== currentProfile) {
@@ -386,12 +403,11 @@ export function useGenerationJobs(options = {}) {
     if (generatorInstanceId && data.generator_instance_id && data.generator_instance_id !== generatorInstanceId) {
       return false
     }
-    if (generatorInstanceId && !data.generator_instance_id) {
-    }
     // Check task type filter
     if (taskType && data.job?.task_type !== taskType) {
       return false
     }
+    warnIfForeignJob(data.job, via)
     return true
   }
 
@@ -418,7 +434,7 @@ export function useGenerationJobs(options = {}) {
 
   // WebSocket event handlers
   function handleJobQueued(data) {
-    if (!matchesFilters(data)) return
+    if (!matchesFilters(data, 'job_queued')) return
 
     const existingIndex = jobs.value.findIndex(j => j.id === data.job.id)
     if (existingIndex === -1) {
@@ -430,7 +446,7 @@ export function useGenerationJobs(options = {}) {
   }
 
   async function handleJobStarted(data) {
-    if (!matchesFilters(data)) return
+    if (!matchesFilters(data, 'job_started')) return
 
     const index = jobs.value.findIndex(j => j.id === data.job.id)
     if (index !== -1) {
@@ -442,7 +458,7 @@ export function useGenerationJobs(options = {}) {
   }
 
   async function handleJobCompleted(data) {
-    if (!matchesFilters(data)) return
+    if (!matchesFilters(data, 'job_completed')) return
 
     // Apply the terminal status IMMEDIATELY so the in-progress bar clears in
     // lockstep with the backend slot. Gating this on the media fetch below let
@@ -475,7 +491,7 @@ export function useGenerationJobs(options = {}) {
   }
 
   async function handleJobFailed(data) {
-    if (!matchesFilters(data)) return
+    if (!matchesFilters(data, 'job_failed')) return
 
     // A job that fails fast enough (e.g. an entitlement/balance rejection
     // right at the start of processing) can have its 'failed' broadcast land
@@ -509,7 +525,7 @@ export function useGenerationJobs(options = {}) {
   }
 
   function handleJobCancelled(data) {
-    if (!matchesFilters(data)) return
+    if (!matchesFilters(data, 'job_cancelled')) return
 
     // Keep cancelled jobs in local state so media-batch groups can account for
     // them as terminal failed cells. Standalone cancelled jobs are still omitted
