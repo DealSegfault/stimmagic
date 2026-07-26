@@ -295,12 +295,12 @@ const reasoningOptions = computed(() => reasoningModel.value?.reasoning?.levels 
 const currentReasoningLevel = computed(() => {
   const model = reasoningModel.value
   if (!model) return null
-  // This chat's own effort first. `reasoningLevels` is the older global
-  // per-model map, kept as a fallback for chats saved before efforts moved
-  // onto the chat itself.
+  // This chat's own effort first, then what a new chat would start on (the
+  // "LLM for new Chats" row). `reasoningLevels` is the older global per-model
+  // map, kept as a fallback for chats saved before effort moved onto the chat.
   return props.reasoningEffort
     || reasoningLevels.value[model.slug]
-    || roleDefaults.value?.chat?.auto_effort
+    || roleDefaults.value?.chat?.effort_resolved
     || model.reasoning?.default
     || null
 })

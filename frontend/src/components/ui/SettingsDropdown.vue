@@ -132,11 +132,6 @@
             No matches
           </div>
         </div>
-        <!-- Opt-in footer pinned below the scroll area, for a secondary control
-             that belongs to the selection (e.g. reasoning effort). -->
-        <div v-if="$slots.footer" class="flex-shrink-0 border-t border-edge px-3 py-2">
-          <slot name="footer" />
-        </div>
       </div>
       </Transition>
     </Teleport>

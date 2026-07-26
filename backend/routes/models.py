@@ -1156,11 +1156,24 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             return "auto"
         return slug
 
-    def _auto_effort_for(role: str, slug: Optional[str], catalog: list) -> Optional[str]:
-        from model_tiers import effort_for_role
+    def _reasoning_for(slug: Optional[str], catalog: list) -> dict:
         entry = next((m for m in catalog if m.get("slug") == slug), None)
-        reasoning = (entry or {}).get("reasoning") or {}
-        return effort_for_role(role, reasoning.get("levels"), reasoning.get("default"))
+        return (entry or {}).get("reasoning") or {}
+
+    def _effective_effort(role: str, slug: Optional[str], pinned: Optional[str]) -> Optional[str]:
+        """The concrete level this role will actually run at.
+
+        The settings row shows exactly this — never a word standing in for it —
+        so a pin this model has no rung for reads as the seeded level instead.
+        """
+        from model_tiers import seed_effort
+        reasoning = _reasoning_for(slug, models)
+        levels = reasoning.get("levels") or []
+        if pinned and pinned in levels:
+            return pinned
+        return seed_effort(
+            role, levels, reasoning.get("default"), reasoning.get("quick_task")
+        )
 
     role_defaults = {}
     for role in SETTINGS_ROLES:
@@ -1190,9 +1203,12 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             ),
             "profile_effort": settings.get_role_effort(role),
             "project_effort": project_efforts.get(role),
-            # The level the role's intent lands on for the model in effect —
-            # what the picker's Automatic chip is promising.
-            "auto_effort": _auto_effort_for(role, resolved_for_role, models),
+            # The concrete level in effect, and the ladder to render.
+            "effort_resolved": _effective_effort(
+                role, resolved_for_role,
+                project_efforts.get(role) or settings.get_role_effort(role),
+            ),
+            "effort_levels": _reasoning_for(resolved_for_role, models).get("levels") or [],
         }
 
     # The chat role keeps its own top-level keys — the model picker and several

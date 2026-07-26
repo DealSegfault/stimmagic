@@ -199,8 +199,14 @@ watch(() => props.project, (project) => {
 
 // '' clears the override; the backend reads empty string as "inherit".
 async function saveRoleModel(role, slug) {
+  // Clearing the effort alongside matches the profile panel: a level pinned for
+  // one model rarely carries to another.
   localModels.value = { ...localModels.value, [role]: slug }
-  const updated = await updateProject(props.project.id, { [ROLE_COLUMNS[role]]: slug })
+  localEfforts.value = { ...localEfforts.value, [role]: '' }
+  const updated = await updateProject(props.project.id, {
+    [ROLE_COLUMNS[role]]: slug,
+    [EFFORT_COLUMNS[role]]: '',
+  })
   Object.assign(props.project, updated)
 }
 

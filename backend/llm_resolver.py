@@ -21,7 +21,7 @@ from typing import Optional
 
 from config import LEGACY_LLM_MODEL_SLUGS, get_settings, LLMEndpointConfig
 from core.logging import get_logger
-from model_tiers import ModelCandidate, ROLE_TIERS, effort_for_role, select_auto_model
+from model_tiers import ModelCandidate, ROLE_TIERS, seed_effort, select_auto_model
 
 log = get_logger(__name__)
 
@@ -674,16 +674,20 @@ def _resolve_level(
 ) -> Optional[str]:
     """Pick the reasoning level one call runs at.
 
-    Order: an explicitly pinned effort, then — for the four settings roles — the
-    effort that role is worth (model_tiers.ROLE_EFFORTS), resolved against this
-    model's own ladder. Wire roles keep the older behavior so the chat path and
-    the endpoint-test screen are unaffected: ``agent-fast`` runs at the model's
-    quick-task level, ``agent`` at the globally saved per-model level.
+    A pinned effort wins, but only if this model has that rung — a level saved
+    against one model must never be forced onto another that doesn't offer it.
+    Otherwise the role seeds from the model's own declared cheap/normal levels.
+
+    Wire roles keep the older behavior so the chat path and the endpoint-test
+    screen are unaffected: ``agent-fast`` runs at the model's quick-task level,
+    ``agent`` at the globally saved per-model level.
     """
     if effort and effort in levels:
         return effort
     if role in ROLE_TIERS:
-        return effort_for_role(role, levels, default)
+        # Nothing pinned (or a pin this model has no rung for): start from what
+        # the model itself calls cheap/normal for this kind of work.
+        return seed_effort(role, levels, default, quick_task_level)
     if role == "agent-fast":
         return quick_task_level
     if slug:

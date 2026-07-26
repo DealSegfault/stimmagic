@@ -145,37 +145,47 @@ class TestSelectAutoModels:
         assert chosen["tool_assistant"] == "stimma:claude-opus-5"
 
 
-class TestEffortForRole:
-    """Roles carry an effort INTENT, not a level name — models don't agree on
-    what levels exist, so a stored "low" would mean different things or nothing."""
+class TestSeedEffort:
+    """A role's starting effort comes from the model's OWN declared levels —
+    `reasoning.default` and `reasoning.quick_task` — so nothing invents a
+    vocabulary the catalog didn't already have, and the result is always a
+    concrete rung of that model's ladder."""
 
     ANTHROPIC = ["off", "low", "medium", "high", "xhigh", "max"]
-    COARSE = ["off", "high"]          # MiniMax: no cheap middle
-    GEMINI = ["minimal", "low", "medium", "high"]  # no "off" at all
+    COARSE = ["off", "high"]                        # MiniMax: no cheap middle
+    GEMINI = ["minimal", "low", "medium", "high"]   # no "off" at all
 
-    def test_quick_tasks_take_the_cheapest_rung(self):
-        from model_tiers import effort_for_role
-        assert effort_for_role("quick_task", self.ANTHROPIC, "high") == "off"
-        assert effort_for_role("quick_task", self.GEMINI, "medium") == "minimal"
+    def test_background_roles_take_the_model_cheap_level(self):
+        from model_tiers import seed_effort
+        for role in ("quick_task", "tool_assistant"):
+            assert seed_effort(role, self.ANTHROPIC, "high", "off") == "off"
+            assert seed_effort(role, self.GEMINI, "medium", "minimal") == "minimal"
 
-    def test_flows_and_tool_assistant_want_a_little_thinking(self):
-        from model_tiers import effort_for_role
-        assert effort_for_role("flow", self.ANTHROPIC, "high") == "low"
-        assert effort_for_role("tool_assistant", self.GEMINI, "medium") == "low"
+    def test_chat_takes_the_model_normal_level(self):
+        from model_tiers import seed_effort
+        assert seed_effort("chat", self.ANTHROPIC, "high", "off") == "high"
+        assert seed_effort("chat", self.GEMINI, "medium", "minimal") == "medium"
 
-    def test_low_resolves_down_on_a_coarse_ladder(self):
-        # off/high has no cheap middle. "A little thinking" must not round UP to
-        # high — the point of the intent is to stay cheap, and a flow multiplies
-        # that cost over every item it processes.
-        from model_tiers import effort_for_role
-        assert effort_for_role("flow", self.COARSE, "high") == "off"
+    def test_flows_take_one_rung_above_cheap(self):
+        from model_tiers import seed_effort
+        assert seed_effort("flow", self.ANTHROPIC, "high", "off") == "low"
+        assert seed_effort("flow", self.GEMINI, "medium", "minimal") == "low"
 
-    def test_chat_takes_the_model_default(self):
-        from model_tiers import effort_for_role
-        assert effort_for_role("chat", self.ANTHROPIC, "high") == "high"
-        assert effort_for_role("chat", self.COARSE, "high") == "high"
+    def test_flows_stay_cheap_when_one_rung_up_is_the_maximum(self):
+        # off/high has no middle: "a little thinking" would mean the model's most
+        # expensive setting, on the one role whose cost multiplies over every
+        # item it processes.
+        from model_tiers import seed_effort
+        assert seed_effort("flow", self.COARSE, "high", "off") == "off"
 
-    def test_no_ladder_means_no_choice(self):
-        from model_tiers import effort_for_role
-        assert effort_for_role("chat", [], "high") is None
-        assert effort_for_role("quick_task", None, None) is None
+    def test_a_model_with_no_ladder_has_nothing_to_seed(self):
+        from model_tiers import seed_effort
+        assert seed_effort("chat", [], "high", "off") is None
+        assert seed_effort("quick_task", None, None, None) is None
+
+    def test_metadata_outside_the_ladder_is_ignored(self):
+        """Catalog entries drift; a `default` no longer on the ladder must not
+        become the seeded level."""
+        from model_tiers import seed_effort
+        assert seed_effort("chat", self.COARSE, "medium", "off") == "high"
+        assert seed_effort("quick_task", self.COARSE, "high", "minimal") == "off"

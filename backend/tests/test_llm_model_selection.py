@@ -818,7 +818,7 @@ class TestRoleEffort:
     per-model map did."""
 
     @pytest.mark.asyncio
-    async def test_unpinned_roles_get_their_intent_not_the_model_default(self, monkeypatch):
+    async def test_unpinned_roles_seed_from_the_model_own_levels(self, monkeypatch):
         import llm_resolver
 
         monkeypatch.setattr(llm_resolver, "get_settings", lambda: _stub_settings())
@@ -833,7 +833,7 @@ class TestRoleEffort:
         }
         assert fields == {
             "quick_task": "off",
-            "tool_assistant": "low",
+            "tool_assistant": "off",
             "flow": "low",       # cheap by default: flows multiply the cost
             "chat": "high",
         }
@@ -860,7 +860,7 @@ class TestRoleEffort:
             "flow", effort="xhigh", levels=["off", "high"],
             default="high", quick_task_level="off", slug="x",
         )
-        assert level == "off"  # falls back to the flow intent, not to xhigh
+        assert level == "off"  # falls back to the seeded level, not to xhigh
 
     @pytest.mark.asyncio
     async def test_wire_roles_keep_the_old_behavior(self, monkeypatch):

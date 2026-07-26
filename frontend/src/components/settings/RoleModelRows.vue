@@ -129,26 +129,36 @@ function selectedFor(role: string) {
   return modelOptions.value.some(o => o.value === slug) ? slug : ''
 }
 
-/** The model a role is actually running, so its ladder is the one we offer. */
-function effectiveModel(role: string) {
-  const slug = props.modelValue?.[role]
-  if (slug && slug !== 'auto') return modelFor(slug)
-  return fallbackModel(role)
-}
-
+/** The ladder of the model actually in effect for this role. */
 function effortLevels(role: string): string[] {
-  return effectiveModel(role)?.reasoning?.levels || []
+  return roleDefaults.value[role]?.effort_levels || []
 }
 
-/** What's pinned here, or '' when the role's own intent is deciding. */
+/**
+ * Reasoning is a peer of the model, not something inside its menu: two
+ * decisions, two controls. The menu lists only the levels this model actually
+ * has, so it changes shape with the row above it.
+ */
+function effortOptions(role: string) {
+  const options = effortLevels(role).map(level => ({ value: level, label: effortLabel(level) }))
+  if (!props.inherits) return options
+  const inherited = roleDefaults.value[role]?.effort_resolved
+  return [
+    { value: '', label: inherited ? `Inherit — ${effortLabel(inherited)}` : 'Inherit' },
+    ...options,
+  ]
+}
+
+/**
+ * The level the row shows. Always concrete at profile level: a role with
+ * nothing pinned displays what it seeds to, and a pin this model has no rung
+ * for displays the seeded level rather than a value that can't be honored.
+ */
 function selectedEffort(role: string) {
   const pinned = props.efforts?.[role]
-  return pinned && effortLevels(role).includes(pinned) ? pinned : ''
-}
-
-/** The level the role's intent lands on, shown on the Automatic chip. */
-function autoEffort(role: string) {
-  return roleDefaults.value[role]?.auto_effort || ''
+  if (pinned && effortLevels(role).includes(pinned)) return pinned
+  if (props.inherits) return ''
+  return roleDefaults.value[role]?.effort_resolved || ''
 }
 
 function effortLabel(level: string) {
@@ -176,31 +186,19 @@ onMounted(() => fetchModels(props.projectId ?? null, true))
         :model-value="selectedFor(role.key)"
         :options="optionsFor(role.key)"
         @update:model-value="slug => emit('update:role', role.key, slug)"
-      >
-        <template v-if="effortLevels(role.key).length > 1" #footer>
-          <div class="mb-1.5 text-[11px] font-medium text-content-muted">Reasoning</div>
-          <div class="flex flex-wrap gap-1">
-            <button
-              type="button"
-              class="rounded-md border px-2 py-1 text-[11px]"
-              :class="selectedEffort(role.key) === ''
-                ? 'border-blue-500/50 bg-blue-500/15 text-blue-400'
-                : 'border-edge-subtle bg-overlay-light text-content-secondary hover:text-content'"
-              @click.stop="emit('update:effort', role.key, '')"
-            >Automatic{{ autoEffort(role.key) ? ` (${effortLabel(autoEffort(role.key))})` : '' }}</button>
-            <button
-              v-for="level in effortLevels(role.key)"
-              :key="level"
-              type="button"
-              class="rounded-md border px-2 py-1 text-[11px]"
-              :class="selectedEffort(role.key) === level
-                ? 'border-blue-500/50 bg-blue-500/15 text-blue-400'
-                : 'border-edge-subtle bg-overlay-light text-content-secondary hover:text-content'"
-              @click.stop="emit('update:effort', role.key, level)"
-            >{{ effortLabel(level) }}</button>
-          </div>
-        </template>
-      </SettingsDropdown>
+      />
+      <!-- Reasoning: only for models that expose a ladder. A local endpoint
+           whose profiler found no thinking toggle has nothing to offer here. -->
+      <SettingsDropdown
+        v-if="effortLevels(role.key).length"
+        control
+        compact
+        class="w-32"
+        :menu-width="180"
+        :model-value="selectedEffort(role.key)"
+        :options="effortOptions(role.key)"
+        @update:model-value="level => emit('update:effort', role.key, level)"
+      />
     </SettingRow>
   </div>
 </template>

@@ -234,8 +234,11 @@ async function saveSelection(role: string, patch: Partial<RoleSelection>) {
   }
 }
 
+// Changing the model clears the pinned effort: a level chosen for one model
+// rarely means the same on another, and several models don't have it at all.
+// The row then shows what the new model seeds to, so the change is visible.
 const saveRoleModel = (role: string, slug: string) =>
-  saveSelection(role, { model: slug || 'auto' })
+  saveSelection(role, { model: slug || 'auto', effort: null })
 const saveRoleEffort = (role: string, effort: string) =>
   saveSelection(role, { effort: effort || null })
 
