@@ -5,6 +5,7 @@
 // INVENTORY.md §2) builds on this rather than re-pasting Teleport/backdrop/
 // Transition markup.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { isTauri } from '../../apiConfig'
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -38,6 +39,12 @@ const sizeClasses: Record<string, string> = {
 
 const cardSizeClass = computed(() => props.size === 'custom' ? props.customClass : sizeClasses[props.size])
 const zClass = computed(() => props.nested ? 'z-confirm' : 'z-modal')
+
+// The backdrop covers the whole window, including the title-bar strip the
+// TopBar/sidebar mark as a Tauri drag region, so window dragging dies while a
+// modal is open. Re-declare the strip on the backdrop itself; the card sits
+// above it so a tall modal's own top edge stays clickable.
+const inTauri = isTauri()
 
 function close() {
   emit('close')
@@ -81,10 +88,11 @@ onBeforeUnmount(() => {
         :class="zClass"
         @click.self="onBackdropClick"
       >
+        <div v-if="inTauri" class="absolute top-0 left-0 right-0 h-14" data-tauri-drag-region />
         <div
           ref="cardRef"
           tabindex="-1"
-          class="bg-surface border border-edge rounded-lg shadow-2xl outline-none mx-4"
+          class="relative bg-surface border border-edge rounded-lg shadow-2xl outline-none mx-4"
           :class="cardSizeClass"
         >
           <div v-if="$slots.header" class="px-6 py-4 border-b border-edge">
