@@ -51,6 +51,8 @@ export interface MiniAgentContext {
   /** Called before each tool executes — lets the host snapshot lazily so that
    *  non-mutating tools (undo/redo/search) don't trigger an undo entry. */
   onBeforeTool?: (name: string) => void
+  /** Project the editor is scoped to, so its model override applies. */
+  getProjectId?: () => number | null
 }
 
 const MAX_ITERATIONS = 8
@@ -146,6 +148,7 @@ export function usePromptMiniAgent(ctx: MiniAgentContext) {
           state_context: stateForTurn,
           session_id: sessionId.value,
           debug: devModeRef.value,
+          project_id: ctx.getProjectId?.() ?? null,
         })
         const data = resp.data as {
           message: string

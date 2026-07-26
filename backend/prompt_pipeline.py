@@ -174,6 +174,7 @@ async def _improve_with_verbatim_protection(
     is_audio: bool,
     input_image_count: int,
     media_id: Optional[int],
+    project_id: Optional[int],
 ) -> str:
     from routes.prompt_enhancement import ImprovePromptRequest, improve_prompt
 
@@ -188,6 +189,7 @@ async def _improve_with_verbatim_protection(
             is_audio=is_audio,
             input_image_count=input_image_count,
             media_id=media_id,
+            project_id=project_id,
         )
         async with db.async_session_maker() as session:
             candidate = (await improve_prompt(request, session)).improved_prompt
@@ -201,7 +203,9 @@ async def _improve_with_verbatim_protection(
     return prompt
 
 
-async def _translate_with_verbatim_protection(prompt: str, language_code: str) -> str:
+async def _translate_with_verbatim_protection(
+    prompt: str, language_code: str, project_id: Optional[int] = None
+) -> str:
     from routes.prompt_enhancement import (
         PROMPT_LANGUAGE_ENGLISH_BY_CODE,
         TranslatePromptRequest,
@@ -215,7 +219,11 @@ async def _translate_with_verbatim_protection(prompt: str, language_code: str) -
     prompt_with_placeholders, segments = extract_verbatim(prompt)
 
     for attempt in range(_MAX_LLM_RETRIES):
-        request = TranslatePromptRequest(prompt=prompt_with_placeholders, target_language=target)
+        request = TranslatePromptRequest(
+            prompt=prompt_with_placeholders,
+            target_language=target,
+            project_id=project_id,
+        )
         candidate = (await translate_prompt(request)).translated_prompt
         if not segments:
             return candidate
@@ -227,10 +235,17 @@ async def _translate_with_verbatim_protection(prompt: str, language_code: str) -
     return prompt
 
 
-async def _to_ideogram_json(prompt: str, width: Optional[int], height: Optional[int]) -> str:
+async def _to_ideogram_json(
+    prompt: str,
+    width: Optional[int],
+    height: Optional[int],
+    project_id: Optional[int] = None,
+) -> str:
     from routes.prompt_enhancement import IdeogramJsonRequest, prompt_to_ideogram_json
 
-    request = IdeogramJsonRequest(prompt=prompt, width=width or None, height=height or None)
+    request = IdeogramJsonRequest(
+        prompt=prompt, width=width or None, height=height or None, project_id=project_id
+    )
     return (await prompt_to_ideogram_json(request)).json_prompt
 
 
@@ -350,6 +365,7 @@ async def run_prompt_pipeline(
     width: Optional[int] = None,
     height: Optional[int] = None,
     profile_id: Optional[str] = None,
+    project_id: Optional[int] = None,
     prompt_preload: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Run the full generate-time pipeline on a prompt, server-side.
@@ -409,11 +425,14 @@ async def run_prompt_pipeline(
             is_audio=is_audio,
             input_image_count=input_image_count,
             media_id=media_id,
+            project_id=project_id,
         )
 
     # 3) Translate.
     if translate.get("enabled") and translate.get("language"):
-        processed = await _translate_with_verbatim_protection(processed, translate["language"])
+        processed = await _translate_with_verbatim_protection(
+            processed, translate["language"], project_id
+        )
 
     # 4) Final cleanup: comments, verbatim, and any wildcard syntax introduced
     # by the LLM.
@@ -421,6 +440,6 @@ async def run_prompt_pipeline(
 
     # 5) Ideogram JSON — on the fully resolved prompt (last step).
     if ideogram_json_mode:
-        processed = await _to_ideogram_json(processed, width, height)
+        processed = await _to_ideogram_json(processed, width, height, project_id)
 
     return processed

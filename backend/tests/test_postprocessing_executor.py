@@ -361,7 +361,7 @@ class TestChainPromptPipeline:
             return {"media_id": 4242}
 
         async def fake_pipeline(db, prompt, prompt_options, tool_id, task_type, input_media_id,
-                                parameters=None, profile_id=None):
+                                parameters=None, profile_id=None, project_id=None):
             seen["prompt_options"] = prompt_options
             seen["profile_id"] = profile_id
             return prompt + " [ENHANCED]"

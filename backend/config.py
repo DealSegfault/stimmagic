@@ -434,11 +434,26 @@ class AgentToolConfig(BaseModel):
     v2_permissions: Dict[str, str] = {}  # V2 tool permissions: tool_name -> "allow" | "deny"
 
 
+class ProfileAgentModels(BaseModel):
+    """Per-profile model selection for each LLM role.
+
+    ``auto`` resolves against whatever models the install actually has (see
+    model_tiers.py). Profiles carry different privacy and cost postures — one
+    local-only, one on frontier models — so these never fall back to a global
+    value; ``auto`` is the only cross-install default that can be honest.
+    """
+    quick_task: str = "auto"       # captioning, chat titles, share summaries
+    tool_assistant: str = "auto"   # the ToolView assistant and its prompt tools
+    chat: str = "auto"             # chat agent and its sub-agents
+    flow: str = "auto"             # default written into new flow programs
+
+
 class ProfileAgentConfig(BaseModel):
-    """Per-profile agent settings (instructions, tool config)."""
+    """Per-profile agent settings (instructions, tool config, models)."""
     additional_instructions: str = ""  # Custom instructions added to system prompt
     memory: str = ""  # Persistent cross-session memory (written by user or agent)
     tool_config: AgentToolConfig = AgentToolConfig()  # Per-profile tool allow/deny
+    models: ProfileAgentModels = ProfileAgentModels()  # Per-role model selection
 
 
 class AgentConfig(BaseModel):
@@ -768,6 +783,61 @@ def _migrate_legacy_llm_model_slugs(config_file: Path) -> bool:
     return True
 
 
+def _migrate_global_models_to_profiles(config_file: Path) -> bool:
+    """Move the two global model choices into each profile's agent.models.
+
+    ``quick_task_model`` and ``default_model`` used to be single global values
+    shared by every profile, which made a profile's privacy posture impossible to
+    express — a local-only profile still resolved background work through
+    whatever the last cloud selection was. Each profile now owns four role
+    settings; the old globals seed them and are then removed.
+    """
+    from ruamel.yaml import YAML
+    import shutil
+    import tempfile
+
+    parser = YAML()
+    parser.preserve_quotes = True
+    parser.width = 120
+    with config_file.open("r") as handle:
+        data = parser.load(handle) or {}
+
+    if "quick_task_model" not in data and "default_model" not in data:
+        return False
+
+    quick = LEGACY_LLM_MODEL_SLUGS.get(data.get("quick_task_model"), data.get("quick_task_model"))
+    chat = LEGACY_LLM_MODEL_SLUGS.get(data.get("default_model"), data.get("default_model"))
+
+    for profile in data.get("profiles", []) or []:
+        agent = profile.setdefault("agent", {})
+        models = agent.setdefault("models", {})
+        # Only seed roles the profile has not already set — re-running this
+        # migration must never overwrite a deliberate choice.
+        for key, value in (
+            ("quick_task", quick),
+            ("tool_assistant", quick),
+            ("chat", chat),
+            ("flow", chat),
+        ):
+            if key not in models and value:
+                models[key] = value
+
+    data.pop("quick_task_model", None)
+    data.pop("default_model", None)
+
+    fd, temp_path = tempfile.mkstemp(suffix=".yaml", dir=config_file.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            parser.dump(data, handle)
+        shutil.copy2(config_file, config_file.with_suffix(".yaml.bak"))
+        os.replace(temp_path, config_file)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        raise
+    return True
+
+
 class Settings(BaseSettings):
     # Profile-based configuration (new structure)
     profiles: List[ProfileConfig] = []
@@ -808,10 +878,6 @@ class Settings(BaseSettings):
     # LLM configurations: agent (main), agent-fast (prompt enhancement, captioning, etc.)
     # Each role has a source selector (stimma_cloud or custom) and custom config
     llms: Dict[str, LLMRoleConfig] = {}
-    # Last model explicitly selected by the user; new chats inherit this while
-    # existing chats retain their own model_slug.
-    default_model: str = 'stimma:minimax-m3'
-    quick_task_model: str = 'stimma:minimax-m3'
     llm_reasoning_levels: Dict[str, str] = Field(default_factory=dict)
     llm_providers: List[LLMProviderConfig] = Field(default_factory=list)
     llm_model_prompts: Dict[str, LLMModelPromptConfig] = Field(default_factory=dict)
@@ -924,6 +990,19 @@ class Settings(BaseSettings):
             tool_config=self.agent.tool_config,
         )
 
+    def get_role_model_slug(self, role: str, profile_id: Optional[str] = None) -> str:
+        """The model slug a profile has selected for an LLM role.
+
+        Returns ``auto`` for an unknown role rather than raising — a new role
+        added to a call site before it exists in config should degrade to
+        automatic selection, not break the feature.
+        """
+        if profile_id is None:
+            from core.profile_context import get_current_profile
+            profile_id = get_current_profile()
+        models = self.get_agent_for_profile(profile_id).models
+        return getattr(models, role, None) or "auto"
+
     @classmethod
     def load_config(cls, config_path: Optional[str] = None) -> "Settings":
         """Load configuration from YAML file.
@@ -939,6 +1018,7 @@ class Settings(BaseSettings):
 
         _migrate_source_folder_config(config_file)
         _migrate_legacy_llm_model_slugs(config_file)
+        _migrate_global_models_to_profiles(config_file)
         with open(config_file, 'r') as f:
             config_data = yaml.safe_load(f)
 
@@ -1214,10 +1294,16 @@ class Settings(BaseSettings):
                             allowed_tools=agent_data.get('allowed_tools', []),
                             denied_tools=agent_data.get('denied_tools', []),
                         )
+                    models_data = agent_data.get('models') or {}
                     profile_agent = ProfileAgentConfig(
                         additional_instructions=agent_data.get('additional_instructions', ''),
                         memory=agent_data.get('memory', ''),
                         tool_config=tool_config,
+                        models=ProfileAgentModels(**{
+                            key: value
+                            for key, value in models_data.items()
+                            if key in ProfileAgentModels.model_fields and value
+                        }),
                     )
 
                 # Parse profile wildcards

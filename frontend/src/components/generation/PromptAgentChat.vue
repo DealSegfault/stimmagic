@@ -561,6 +561,8 @@ interface Props {
   instructions?: string
   /** Skills auto-activated for this tool (by task_type match) — shown as an indicator. */
   activeSkills?: Array<{ qualified_name: string; display_name: string; description?: string }>
+  /** Project this editor is scoped to, so its model override applies. */
+  projectId?: number | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -571,6 +573,7 @@ const props = withDefaults(defineProps<Props>(), {
   placeholder: '',
   instructions: '',
   activeSkills: () => [],
+  projectId: null,
 })
 
 const emit = defineEmits<{
@@ -1146,6 +1149,7 @@ IMPORTANT: The user's edits are INTENTIONAL. If they removed something, do NOT a
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const response = await axios.post('/api/prompt/enhance', {
+        project_id: props.projectId,
         prompt: promptWithPlaceholders,
         feedback: feedback,
         conversation_history: conversationHistory.value,
@@ -1255,6 +1259,7 @@ async function fetchIdeas(force = false) {
 
     // Phase 1: Get categories
     const catResponse = await axios.post('/api/prompt/suggest-categories', {
+      project_id: props.projectId,
       prompt: promptForIdeas,
       ...suggestionExtras(),
       debug: showDebug.value || devModeRef.value
@@ -1390,6 +1395,7 @@ async function fetchOptionsForCategories(promptForIdeas: string, cats: CategoryI
 
 async function fetchOptionsBatch(promptForIdeas: string, cats: CategoryItem[], excludeMap?: Record<string, string[]>) {
   const response = await axios.post('/api/prompt/suggest-options/batch', {
+    project_id: props.projectId,
     prompt: promptForIdeas,
     categories: cats.map(cat => ({
       label: cat.label,
@@ -1501,6 +1507,7 @@ async function handleSubmenuRefresh() {
 
   try {
     const response = await axios.post('/api/prompt/suggest-options', {
+      project_id: props.projectId,
       prompt: promptForIdeas,
       category: {
         label: cat.label,
@@ -1697,6 +1704,7 @@ async function refreshCategoryCmd(key: string): Promise<string> {
   loadingOptionsByCategory.value[key] = true
   try {
     const response = await axios.post('/api/prompt/suggest-options', {
+      project_id: props.projectId,
       prompt: promptForIdeas,
       category: { label: cat.label, category: cat.category, allow_wildcard: cat.allow_wildcard },
       exclude,

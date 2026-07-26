@@ -24,8 +24,8 @@ def prompt_variant_probe(monkeypatch):
 
     seen = {"prompt_keys": [], "messages": None}
 
-    async def fake_llm_config(role):
-        assert role == "agent-fast"
+    async def fake_llm_config(role, project_id=None):
+        assert role == "tool_assistant"
         return {"provider": "test"}
 
     def fake_get_prompt(namespace, key):

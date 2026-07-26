@@ -14,6 +14,20 @@
         />
       </div>
 
+      <!-- Models -->
+      <div class="mb-6">
+        <h4 class="text-xs font-semibold text-content-secondary mb-1">Models</h4>
+        <p class="text-xs text-content-tertiary mb-3">
+          Override the profile's model choices for work done in this project.
+        </p>
+        <RoleModelRows
+          :model-value="localModels"
+          :project-id="project.id"
+          inherits
+          @update:role="saveRoleModel"
+        />
+      </div>
+
       <!-- Agent Instructions -->
       <div class="mb-6">
         <h4 class="text-xs font-semibold text-content-secondary mb-3">Agent Instructions</h4>
@@ -91,6 +105,7 @@
 import { computed, ref, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import ConfirmModal from '../components/ConfirmModal.vue'
+import RoleModelRows from '../components/settings/RoleModelRows.vue'
 import ToolConfigRow from '../components/chat/ToolConfigRow.vue'
 import Button from '../components/ui/Button.vue'
 import { useMediaApi } from '../composables/useMediaApi'
@@ -119,6 +134,14 @@ const localToolConfig = ref({
   denied_tools: [],
   v2_permissions: {},
 })
+
+const ROLE_COLUMNS = {
+  quick_task: 'quick_task_model_slug',
+  tool_assistant: 'tool_assistant_model_slug',
+  chat: 'chat_model_slug',
+  flow: 'flow_model_slug',
+}
+const localModels = ref({})
 
 // Tools state
 const allTools = ref([])
@@ -160,7 +183,17 @@ watch(() => props.project, (project) => {
   localInstructions.value = project.additional_instructions || ''
   localMemory.value = project.memory || ''
   localToolConfig.value = normalizeToolConfig(project.agent_tool_config || {})
+  localModels.value = Object.fromEntries(
+    Object.entries(ROLE_COLUMNS).map(([role, column]) => [role, project[column] || ''])
+  )
 }, { immediate: true, deep: true })
+
+// '' clears the override; the backend reads empty string as "inherit".
+async function saveRoleModel(role, slug) {
+  localModels.value = { ...localModels.value, [role]: slug }
+  const updated = await updateProject(props.project.id, { [ROLE_COLUMNS[role]]: slug })
+  Object.assign(props.project, updated)
+}
 
 // Tool config helpers
 async function handleToolConfigUpdate(config) {

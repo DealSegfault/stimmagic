@@ -968,7 +968,7 @@ async def _vlm_generate_title(media_item) -> SuggestTitleResponse:
         from llm import llm_complete_vision
         from llm_resolver import get_effective_llm_config
 
-        config = await get_effective_llm_config("agent-fast")
+        config = await get_effective_llm_config("quick_task")
         if not config:
             return SuggestTitleResponse()
 
@@ -1028,7 +1028,7 @@ async def _llm_generate_title(context_parts: list[str]) -> SuggestTitleResponse:
         from llm import llm_complete_text
         from llm_resolver import get_effective_llm_config
 
-        config = await get_effective_llm_config("agent-fast")
+        config = await get_effective_llm_config("quick_task")
         if not config:
             return SuggestTitleResponse()
 

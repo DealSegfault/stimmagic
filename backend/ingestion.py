@@ -389,7 +389,7 @@ class MediaIngestion:
 
         log.info("INGESTION INIT: Resolving LLM config for captioning...")
         try:
-            llm_config = await get_effective_llm_config('agent-fast')
+            llm_config = await get_effective_llm_config('quick_task')
             log.info(f"INGESTION INIT: Captioning config resolved: model={llm_config.get_model()}, base={llm_config.get_api_base()}")
 
             self.caption_service = VLMService(

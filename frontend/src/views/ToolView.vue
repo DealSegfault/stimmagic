@@ -400,6 +400,7 @@
             :has-prompt="hasPrompt"
             hide-empty-ideas
             :active-skills="activeToolSkills"
+            :project-id="projectScopeId"
             v-model:instructions="globalPrefs.agentInstructions"
           />
         </Teleport>
@@ -5879,6 +5880,7 @@ let agentRunSnapshotTaken = false
 const promptMiniAgent = usePromptMiniAgent({
   getStateContext,
   runTool,
+  getProjectId: () => projectScopeId.value,
   onRunStart: () => { agentRunSnapshotTaken = false },
   onBeforeTool: (name: string) => {
     if (!agentRunSnapshotTaken && !AGENT_NON_MUTATING_TOOLS.has(name)) {

@@ -12,13 +12,15 @@ from tests.helpers.ws import MockWebSocketManager
 def _make_llm_fixtures(monkeypatch, return_name="Golden Retriever Variations"):
     """Helper to set up LLM mocks. Returns (effective_config, mock_ws)."""
     effective_config = SimpleNamespace(
-        get_model=lambda: "agent-fast",
+        get_model=lambda: "quick-task-model",
         get_api_base=lambda: "http://llm.test/v1",
         get_api_key=lambda: "test-key",
     )
 
-    async def fake_get_effective_llm_config(role):
-        assert role == "agent-fast"
+    async def fake_get_effective_llm_config(role, project_id=None):
+        # Chat titles are background work — the Quick Tasks setting, never the
+        # model the chat itself is talking to.
+        assert role == "quick_task"
         return effective_config
 
     async def fake_llm_complete_text(config, messages, *, max_tokens=500, temperature=0.3):
@@ -34,7 +36,7 @@ def _make_llm_fixtures(monkeypatch, return_name="Golden Retriever Variations"):
 
 
 @pytest.mark.asyncio
-async def test_auto_name_chat_uses_effective_agent_fast_config(db_session, monkeypatch):
+async def test_auto_name_chat_uses_the_quick_task_model(db_session, monkeypatch):
     async with db_session() as session:
         chat = Chat(name="")
         session.add(chat)

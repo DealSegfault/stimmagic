@@ -332,8 +332,6 @@ class SettingsResponse(BaseModel):
     telemetry_enabled: Optional[bool] = None
     distribution: str = "dev"  # Build distribution: 'dev' | 'official'
     privacy_lockdown_active: bool = False
-    default_model: str = 'stimma:minimax-m3'
-    quick_task_model: str = 'stimma:minimax-m3'
     llm_reasoning_levels: Dict[str, str] = Field(default_factory=dict)
     llm_model_prompts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     llm_content_policy: str = 'stimma'
@@ -750,8 +748,6 @@ async def get_settings_all():
         telemetry_enabled=settings.telemetry.enabled,
         distribution=get_distribution(),
         privacy_lockdown_active=is_privacy_lockdown(),
-        default_model=settings.default_model,
-        quick_task_model=settings.quick_task_model,
         llm_reasoning_levels=settings.llm_reasoning_levels,
         llm_model_prompts={
             slug: prompt.model_dump()
@@ -944,31 +940,6 @@ async def update_telemetry(request: UpdateTelemetryRequest):
     from telemetry import get_telemetry_client
     get_telemetry_client().on_consent_changed(request.enabled)
     return {"status": "success", "telemetry_enabled": request.enabled}
-
-
-class UpdateDefaultModelRequest(BaseModel):
-    """Request to update the global default model."""
-    default_model: str
-
-
-@router.patch("/default-model")
-async def update_default_model(request: UpdateDefaultModelRequest):
-    """Update the global default model slug."""
-    model_slug = normalize_model_slug(request.default_model)
-    patch_global_section("default_model", model_slug)
-    log.info("default model updated", default_model=model_slug)
-    return {"status": "success", "default_model": model_slug}
-
-
-class UpdateQuickTaskModelRequest(BaseModel):
-    model: str
-
-
-@router.patch("/quick-task-model")
-async def update_quick_task_model(request: UpdateQuickTaskModelRequest):
-    model_slug = normalize_model_slug(request.model)
-    patch_global_section("quick_task_model", model_slug)
-    return {"status": "success", "quick_task_model": model_slug}
 
 
 class UpdateModelReasoningRequest(BaseModel):
@@ -2433,11 +2404,20 @@ class AgentToolConfigResponse(BaseModel):
     v2_permissions: Dict[str, str] = {}  # V2 tool permissions: tool_name -> "allow" | "deny"
 
 
+class AgentModelsResponse(BaseModel):
+    """Per-profile model selection for each LLM role. "auto" = pick for me."""
+    quick_task: str = "auto"
+    tool_assistant: str = "auto"
+    chat: str = "auto"
+    flow: str = "auto"
+
+
 class AgentSettingsResponse(BaseModel):
     """Per-profile agent settings response."""
     additional_instructions: str
     memory: str
     tool_config: AgentToolConfigResponse
+    models: AgentModelsResponse = AgentModelsResponse()
 
 
 class AgentSettingsUpdate(BaseModel):
@@ -2445,6 +2425,7 @@ class AgentSettingsUpdate(BaseModel):
     additional_instructions: Optional[str] = None
     memory: Optional[str] = None
     tool_config: Optional[AgentToolConfigResponse] = None
+    models: Optional[AgentModelsResponse] = None
 
 
 @router.get("/agent", response_model=AgentSettingsResponse)
@@ -2462,6 +2443,7 @@ async def get_agent_settings():
             denied_tools=agent_config.tool_config.denied_tools,
             v2_permissions=agent_config.tool_config.v2_permissions,
         ),
+        models=AgentModelsResponse(**agent_config.models.model_dump()),
     )
 
 
@@ -2484,6 +2466,7 @@ async def update_agent_settings(request: AgentSettingsUpdate):
             "denied_tools": agent_config.tool_config.denied_tools,
             "v2_permissions": agent_config.tool_config.v2_permissions,
         },
+        "models": agent_config.models.model_dump(),
     }
 
     # Apply updates
@@ -2496,6 +2479,12 @@ async def update_agent_settings(request: AgentSettingsUpdate):
             "allowed_tools": request.tool_config.allowed_tools,
             "denied_tools": request.tool_config.denied_tools,
             "v2_permissions": request.tool_config.v2_permissions,
+        }
+    if request.models is not None:
+        from llm_resolver import normalize_model_slug
+        agent_data["models"] = {
+            role: (normalize_model_slug(slug) or "auto")
+            for role, slug in request.models.model_dump().items()
         }
 
     # Write to profile's agent section in config
@@ -2514,6 +2503,7 @@ async def update_agent_settings(request: AgentSettingsUpdate):
     return AgentSettingsResponse(
         additional_instructions=agent_data["additional_instructions"],
         memory=agent_data.get("memory", ""),
+        models=AgentModelsResponse(**agent_data.get("models", {})),
         tool_config=AgentToolConfigResponse(
             allowed_tools=agent_data["tool_config"]["allowed_tools"],
             denied_tools=agent_data["tool_config"]["denied_tools"],

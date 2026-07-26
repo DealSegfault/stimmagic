@@ -285,6 +285,7 @@ async def _apply_generation_prompt_pipeline(
     prompt_options: Optional[Dict[str, Any]],
     prompt_preload: Optional[Dict[str, Any]],
     generator_instance_id: Optional[str] = None,
+    project_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     prompt = parameters.get("prompt")
     if not isinstance(prompt, str):
@@ -325,6 +326,7 @@ async def _apply_generation_prompt_pipeline(
         width=_optional_int(parameters, "width"),
         height=_optional_int(parameters, "height"),
         profile_id=profile_id,
+        project_id=project_id,
         prompt_preload=effective_preload,
     )
 
@@ -1395,6 +1397,7 @@ async def submit_generation_job(
             prompt_options=request.prompt_options,
             prompt_preload=request.prompt_preload,
             generator_instance_id=request.generator_instance_id,
+            project_id=request.project_id,
         )
         if request.prompt_metadata:
             parameters["prompt_metadata"] = request.prompt_metadata.model_dump()
@@ -1578,6 +1581,7 @@ async def submit_batch_jobs(
                 prompt_options=request.prompt_options,
                 prompt_preload=_prompt_preload_for_batch_index(request, idx),
                 generator_instance_id=request.generator_instance_id,
+                project_id=request.project_id,
             )
 
             # Add prompt metadata if provided
@@ -1887,6 +1891,7 @@ async def submit_media_batch_jobs(
                 prompt_options=request.prompt_options,
                 prompt_preload=_prompt_preload_for_batch_index(request, idx),
                 generator_instance_id=request.generator_instance_id,
+                project_id=request.project_id,
             )
 
             if request.prompt_metadata:

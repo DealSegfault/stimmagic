@@ -223,6 +223,9 @@ class EnhancePromptRequest(BaseModel):
     conversation_history: List[Message] = []
     human_edited: bool = False  # True if user manually edited the prompt since last AI response
     previous_prompt: Optional[str] = None  # The prompt before human edits (for diff context)
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class EnhancePromptResponse(BaseModel):
@@ -252,6 +255,9 @@ class ImprovePromptRequest(BaseModel):
     # on the cinematography path, the frame is shown to the model so the prompt
     # animates the real image. Ignored for other styles.
     media_id: Optional[int] = None
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class ImprovePromptResponse(BaseModel):
@@ -280,6 +286,9 @@ class TranslatePromptRequest(BaseModel):
     # The target language as a human-readable English name, e.g. "Simplified
     # Chinese" — the frontend maps its language code to this before sending.
     target_language: str
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class TranslatePromptResponse(BaseModel):
@@ -292,6 +301,9 @@ class IdeogramJsonRequest(BaseModel):
     # real aspect ratio rather than guessing. Optional — falls back to 1:1.
     width: Optional[int] = None
     height: Optional[int] = None
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class IdeogramJsonResponse(BaseModel):
@@ -313,6 +325,9 @@ class SuggestCategoriesRequest(BaseModel):
     # Let the model reason first (the editor's thinking toggle). Slower; off by default.
     thinking: bool = False
     debug: bool = False
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class SuggestCategoriesResponse(BaseModel):
@@ -328,6 +343,9 @@ class SuggestOptionsRequest(BaseModel):
     instructions: Optional[str] = None
     thinking: bool = False
     debug: bool = False
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class SuggestOptionsResponse(BaseModel):
@@ -346,6 +364,9 @@ class SuggestOptionsBatchRequest(BaseModel):
     instructions: Optional[str] = None
     thinking: bool = False
     debug: bool = False
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class SuggestOptionsBatchResponse(BaseModel):
@@ -474,7 +495,7 @@ async def enhance_prompt(request: EnhancePromptRequest):
     from llm_resolver import LLMUnavailableError, get_effective_llm_config
 
     try:
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
     except LLMUnavailableError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -584,7 +605,7 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
     from llm_resolver import LLMUnavailableError, get_effective_llm_config
 
     try:
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
     except LLMUnavailableError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -720,7 +741,7 @@ async def translate_prompt(request: TranslatePromptRequest):
         return TranslatePromptResponse(translated_prompt=request.prompt)
 
     try:
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
     except LLMUnavailableError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -842,7 +863,7 @@ async def prompt_to_ideogram_json(request: IdeogramJsonRequest):
     from llm_resolver import LLMUnavailableError, get_effective_llm_config
 
     try:
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
     except LLMUnavailableError as e:
         raise HTTPException(
             status_code=e.status_code,
@@ -1010,7 +1031,7 @@ async def suggest_categories(request: SuggestCategoriesRequest):
     Fast call with low temperature.
     """
     from llm_resolver import get_effective_llm_config
-    llm_config = await get_effective_llm_config('agent-fast')
+    llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
 
     prompt_from_file = get_prompt("prompt_enhancement", "suggest_categories_system_prompt")
     if not prompt_from_file:
@@ -1138,6 +1159,7 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
                     instructions=request.instructions,
                     thinking=request.thinking,
                     debug=request.debug,
+                    project_id=request.project_id,
                 )
             )
         )
@@ -1169,7 +1191,7 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
 async def _suggest_options_impl(request: SuggestOptionsRequest) -> SuggestOptionsResponse:
     """Shared suggest-options implementation for single and batch endpoints."""
     from llm_resolver import get_effective_llm_config
-    llm_config = await get_effective_llm_config('agent-fast')
+    llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
 
     prompt_from_file = get_prompt("prompt_enhancement", "suggest_options_system_prompt")
     if not prompt_from_file:
@@ -1284,6 +1306,9 @@ class AgentStepRequest(BaseModel):
     # (resolved model/api_base, the full message list sent to the LLM, and the
     # raw response text) so a failed/refused step can be copied into a bug report.
     debug: bool = False
+    # Project whose model override should apply, when the editor is scoped
+    # to one. Absent -> the profile's Tool Assistant setting.
+    project_id: Optional[int] = None
 
 
 class AgentStepResponse(BaseModel):
@@ -1322,7 +1347,7 @@ async def agent_step(request: AgentStepRequest):
     )
 
     try:
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
     except LLMUnavailableError as e:
         raise HTTPException(status_code=e.status_code, detail={"code": e.code, "message": str(e)})
 

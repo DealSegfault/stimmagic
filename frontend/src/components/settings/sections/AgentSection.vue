@@ -13,6 +13,17 @@
     </div>
 
     <div v-else class="mt-8 space-y-9">
+      <!-- Models -->
+      <div>
+        <h4 class="text-xs font-semibold text-content-secondary">Models</h4>
+        <p class="mt-1 max-w-xl text-xs leading-relaxed text-content-tertiary">
+          Each kind of work can run on a different model. Projects can override any of these.
+        </p>
+        <div class="mt-3 max-w-[680px]">
+          <RoleModelRows :model-value="localModels" @update:role="saveRoleModel" />
+        </div>
+      </div>
+
       <!-- Default Instructions -->
       <div>
         <h4 class="text-xs font-semibold text-content-secondary">Default Instructions</h4>
@@ -72,19 +83,29 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import axios from 'axios'
 import { getApiBase } from '../../../apiConfig'
+import RoleModelRows from '../RoleModelRows.vue'
 import ToolConfigRow from '../../chat/ToolConfigRow.vue'
 import type { ToolConfig } from '../../../composables/useAgentPresetsApi'
 import { useProvidersApi, type ProviderTool } from '../../../composables/useProvidersApi'
 import { useProfile } from '../../../composables/useProfile'
+import { useAvailableModels } from '../../../composables/useAvailableModels'
+
+type RoleModels = Record<string, string>
 
 interface ProfileAgentSettings {
   additional_instructions: string
   memory: string
   tool_config: ToolConfig
+  models: RoleModels
+}
+
+const EMPTY_MODELS: RoleModels = {
+  quick_task: 'auto', tool_assistant: 'auto', chat: 'auto', flow: 'auto',
 }
 
 const { listAllTools } = useProvidersApi()
 const { currentProfileId } = useProfile()
+const { fetchModels } = useAvailableModels()
 
 // State
 const loading = ref(false)
@@ -99,6 +120,7 @@ const localToolConfig = ref<ToolConfig>({
   allowed_tools: [],
   denied_tools: [],
 })
+const localModels = ref<RoleModels>({ ...EMPTY_MODELS })
 
 // Computed: tools that are explicitly configured (in allowed or denied lists)
 const configuredToolIds = computed(() => {
@@ -136,6 +158,7 @@ async function loadSettings() {
       allowed_tools: [],
       denied_tools: [],
     }
+    localModels.value = { ...EMPTY_MODELS, ...(settings.value?.models || {}) }
   } catch (err) {
     console.error('Failed to load agent settings:', err)
   } finally {
@@ -175,6 +198,19 @@ async function saveMemory() {
     })
   } catch (err) {
     console.error('Failed to save memory:', err)
+  }
+}
+
+// '' from the dropdown means "automatic" — stored as the explicit 'auto' the
+// backend resolver understands.
+async function saveRoleModel(role: string, slug: string) {
+  const next = { ...localModels.value, [role]: slug || 'auto' }
+  localModels.value = next
+  try {
+    await axios.patch(`${getApiBase()}/settings/agent`, { models: next })
+    await fetchModels(null, true)
+  } catch (err) {
+    console.error('Failed to save model selection:', err)
   }
 }
 

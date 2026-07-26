@@ -325,7 +325,7 @@ async def auto_name_chat(
 
             # Resolve the effective agent-fast LLM so Stimma Cloud and endpoint
             # configs both work here.
-            llm_config = await get_effective_llm_config("agent-fast")
+            llm_config = await get_effective_llm_config("quick_task")
 
             # Build conversation context from all user messages if available
             if user_messages and len(user_messages) > 1:
@@ -542,13 +542,12 @@ async def create_chat(
         flow_id=request.flow_id,
         throttle='off',
         generation_settings=json.dumps(default_settings),
-        # Snapshot the current choice. New chats follow the last explicitly
-        # selected model; existing chats do not change when that choice moves.
-        model_slug=normalize_model_slug(
-            request.model_slug
-            or (project.default_model_slug if project else None)
-            or get_settings().default_model
-        ),
+        # NULL means "inherit": the chat follows the project's, then the
+        # profile's, "LLM for new Chats" setting, resolved at send time. Only an
+        # explicit request pins a model here — snapshotting the setting at
+        # creation would freeze every chat and make changing the setting affect
+        # nothing but the next new chat.
+        model_slug=normalize_model_slug(request.model_slug) if request.model_slug else None,
     )
     session.add(chat)
     await session.commit()

@@ -16,7 +16,10 @@ import {
 
 const models = ref([])
 const globalDefault = ref('auto')
-const quickTaskModel = ref('stimma:minimax-m3')
+// Per-role resolution from the backend: role -> { profile, project, resolved }.
+// `profile`/`project` are what's saved (either may be 'auto'/null); `resolved`
+// is the model that will actually be called, with 'auto' already expanded.
+const roleDefaults = ref({})
 const reasoningLevels = ref({})
 const cloudStatus = ref('unknown')
 const cloudMessage = ref('')
@@ -108,7 +111,7 @@ async function fetchModels(projectId = null, force = false) {
     const response = await axios.get(`${getApiBase()}/models/available`, { params })
     models.value = sortModelsByBrand(response.data.models || [])
     globalDefault.value = normalizeModelSlug(response.data.global_default || 'auto')
-    quickTaskModel.value = normalizeModelSlug(response.data.quick_task_model || 'stimma:minimax-m3')
+    roleDefaults.value = response.data.role_defaults || {}
     reasoningLevels.value = response.data.reasoning_levels || {}
     cloudStatus.value = response.data.cloud_status || 'unknown'
     cloudMessage.value = response.data.cloud_message || ''
@@ -171,7 +174,7 @@ export function useAvailableModels() {
     models: readonly(visibleModels),
     selectableModels: readonly(selectableModels),
     globalDefault: readonly(effectiveGlobalDefault),
-    quickTaskModel: readonly(quickTaskModel),
+    roleDefaults: readonly(roleDefaults),
     reasoningLevels: readonly(reasoningLevels),
     cloudStatus: readonly(cloudStatus),
     cloudMessage: readonly(cloudMessage),

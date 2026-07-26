@@ -612,6 +612,7 @@ async def _apply_prompt_pipeline(
     input_media_id: int,
     parameters: Optional[Dict[str, Any]] = None,
     profile_id: Optional[str] = None,
+    project_id: Optional[int] = None,
 ) -> str:
     """Run the full generate-time prompt pipeline on a chain step's prompt —
     identical behavior to an interactive submit (prompt_pipeline.py mirrors
@@ -663,6 +664,7 @@ async def _apply_prompt_pipeline(
         width=_dim("width"),
         height=_dim("height"),
         profile_id=profile_id,
+        project_id=project_id,
     )
 
 
@@ -781,6 +783,7 @@ async def _run_tool_step(
             input_media_id=input_media_id,
             parameters=parameters,
             profile_id=profile_id,
+            project_id=project_id,
         )
 
     # The input media is only known now — adapt the step's canvas to it, the

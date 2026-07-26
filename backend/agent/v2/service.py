@@ -1135,12 +1135,12 @@ async def _run_agentic_loop_inner(
         from database import Project
         from sqlalchemy import select as sa_select
         proj_result = await session.execute(
-            sa_select(Project.default_model_slug).where(Project.id == chat.project_id)
+            sa_select(Project.chat_model_slug).where(Project.id == chat.project_id)
         )
         project_default_slug = proj_result.scalar_one_or_none()
     from config import get_settings as _get_settings
     effective_model_slug = resolve_chat_model_slug(
-        chat.model_slug, project_default_slug, _get_settings().default_model
+        chat.model_slug, project_default_slug
     )
 
     # Build system prompt once — stimpacks and other volatile context are delivered
@@ -1158,12 +1158,13 @@ async def _run_agentic_loop_inner(
     # the workspace for program.py edits. Everything else (tools, LLM,
     # broadcast) is shared with the main agent loop.
     if chat.flow_id is not None:
-        from .flow_prompt import get_flow_system_prompt
+        from .flow_prompt import build_available_models_section, get_flow_system_prompt
         from flow_runtime import get_flow_dir
         system_prompt = get_flow_system_prompt(
             additional_instructions=resolved_config.additional_instructions,
             global_memory=resolved_config.global_memory,
             project_memory=resolved_config.project_memory,
+            available_models=await build_available_models_section(chat.project_id),
         )
         flow_dir = get_flow_dir(chat.flow_id)
         if flow_dir.exists():
@@ -1739,12 +1740,12 @@ async def _resume_delegate_after_permission(
         from database import Project
         from sqlalchemy import select as sa_select
         _proj_r = await session.execute(
-            sa_select(Project.default_model_slug).where(Project.id == chat.project_id)
+            sa_select(Project.chat_model_slug).where(Project.id == chat.project_id)
         )
         _project_default = _proj_r.scalar_one_or_none()
     from config import get_settings as _get_settings
     _eff_slug = resolve_chat_model_slug(
-        chat.model_slug, _project_default, _get_settings().default_model
+        chat.model_slug, _project_default
     )
 
     # Resume the delegate loop from saved state
@@ -1904,12 +1905,12 @@ async def resume_after_hitl(
             from database import Project
             from sqlalchemy import select as sa_select
             _proj_result = await session.execute(
-                sa_select(Project.default_model_slug).where(Project.id == chat.project_id)
+                sa_select(Project.chat_model_slug).where(Project.id == chat.project_id)
             )
             _project_default_slug = _proj_result.scalar_one_or_none()
         from config import get_settings as _get_settings
         _effective_model_slug = resolve_chat_model_slug(
-            chat.model_slug, _project_default_slug, _get_settings().default_model
+            chat.model_slug, _project_default_slug
         )
 
         delegate_state = pending.get("delegate_state")

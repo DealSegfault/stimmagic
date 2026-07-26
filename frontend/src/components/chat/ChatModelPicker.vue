@@ -385,16 +385,16 @@ async function selectModel(model) {
   const newSlug = slug
   emit('update:modelSlug', newSlug)
 
-  // Persist to backend
+  // Persist to this chat only. Picking a model here used to also rewrite the
+  // profile-wide default for new chats, so one experiment silently retargeted
+  // every future chat in every profile. That default now changes only from
+  // Settings > Agent (or a project override).
   try {
     if (props.chatId != null) {
       await axios.patch(`${getApiBase()}/chats/${props.chatId}`, {
         model_slug: newSlug,
       })
     }
-    await axios.patch(`${getApiBase()}/settings/default-model`, {
-      default_model: newSlug,
-    })
     await fetchModels(props.projectId, true)
   } catch (err) {
     console.error('Failed to update chat model:', err)

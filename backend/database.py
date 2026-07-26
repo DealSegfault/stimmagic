@@ -940,7 +940,11 @@ class Project(Base):
     additional_instructions = Column(Text, nullable=True)
     memory = Column(Text, nullable=True)
     agent_tool_config = Column(String, nullable=True)
-    default_model_slug = Column(String, nullable=True)  # Default LLM model for chats in this project
+    # Per-role model overrides. NULL = inherit the profile's setting.
+    chat_model_slug = Column(String, nullable=True)
+    quick_task_model_slug = Column(String, nullable=True)
+    tool_assistant_model_slug = Column(String, nullable=True)
+    flow_model_slug = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
     deleted_at = Column(DateTime, nullable=True, index=True)
@@ -956,7 +960,10 @@ class Project(Base):
             "additional_instructions": self.additional_instructions,
             "memory": self.memory,
             "agent_tool_config": json.loads(self.agent_tool_config) if self.agent_tool_config else None,
-            "default_model_slug": self.default_model_slug,
+            "chat_model_slug": self.chat_model_slug,
+            "quick_task_model_slug": self.quick_task_model_slug,
+            "tool_assistant_model_slug": self.tool_assistant_model_slug,
+            "flow_model_slug": self.flow_model_slug,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,

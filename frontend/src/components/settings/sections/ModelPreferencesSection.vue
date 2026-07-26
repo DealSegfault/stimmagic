@@ -27,21 +27,6 @@
           </div>
         </SettingRow>
 
-        <SettingRow label="LLM for Quick Tasks" description="Prompt cleanup, chat names, and other background work.">
-          <SettingsDropdown
-            v-if="quickTaskOptions.length"
-            control
-            fill
-            class="w-72"
-            :menu-width="320"
-            :model-value="selectedQuickTaskValue"
-            :options="quickTaskOptions"
-            placeholder="Choose a model"
-            @update:model-value="saveQuickTaskModel"
-          />
-          <span v-else class="w-72 text-right text-[13px] text-content-muted">No models available</span>
-        </SettingRow>
-
         <SettingRow v-if="voiceSupported" label="Voice Input Model">
           <template #description>
             Processed on this device. <span v-if="!voiceModelReady">{{ privacyLockdownActive ? 'Downloads are off during Privacy Lockdown.' : 'Downloads on first use.' }}</span>
@@ -68,18 +53,13 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import axios from 'axios'
-import { getApiBase } from '../../../apiConfig'
-import { useAvailableModels } from '../../../composables/useAvailableModels'
 import { usePrivacyLockdown } from '../../../composables/usePrivacyLockdown'
 import { useTheme } from '../../../composables/useTheme'
 import { useSettingsApi } from '../../../composables/useSettingsApi'
 import { VOICE_MODELS, voiceModel, isModelReady, supported as voiceSupported } from '../../../composables/useVoiceInput'
 import SettingsDropdown from '../../ui/SettingsDropdown.vue'
 import SettingRow from '../SettingRow.vue'
-import { resolveModelVendorId } from '../../../utils/modelVendors'
 
-const { selectableModels, quickTaskModel, fetchModels } = useAvailableModels()
 const { privacyLockdownActive } = usePrivacyLockdown()
 
 // Theme
@@ -100,26 +80,6 @@ function selectTheme(theme) {
 
 const voiceModelReady = ref(false)
 
-function endpointHost(url) {
-  if (!url) return ''
-  try { return new URL(url).host } catch { return url }
-}
-
-const quickTaskOptions = computed(() => {
-  return selectableModels.value.filter(model => model.source !== 'auto' && !model.collapsed).map(model => ({
-    value: model.slug,
-    label: model.name,
-    description: `via ${model.source === 'stimma_cloud' ? 'Stimma' : (model.provider_name || endpointHost(model.endpoint_url) || 'your endpoint')}`,
-    meta: model.cost_tier || '',
-    tone: model.source === 'stimma_cloud' ? 'cloud' : undefined,
-    vendor: resolveModelVendorId(model) || undefined,
-  }))
-})
-const selectedQuickTaskValue = computed(() => (
-  quickTaskOptions.value.some(option => option.value === quickTaskModel.value)
-    ? quickTaskModel.value
-    : ''
-))
 const voiceModelOptions = computed(() => VOICE_MODELS.map(model => ({
   value: model.id,
   label: model.label,
@@ -127,12 +87,7 @@ const voiceModelOptions = computed(() => VOICE_MODELS.map(model => ({
   meta: model.size,
 })))
 
-async function saveQuickTaskModel(model) {
-  await axios.patch(`${getApiBase()}/settings/quick-task-model`, { model })
-  await fetchModels(null, true)
-}
-
 async function refreshVoiceModelReady() { voiceModelReady.value = await isModelReady(voiceModel.value) }
 watch(voiceModel, refreshVoiceModelReady)
-onMounted(async () => { await refreshVoiceModelReady(); await fetchModels(null, true) })
+onMounted(refreshVoiceModelReady)
 </script>

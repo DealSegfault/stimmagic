@@ -686,13 +686,15 @@ def _tool_output_element_shape(tool_id: str) -> Shape:
     return Scalar(kind="media")
 
 
-_LLM_VALID_MODELS = ("agent", "agent-fast")
+# Legacy role aliases. Programs written before flows named their model use
+# these; they still resolve, so an old flow keeps running untouched.
+_LLM_LEGACY_MODELS = ("agent", "agent-fast")
 
 
 def llm(
     prompt: Any,
     *,
-    model: str = "agent",
+    model: Optional[str] = None,
     think: bool = False,
     response_format: Any = None,
     system: Optional[str] = None,
@@ -701,16 +703,15 @@ def llm(
 ) -> NodeRef:
     ctx = current_context()
 
-    if model not in _LLM_VALID_MODELS:
+    if model is not None and (not isinstance(model, str) or not model.strip()):
         raise DSLMisuseError(
-            f"llm(): model must be one of {list(_LLM_VALID_MODELS)}; got {model!r}",
+            f"llm(): model must be a model slug string; got {model!r}",
             suggestion=(
-                "Use model='agent' (default) for anything requiring reasoning, "
-                "structured output, nuance, or careful prose. Use model='agent-fast' "
-                "only for simple, high-volume classification, extraction, or boilerplate "
-                "generation where latency matters more than quality. Stimma resolves "
-                "these aliases to the user's configured LLMs — do not pass concrete "
-                "model names like 'claude-sonnet' or 'gpt-4o'."
+                "Pass a slug from the user's available models, e.g. "
+                "model='stimma:claude-sonnet-5'. Omit model= to use the model "
+                "configured for flows. The slug is written into the program on "
+                "purpose: a flow keeps running on the model it was built and "
+                "tested against instead of drifting when Settings change."
             ),
         )
 

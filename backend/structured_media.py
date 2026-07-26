@@ -1074,7 +1074,7 @@ async def generate_smart_batch_title(
         log.info(f"SMART TITLE: Calling LLM with context: {context}")
 
         # Get LLM config
-        llm_config = await get_effective_llm_config('agent-fast')
+        llm_config = await get_effective_llm_config('quick_task')
         log.info(f"SMART TITLE: Using LLM model: {llm_config.get_model()}")
 
         system_prompt = "You generate short titles (2-5 words). Reply with ONLY the title, no quotes or punctuation."

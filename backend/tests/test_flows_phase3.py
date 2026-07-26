@@ -2087,7 +2087,7 @@ class TestFlowAgentPrompt:
         assert "switch" in FLOW_SYSTEM_PROMPT
         assert "filter" in FLOW_SYSTEM_PROMPT
         assert "Copy these signatures exactly" in FLOW_SYSTEM_PROMPT
-        assert 'llm(prompt, *, model="agent", think=False' in FLOW_SYSTEM_PROMPT
+        assert 'llm(prompt, *, model=None, think=False' in FLOW_SYSTEM_PROMPT
         assert "info(body, *, title, subtitle=\"\", inputs={})" in FLOW_SYSTEM_PROMPT
         assert "gate(condition, value, *, otherwise=None" in FLOW_SYSTEM_PROMPT
         assert "partition(items, classifier, *, labels" in FLOW_SYSTEM_PROMPT
@@ -2111,7 +2111,11 @@ class TestFlowAgentPrompt:
         assert "info(template" not in FLOW_SYSTEM_PROMPT
         assert "resolved" in FLOW_SYSTEM_PROMPT
         assert "@flow" in FLOW_SYSTEM_PROMPT
-        assert 'model="agent-fast"' in FLOW_SYSTEM_PROMPT
+        # Programs name a concrete model; the legacy role aliases must be gone
+        # from the authoring docs so new programs stop emitting them.
+        assert 'model="agent-fast"' not in FLOW_SYSTEM_PROMPT
+        assert 'model="agent"' not in FLOW_SYSTEM_PROMPT
+        assert 'model="stimma:claude-haiku-4.5"' in FLOW_SYSTEM_PROMPT
         assert "do not write" in FLOW_SYSTEM_PROMPT and "think=True" in FLOW_SYSTEM_PROMPT
         assert "Be extremely brief" in FLOW_SYSTEM_PROMPT
         assert "The flow UI is the status report" in FLOW_SYSTEM_PROMPT

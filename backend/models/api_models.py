@@ -345,7 +345,10 @@ class ProjectResponse(BaseModel):
     additional_instructions: Optional[str] = None
     memory: Optional[str] = None
     agent_tool_config: Optional[dict] = None
-    default_model_slug: Optional[str] = None
+    chat_model_slug: Optional[str] = None
+    quick_task_model_slug: Optional[str] = None
+    tool_assistant_model_slug: Optional[str] = None
+    flow_model_slug: Optional[str] = None
     created_at: str
     updated_at: str
     deleted_at: Optional[str] = None
@@ -356,7 +359,10 @@ class ProjectResponse(BaseModel):
 
 class ProjectCreateRequest(BaseModel):
     name: Optional[str] = ""
-    default_model_slug: Optional[str] = None
+    chat_model_slug: Optional[str] = None
+    quick_task_model_slug: Optional[str] = None
+    tool_assistant_model_slug: Optional[str] = None
+    flow_model_slug: Optional[str] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -364,7 +370,10 @@ class ProjectUpdateRequest(BaseModel):
     additional_instructions: Optional[str] = None
     memory: Optional[str] = None
     agent_tool_config: Optional[dict] = None
-    default_model_slug: Optional[str] = None
+    chat_model_slug: Optional[str] = None
+    quick_task_model_slug: Optional[str] = None
+    tool_assistant_model_slug: Optional[str] = None
+    flow_model_slug: Optional[str] = None
 
 
 class BoardSectionCreateRequest(BaseModel):

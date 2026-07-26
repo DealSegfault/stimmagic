@@ -15,11 +15,14 @@ from models.api_models import (
     ProjectSummaryResponse,
     ProjectUpdateRequest,
 )
-from llm_resolver import normalize_model_slug
+from llm_resolver import PROJECT_ROLE_COLUMNS, normalize_model_slug
 from project_service import get_project_or_404, initialize_project_root
 from utils.websocket import ws_manager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
+
+# Per-role model override columns, in the order the settings UI shows them.
+PROJECT_MODEL_COLUMNS = tuple(PROJECT_ROLE_COLUMNS.values())
 
 
 async def _serialize_project(project: Project, session: AsyncSession) -> ProjectResponse:
@@ -87,7 +90,10 @@ async def create_project(
 ):
     project = Project(
         name=(request.name or "").strip(),
-        default_model_slug=normalize_model_slug(request.default_model_slug),
+        **{
+            column: normalize_model_slug(getattr(request, column))
+            for column in PROJECT_MODEL_COLUMNS
+        },
     )
     session.add(project)
     await session.flush()
@@ -128,8 +134,11 @@ async def update_project(
     if request.agent_tool_config is not None:
         import json
         project.agent_tool_config = json.dumps(request.agent_tool_config)
-    if request.default_model_slug is not None:
-        project.default_model_slug = normalize_model_slug(request.default_model_slug)
+    for column in PROJECT_MODEL_COLUMNS:
+        value = getattr(request, column)
+        if value is not None:
+            # "" clears the override back to inheriting the profile setting.
+            setattr(project, column, normalize_model_slug(value) if value else None)
     project.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(project)

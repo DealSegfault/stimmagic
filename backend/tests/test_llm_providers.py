@@ -565,8 +565,7 @@ async def test_failed_provider_is_blocked_without_cloud_fallback(monkeypatch):
         last_test_passed=False,
     )
     settings = SimpleNamespace(
-        default_model=model.id,
-        quick_task_model=model.id,
+        get_role_model_slug=lambda _role, profile_id=None: model.id,
         llm_providers=[provider],
         llm_reasoning_levels={},
         llm_content_policy="stimma",
@@ -575,22 +574,24 @@ async def test_failed_provider_is_blocked_without_cloud_fallback(monkeypatch):
     )
     monkeypatch.setattr(llm_resolver, "get_settings", lambda: settings)
 
+    # A provider whose last test failed offers no candidates, so the saved slug
+    # stands and the user is told which provider is broken rather than being
+    # silently moved onto something else.
     with pytest.raises(llm_resolver.LLMUnavailableError, match="OpenAI is unavailable"):
-        await llm_resolver.get_effective_llm_config("agent-fast")
+        await llm_resolver.get_effective_llm_config("quick_task")
 
 
 @pytest.mark.asyncio
 async def test_quick_tasks_respect_explicit_legacy_local_endpoint(monkeypatch):
     endpoint = LLMEndpointConfig(url="http://localhost:1234/v1", model="local-model")
     settings = SimpleNamespace(
-        default_model="local",
-        quick_task_model="local",
+        get_role_model_slug=lambda _role, profile_id=None: "local",
         llm_providers=[],
         get_llm_role_config=lambda _role: LLMRoleConfig(source="auto", endpoint=endpoint),
     )
     monkeypatch.setattr(llm_resolver, "get_settings", lambda: settings)
 
-    assert await llm_resolver.get_effective_llm_config("agent-fast") is endpoint
+    assert await llm_resolver.get_effective_llm_config("quick_task") is endpoint
 
 
 def test_cloud_reasoning_repairs_removed_level(monkeypatch):

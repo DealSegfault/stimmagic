@@ -209,7 +209,7 @@ async def _resolve_flow_chat_model_slug(
             if project_id is not None:
                 project_slug = (
                     await session.execute(
-                        select(Project.default_model_slug).where(
+                        select(Project.chat_model_slug).where(
                             Project.id == project_id
                         )
                     )
@@ -221,7 +221,7 @@ async def _resolve_flow_chat_model_slug(
             exc_info=True,
         )
     return resolve_chat_model_slug(
-        chat_slug, project_slug, get_settings().default_model
+        chat_slug, project_slug
     )
 
 
@@ -231,25 +231,31 @@ def make_flow_llm_resolve_config(
 ) -> Callable[[str], Awaitable[Any]]:
     """Build the ``resolve_config`` a flow's LLM evaluators use to pick a model.
 
-    A flow's ``llm()`` steps carry a Stimma *role*, not a concrete model:
+    A flow program names the model each ``llm()`` call runs on, so a flow written
+    months ago keeps running on the model it was written against instead of
+    drifting with Settings. This resolver handles the three things a call can
+    carry:
 
-    - ``agent``      → the model selected for the flow's associated chat,
-      resolved chat → project → global exactly like the agent
-      (``get_chat_llm_config``). Without this, ``agent`` would resolve to the
-      global default rather than the model the user picked for this flow.
-    - ``agent-fast`` → the Settings "quick tasks" model
-      (``get_effective_llm_config('agent-fast')``).
+    - a concrete slug — used as written.
+    - ``agent`` / ``agent-fast`` — legacy role aliases in older programs.
+      ``agent`` resolves to the flow's chat model (chat -> project -> profile),
+      ``agent-fast`` to the profile's quick-task model, both as they always did.
+    - nothing — the profile's **Flows** setting, honoring this project's override.
 
-    Resolved lazily per call, so changing the chat's model mid-run takes
-    effect on the next LLM step.
+    Resolved lazily per call, so a mid-run Settings change takes effect on the
+    next step for the cases that still read Settings.
     """
-    async def _resolve(role: str) -> Any:
+    async def _resolve(model: str) -> Any:
         from llm_resolver import get_chat_llm_config, get_effective_llm_config
 
-        if role == "agent-fast":
-            return await get_effective_llm_config("agent-fast")
-        slug = await _resolve_flow_chat_model_slug(flow_id, project_id)
-        return await get_chat_llm_config(slug, role="agent")
+        if model == "agent-fast":
+            return await get_effective_llm_config("quick_task", project_id)
+        if model == "agent":
+            slug = await _resolve_flow_chat_model_slug(flow_id, project_id)
+            return await get_chat_llm_config(slug, role="chat")
+        if not model or model == "flow":
+            return await get_effective_llm_config("flow", project_id)
+        return await get_chat_llm_config(model, role="flow")
 
     return _resolve
 
@@ -259,23 +265,25 @@ def make_frozen_flow_llm_resolve_config(
 ) -> Optional[Callable[[str], Awaitable[Any]]]:
     """``resolve_config`` for a frozen flow run as a tool (oneshot).
 
-    A frozen flow has no live chat, so ``agent`` runs on the model captured at
-    freeze time (``UserTool.model_slug``). ``agent-fast`` uses the Settings
-    "quick tasks" model.
+    A frozen flow has no live chat. Calls that name a model use it; legacy
+    ``agent`` calls fall back to the slug captured at freeze time
+    (``UserTool.model_slug``), and ``agent-fast`` to the quick-task setting.
 
     Returns ``None`` when nothing was captured — the caller then omits the
-    resolver so the evaluators use the plain role resolver (global default),
-    which is exactly the intended fallback.
+    resolver so the evaluators use the plain resolver, which is exactly the
+    intended fallback.
     """
     if not model_slug:
         return None
 
-    async def _resolve(role: str) -> Any:
+    async def _resolve(model: str) -> Any:
         from llm_resolver import get_chat_llm_config, get_effective_llm_config
 
-        if role == "agent-fast":
-            return await get_effective_llm_config("agent-fast")
-        return await get_chat_llm_config(model_slug, role="agent")
+        if model == "agent-fast":
+            return await get_effective_llm_config("quick_task")
+        if not model or model in ("agent", "flow"):
+            return await get_chat_llm_config(model_slug, role="flow")
+        return await get_chat_llm_config(model, role="flow")
 
     return _resolve
 
@@ -814,7 +822,10 @@ def _structured_response_instruction(response_format: Any) -> str:
     )
 
 
-_LLM_VALID_ROLES = ("agent", "agent-fast")
+# Legacy role aliases. Flow programs now name a concrete model so a flow keeps
+# running on the model it was written against; these two strings appear only in
+# programs written before that change and resolve exactly as they always did.
+_LLM_LEGACY_ROLES = ("agent", "agent-fast")
 
 # Hard ceiling on a single llm() evaluation. The underlying llm_completion has
 # no timeout of its own, so without this the equation can stay in ``computing``
@@ -845,12 +856,13 @@ def llm_batch_timeout_seconds(n: int) -> float:
 class LLMEvaluator:
     """Call the configured LLM for a DSL ``llm()`` equation.
 
-    The ``model`` field on the equation definition is the Stimma role to
-    resolve — either ``agent`` (default, high-quality) or ``agent-fast``
-    (latency-optimized). Values outside that set fall back to the evaluator's
-    default role. Resolves the effective LLM config via ``llm_resolver``,
-    renders the prompt, and returns either the raw text content (no
-    ``response_format``) or the parsed JSON payload.
+    The ``model`` field on the equation definition is the concrete model slug
+    the program was written against. Omitted, it falls back to the evaluator's
+    default (the profile's Flows setting); the legacy ``agent`` / ``agent-fast``
+    aliases still resolve for programs written before models were named.
+    Resolves the effective LLM config via ``llm_resolver``, renders the prompt,
+    and returns either the raw text content (no ``response_format``) or the
+    parsed JSON payload.
     """
 
     def __init__(
@@ -863,7 +875,7 @@ class LLMEvaluator:
         resolve_image: Optional[
             Callable[[int], Awaitable[tuple[bytes, str]]]
         ] = None,
-        role: str = "agent",
+        role: str = "flow",
     ) -> None:
         self._completion = completion
         self._resolve_config = resolve_config
@@ -879,7 +891,7 @@ class LLMEvaluator:
         images_binding = request.resolved_inputs.get("images")
 
         requested_model = request.definition.get("model")
-        role = requested_model if requested_model in _LLM_VALID_ROLES else self._role
+        role = requested_model or self._role
         think = bool(request.definition.get("think", False))
 
         prompt = _render_template(prompt_tmpl, prompt_bindings)
@@ -950,11 +962,24 @@ class LLMEvaluator:
         value = _parse_structured_response(content, response_format)
         return EvaluationResult(value=value)
 
-    async def _get_config(self, role: str) -> Any:
+    async def _get_config(self, model: str) -> Any:
+        """Resolve one llm() call's model.
+
+        ``model`` is whatever the program wrote: a concrete slug
+        (``stimma:claude-sonnet-5``), a legacy role alias, or the evaluator's
+        default when the call omitted it.
+        """
         if self._resolve_config is not None:
-            return await self._resolve_config(role)
-        from llm_resolver import get_effective_llm_config
-        return await get_effective_llm_config(role)
+            return await self._resolve_config(model)
+        from llm_resolver import (
+            SETTINGS_ROLES,
+            get_chat_llm_config,
+            get_effective_llm_config,
+        )
+
+        if not model or model in _LLM_LEGACY_ROLES or model in SETTINGS_ROLES:
+            return await get_effective_llm_config(model or "flow")
+        return await get_chat_llm_config(model, role="flow")
 
     async def _get_completion(self) -> Callable[..., Awaitable[Any]]:
         if self._completion is not None:
@@ -1283,7 +1308,7 @@ class LLMBatchEvaluator(LLMEvaluator):
         images_binding = request.resolved_inputs.get("images")
 
         requested_model = request.definition.get("model")
-        role = requested_model if requested_model in _LLM_VALID_ROLES else self._role
+        role = requested_model or self._role
         think = bool(request.definition.get("think", False))
 
         prompt = _render_template(prompt_tmpl, prompt_bindings)
@@ -1394,7 +1419,7 @@ class LLMSlotEvaluator(LLMEvaluator):
         resolve_image: Optional[
             Callable[[int], Awaitable[tuple[bytes, str]]]
         ] = None,
-        role: str = "agent",
+        role: str = "flow",
         graph_getter: Optional[Callable[[], Any]] = None,
     ) -> None:
         super().__init__(
@@ -1481,7 +1506,7 @@ class LLMSlotEvaluator(LLMEvaluator):
         images_binding = request.resolved_inputs.get("images")
 
         requested_model = batch_eq.definition.get("model")
-        role = requested_model if requested_model in _LLM_VALID_ROLES else self._role
+        role = requested_model or self._role
         think = bool(batch_eq.definition.get("think", False))
 
         prompt = _render_template(prompt_tmpl, prompt_bindings)

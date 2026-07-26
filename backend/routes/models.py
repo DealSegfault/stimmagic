@@ -24,7 +24,14 @@ from config import (
 from config_writer import patch_global_section
 from core.logging import get_logger
 from cloud_runtime import with_cloud_access_headers
-from llm_resolver import get_max_context_tokens, normalize_model_slug, set_catalog_cache
+from llm_resolver import (
+    PROJECT_ROLE_COLUMNS,
+    SETTINGS_ROLES,
+    get_max_context_tokens,
+    normalize_model_slug,
+    resolve_role_model_slug,
+    set_catalog_cache,
+)
 from privacy_lockdown import is_privacy_lockdown_enabled
 from llm_provider_catalog import (
     FIXED_MODEL_PROVIDERS,
@@ -1110,39 +1117,64 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
 
     models.insert(0, auto_model)
 
-    # 4. Resolve project default if requested
-    project_default = None
+    # 4. Resolve every role: project override -> profile setting -> auto.
+    project_overrides: dict[str, Optional[str]] = {role: None for role in SETTINGS_ROLES}
     if project_id is not None:
         try:
+            from core.profile_context import get_current_profile
             from database_registry import get_database_registry
             from database import Project
             from sqlalchemy import select
 
-            db_reg = get_database_registry()
-            async with db_reg.get_session() as session:
+            db = get_database_registry().get_database(get_current_profile())
+            async with db.async_session_maker() as session:
                 result = await session.execute(
-                    select(Project.default_model_slug).where(
+                    select(*[
+                        getattr(Project, PROJECT_ROLE_COLUMNS[role])
+                        for role in SETTINGS_ROLES
+                    ]).where(
                         Project.id == project_id,
                         Project.deleted_at.is_(None),
                     )
                 )
-                row = result.scalar_one_or_none()
+                row = result.first()
                 if row:
-                    project_default = row
+                    project_overrides = dict(zip(SETTINGS_ROLES, row))
         except Exception as e:
-            log.warning("failed to fetch project default model", error=str(e))
+            log.warning("failed to fetch project model overrides", error=str(e))
 
-    effective_global_default = normalize_model_slug(settings.default_model)
-    effective_project_default = normalize_model_slug(project_default)
-    if lockdown:
-        if effective_global_default not in {None, "auto", "local"}:
-            effective_global_default = "auto"
-        if effective_project_default not in {None, "auto", "local"}:
-            effective_project_default = "auto"
+    def _lockdown_safe(slug: Optional[str]) -> Optional[str]:
+        # A saved cloud slug can't be honored during lockdown; show it as auto,
+        # matching what resolve_chat_model_slug will actually do.
+        if lockdown and slug not in {None, "auto", "local"}:
+            return "auto"
+        return slug
+
+    role_defaults = {}
+    for role in SETTINGS_ROLES:
+        profile_setting = _lockdown_safe(
+            normalize_model_slug(settings.get_role_model_slug(role))
+        )
+        override = _lockdown_safe(normalize_model_slug(project_overrides.get(role)))
+        role_defaults[role] = {
+            "profile": profile_setting or "auto",
+            "project": override,
+            # What the app will actually call right now, with `auto` expanded.
+            "resolved": await resolve_role_model_slug(
+                role, project_slug=override,
+            ) if override else await resolve_role_model_slug(role),
+        }
+
+    # The chat role keeps its own top-level keys — the model picker and several
+    # older consumers read them by name.
+    effective_global_default = role_defaults["chat"]["profile"]
+    effective_project_default = role_defaults["chat"]["project"]
 
     saved_slugs = {
-        s for s in (effective_global_default, effective_project_default)
-        if s and s not in {m["slug"] for m in models}
+        slug
+        for entry in role_defaults.values()
+        for slug in (entry["profile"], entry["project"])
+        if slug and slug not in {m["slug"] for m in models}
     }
     for slug in saved_slugs:
         models.append({
@@ -1155,25 +1187,10 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             "max_context_tokens": get_max_context_tokens(slug),
         })
 
-    # Report the quick-task model actually in effect. When the saved slug
-    # can't resolve (e.g. a cloud model while signed out) the resolver falls
-    # back to a working provider model / the legacy endpoint pair; the
-    # settings UI should show that model, not an empty selection.
-    quick_task_model = normalize_model_slug(
-        getattr(settings, "quick_task_model", "stimma:minimax-m3")
-    )
-    usable_slugs = {m["slug"] for m in models if m.get("available")}
-    if quick_task_model not in usable_slugs:
-        fallback = _fallback_provider_model_entry(models, lockdown)
-        if fallback:
-            quick_task_model = fallback["slug"]
-        elif agent_has_endpoint and agent_fast_has_endpoint:
-            quick_task_model = "local"
-
     return {
         "models": models,
         "global_default": effective_global_default,
-        "quick_task_model": quick_task_model,
+        "role_defaults": role_defaults,
         "reasoning_levels": getattr(settings, "llm_reasoning_levels", {}),
         "project_default": effective_project_default,
         "cloud_status": cloud_status,

@@ -11,6 +11,8 @@ than listing prohibitions. See docs/AGENT_V2_PRINCIPLES.md §Anti-Patterns.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .code_runtime import ALLOWED_MODULES_PROMPT_DESCRIPTION
 
 
@@ -134,7 +136,7 @@ output(type, *, description="")
 with phase("Phase Name"):
 
 tool(tool_id, *, task_type, **params)
-llm(prompt, *, model="agent", think=False, response_format=None, system=None, images=None, n=1)
+llm(prompt, *, model=None, think=False, response_format=None, system=None, images=None, n=1)
 code(fn_or_source, *, inputs={}, output_type="json", description=None, subtitle=None)
 info(body, *, title, subtitle="", inputs={})
 
@@ -340,7 +342,7 @@ Tool ids are opaque and provider-specific — the catalog ids are the only ones
 the runtime accepts. Large option lists (e.g. loras) aren't inlined in the stub;
 its docstring points to a greppable ``.stimma/enums/*.txt``.
 
-**llm(prompt, *, model="agent", think=False, response_format=None, system=None, images=None, n=1)**
+**llm(prompt, *, model=None, think=False, response_format=None, system=None, images=None, n=1)**
 — calls an LLM at flow evaluation time.
 
 The ``prompt`` is either a plain string with no placeholders, or a single
@@ -351,7 +353,6 @@ into a prompt, build the string with ``code()`` first and pass the result:
 # Plain string, no substitutions needed.
 tones = llm(
     "Describe three possible tones for a short story. Return a JSON list.",
-    model="agent-fast",
     response_format={"schema": {"tones": "list[str]"}},
 )
 
@@ -361,7 +362,7 @@ prompt = code(
     inputs={"scene": scene_type, "era": time_period},
     output_type="text",
 )
-description = llm(prompt, model="agent-fast")
+description = llm(prompt)
 ```
 
 Pass ``images=`` to give the model vision. It accepts a single media NodeRef or
@@ -372,27 +373,39 @@ to describe, categorize, or reason about an actual image:
 ```python
 analysis = llm(
     "Describe the dominant mood and color palette of this image in one sentence.",
-    model="agent-fast",
     images=reference_image,
 )
 ```
 
-``model`` and ``think`` together give four latency/quality points. Pick based
-on the shape of the call, not the length of the prompt.
+``model`` names the model this call runs on, written into the program. Flows are
+long-lived: a flow the user builds today should still run on the model it was
+built and tested against months from now, so the choice is recorded in the source
+rather than resolved from Settings at run time.
 
-- ``model="agent-fast"`` — latency-optimized model. Use for simple,
-  high-volume calls where speed dominates: single-label classification, short
-  tag extraction, boilerplate rewrites, trivial summarization. Inside a
-  ``foreach`` over a long list with a genuinely simple per-item task,
-  ``agent-fast`` is usually right. For flow authoring, this is the default
-  choice in practice: write ``model="agent-fast"`` on almost every ``llm()``
-  call, especially for prompt-building, prompt-rewriting, extraction,
-  classification, and image-description steps.
-- ``model="agent"`` (runtime default if omitted) — full-quality model. Use it
-  deliberately, not by accident: only when the step is genuinely hard and the
-  extra latency is justified by better reasoning or writing quality. Reserve it
-  for the rare call that needs non-trivial planning, subtle synthesis,
-  difficult structured output, or unusually important prose.
+- **Omit ``model=``** to use the model the user configured for flows. That is the
+  right default and what you should write unless the user asks for something else.
+- **Pass a slug** from the available models listed above when a step wants a
+  different point on the latency/quality curve — a fast, cheap model for a
+  ``foreach`` over a long list of trivial classifications, a stronger one for the
+  rare step that needs real synthesis. Use the exact slug as listed.
+- **Ask the user** when the tradeoff is theirs to make: a flow that fans a model
+  call over hundreds of items, or one whose quality obviously hinges on the
+  model, is worth a sentence before you commit a slug. Do not silently pick an
+  expensive model for a high-volume step.
+
+```python
+# Uses the user's configured flow model.
+tones = llm(
+    "Describe three possible tones for a short story. Return a JSON list.",
+    response_format={"schema": {"tones": "list[str]"}},
+)
+
+# A cheap model, deliberately, for a trivial per-item call inside a foreach.
+label = llm("One word for the dominant color.", model="stimma:claude-haiku-4.5")
+```
+
+``think`` is the other latency/quality control, independent of the model:
+
 - ``think=False`` (default) — no reasoning budget. Almost every flow LLM
   call belongs here: combining inputs into a prompt, classifying, extracting,
   rewording. Thinking burns tens of seconds per call and rarely changes the
@@ -1218,7 +1231,7 @@ def image_analysis(image):
         observations = llm(
             "List the visual elements, composition, mood, and likely use-case "
             "of this image.",
-            model="agent-fast", images=image,
+            images=image,
         )
     with phase("Write"):
         prompt = code(
@@ -1227,7 +1240,7 @@ def image_analysis(image):
             output_type="text",
             description="build brief prompt",
         )
-        return llm(prompt, model="agent")
+        return llm(prompt)
 ```
 
 ### Gated linear workflow
@@ -1272,13 +1285,48 @@ def _substitute_runtime(prompt: str) -> str:
     )
 
 
+async def build_available_models_section(project_id: Optional[int] = None) -> str:
+    """The models this install can run, for `llm(model=...)` selection.
+
+    Flow programs name their model, so the author has to know what exists here —
+    a slug guessed from training data would freeze a flow onto a model the user
+    cannot reach. Tiers are the ones the `auto` heuristic uses, so "fast" here
+    means the same thing it means in Settings.
+    """
+    from llm_resolver import (
+        auto_candidates,
+        _cloud_is_available,
+        resolve_role_model_slug,
+    )
+    from model_tiers import tier_for
+
+    candidates = auto_candidates(cloud_available=await _cloud_is_available())
+    if not candidates:
+        return ""
+
+    default_slug = await resolve_role_model_slug("flow", project_id)
+    lines = [
+        "## Available models",
+        "",
+        f"`llm()` with no `model=` uses **{default_slug}** — the model this "
+        "profile configured for flows. Pass one of these slugs to override:",
+        "",
+    ]
+    for candidate in sorted(candidates, key=lambda m: (m.vendor or "", m.name)):
+        lines.append(f"- `{candidate.slug}` — {candidate.name} ({tier_for(candidate)})")
+    return "\n".join(lines)
+
+
 def get_flow_system_prompt(
     *,
     additional_instructions: str = "",
     global_memory: str = "",
     project_memory: str = "",
+    available_models: str = "",
 ) -> str:
     prompt = _substitute_runtime(FLOW_SYSTEM_PROMPT)
+    if available_models:
+        prompt += f"\n\n{available_models}"
     if additional_instructions:
         prompt += f"\n\n## User Instructions\n\n{additional_instructions}"
     if global_memory or project_memory:
