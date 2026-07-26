@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from llm import llm_completion, QuotaExceededError, ContentFilteredError, Usage, classify_provider_http_error, is_auto_tool_choice_unsupported_error, strip_thinking_tags
 from llm_correlation import llm_correlation_context
-from llm_resolver import get_effective_llm_config, get_chat_llm_config, resolve_chat_model_slug, LLMNotConfiguredError, LLMInsufficientBalanceError
+from llm_resolver import get_effective_llm_config, get_chat_llm_config, resolve_chat_effort, resolve_chat_model_slug, LLMNotConfiguredError, LLMInsufficientBalanceError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1129,19 +1129,23 @@ async def _run_agentic_loop_inner(
     shown_media_ids: set[int] = set()
     resolved_config = await resolve_agent_config(chat, session)
 
-    # Resolve the effective model slug for this chat (chat -> project -> global)
+    # Resolve the effective model + effort for this chat (chat -> project -> profile)
     project_default_slug = None
+    project_effort = None
     if chat.project_id:
         from database import Project
         from sqlalchemy import select as sa_select
         proj_result = await session.execute(
-            sa_select(Project.chat_model_slug).where(Project.id == chat.project_id)
+            sa_select(Project.chat_model_slug, Project.chat_effort)
+            .where(Project.id == chat.project_id)
         )
-        project_default_slug = proj_result.scalar_one_or_none()
-    from config import get_settings as _get_settings
+        proj_row = proj_result.first()
+        if proj_row:
+            project_default_slug, project_effort = proj_row
     effective_model_slug = resolve_chat_model_slug(
         chat.model_slug, project_default_slug
     )
+    effective_effort = resolve_chat_effort(chat.reasoning_effort, project_effort)
 
     # Build system prompt once — stimpacks and other volatile context are delivered
     # via system reminders (injected into the last user message per turn)
@@ -1368,7 +1372,9 @@ async def _run_agentic_loop_inner(
 
         # Resolve LLM config first so build_messages knows the window size and
         # we don't leave a dangling "thinking.." if no model is configured.
-        llm_config = await get_chat_llm_config(effective_model_slug, role='agent')
+        llm_config = await get_chat_llm_config(
+            effective_model_slug, role='agent', effort=effective_effort
+        )
         turn_stats["llm_config"] = llm_config
 
         # The tools schema counts as prompt input at the provider but isn't in

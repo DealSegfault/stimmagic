@@ -5,7 +5,7 @@ import string
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 import app_dirs
@@ -434,6 +434,28 @@ class AgentToolConfig(BaseModel):
     v2_permissions: Dict[str, str] = {}  # V2 tool permissions: tool_name -> "allow" | "deny"
 
 
+class RoleModelSelection(BaseModel):
+    """One role's model and how hard it should think.
+
+    ``effort`` is None by default, meaning "whatever this role is worth" — see
+    model_tiers.ROLE_EFFORTS. A role can't store a level name as its default
+    because models expose different ladders; the intent is resolved against the
+    chosen model's ladder at call time.
+    """
+    model_config = {"protected_namespaces": ()}
+
+    model: str = "auto"
+    effort: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_bare_slug(cls, value: Any) -> Any:
+        # Configs written before effort existed store a bare slug string.
+        if isinstance(value, str):
+            return {"model": value}
+        return value
+
+
 class ProfileAgentModels(BaseModel):
     """Per-profile model selection for each LLM role.
 
@@ -442,10 +464,10 @@ class ProfileAgentModels(BaseModel):
     local-only, one on frontier models — so these never fall back to a global
     value; ``auto`` is the only cross-install default that can be honest.
     """
-    quick_task: str = "auto"       # captioning, chat titles, share summaries
-    tool_assistant: str = "auto"   # the ToolView assistant and its prompt tools
-    chat: str = "auto"             # chat agent and its sub-agents
-    flow: str = "auto"             # default written into new flow programs
+    quick_task: RoleModelSelection = RoleModelSelection()      # captioning, chat titles
+    tool_assistant: RoleModelSelection = RoleModelSelection()  # ToolView assistant
+    chat: RoleModelSelection = RoleModelSelection()            # chat agent + sub-agents
+    flow: RoleModelSelection = RoleModelSelection()            # new flow programs
 
 
 class ProfileAgentConfig(BaseModel):
@@ -825,6 +847,9 @@ def _migrate_global_models_to_profiles(config_file: Path) -> bool:
             ("chat", chat),
         ):
             if key not in models and value:
+                # Bare slug, not the {model, effort} mapping: effort had no
+                # predecessor either, so it stays automatic. RoleModelSelection
+                # accepts both shapes.
                 models[key] = value
 
     data.pop("quick_task_model", None)
@@ -995,18 +1020,28 @@ class Settings(BaseSettings):
             tool_config=self.agent.tool_config,
         )
 
-    def get_role_model_slug(self, role: str, profile_id: Optional[str] = None) -> str:
-        """The model slug a profile has selected for an LLM role.
+    def get_role_selection(
+        self, role: str, profile_id: Optional[str] = None
+    ) -> "RoleModelSelection":
+        """A profile's model + effort for an LLM role.
 
-        Returns ``auto`` for an unknown role rather than raising — a new role
-        added to a call site before it exists in config should degrade to
-        automatic selection, not break the feature.
+        Returns the automatic default for an unknown role rather than raising —
+        a new role added to a call site before it exists in config should
+        degrade to automatic selection, not break the feature.
         """
         if profile_id is None:
             from core.profile_context import get_current_profile
             profile_id = get_current_profile()
         models = self.get_agent_for_profile(profile_id).models
-        return getattr(models, role, None) or "auto"
+        return getattr(models, role, None) or RoleModelSelection()
+
+    def get_role_model_slug(self, role: str, profile_id: Optional[str] = None) -> str:
+        """The model slug a profile has selected for an LLM role."""
+        return self.get_role_selection(role, profile_id).model or "auto"
+
+    def get_role_effort(self, role: str, profile_id: Optional[str] = None) -> Optional[str]:
+        """The effort a profile pinned for a role, or None for automatic."""
+        return self.get_role_selection(role, profile_id).effort
 
     @classmethod
     def load_config(cls, config_path: Optional[str] = None) -> "Settings":

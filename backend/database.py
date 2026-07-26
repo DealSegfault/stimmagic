@@ -940,11 +940,15 @@ class Project(Base):
     additional_instructions = Column(Text, nullable=True)
     memory = Column(Text, nullable=True)
     agent_tool_config = Column(String, nullable=True)
-    # Per-role model overrides. NULL = inherit the profile's setting.
+    # Per-role model + reasoning overrides. NULL = inherit the profile's setting.
     chat_model_slug = Column(String, nullable=True)
     quick_task_model_slug = Column(String, nullable=True)
     tool_assistant_model_slug = Column(String, nullable=True)
     flow_model_slug = Column(String, nullable=True)
+    chat_effort = Column(String, nullable=True)
+    quick_task_effort = Column(String, nullable=True)
+    tool_assistant_effort = Column(String, nullable=True)
+    flow_effort = Column(String, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
     deleted_at = Column(DateTime, nullable=True, index=True)
@@ -964,6 +968,10 @@ class Project(Base):
             "quick_task_model_slug": self.quick_task_model_slug,
             "tool_assistant_model_slug": self.tool_assistant_model_slug,
             "flow_model_slug": self.flow_model_slug,
+            "chat_effort": self.chat_effort,
+            "quick_task_effort": self.quick_task_effort,
+            "tool_assistant_effort": self.tool_assistant_effort,
+            "flow_effort": self.flow_effort,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
@@ -1356,7 +1364,10 @@ class Chat(Base):
     additional_instructions = Column(Text, nullable=True)  # Custom instructions for this chat
     # JSON: {allowed_tools: [], denied_tools: [], v2_permissions: {}}
     agent_tool_config = Column(String, nullable=True)
-    model_slug = Column(String, nullable=True)  # LLM model override (NULL = inherit from project/global default)
+    model_slug = Column(String, nullable=True)  # LLM model override (NULL = inherit from project/profile)
+    # Reasoning effort for THIS chat (NULL = inherit from project/profile).
+    # Mirrors model_slug: the picker writes here, not to a global per-model map.
+    reasoning_effort = Column(String, nullable=True)
 
     __table_args__ = {'sqlite_autoincrement': True}  # Prevent ID reuse after deletion
 
@@ -1377,6 +1388,7 @@ class Chat(Base):
             "additional_instructions": self.additional_instructions,
             "agent_tool_config": json.loads(self.agent_tool_config) if self.agent_tool_config else None,
             "model_slug": self.model_slug,
+            "reasoning_effort": self.reasoning_effort,
         }
 
 

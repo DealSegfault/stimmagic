@@ -2404,12 +2404,20 @@ class AgentToolConfigResponse(BaseModel):
     v2_permissions: Dict[str, str] = {}  # V2 tool permissions: tool_name -> "allow" | "deny"
 
 
+class RoleSelectionResponse(BaseModel):
+    """One role's model and reasoning effort. "auto" / null = pick for me."""
+    model_config = {"protected_namespaces": ()}
+
+    model: str = "auto"
+    effort: Optional[str] = None
+
+
 class AgentModelsResponse(BaseModel):
-    """Per-profile model selection for each LLM role. "auto" = pick for me."""
-    quick_task: str = "auto"
-    tool_assistant: str = "auto"
-    chat: str = "auto"
-    flow: str = "auto"
+    """Per-profile model selection for each LLM role."""
+    quick_task: RoleSelectionResponse = RoleSelectionResponse()
+    tool_assistant: RoleSelectionResponse = RoleSelectionResponse()
+    chat: RoleSelectionResponse = RoleSelectionResponse()
+    flow: RoleSelectionResponse = RoleSelectionResponse()
 
 
 class AgentSettingsResponse(BaseModel):
@@ -2425,7 +2433,9 @@ class AgentSettingsUpdate(BaseModel):
     additional_instructions: Optional[str] = None
     memory: Optional[str] = None
     tool_config: Optional[AgentToolConfigResponse] = None
-    models: Optional[AgentModelsResponse] = None
+    # Partial by design: only the roles present are touched. Sending the whole
+    # map would let a stale tab reset roles the user never opened.
+    models: Optional[Dict[str, RoleSelectionResponse]] = None
 
 
 @router.get("/agent", response_model=AgentSettingsResponse)
@@ -2481,11 +2491,18 @@ async def update_agent_settings(request: AgentSettingsUpdate):
             "v2_permissions": request.tool_config.v2_permissions,
         }
     if request.models is not None:
-        from llm_resolver import normalize_model_slug
-        agent_data["models"] = {
-            role: (normalize_model_slug(slug) or "auto")
-            for role, slug in request.models.model_dump().items()
-        }
+        from llm_resolver import SETTINGS_ROLES, normalize_model_slug
+        merged = dict(agent_data["models"])
+        for role, selection in request.models.items():
+            if role not in SETTINGS_ROLES:
+                raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
+            merged[role] = {
+                "model": normalize_model_slug(selection.model) or "auto",
+                # "" from a picker means "no pin" — store it as absent, not as a
+                # level name no model has.
+                "effort": selection.effort or None,
+            }
+        agent_data["models"] = merged
 
     # Write to profile's agent section in config
     try:

@@ -15,13 +15,18 @@ import SettingRow from './SettingRow.vue'
 const props = defineProps<{
   /** role -> saved slug. '' / null means unset (inherit). */
   modelValue: Record<string, string | null>
+  /** role -> saved effort. '' / null means unset (whatever the role is worth). */
+  efforts?: Record<string, string | null>
   /** Project scope, so the resolved preview reflects this project's overrides. */
   projectId?: number | null
   /** True in project settings, where an unset role inherits the profile. */
   inherits?: boolean
 }>()
 
-const emit = defineEmits<{ (e: 'update:role', role: string, slug: string): void }>()
+const emit = defineEmits<{
+  (e: 'update:role', role: string, slug: string): void
+  (e: 'update:effort', role: string, effort: string): void
+}>()
 
 const { selectableModels, roleDefaults, fetchModels } = useAvailableModels()
 
@@ -124,6 +129,34 @@ function selectedFor(role: string) {
   return modelOptions.value.some(o => o.value === slug) ? slug : ''
 }
 
+/** The model a role is actually running, so its ladder is the one we offer. */
+function effectiveModel(role: string) {
+  const slug = props.modelValue?.[role]
+  if (slug && slug !== 'auto') return modelFor(slug)
+  return fallbackModel(role)
+}
+
+function effortLevels(role: string): string[] {
+  return effectiveModel(role)?.reasoning?.levels || []
+}
+
+/** What's pinned here, or '' when the role's own intent is deciding. */
+function selectedEffort(role: string) {
+  const pinned = props.efforts?.[role]
+  return pinned && effortLevels(role).includes(pinned) ? pinned : ''
+}
+
+/** The level the role's intent lands on, shown on the Automatic chip. */
+function autoEffort(role: string) {
+  return roleDefaults.value[role]?.auto_effort || ''
+}
+
+function effortLabel(level: string) {
+  if (level === 'off') return 'Off'
+  if (level === 'xhigh') return 'XHigh'
+  return level.charAt(0).toUpperCase() + level.slice(1)
+}
+
 onMounted(() => fetchModels(props.projectId ?? null, true))
 </script>
 
@@ -143,7 +176,31 @@ onMounted(() => fetchModels(props.projectId ?? null, true))
         :model-value="selectedFor(role.key)"
         :options="optionsFor(role.key)"
         @update:model-value="slug => emit('update:role', role.key, slug)"
-      />
+      >
+        <template v-if="effortLevels(role.key).length > 1" #footer>
+          <div class="mb-1.5 text-[11px] font-medium text-content-muted">Reasoning</div>
+          <div class="flex flex-wrap gap-1">
+            <button
+              type="button"
+              class="rounded-md border px-2 py-1 text-[11px]"
+              :class="selectedEffort(role.key) === ''
+                ? 'border-blue-500/50 bg-blue-500/15 text-blue-400'
+                : 'border-edge-subtle bg-overlay-light text-content-secondary hover:text-content'"
+              @click.stop="emit('update:effort', role.key, '')"
+            >Automatic{{ autoEffort(role.key) ? ` (${effortLabel(autoEffort(role.key))})` : '' }}</button>
+            <button
+              v-for="level in effortLevels(role.key)"
+              :key="level"
+              type="button"
+              class="rounded-md border px-2 py-1 text-[11px]"
+              :class="selectedEffort(role.key) === level
+                ? 'border-blue-500/50 bg-blue-500/15 text-blue-400'
+                : 'border-edge-subtle bg-overlay-light text-content-secondary hover:text-content'"
+              @click.stop="emit('update:effort', role.key, level)"
+            >{{ effortLabel(level) }}</button>
+          </div>
+        </template>
+      </SettingsDropdown>
     </SettingRow>
   </div>
 </template>

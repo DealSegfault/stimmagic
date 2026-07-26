@@ -15,7 +15,7 @@ from models.api_models import (
     ProjectSummaryResponse,
     ProjectUpdateRequest,
 )
-from llm_resolver import PROJECT_ROLE_COLUMNS, normalize_model_slug
+from llm_resolver import PROJECT_EFFORT_COLUMNS, PROJECT_ROLE_COLUMNS, normalize_model_slug
 from project_service import get_project_or_404, initialize_project_root
 from utils.websocket import ws_manager
 
@@ -23,6 +23,8 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 # Per-role model override columns, in the order the settings UI shows them.
 PROJECT_MODEL_COLUMNS = tuple(PROJECT_ROLE_COLUMNS.values())
+# Effort overrides carry no slug normalization — they are level names.
+PROJECT_EFFORT_COLS = tuple(PROJECT_EFFORT_COLUMNS.values())
 
 
 async def _serialize_project(project: Project, session: AsyncSession) -> ProjectResponse:
@@ -94,6 +96,7 @@ async def create_project(
             column: normalize_model_slug(getattr(request, column))
             for column in PROJECT_MODEL_COLUMNS
         },
+        **{column: getattr(request, column) for column in PROJECT_EFFORT_COLS},
     )
     session.add(project)
     await session.flush()
@@ -139,6 +142,10 @@ async def update_project(
         if value is not None:
             # "" clears the override back to inheriting the profile setting.
             setattr(project, column, normalize_model_slug(value) if value else None)
+    for column in PROJECT_EFFORT_COLS:
+        value = getattr(request, column)
+        if value is not None:
+            setattr(project, column, value or None)
     project.updated_at = datetime.utcnow()
     await session.commit()
     await session.refresh(project)

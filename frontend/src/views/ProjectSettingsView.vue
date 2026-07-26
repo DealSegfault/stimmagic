@@ -19,9 +19,11 @@
         <h4 class="text-xs font-semibold text-content-secondary mb-3">Models</h4>
         <RoleModelRows
           :model-value="localModels"
+          :efforts="localEfforts"
           :project-id="project.id"
           inherits
           @update:role="saveRoleModel"
+          @update:effort="saveRoleEffort"
         />
       </div>
 
@@ -138,7 +140,14 @@ const ROLE_COLUMNS = {
   chat: 'chat_model_slug',
   flow: 'flow_model_slug',
 }
+const EFFORT_COLUMNS = {
+  quick_task: 'quick_task_effort',
+  tool_assistant: 'tool_assistant_effort',
+  chat: 'chat_effort',
+  flow: 'flow_effort',
+}
 const localModels = ref({})
+const localEfforts = ref({})
 
 // Tools state
 const allTools = ref([])
@@ -183,12 +192,21 @@ watch(() => props.project, (project) => {
   localModels.value = Object.fromEntries(
     Object.entries(ROLE_COLUMNS).map(([role, column]) => [role, project[column] || ''])
   )
+  localEfforts.value = Object.fromEntries(
+    Object.entries(EFFORT_COLUMNS).map(([role, column]) => [role, project[column] || ''])
+  )
 }, { immediate: true, deep: true })
 
 // '' clears the override; the backend reads empty string as "inherit".
 async function saveRoleModel(role, slug) {
   localModels.value = { ...localModels.value, [role]: slug }
   const updated = await updateProject(props.project.id, { [ROLE_COLUMNS[role]]: slug })
+  Object.assign(props.project, updated)
+}
+
+async function saveRoleEffort(role, effort) {
+  localEfforts.value = { ...localEfforts.value, [role]: effort }
+  const updated = await updateProject(props.project.id, { [EFFORT_COLUMNS[role]]: effort })
   Object.assign(props.project, updated)
 }
 

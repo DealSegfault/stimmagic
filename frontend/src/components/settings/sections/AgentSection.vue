@@ -20,7 +20,12 @@
           Projects can override any of these.
         </p>
         <div class="mt-3 max-w-[680px]">
-          <RoleModelRows :model-value="localModels" @update:role="saveRoleModel" />
+          <RoleModelRows
+            :model-value="roleSlugs"
+            :efforts="roleEfforts"
+            @update:role="saveRoleModel"
+            @update:effort="saveRoleEffort"
+          />
         </div>
       </div>
 
@@ -90,7 +95,8 @@ import { useProvidersApi, type ProviderTool } from '../../../composables/useProv
 import { useProfile } from '../../../composables/useProfile'
 import { useAvailableModels } from '../../../composables/useAvailableModels'
 
-type RoleModels = Record<string, string>
+type RoleSelection = { model: string; effort: string | null }
+type RoleModels = Record<string, RoleSelection>
 
 interface ProfileAgentSettings {
   additional_instructions: string
@@ -99,8 +105,12 @@ interface ProfileAgentSettings {
   models: RoleModels
 }
 
-const EMPTY_MODELS: RoleModels = {
-  quick_task: 'auto', tool_assistant: 'auto', chat: 'auto', flow: 'auto',
+const ROLE_KEYS = ['quick_task', 'tool_assistant', 'chat', 'flow'] as const
+
+function emptyModels(): RoleModels {
+  return Object.fromEntries(
+    ROLE_KEYS.map(role => [role, { model: 'auto', effort: null }])
+  ) as RoleModels
 }
 
 const { listAllTools } = useProvidersApi()
@@ -120,7 +130,14 @@ const localToolConfig = ref<ToolConfig>({
   allowed_tools: [],
   denied_tools: [],
 })
-const localModels = ref<RoleModels>({ ...EMPTY_MODELS })
+const localModels = ref<RoleModels>(emptyModels())
+
+const roleSlugs = computed(() => Object.fromEntries(
+  Object.entries(localModels.value).map(([role, sel]) => [role, sel?.model || 'auto'])
+))
+const roleEfforts = computed(() => Object.fromEntries(
+  Object.entries(localModels.value).map(([role, sel]) => [role, sel?.effort ?? null])
+))
 
 // Computed: tools that are explicitly configured (in allowed or denied lists)
 const configuredToolIds = computed(() => {
@@ -158,7 +175,7 @@ async function loadSettings() {
       allowed_tools: [],
       denied_tools: [],
     }
-    localModels.value = { ...EMPTY_MODELS, ...(settings.value?.models || {}) }
+    localModels.value = { ...emptyModels(), ...(settings.value?.models || {}) }
   } catch (err) {
     console.error('Failed to load agent settings:', err)
   } finally {
@@ -201,18 +218,26 @@ async function saveMemory() {
   }
 }
 
-// '' from the dropdown means "automatic" — stored as the explicit 'auto' the
-// backend resolver understands.
-async function saveRoleModel(role: string, slug: string) {
-  const next = { ...localModels.value, [role]: slug || 'auto' }
-  localModels.value = next
+// '' from either control means "decide for me" — stored as the explicit 'auto'
+// slug and a null effort, which is what the backend resolver reads.
+async function saveSelection(role: string, patch: Partial<RoleSelection>) {
+  const current = localModels.value[role] || { model: 'auto', effort: null }
+  const selection = { ...current, ...patch }
+  localModels.value = { ...localModels.value, [role]: selection }
   try {
-    await axios.patch(`${getApiBase()}/settings/agent`, { models: next })
+    // Send ONLY the role that changed. Posting the whole map would let a tab
+    // opened before an edit elsewhere quietly reset the other three roles.
+    await axios.patch(`${getApiBase()}/settings/agent`, { models: { [role]: selection } })
     await fetchModels(null, true)
   } catch (err) {
     console.error('Failed to save model selection:', err)
   }
 }
+
+const saveRoleModel = (role: string, slug: string) =>
+  saveSelection(role, { model: slug || 'auto' })
+const saveRoleEffort = (role: string, effort: string) =>
+  saveSelection(role, { effort: effort || null })
 
 async function handleToolConfigUpdate(config: ToolConfig) {
   localToolConfig.value = config

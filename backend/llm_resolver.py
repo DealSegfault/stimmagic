@@ -21,7 +21,7 @@ from typing import Optional
 
 from config import LEGACY_LLM_MODEL_SLUGS, get_settings, LLMEndpointConfig
 from core.logging import get_logger
-from model_tiers import ModelCandidate, ROLE_TIERS, select_auto_model
+from model_tiers import ModelCandidate, ROLE_TIERS, effort_for_role, select_auto_model
 
 log = get_logger(__name__)
 
@@ -120,7 +120,7 @@ async def get_effective_llm_config(
     except LLMUnavailableError:
         # When the saved selection can't resolve — e.g. a cloud model while
         # signed out — any working configured model beats failing the feature.
-        fallback = _fallback_provider_model_config(quick_task=_is_quick(role))
+        fallback = _fallback_provider_model_config(role=role)
         if fallback:
             return fallback
         role_config = _wire_role_config(role)
@@ -145,10 +145,10 @@ async def _resolve_role_llm_config(
     if acceptance_config:
         return acceptance_config
 
-    quick = _is_quick(role)
     selected_slug = await resolve_role_model_slug(role, project_id)
+    effort = await resolve_role_effort(role, project_id)
 
-    provider_config = _get_provider_model_config(selected_slug, quick_task=quick)
+    provider_config = _get_provider_model_config(selected_slug, role=role, effort=effort)
     if provider_config:
         return provider_config
     provider = _provider_for_model_slug(selected_slug)
@@ -173,7 +173,8 @@ async def _resolve_role_llm_config(
             _resolve_catalog_alias(selected_slug, _wire_role(role)),
             model_slug=selected_slug,
             max_context_tokens=get_max_context_tokens(selected_slug),
-            quick_task=quick,
+            settings_role=role,
+            effort=effort,
         )
         if cloud_config:
             return cloud_config
@@ -193,7 +194,8 @@ async def _get_stimma_cloud_config(
     *,
     model_slug: Optional[str] = None,
     max_context_tokens: Optional[int] = None,
-    quick_task: bool = False,
+    settings_role: str = "agent",
+    effort: Optional[str] = None,
 ) -> Optional[LLMEndpointConfig]:
     """Get Stimma Cloud LLM configuration.
 
@@ -242,11 +244,26 @@ async def _get_stimma_cloud_config(
             api_key=id_token,
             max_context_tokens=max_context_tokens if max_context_tokens is not None else MAX_CONTEXT_CAP,
             **_model_prompt_fields(model_slug or role),
-            **_cloud_reasoning_fields(role, quick_task=quick_task),
+            **_cloud_reasoning_fields(model_slug or role, role=settings_role, effort=effort),
         )
     except Exception as e:
         log.error("failed to get stimma cloud config", role=role, error=str(e))
         return None
+
+
+def resolve_chat_effort(
+    chat_effort: Optional[str],
+    project_effort: Optional[str],
+    profile_effort: Optional[str] = None,
+) -> Optional[str]:
+    """Three-level effort resolution: chat -> project -> profile.
+
+    Mirrors resolve_chat_model_slug exactly. None at every level means nobody
+    pinned one, so the `chat` role's intent decides once the model is known.
+    """
+    if profile_effort is None:
+        profile_effort = get_settings().get_role_effort("chat")
+    return chat_effort or project_effort or profile_effort
 
 
 def resolve_chat_model_slug(
@@ -374,17 +391,21 @@ def _lookup_catalog(slug: str) -> Optional[dict]:
     return _catalog_cache.get(slug) or _BUILTIN_CATALOG.get(slug)
 
 
-def _cloud_reasoning_fields(model_slug: str, *, quick_task: bool) -> dict:
+def _cloud_reasoning_fields(
+    model_slug: str, *, role: str = "agent", effort: Optional[str] = None
+) -> dict:
     entry = _lookup_catalog(model_slug) or {}
     reasoning = entry.get("reasoning") or {}
     levels = reasoning.get("levels") or []
     if not levels:
         return {}
-    settings = get_settings()
-    requested_level = (
-        reasoning.get("quick_task")
-        if quick_task
-        else settings.llm_reasoning_levels.get(model_slug, reasoning.get("default"))
+    requested_level = _resolve_level(
+        role,
+        effort=effort,
+        levels=levels,
+        default=reasoning.get("default"),
+        quick_task_level=reasoning.get("quick_task"),
+        slug=model_slug,
     )
     level = requested_level if requested_level in levels else reasoning.get("default")
     if level not in levels:
@@ -537,7 +558,7 @@ async def resolve_role_model_slug(
         # it first keeps a local-only install off the network — this runs on
         # every captioned image, and a cloud auth probe per quick task would be
         # a real cost for someone who has no cloud.
-        if _get_provider_model_config(slug, quick_task=_is_quick(role)):
+        if _get_provider_model_config(slug, role=role):
             return slug
         # A saved slug the install can no longer reach — a cloud model after
         # signing out, a provider that was deleted — must not be reported or
@@ -575,10 +596,50 @@ PROJECT_ROLE_COLUMNS = {
     "flow": "flow_model_slug",
 }
 
+PROJECT_EFFORT_COLUMNS = {
+    "quick_task": "quick_task_effort",
+    "tool_assistant": "tool_assistant_effort",
+    "chat": "chat_effort",
+    "flow": "flow_effort",
+}
+
+
+async def resolve_role_effort(
+    role: str,
+    project_id: Optional[int] = None,
+    *,
+    project_effort: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve a role's pinned reasoning effort: project -> profile -> None.
+
+    None means "no one pinned one", which leaves the choice to the role's intent
+    (model_tiers.ROLE_EFFORTS) once the model — and therefore its ladder — is
+    known. Effort can't be resolved to a level here because two models rarely
+    offer the same levels.
+    """
+    if role not in ROLE_TIERS:
+        return None
+    if project_effort is None and project_id is not None:
+        project_effort = await _project_role_effort(role, project_id)
+    if project_effort:
+        return project_effort
+    return get_settings().get_role_effort(role)
+
+
+async def _project_role_effort(role: str, project_id: int) -> Optional[str]:
+    """A project's effort override for a role, or None. Never fails a caller."""
+    return await _project_column(PROJECT_EFFORT_COLUMNS.get(role), project_id, role)
+
 
 async def _project_role_slug(role: str, project_id: int) -> Optional[str]:
-    """A project's override for a role, or None. Never fails a caller."""
-    column_name = PROJECT_ROLE_COLUMNS.get(role)
+    """A project's model override for a role, or None. Never fails a caller."""
+    return await _project_column(PROJECT_ROLE_COLUMNS.get(role), project_id, role)
+
+
+async def _project_column(
+    column_name: Optional[str], project_id: int, role: str
+) -> Optional[str]:
+    """Read one nullable project column. An override lookup must never break a run."""
     if not column_name:
         return None
     try:
@@ -597,15 +658,44 @@ async def _project_role_slug(role: str, project_id: int) -> Optional[str]:
             )
             return result.scalar_one_or_none()
     except Exception:  # noqa: BLE001 — an override lookup must never break a run
-        log.debug("project model override lookup failed", role=role,
+        log.debug("project override lookup failed", column=column_name, role=role,
                   project_id=project_id, exc_info=True)
         return None
+
+
+def _resolve_level(
+    role: str,
+    *,
+    effort: Optional[str],
+    levels: list,
+    default: Optional[str],
+    quick_task_level: Optional[str],
+    slug: Optional[str],
+) -> Optional[str]:
+    """Pick the reasoning level one call runs at.
+
+    Order: an explicitly pinned effort, then — for the four settings roles — the
+    effort that role is worth (model_tiers.ROLE_EFFORTS), resolved against this
+    model's own ladder. Wire roles keep the older behavior so the chat path and
+    the endpoint-test screen are unaffected: ``agent-fast`` runs at the model's
+    quick-task level, ``agent`` at the globally saved per-model level.
+    """
+    if effort and effort in levels:
+        return effort
+    if role in ROLE_TIERS:
+        return effort_for_role(role, levels, default)
+    if role == "agent-fast":
+        return quick_task_level
+    if slug:
+        return get_settings().llm_reasoning_levels.get(slug, default)
+    return default
 
 
 def _get_provider_model_config(
     model_slug: Optional[str],
     *,
-    quick_task: bool,
+    role: str = "agent",
+    effort: Optional[str] = None,
 ) -> Optional[LLMEndpointConfig]:
     if not model_slug:
         return None
@@ -617,10 +707,13 @@ def _get_provider_model_config(
             if model.id != model_slug or not model.enabled:
                 continue
             reasoning = model.reasoning
-            selected_level = (
-                reasoning.quick_task
-                if quick_task
-                else settings.llm_reasoning_levels.get(model.id, reasoning.default)
+            selected_level = _resolve_level(
+                role,
+                effort=effort,
+                levels=reasoning.levels,
+                default=reasoning.default,
+                quick_task_level=reasoning.quick_task,
+                slug=model.id,
             )
             if selected_level not in reasoning.levels:
                 selected_level = (
@@ -656,7 +749,9 @@ def _provider_for_model_slug(model_slug: Optional[str]):
     return None
 
 
-def _fallback_provider_model_config(*, quick_task: bool) -> Optional[LLMEndpointConfig]:
+def _fallback_provider_model_config(
+    *, role: str = "agent", effort: Optional[str] = None
+) -> Optional[LLMEndpointConfig]:
     """First enabled, working provider model, for when the saved selection
     can't resolve. A single configured model should be used without making the
     user pick it explicitly. Remote providers are excluded during Privacy
@@ -671,11 +766,15 @@ def _fallback_provider_model_config(*, quick_task: bool) -> Optional[LLMEndpoint
             continue
         for model in provider.models:
             if model.enabled:
-                return _get_provider_model_config(model.id, quick_task=quick_task)
+                return _get_provider_model_config(model.id, role=role, effort=effort)
     return None
 
 
-async def get_chat_llm_config(model_slug: Optional[str], role: str = 'agent') -> LLMEffectiveConfig:
+async def get_chat_llm_config(
+    model_slug: Optional[str],
+    role: str = 'agent',
+    effort: Optional[str] = None,
+) -> LLMEffectiveConfig:
     """Get LLM config for a chat message, respecting per-chat model selection.
 
     Args:
@@ -697,10 +796,7 @@ async def get_chat_llm_config(model_slug: Optional[str], role: str = 'agent') ->
 
     model_slug = normalize_model_slug(model_slug) or 'auto'
 
-    provider_config = _get_provider_model_config(
-        model_slug,
-        quick_task=_is_quick(role),
-    )
+    provider_config = _get_provider_model_config(model_slug, role=role, effort=effort)
     if provider_config:
         return provider_config
     provider = _provider_for_model_slug(model_slug)
@@ -715,11 +811,11 @@ async def get_chat_llm_config(model_slug: Optional[str], role: str = 'agent') ->
         # available model for this role, tier-matched against what's installed.
         auto_slug = await resolve_auto_slug(role)
         if auto_slug and auto_slug != 'auto':
-            return await get_chat_llm_config(auto_slug, role=role)
+            return await get_chat_llm_config(auto_slug, role=role, effort=effort)
         role_config = _wire_role_config(role)
         if role_config and role_config.endpoint and role_config.endpoint.url:
             return role_config.endpoint
-        fallback = _fallback_provider_model_config(quick_task=_is_quick(role))
+        fallback = _fallback_provider_model_config(role=role, effort=effort)
         if fallback:
             return fallback
         await _raise_cloud_llm_error()
@@ -739,7 +835,8 @@ async def get_chat_llm_config(model_slug: Optional[str], role: str = 'agent') ->
         alias,
         model_slug=model_slug,
         max_context_tokens=get_max_context_tokens(model_slug),
-        quick_task=_is_quick(role),
+        settings_role=role,
+        effort=effort,
     )
     if cloud_config:
         return cloud_config

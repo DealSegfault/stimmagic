@@ -498,13 +498,13 @@ def test_provider_model_resolver_uses_saved_chat_level_and_minimum_for_quick_tas
     )
     monkeypatch.setattr(llm_resolver, "get_settings", lambda: settings)
 
-    chat = llm_resolver._get_provider_model_config(model.id, quick_task=False)
+    chat = llm_resolver._get_provider_model_config(model.id, role='agent')
     assert chat is not None
     assert chat.reasoning_level == "xhigh"
     assert chat.content_policy_enabled is True
     assert chat.extra_system_prompt == "Keep answers concise."
 
-    quick = llm_resolver._get_provider_model_config(model.id, quick_task=True)
+    quick = llm_resolver._get_provider_model_config(model.id, role='quick_task')
     assert quick is not None
     assert quick.reasoning_level == "off"
 
@@ -526,7 +526,7 @@ def test_provider_model_resolver_repairs_removed_reasoning_level(monkeypatch):
     )
     monkeypatch.setattr(llm_resolver, "get_settings", lambda: settings)
 
-    resolved = llm_resolver._get_provider_model_config(model.id, quick_task=False)
+    resolved = llm_resolver._get_provider_model_config(model.id, role='agent')
     assert resolved is not None
     assert resolved.reasoning_level == "high"
     assert resolved.content_policy_enabled is False
@@ -566,6 +566,7 @@ async def test_failed_provider_is_blocked_without_cloud_fallback(monkeypatch):
     )
     settings = SimpleNamespace(
         get_role_model_slug=lambda _role, profile_id=None: model.id,
+        get_role_effort=lambda _role, profile_id=None: None,
         llm_providers=[provider],
         llm_reasoning_levels={},
         llm_content_policy="stimma",
@@ -586,6 +587,7 @@ async def test_quick_tasks_respect_explicit_legacy_local_endpoint(monkeypatch):
     endpoint = LLMEndpointConfig(url="http://localhost:1234/v1", model="local-model")
     settings = SimpleNamespace(
         get_role_model_slug=lambda _role, profile_id=None: "local",
+        get_role_effort=lambda _role, profile_id=None: None,
         llm_providers=[],
         get_llm_role_config=lambda _role: LLMRoleConfig(source="auto", endpoint=endpoint),
     )
@@ -610,7 +612,7 @@ def test_cloud_reasoning_repairs_removed_level(monkeypatch):
         "get_settings",
         lambda: SimpleNamespace(llm_reasoning_levels={"stimma:test": "off"}),
     )
-    assert llm_resolver._cloud_reasoning_fields("stimma:test", quick_task=False)[
+    assert llm_resolver._cloud_reasoning_fields("stimma:test", role='agent')[
         "reasoning_level"
     ] == "high"
 

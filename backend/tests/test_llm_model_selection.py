@@ -5,7 +5,7 @@ import pytest
 from config import LLMEndpointConfig, LLMRoleConfig
 
 
-def _stub_settings(*, role_models=None, **overrides):
+def _stub_settings(*, role_models=None, role_efforts=None, **overrides):
     """A settings stub with the per-role model accessor the resolver needs.
 
     ``role_models`` maps a settings role to its saved slug; anything unset is
@@ -16,11 +16,13 @@ def _stub_settings(*, role_models=None, **overrides):
         "chat": "auto", "flow": "auto",
         **(role_models or {}),
     }
+    efforts = dict(role_efforts or {})
     defaults = dict(
         llm_providers=[],
         llm_reasoning_levels={},
         llm_model_prompts={},
         get_role_model_slug=lambda role, profile_id=None: models.get(role, "auto"),
+        get_role_effort=lambda role, profile_id=None: efforts.get(role),
         get_llm_role_config=lambda _role: LLMRoleConfig(source="auto"),
     )
     defaults.update(overrides)
@@ -175,7 +177,8 @@ async def test_chat_auto_uses_builtin_catalog_before_cloud_fetch(monkeypatch):
 
     seen = {}
 
-    async def fake_cloud_config(role, *, model_slug=None, max_context_tokens=None, quick_task=False):
+    async def fake_cloud_config(role, *, model_slug=None, max_context_tokens=None,
+                                settings_role="agent", effort=None):
         seen["role"] = role
         seen["model_slug"] = model_slug
         seen["max_context_tokens"] = max_context_tokens
@@ -807,3 +810,108 @@ async def test_cold_catalog_does_not_downgrade_a_saved_cloud_model(monkeypatch):
         assert await llm_resolver.resolve_role_model_slug("chat") != "stimma:claude-opus-5"
     finally:
         llm_resolver.set_catalog_cache([])
+
+
+class TestRoleEffort:
+    """Effort resolves like the model does — pinned first, then the role's own
+    intent — and a pin never leaks across roles the way the old global
+    per-model map did."""
+
+    @pytest.mark.asyncio
+    async def test_unpinned_roles_get_their_intent_not_the_model_default(self, monkeypatch):
+        import llm_resolver
+
+        monkeypatch.setattr(llm_resolver, "get_settings", lambda: _stub_settings())
+
+        anthropic = ["off", "low", "medium", "high", "xhigh", "max"]
+        fields = {
+            role: llm_resolver._resolve_level(
+                role, effort=None, levels=anthropic, default="high",
+                quick_task_level="off", slug="stimma:claude-sonnet-5",
+            )
+            for role in ("quick_task", "tool_assistant", "flow", "chat")
+        }
+        assert fields == {
+            "quick_task": "off",
+            "tool_assistant": "low",
+            "flow": "low",       # cheap by default: flows multiply the cost
+            "chat": "high",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_pinned_effort_wins(self, monkeypatch):
+        import llm_resolver
+
+        monkeypatch.setattr(llm_resolver, "get_settings", lambda: _stub_settings())
+        level = llm_resolver._resolve_level(
+            "flow", effort="max", levels=["off", "low", "high", "max"],
+            default="high", quick_task_level="off", slug="x",
+        )
+        assert level == "max"
+
+    @pytest.mark.asyncio
+    async def test_a_pin_the_model_cannot_honor_is_ignored(self, monkeypatch):
+        """A level saved against one model must not be forced onto another that
+        has no such rung — it would reach the provider as garbage."""
+        import llm_resolver
+
+        monkeypatch.setattr(llm_resolver, "get_settings", lambda: _stub_settings())
+        level = llm_resolver._resolve_level(
+            "flow", effort="xhigh", levels=["off", "high"],
+            default="high", quick_task_level="off", slug="x",
+        )
+        assert level == "off"  # falls back to the flow intent, not to xhigh
+
+    @pytest.mark.asyncio
+    async def test_wire_roles_keep_the_old_behavior(self, monkeypatch):
+        """`agent` / `agent-fast` still serve the chat path and the endpoint
+        test screen, which must not change under them."""
+        import llm_resolver
+
+        monkeypatch.setattr(
+            llm_resolver, "get_settings",
+            lambda: _stub_settings(llm_reasoning_levels={"x": "max"}),
+        )
+        levels = ["off", "low", "high", "max"]
+        assert llm_resolver._resolve_level(
+            "agent-fast", effort=None, levels=levels, default="high",
+            quick_task_level="off", slug="x",
+        ) == "off"
+        assert llm_resolver._resolve_level(
+            "agent", effort=None, levels=levels, default="high",
+            quick_task_level="off", slug="x",
+        ) == "max"
+
+    @pytest.mark.asyncio
+    async def test_profile_effort_is_read_per_role(self, monkeypatch):
+        import llm_resolver
+
+        monkeypatch.setattr(
+            llm_resolver, "get_settings",
+            lambda: _stub_settings(role_efforts={"flow": "medium"}),
+        )
+        assert await llm_resolver.resolve_role_effort("flow") == "medium"
+        assert await llm_resolver.resolve_role_effort("chat") is None
+
+    @pytest.mark.asyncio
+    async def test_project_effort_beats_the_profile(self, monkeypatch):
+        import llm_resolver
+
+        monkeypatch.setattr(
+            llm_resolver, "get_settings",
+            lambda: _stub_settings(role_efforts={"flow": "medium"}),
+        )
+        resolved = await llm_resolver.resolve_role_effort("flow", project_effort="off")
+        assert resolved == "off"
+
+
+def test_chat_effort_resolves_chat_then_project_then_profile(monkeypatch):
+    import llm_resolver
+
+    monkeypatch.setattr(
+        llm_resolver, "get_settings",
+        lambda: _stub_settings(role_efforts={"chat": "high"}),
+    )
+    assert llm_resolver.resolve_chat_effort("max", "low") == "max"
+    assert llm_resolver.resolve_chat_effort(None, "low") == "low"
+    assert llm_resolver.resolve_chat_effort(None, None) == "high"

@@ -349,6 +349,10 @@ class ProjectResponse(BaseModel):
     quick_task_model_slug: Optional[str] = None
     tool_assistant_model_slug: Optional[str] = None
     flow_model_slug: Optional[str] = None
+    chat_effort: Optional[str] = None
+    quick_task_effort: Optional[str] = None
+    tool_assistant_effort: Optional[str] = None
+    flow_effort: Optional[str] = None
     created_at: str
     updated_at: str
     deleted_at: Optional[str] = None
@@ -363,6 +367,10 @@ class ProjectCreateRequest(BaseModel):
     quick_task_model_slug: Optional[str] = None
     tool_assistant_model_slug: Optional[str] = None
     flow_model_slug: Optional[str] = None
+    chat_effort: Optional[str] = None
+    quick_task_effort: Optional[str] = None
+    tool_assistant_effort: Optional[str] = None
+    flow_effort: Optional[str] = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -374,6 +382,10 @@ class ProjectUpdateRequest(BaseModel):
     quick_task_model_slug: Optional[str] = None
     tool_assistant_model_slug: Optional[str] = None
     flow_model_slug: Optional[str] = None
+    chat_effort: Optional[str] = None
+    quick_task_effort: Optional[str] = None
+    tool_assistant_effort: Optional[str] = None
+    flow_effort: Optional[str] = None
 
 
 class BoardSectionCreateRequest(BaseModel):

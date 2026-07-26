@@ -246,15 +246,17 @@ const MAX_RECENT_MODELS = 4
 
 const props = defineProps({
   modelSlug: { type: String, default: null },
+  /** This chat's pinned reasoning effort, or null to inherit. */
+  reasoningEffort: { type: String, default: null },
   chatId: { type: Number, default: null },
   projectId: { type: Number, default: null },
   disabled: { type: Boolean, default: false },
   disabledLabel: { type: String, default: 'Model unavailable' },
 })
 
-const emit = defineEmits(['update:modelSlug'])
+const emit = defineEmits(['update:modelSlug', 'update:reasoningEffort'])
 
-const { models, selectableModels, globalDefault, reasoningLevels, loading, hasFetched, fetchModels, getModelDisplayName, getSelectableModel } = useAvailableModels()
+const { models, selectableModels, globalDefault, reasoningLevels, roleDefaults, loading, hasFetched, fetchModels, getModelDisplayName, getSelectableModel } = useAvailableModels()
 
 const container = ref(null)
 const dropdown = ref(null)
@@ -293,7 +295,14 @@ const reasoningOptions = computed(() => reasoningModel.value?.reasoning?.levels 
 const currentReasoningLevel = computed(() => {
   const model = reasoningModel.value
   if (!model) return null
-  return reasoningLevels.value[model.slug] || model.reasoning?.default || null
+  // This chat's own effort first. `reasoningLevels` is the older global
+  // per-model map, kept as a fallback for chats saved before efforts moved
+  // onto the chat itself.
+  return props.reasoningEffort
+    || reasoningLevels.value[model.slug]
+    || roleDefaults.value?.chat?.auto_effort
+    || model.reasoning?.default
+    || null
 })
 const currentReasoningLabel = computed(() => currentReasoningLevel.value ? reasoningLabel(currentReasoningLevel.value) : '')
 
@@ -406,13 +415,17 @@ function reasoningLabel(level) {
 }
 
 async function selectReasoning(level) {
-  const model = reasoningModel.value
-  if (!model) return
-  await axios.patch(`${getApiBase()}/settings/model-reasoning`, {
-    model: model.slug,
-    level,
-  })
-  await fetchModels(props.projectId, true)
+  // Effort belongs to THIS chat. It used to be written per-model and globally,
+  // so turning one chat up to Max turned every chat on that model up with it.
+  emit('update:reasoningEffort', level)
+  if (props.chatId == null) return
+  try {
+    await axios.patch(`${getApiBase()}/chats/${props.chatId}`, {
+      reasoning_effort: level,
+    })
+  } catch (err) {
+    console.error('Failed to update chat reasoning effort:', err)
+  }
 }
 
 function isSelectedModel(model) {

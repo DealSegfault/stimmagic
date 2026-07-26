@@ -33,6 +33,49 @@ ROLE_TIERS: dict[str, str] = {
     "chat": DEEP,
 }
 
+# Role -> how much reasoning that kind of work is worth, as an intent rather
+# than a level name. Models expose different ladders ("off/low/medium/high/max",
+# "minimal/low/medium/high", "off/high"), so a role can't name a level directly
+# and have it mean the same thing everywhere.
+#
+#   minimum — the cheapest the model offers
+#   low     — a little thinking if the model sells it that way, else the cheapest
+#   default — whatever the model considers normal
+#
+# Flows sit at `low` on purpose: a flow fans one call out over every item it
+# processes, so effort there multiplies in a way it doesn't in a chat.
+ROLE_EFFORTS: dict[str, str] = {
+    "quick_task": "minimum",
+    "tool_assistant": "low",
+    "flow": "low",
+    "chat": "default",
+}
+
+
+def effort_for_role(
+    role: str,
+    levels: Optional[list[str]],
+    default_level: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve a role's effort intent against one model's actual ladder.
+
+    ``levels`` is ordered weakest-first, which is how both the cloud catalog and
+    the provider catalog emit it. Returns None when the model exposes no choice.
+    """
+    if not levels:
+        return None
+    intent = ROLE_EFFORTS.get(role, "default")
+    if intent == "minimum":
+        return levels[0]
+    if intent == "low":
+        # A model with a coarse ladder (off/high) has no cheap middle, so "a
+        # little thinking" resolves down, not up — the point of the intent is to
+        # stay cheap.
+        return "low" if "low" in levels else levels[0]
+    if default_level in levels:
+        return default_level
+    return levels[-1] if len(levels) == 1 else levels[min(1, len(levels) - 1)]
+
 # Vendor preference when more than one family is available. Most Stimma work is
 # visual direction and prompt craft, where the Anthropic models are the strongest
 # general default; the rest is ranked by how reliably the family covers all three

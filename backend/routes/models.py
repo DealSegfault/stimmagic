@@ -25,11 +25,13 @@ from config_writer import patch_global_section
 from core.logging import get_logger
 from cloud_runtime import with_cloud_access_headers
 from llm_resolver import (
+    PROJECT_EFFORT_COLUMNS,
     PROJECT_ROLE_COLUMNS,
     SETTINGS_ROLES,
     get_max_context_tokens,
     normalize_model_slug,
     resolve_auto_slug,
+    resolve_role_effort,
     resolve_role_model_slug,
     set_catalog_cache,
 )
@@ -1120,6 +1122,7 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
 
     # 4. Resolve every role: project override -> profile setting -> auto.
     project_overrides: dict[str, Optional[str]] = {role: None for role in SETTINGS_ROLES}
+    project_efforts: dict[str, Optional[str]] = {role: None for role in SETTINGS_ROLES}
     if project_id is not None:
         try:
             from core.profile_context import get_current_profile
@@ -1130,17 +1133,19 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             db = get_database_registry().get_database(get_current_profile())
             async with db.async_session_maker() as session:
                 result = await session.execute(
-                    select(*[
-                        getattr(Project, PROJECT_ROLE_COLUMNS[role])
-                        for role in SETTINGS_ROLES
-                    ]).where(
+                    select(*(
+                        [getattr(Project, PROJECT_ROLE_COLUMNS[r]) for r in SETTINGS_ROLES]
+                        + [getattr(Project, PROJECT_EFFORT_COLUMNS[r]) for r in SETTINGS_ROLES]
+                    )).where(
                         Project.id == project_id,
                         Project.deleted_at.is_(None),
                     )
                 )
                 row = result.first()
                 if row:
-                    project_overrides = dict(zip(SETTINGS_ROLES, row))
+                    n = len(SETTINGS_ROLES)
+                    project_overrides = dict(zip(SETTINGS_ROLES, row[:n]))
+                    project_efforts = dict(zip(SETTINGS_ROLES, row[n:]))
         except Exception as e:
             log.warning("failed to fetch project model overrides", error=str(e))
 
@@ -1151,19 +1156,26 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             return "auto"
         return slug
 
+    def _auto_effort_for(role: str, slug: Optional[str], catalog: list) -> Optional[str]:
+        from model_tiers import effort_for_role
+        entry = next((m for m in catalog if m.get("slug") == slug), None)
+        reasoning = (entry or {}).get("reasoning") or {}
+        return effort_for_role(role, reasoning.get("levels"), reasoning.get("default"))
+
     role_defaults = {}
     for role in SETTINGS_ROLES:
         profile_setting = _lockdown_safe(
             normalize_model_slug(settings.get_role_model_slug(role))
         )
         override = _lockdown_safe(normalize_model_slug(project_overrides.get(role)))
+        resolved_for_role = await resolve_role_model_slug(
+            role, project_slug=override,
+        ) if override else await resolve_role_model_slug(role)
         role_defaults[role] = {
             "profile": profile_setting or "auto",
             "project": override,
             # What the app will actually call right now, with `auto` expanded.
-            "resolved": await resolve_role_model_slug(
-                role, project_slug=override,
-            ) if override else await resolve_role_model_slug(role),
+            "resolved": resolved_for_role,
             # What choosing "Automatic" would land on, independent of what is
             # saved. The picker labels its Automatic row with this, so the label
             # describes the option rather than the current selection.
@@ -1171,6 +1183,16 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             # What inheriting from the profile would land on, ignoring any
             # project override — the label on a project's Inherit row.
             "profile_resolved": await resolve_role_model_slug(role),
+            # Reasoning effort. None at a level means nothing is pinned there,
+            # and the role's own intent decides once the model is known.
+            "effort": await resolve_role_effort(
+                role, project_effort=project_efforts.get(role),
+            ),
+            "profile_effort": settings.get_role_effort(role),
+            "project_effort": project_efforts.get(role),
+            # The level the role's intent lands on for the model in effect —
+            # what the picker's Automatic chip is promising.
+            "auto_effort": _auto_effort_for(role, resolved_for_role, models),
         }
 
     # The chat role keeps its own top-level keys — the model picker and several

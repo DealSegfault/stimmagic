@@ -143,3 +143,39 @@ class TestSelectAutoModels:
         assert chosen["quick_task"] == "stimma:claude-haiku-4.5"
         # No balanced model in the family; tool assistant biases up, not down.
         assert chosen["tool_assistant"] == "stimma:claude-opus-5"
+
+
+class TestEffortForRole:
+    """Roles carry an effort INTENT, not a level name — models don't agree on
+    what levels exist, so a stored "low" would mean different things or nothing."""
+
+    ANTHROPIC = ["off", "low", "medium", "high", "xhigh", "max"]
+    COARSE = ["off", "high"]          # MiniMax: no cheap middle
+    GEMINI = ["minimal", "low", "medium", "high"]  # no "off" at all
+
+    def test_quick_tasks_take_the_cheapest_rung(self):
+        from model_tiers import effort_for_role
+        assert effort_for_role("quick_task", self.ANTHROPIC, "high") == "off"
+        assert effort_for_role("quick_task", self.GEMINI, "medium") == "minimal"
+
+    def test_flows_and_tool_assistant_want_a_little_thinking(self):
+        from model_tiers import effort_for_role
+        assert effort_for_role("flow", self.ANTHROPIC, "high") == "low"
+        assert effort_for_role("tool_assistant", self.GEMINI, "medium") == "low"
+
+    def test_low_resolves_down_on_a_coarse_ladder(self):
+        # off/high has no cheap middle. "A little thinking" must not round UP to
+        # high — the point of the intent is to stay cheap, and a flow multiplies
+        # that cost over every item it processes.
+        from model_tiers import effort_for_role
+        assert effort_for_role("flow", self.COARSE, "high") == "off"
+
+    def test_chat_takes_the_model_default(self):
+        from model_tiers import effort_for_role
+        assert effort_for_role("chat", self.ANTHROPIC, "high") == "high"
+        assert effort_for_role("chat", self.COARSE, "high") == "high"
+
+    def test_no_ladder_means_no_choice(self):
+        from model_tiers import effort_for_role
+        assert effort_for_role("chat", [], "high") is None
+        assert effort_for_role("quick_task", None, None) is None

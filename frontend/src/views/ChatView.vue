@@ -1261,11 +1261,13 @@
           <ChatModelPicker
             v-if="showModelPicker"
             :model-slug="chat.model_slug"
+            :reasoning-effort="chat.reasoning_effort"
             :chat-id="chatId"
             :project-id="chat.project_id"
             :disabled="noUsableChatModels"
             disabled-label="Model unavailable"
             @update:model-slug="updateChatModel"
+            @update:reasoning-effort="effort => chat.reasoning_effort = effort"
           />
         </template>
         <template #actions>

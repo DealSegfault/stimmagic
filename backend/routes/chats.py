@@ -46,6 +46,9 @@ class ChatUpdateRequest(PydanticBaseModel):
     project_id: Optional[int] = None
     flow_id: Optional[int] = None
     model_slug: Optional[str] = None
+    # Reasoning effort for THIS chat. "" clears it back to inheriting the
+    # project's, then the profile's, "LLM for new Chats" effort.
+    reasoning_effort: Optional[str] = None
 
 
 class AttachmentInfo(PydanticBaseModel):
@@ -843,6 +846,8 @@ async def update_chat(
     update_data = request.dict(exclude_unset=True)
     if "model_slug" in update_data:
         update_data["model_slug"] = normalize_model_slug(update_data["model_slug"])
+    if "reasoning_effort" in update_data:
+        update_data["reasoning_effort"] = update_data["reasoning_effort"] or None
 
     # Check if settings (not just name) are being changed
     settings_changed = 'throttle' in update_data or 'generation_settings' in update_data
