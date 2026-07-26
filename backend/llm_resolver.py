@@ -545,6 +545,15 @@ async def resolve_role_model_slug(
         # what actually happens downstream anyway; agreeing here keeps the
         # settings UI showing the model that will really be called.
         cloud_available = await _cloud_is_available()
+
+        # Until the live catalog has been fetched, the only cloud models we know
+        # about are the compiled-in fallbacks — so "not in the candidate list"
+        # says nothing about a cloud slug. Downgrading here would silently move
+        # a freshly-started backend off the user's chosen model for every
+        # caption and flow step until something happens to fetch the catalog.
+        if slug.startswith("stimma:") and cloud_available and not _catalog_cache:
+            return slug
+
         candidates = auto_candidates(cloud_available=cloud_available)
         if any(candidate.slug == slug for candidate in candidates):
             return slug

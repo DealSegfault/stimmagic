@@ -474,6 +474,24 @@ def _local_provider(**overrides):
     return provider
 
 
+def _fast_provider():
+    """A second local provider whose model is small enough to read as `fast`."""
+    from config import LLMProviderConfig, LLMProviderModelConfig
+
+    return LLMProviderConfig(
+        id="local-fast",
+        kind="local",
+        name="little-box",
+        base_url="http://little.local:8080/v1",
+        models=[LLMProviderModelConfig(
+            id="local-fast:tiny-3b",
+            model_id="tiny-3b",
+            name="Tiny 3B",
+            model_vendor="alibaba",
+        )],
+    )
+
+
 @pytest.mark.asyncio
 async def test_quick_task_falls_back_to_only_provider_model(monkeypatch):
     """A saved cloud quick-task model with no cloud auth must fall back to the
@@ -714,3 +732,76 @@ async def test_remote_providers_are_dropped_in_lockdown(monkeypatch):
     candidates = llm_resolver.auto_candidates(cloud_available=False)
 
     assert [c.slug for c in candidates] == ["local-abc123:qwen3-vl"]
+
+
+@pytest.mark.asyncio
+async def test_role_defaults_describe_the_fallback_options_not_the_selection(monkeypatch):
+    """The picker labels its Automatic / Inherit rows from `auto` and
+    `profile_resolved`. Both must describe what choosing that row would GIVE
+    you, independent of what is currently saved — labelling them from the
+    active selection makes the row claim it would keep the current model."""
+    from routes import models as models_route
+    import firebase_auth
+
+    settings = _stub_settings(
+        # Explicitly pinned to a mid-tier model, so `auto` must differ.
+        role_models={"quick_task": "local-abc123:qwen3-vl"},
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llm_providers=[_local_provider(), _fast_provider()],
+        llms={
+            "agent": LLMRoleConfig(source="auto"),
+            "agent-fast": LLMRoleConfig(source="auto"),
+        },
+    )
+
+    async def no_cloud_token():
+        return None
+
+    monkeypatch.setattr(models_route, "get_settings", lambda: settings)
+    monkeypatch.setattr("llm_resolver.get_settings", lambda: settings)
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", no_cloud_token)
+
+    entry = (await models_route.get_available_models())["role_defaults"]["quick_task"]
+
+    assert entry["profile"] == "local-abc123:qwen3-vl"
+    # `auto` ignores the pin and reports the tier-matched model for the role.
+    assert entry["auto"] == "local-fast:tiny-3b"
+    # `profile_resolved` is what a project inheriting would land on.
+    assert entry["profile_resolved"] == "local-abc123:qwen3-vl"
+
+
+@pytest.mark.asyncio
+async def test_cold_catalog_does_not_downgrade_a_saved_cloud_model(monkeypatch):
+    """Right after startup the live catalog hasn't been fetched, so the only
+    cloud models we know of are the compiled-in fallbacks. Absence from that
+    list says nothing about whether a saved cloud slug is reachable — treating
+    it as unreachable would silently move every caption and flow step off the
+    user's chosen model until something happened to fetch the catalog."""
+    import llm_resolver
+
+    monkeypatch.setattr(
+        llm_resolver, "get_settings",
+        lambda: _stub_settings(
+            role_models={"chat": "stimma:claude-opus-5"},
+            llm_providers=[_local_provider()],
+        ),
+    )
+    monkeypatch.setattr("privacy_lockdown.is_privacy_lockdown_enabled", lambda: False)
+
+    async def cloud_up():
+        return True
+
+    monkeypatch.setattr(llm_resolver, "_cloud_is_available", cloud_up)
+    llm_resolver.set_catalog_cache([])  # cold
+
+    assert await llm_resolver.resolve_role_model_slug("chat") == "stimma:claude-opus-5"
+
+    # Once the catalog IS known and the model genuinely isn't in it, the
+    # downgrade is correct again.
+    llm_resolver.set_catalog_cache([
+        {"slug": "stimma:minimax-m3", "name": "MiniMax M3", "model_vendor": "minimax"},
+    ])
+    try:
+        assert await llm_resolver.resolve_role_model_slug("chat") != "stimma:claude-opus-5"
+    finally:
+        llm_resolver.set_catalog_cache([])

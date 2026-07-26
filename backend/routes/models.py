@@ -29,6 +29,7 @@ from llm_resolver import (
     SETTINGS_ROLES,
     get_max_context_tokens,
     normalize_model_slug,
+    resolve_auto_slug,
     resolve_role_model_slug,
     set_catalog_cache,
 )
@@ -1163,6 +1164,13 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             "resolved": await resolve_role_model_slug(
                 role, project_slug=override,
             ) if override else await resolve_role_model_slug(role),
+            # What choosing "Automatic" would land on, independent of what is
+            # saved. The picker labels its Automatic row with this, so the label
+            # describes the option rather than the current selection.
+            "auto": await resolve_auto_slug(role),
+            # What inheriting from the profile would land on, ignoring any
+            # project override — the label on a project's Inherit row.
+            "profile_resolved": await resolve_role_model_slug(role),
         }
 
     # The chat role keeps its own top-level keys — the model picker and several

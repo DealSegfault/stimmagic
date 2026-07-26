@@ -1313,7 +1313,11 @@ async def build_available_models_section(project_id: Optional[int] = None) -> st
         "",
     ]
     for candidate in sorted(candidates, key=lambda m: (m.vendor or "", m.name)):
-        lines.append(f"- `{candidate.slug}` — {candidate.name} ({tier_for(candidate)})")
+        # Before the live catalog is fetched a candidate's "name" is just its
+        # slug; printing "`x` — x" is noise, so show the slug alone.
+        name = candidate.name if candidate.name != candidate.slug else ""
+        suffix = f" — {name}" if name else ""
+        lines.append(f"- `{candidate.slug}`{suffix} ({tier_for(candidate)})")
     return "\n".join(lines)
 
 

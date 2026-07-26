@@ -64,30 +64,32 @@ const modelOptions = computed(() => selectableModels.value
     vendor: resolveModelVendorId(model) || undefined,
   })))
 
-/** Name of the model a role currently resolves to, for the inherit label. */
-function resolvedName(role: string) {
-  const slug = props.inherits
-    ? roleDefaults.value[role]?.profile
-    : roleDefaults.value[role]?.resolved
-  if (!slug || slug === 'auto') {
-    const resolved = roleDefaults.value[role]?.resolved
-    const match = selectableModels.value.find(m => m.slug === resolved)
-    return match?.name || ''
-  }
-  const match = selectableModels.value.find(m => m.slug === slug)
-  return match?.name || slug
+function modelName(slug?: string | null) {
+  if (!slug) return ''
+  return selectableModels.value.find(m => m.slug === slug)?.name || slug
+}
+
+/**
+ * What the fallback row would actually give you. This describes the OPTION, not
+ * the current selection — in a project that means the profile's resolution
+ * (ignoring this project's override), and at profile level it means what the
+ * tier heuristic picks, whether or not `auto` is what's saved.
+ */
+function fallbackName(role: string) {
+  const entry = roleDefaults.value[role]
+  return modelName(props.inherits ? entry?.profile_resolved : entry?.auto)
 }
 
 function inheritOption(role: string) {
-  const name = resolvedName(role)
-  const base = props.inherits ? 'Inherit from profile' : 'Automatic'
-  return {
-    value: '',
-    label: name ? `${base} (${name})` : base,
-    description: props.inherits
-      ? 'Use whatever this profile is set to.'
-      : 'Pick the best available model for this kind of work.',
-  }
+  const name = fallbackName(role)
+  // "Inherit" not "Inherit from profile": the section header already says these
+  // override the profile, and the longer phrasing truncates the model name away,
+  // which is the only part that tells you what you'd actually get.
+  const base = props.inherits ? 'Inherit' : 'Automatic'
+  // No `description`: in this control that slot is a short trailing hint on the
+  // trigger ("via Stimma"), not a sentence. What the option means is already in
+  // the row's own description.
+  return { value: '', label: name ? `${base} (${name})` : base }
 }
 
 function optionsFor(role: string) {
