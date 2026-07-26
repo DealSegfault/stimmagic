@@ -85,48 +85,27 @@ const modelOptions = computed(() => selectableModels.value
   .filter(model => model.source !== 'auto' && !model.collapsed)
   .map(optionFor))
 
-function modelFor(slug?: string | null) {
-  if (!slug) return null
-  return selectableModels.value.find(m => m.slug === slug) || null
-}
-
 /**
- * What the fallback row would actually give you. This describes the OPTION, not
- * the current selection — in a project that means the profile's resolution
- * (ignoring this project's override), and at profile level it means what the
- * tier heuristic picks, whether or not `auto` is what's saved.
+ * Whether this row is running on something the user actually chose.
+ *
+ * Automatic and inheritance are not choices anyone makes — they are what
+ * happens when nothing is set. So they are never options in the menu; they are
+ * a quiet annotation on a row that is otherwise identical to a set one.
  */
-function fallbackModel(role: string) {
-  const entry = roleDefaults.value[role]
-  return modelFor(props.inherits ? entry?.profile_resolved : entry?.auto)
-}
-
-/**
- * The row you land on when nothing is pinned. In the MENU it names the mode
- * ("Automatic"); on the TRIGGER it shows the model actually in effect, tagged so
- * the tracking state is still legible. Showing the mode alone on the trigger
- * would hide the one thing you came to check.
- */
-function inheritOption(role: string) {
-  const model = fallbackModel(role)
-  return {
-    value: '',
-    label: props.inherits ? 'Inherit from profile' : 'Automatic',
-    triggerLabel: model?.name || (props.inherits ? 'Inherit from profile' : 'Automatic'),
-    triggerMeta: props.inherits ? 'Inherited' : 'Auto',
-    vendor: model ? (resolveModelVendorId(model) || undefined) : undefined,
-  }
-}
-
-function optionsFor(role: string) {
-  return [inheritOption(role), ...modelOptions.value]
-}
-
-/** '' selects the inherit row; an unknown saved slug also falls back to it. */
-function selectedFor(role: string) {
+function isExplicit(role: string) {
   const slug = props.modelValue?.[role]
-  if (!slug || slug === 'auto') return ''
-  return modelOptions.value.some(o => o.value === slug) ? slug : ''
+  return !!slug && slug !== 'auto'
+}
+
+/** The model actually in effect, shown with the same treatment as any pick. */
+function selectedFor(role: string) {
+  const resolved = roleDefaults.value[role]?.resolved
+  const slug = isExplicit(role) ? props.modelValue?.[role] : resolved
+  return modelOptions.value.some(o => o.value === slug) ? (slug as string) : ''
+}
+
+function optionsFor(_role: string) {
+  return modelOptions.value
 }
 
 /** The ladder of the model actually in effect for this role. */
@@ -140,13 +119,7 @@ function effortLevels(role: string): string[] {
  * has, so it changes shape with the row above it.
  */
 function effortOptions(role: string) {
-  const options = effortLevels(role).map(level => ({ value: level, label: effortLabel(level) }))
-  if (!props.inherits) return options
-  const inherited = roleDefaults.value[role]?.effort_resolved
-  return [
-    { value: '', label: inherited ? `Inherit — ${effortLabel(inherited)}` : 'Inherit' },
-    ...options,
-  ]
+  return effortLevels(role).map(level => ({ value: level, label: effortLabel(level) }))
 }
 
 /**
@@ -157,7 +130,6 @@ function effortOptions(role: string) {
 function selectedEffort(role: string) {
   const pinned = props.efforts?.[role]
   if (pinned && effortLevels(role).includes(pinned)) return pinned
-  if (props.inherits) return ''
   return roleDefaults.value[role]?.effort_resolved || ''
 }
 
@@ -178,6 +150,11 @@ onMounted(() => fetchModels(props.projectId ?? null, true))
       :label="role.label"
       :description="role.description"
     >
+      <!-- Provenance, not a control: says where this value came from when the
+           user didn't choose it. Never a menu row. -->
+      <span v-if="!isExplicit(role.key)" class="text-[11px] text-content-muted">
+        {{ inherits ? 'Inherited' : 'Auto' }}
+      </span>
       <SettingsDropdown
         control
         fill

@@ -16,7 +16,15 @@
 
       <!-- Models -->
       <div class="mb-6">
-        <h4 class="text-xs font-semibold text-content-secondary mb-3">Models</h4>
+        <div class="flex items-baseline justify-between gap-4 mb-3">
+          <h4 class="text-xs font-semibold text-content-secondary">Models</h4>
+          <button
+            v-if="hasOverrides"
+            type="button"
+            class="text-[11px] text-content-tertiary hover:text-content"
+            @click="resetOverrides"
+          >Reset to defaults</button>
+        </div>
         <RoleModelRows
           :model-value="localModels"
           :efforts="localEfforts"
@@ -207,6 +215,21 @@ async function saveRoleModel(role, slug) {
     [ROLE_COLUMNS[role]]: slug,
     [EFFORT_COLUMNS[role]]: '',
   })
+  Object.assign(props.project, updated)
+}
+
+const hasOverrides = computed(() => Object.keys(ROLE_COLUMNS).some(
+  role => localModels.value[role] || localEfforts.value[role]
+))
+
+/** Drop every override so the project follows the profile again. */
+async function resetOverrides() {
+  localModels.value = Object.fromEntries(Object.keys(ROLE_COLUMNS).map(r => [r, '']))
+  localEfforts.value = Object.fromEntries(Object.keys(EFFORT_COLUMNS).map(r => [r, '']))
+  const payload = {}
+  for (const column of Object.values(ROLE_COLUMNS)) payload[column] = ''
+  for (const column of Object.values(EFFORT_COLUMNS)) payload[column] = ''
+  const updated = await updateProject(props.project.id, payload)
   Object.assign(props.project, updated)
 }
 

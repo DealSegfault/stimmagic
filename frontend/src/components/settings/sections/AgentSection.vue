@@ -15,7 +15,15 @@
     <div v-else class="mt-8 space-y-9">
       <!-- Models -->
       <div>
-        <h4 class="text-xs font-semibold text-content-secondary">Models</h4>
+        <div class="flex items-baseline justify-between gap-4">
+          <h4 class="text-xs font-semibold text-content-secondary">Models</h4>
+          <button
+            v-if="hasExplicitModels"
+            type="button"
+            class="text-[11px] text-content-tertiary hover:text-content"
+            @click="resetModels"
+          >Reset to defaults</button>
+        </div>
         <p class="mt-1 max-w-xl text-xs leading-relaxed text-content-tertiary">
           Projects can override any of these.
         </p>
@@ -241,6 +249,23 @@ const saveRoleModel = (role: string, slug: string) =>
   saveSelection(role, { model: slug || 'auto', effort: null })
 const saveRoleEffort = (role: string, effort: string) =>
   saveSelection(role, { effort: effort || null })
+
+const hasExplicitModels = computed(() => ROLE_KEYS.some(role => {
+  const sel = localModels.value[role]
+  return (sel?.model && sel.model !== 'auto') || !!sel?.effort
+}))
+
+/** Back to a clean slate: every role decides for itself again. */
+async function resetModels() {
+  const cleared = emptyModels()
+  localModels.value = cleared
+  try {
+    await axios.patch(`${getApiBase()}/settings/agent`, { models: cleared })
+    await fetchModels(null, true)
+  } catch (err) {
+    console.error('Failed to reset models:', err)
+  }
+}
 
 async function handleToolConfigUpdate(config: ToolConfig) {
   localToolConfig.value = config

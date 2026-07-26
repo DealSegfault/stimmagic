@@ -23,7 +23,7 @@
           :class="selectedOption.tone === 'cloud' ? 'stimma-cloud-text font-medium' : 'text-content-muted'"
         >{{ selectedOption.description }}</span>
       </span>
-      <span v-if="!hideTriggerDetails && (selectedOption?.triggerMeta || selectedOption?.meta)" class="shrink-0 text-[11px] tabular-nums text-content-muted">{{ selectedOption.triggerMeta || selectedOption.meta }}</span>
+      <span v-if="!hideTriggerDetails && selectedOption?.meta" class="shrink-0 text-[11px] tabular-nums text-content-muted">{{ selectedOption.meta }}</span>
       <svg
         class="w-3 h-3 text-content-muted transition-transform"
         :class="{ 'rotate-180': isOpen }"
@@ -147,8 +147,6 @@ interface Option {
   value: string
   label: string
   triggerLabel?: string
-  /** Trailing hint shown on the trigger only, in place of `meta`. */
-  triggerMeta?: string
   description?: string
   meta?: string
   tone?: 'cloud'
