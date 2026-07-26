@@ -259,17 +259,19 @@
 
     <!-- Feedback input box (mirrors ChatView's input: text on top, toolbar row) -->
     <div v-else class="bg-surface border border-edge rounded-lg overflow-hidden">
-      <input v-no-autocorrect
+      <textarea v-no-autocorrect
         ref="feedbackInput"
         v-model="feedbackText"
+        rows="1"
+        @input="autoResizeFeedback"
         @keydown.enter.exact.prevent="enhance"
-        @keydown.up.prevent="historyUp"
-        @keydown.down.prevent="historyDown"
+        @keydown.enter.shift.exact.prevent="insertFeedbackNewline"
+        @keydown.up="onHistoryKey($event, historyUp)"
+        @keydown.down="onHistoryKey($event, historyDown)"
         @keydown="voiceBtn?.handleInputKeydown($event)"
         @keyup="voiceBtn?.handleInputKeyup($event)"
-        type="text"
         :placeholder="inputPlaceholder"
-        class="w-full bg-transparent text-content text-sm px-4 pt-3 pb-1 focus:outline-none font-sans"
+        class="w-full bg-transparent text-content text-sm px-4 pt-3 pb-1 focus:outline-none font-sans resize-none block max-h-40 overflow-y-auto"
       />
 
       <!-- Action bar: undo/redo/settings lower-left, send lower-right -->
@@ -503,13 +505,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, inject, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, inject, computed } from 'vue'
 import type { PromptEditorAgent } from '../../composables/promptEditorAgentKey'
 import { PROMPT_EDITOR_AGENT_KEY } from '../../composables/promptEditorAgentKey'
 import type { PromptEditorHandle } from '../../composables/promptEditorHandle'
 import { SparklesIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, BugAntIcon, ArrowPathIcon, ChevronDownIcon, LightBulbIcon } from '@heroicons/vue/24/solid'
 import { WrenchIcon, ChevronUpIcon, CheckIcon } from '@heroicons/vue/24/outline'
 import { copyToClipboard } from '../../utils/clipboard'
+import { insertNewlineAtCaret } from '../../utils/textInput'
 import axios from 'axios'
 import { useTelemetry } from '../../composables/useTelemetry'
 import { extractVerbatim, restoreVerbatim, verifyVerbatimPreserved } from '../../utils/promptProcessor'
@@ -744,11 +747,13 @@ function prettyArgs(args: string): string {
 }
 
 // Refs
-const feedbackInput = ref<HTMLInputElement | null>(null)
+const feedbackInput = ref<HTMLTextAreaElement | null>(null)
 const voiceBtn = ref<any>(null)
 
 // State
 const feedbackText = ref('')
+// Programmatic writes (send, history, dictation) resize the composer too.
+watch(feedbackText, () => nextTick(autoResizeFeedback))
 
 // Voice input adapters
 function getFeedbackText() {
@@ -945,6 +950,30 @@ function resetConversation() {
 // Delete a single debug entry
 function deleteDebugEntry(id: number) {
   debugHistory.value = debugHistory.value.filter(e => e.id !== id)
+}
+
+// Shift+Enter breaks the line (plain Enter sends).
+function insertFeedbackNewline() {
+  const el = feedbackInput.value
+  if (!el) return
+  feedbackText.value = insertNewlineAtCaret(el)
+  nextTick(autoResizeFeedback)
+}
+
+// Grow the composer with its content instead of scrolling a one-line box.
+function autoResizeFeedback() {
+  const el = feedbackInput.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = el.scrollHeight + 'px'
+}
+
+// Arrows navigate history only while the composer is a single line; once it
+// holds a newline they move the caret like a normal textarea.
+function onHistoryKey(event: KeyboardEvent, navigate: () => void) {
+  if (feedbackText.value.includes('\n')) return
+  event.preventDefault()
+  navigate()
 }
 
 // Navigate feedback history with up/down arrows

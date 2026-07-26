@@ -47,6 +47,7 @@
           :rows="rows"
           class="chat-input-textarea w-full bg-transparent text-content pl-1 pr-1 pb-2 focus:outline-none resize-none block"
           @keydown.enter.exact.prevent="$emit('submit')"
+          @keydown.enter.shift.exact.prevent="insertNewline"
           @keydown="onTextareaKeydown"
           @keyup="onTextareaKeyup"
         />
@@ -135,6 +136,7 @@ import axios from 'axios'
 import ChatInputAttachments from './ChatInputAttachments.vue'
 import VoiceInputButton from '../voice/VoiceInputButton.vue'
 import AgentUnavailableInput from './AgentUnavailableInput.vue'
+import { insertNewlineAtCaret } from '../../utils/textInput'
 
 const props = defineProps({
   modelValue: { type: String, default: '' },
@@ -159,6 +161,14 @@ const scrollWrapRef = ref(null)
 const uploadInputRef = ref(null)
 const dragging = ref(false)
 const voiceBtn = ref(null)
+
+// Shift+Enter breaks the line (plain Enter submits).
+function insertNewline() {
+  const el = textareaRef.value
+  if (!el) return
+  emit('update:modelValue', insertNewlineAtCaret(el))
+  nextTick(autoResize)
+}
 
 // Space-to-dictate (when empty) + propagate keydown for history nav etc.
 function onTextareaKeydown(event) {
