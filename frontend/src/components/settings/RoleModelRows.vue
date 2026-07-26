@@ -2,20 +2,27 @@
 /**
  * The four LLM role selectors, shared by profile settings and project settings.
  *
- * Same four roles, same order, same labels in both places — the only difference
- * is what an unset value means, which `inheritLabel` carries. Profiles fall back
- * to `auto` (pick the best available model); projects fall back to the profile.
+ * Automatic and inheritance are never options in a menu — nobody picks them,
+ * they are what happens when nothing is set. A row always shows the model
+ * actually in effect, rendered like any other pick.
+ *
+ * Rows carry no provenance marker. They used to: "Auto" in a profile when a row
+ * was unset, "Override" in a project when it was set. Correct per surface and
+ * confusing across them — the same absence of a marker meant "you chose this"
+ * on one screen and "you didn't" on the other. Whether a row is explicit is
+ * still legible where it can be acted on: the section's "Reset to defaults"
+ * appears only when something is set.
  */
 import { computed, onMounted } from 'vue'
 import { useAvailableModels } from '../../composables/useAvailableModels'
 import { resolveModelVendorId } from '../../utils/modelVendors'
+import { modelSourceLine } from '../../utils/modelFunding'
 import SettingsDropdown from '../ui/SettingsDropdown.vue'
-import SettingRow from './SettingRow.vue'
 
 const props = defineProps<{
-  /** role -> saved slug. '' / null means unset (inherit). */
+  /** role -> saved slug. '' / 'auto' means unset. */
   modelValue: Record<string, string | null>
-  /** role -> saved effort. '' / null means unset (whatever the role is worth). */
+  /** role -> saved effort. '' / null means unset. */
   efforts?: Record<string, string | null>
   /** Project scope, so the resolved preview reflects this project's overrides. */
   projectId?: number | null
@@ -33,51 +40,38 @@ const { selectableModels, roleDefaults, fetchModels } = useAvailableModels()
 const ROLES = [
   {
     key: 'quick_task',
-    label: 'LLM for Quick Tasks',
-    description: 'Captioning, chat names, and other background work.',
+    label: 'Quick Tasks',
+    description: 'Captions, chat names, background work.',
   },
   {
     key: 'tool_assistant',
-    label: 'LLM for Tool Assistant',
-    description: 'The assistant and prompt tools inside a tool.',
+    label: 'Tool Assistant',
+    description: 'The assistant on the tool screen.',
   },
   {
     key: 'chat',
-    label: 'LLM for new Chats',
-    description: 'The model a new chat starts on.',
+    label: 'New Chats',
+    description: 'The model that new chats use by default.',
   },
   {
     key: 'flow',
-    label: 'LLM for Flows',
-    description: 'The model new flows run on.',
+    label: 'Flows',
+    // Flows run on a deterministic execution environment; an LLM is something
+    // they call, not something they run on.
+    description: 'The model that is used inside of flow steps.',
   },
 ]
 
-function endpointHost(url?: string) {
-  if (!url) return ''
-  try { return new URL(url).host } catch { return url }
-}
-
-/** A model you host yourself: no bill, and the hostname is plumbing. */
-function isLocal(model: any) {
-  return model?.provider_kind === 'local' || model?.source === 'endpoint'
-}
-
 function optionFor(model: any) {
-  const base = {
+  return {
     value: model.slug,
     label: model.name,
     vendor: resolveModelVendorId(model) || undefined,
-  }
-  // Local models carry neither of the trailing details: there is no cost, and
-  // which box serves it says nothing you'd choose on. Dropping them also gives
-  // the long self-hosted names the whole trigger instead of an ellipsis.
-  if (isLocal(model)) return base
-  return {
-    ...base,
-    description: `via ${model.source === 'stimma_cloud' ? 'Stimma' : (model.provider_name || endpointHost(model.endpoint_url) || 'your endpoint')}`,
+    // Where the request goes: whose balance for hosted models, the host for
+    // your own. Menu-only — the trigger hides details, so a long self-hosted
+    // name still gets the full width.
+    description: modelSourceLine(model),
     meta: model.cost_tier || '',
-    tone: model.source === 'stimma_cloud' ? 'cloud' : undefined,
   }
 }
 
@@ -85,52 +79,67 @@ const modelOptions = computed(() => selectableModels.value
   .filter(model => model.source !== 'auto' && !model.collapsed)
   .map(optionFor))
 
-/**
- * Whether this row is running on something the user actually chose.
- *
- * Automatic and inheritance are not choices anyone makes — they are what
- * happens when nothing is set. So they are never options in the menu; they are
- * a quiet annotation on a row that is otherwise identical to a set one.
- */
+/** Whether this row is running on something the user actually chose. */
 function isExplicit(role: string) {
   const slug = props.modelValue?.[role]
   return !!slug && slug !== 'auto'
 }
 
-/** The model actually in effect, shown with the same treatment as any pick. */
+/**
+ * The outcome this row shows: model, effort, and that model's ladder.
+ *
+ * With nothing pinned we read the fallback block the server already sent, so
+ * clearing a row — or resetting the whole section — repaints on the spot
+ * instead of showing the old value until a refetch lands.
+ */
+function blockFor(role: string, fallbackOnly = false): Record<string, any> {
+  const entry: Record<string, any> = roleDefaults.value[role] || {}
+  if (isExplicit(role) && !fallbackOnly) return entry.resolved || {}
+  return (props.inherits ? entry.inherited : entry.auto) || {}
+}
+
+/**
+ * Models to offer, with the value this row falls back to pulled to the top and
+ * tagged. Always present, so the default is a stable place in the list rather
+ * than something that appears once you have diverged — and picking it is how
+ * you hand the row back to automatic selection.
+ */
+function optionsFor(role: string) {
+  const option = modelOptions.value.find(o => o.value === blockFor(role, true).model)
+  if (!option) return modelOptions.value
+  // The real entry stays in the list below: an explicit pin on the same model
+  // is a different state from tracking it, and the trigger needs a match for
+  // whichever one is selected.
+  return [{ ...option, value: '', tag: 'Default' }, ...modelOptions.value]
+}
+
+/** Levels to offer, same treatment. */
+function effortOptionsFor(role: string) {
+  const levels = effortLevels(role).map(l => ({ value: l, label: effortLabel(l) }))
+  const fallback = blockFor(role, true).effort
+  if (!fallback) return levels
+  return [{ value: '', label: effortLabel(fallback), tag: 'Default' }, ...levels]
+}
+
 function selectedFor(role: string) {
-  const resolved = roleDefaults.value[role]?.resolved
-  const slug = isExplicit(role) ? props.modelValue?.[role] : resolved
+  if (!isExplicit(role)) return ''
+  const slug = props.modelValue?.[role]
   return modelOptions.value.some(o => o.value === slug) ? (slug as string) : ''
 }
 
-function optionsFor(_role: string) {
-  return modelOptions.value
-}
-
-/** The ladder of the model actually in effect for this role. */
+/**
+ * The ladder to offer. Read from the model on screen rather than the last
+ * server response, so picking a model swaps the levels in the same frame
+ * instead of briefly offering the previous model's rungs.
+ */
 function effortLevels(role: string): string[] {
-  return roleDefaults.value[role]?.effort_levels || []
+  const shown = selectableModels.value.find(m => m.slug === selectedFor(role))
+  return shown?.reasoning?.levels || blockFor(role).levels || []
 }
 
-/**
- * Reasoning is a peer of the model, not something inside its menu: two
- * decisions, two controls. The menu lists only the levels this model actually
- * has, so it changes shape with the row above it.
- */
-function effortOptions(role: string) {
-  return effortLevels(role).map(level => ({ value: level, label: effortLabel(level) }))
-}
-
-/**
- * The level the row shows. Always concrete at profile level: a role with
- * nothing pinned displays what it seeds to, and a pin this model has no rung
- * for displays the seeded level rather than a value that can't be honored.
- */
 function selectedEffort(role: string) {
   const pinned = props.efforts?.[role]
-  if (pinned && effortLevels(role).includes(pinned)) return pinned
-  return roleDefaults.value[role]?.effort_resolved || ''
+  return pinned && effortLevels(role).includes(pinned) ? pinned : ''
 }
 
 function effortLabel(level: string) {
@@ -139,43 +148,56 @@ function effortLabel(level: string) {
   return level.charAt(0).toUpperCase() + level.slice(1)
 }
 
+// Explains the dot on hover, so the mark and the button that clears it read
+// together without needing a legend.
+const RESET_HINT = 'Set here — “Reset to defaults” clears it.'
+
 onMounted(() => fetchModels(props.projectId ?? null, true))
 </script>
 
 <template>
   <div>
-    <SettingRow
+    <div
       v-for="role in ROLES"
       :key="role.key"
-      :label="role.label"
-      :description="role.description"
+      class="flex items-center justify-between gap-1 border-b border-edge-subtle py-2.5 last:border-b-0"
     >
-      <!-- Provenance, not a control: says where this value came from when the
-           user didn't choose it. Never a menu row. -->
-      <span v-if="!isExplicit(role.key)" class="text-[11px] text-content-muted">
-        {{ inherits ? 'Inherited' : 'Auto' }}
+      <span class="min-w-0">
+        <span class="block text-[13px] text-content">{{ role.label }}</span>
+        <span class="mt-0.5 block text-[11.5px] text-content-tertiary">{{ role.description }}</span>
       </span>
-      <SettingsDropdown
-        control
-        fill
-        class="w-80"
-        :menu-width="340"
-        :model-value="selectedFor(role.key)"
-        :options="optionsFor(role.key)"
-        @update:model-value="slug => emit('update:role', role.key, slug)"
-      />
-      <!-- Reasoning: only for models that expose a ladder. A local endpoint
-           whose profiler found no thinking toggle has nothing to offer here. -->
-      <SettingsDropdown
-        v-if="effortLevels(role.key).length"
-        control
-        compact
-        class="w-32"
-        :menu-width="180"
-        :model-value="selectedEffort(role.key)"
-        :options="effortOptions(role.key)"
-        @update:model-value="level => emit('update:effort', role.key, level)"
-      />
-    </SettingRow>
+      <span class="flex shrink-0 items-center gap-1.5">
+        <!-- Provider and cost live in the menu, where you compare models. On the
+             trigger they cost ~104px that the description needs, and by then you
+             have already chosen. -->
+        <SettingsDropdown
+          control
+          fill
+          hide-trigger-details
+          class="w-[302px]"
+          :menu-width="340"
+          :marked="isExplicit(role.key)"
+          :title="isExplicit(role.key) ? RESET_HINT : ''"
+          :model-value="selectedFor(role.key)"
+          :options="optionsFor(role.key)"
+          @update:model-value="slug => emit('update:role', role.key, slug)"
+        />
+        <!-- Fixed width so this reads as a column, and wide enough for "Medium". -->
+        <SettingsDropdown
+          v-if="effortLevels(role.key).length"
+          control
+          compact
+          fill
+          class="w-[100px]"
+          :menu-width="180"
+          :marked="!!efforts?.[role.key]"
+          :title="efforts?.[role.key] ? RESET_HINT : ''"
+          :model-value="selectedEffort(role.key)"
+          :options="effortOptionsFor(role.key)"
+          @update:model-value="level => emit('update:effort', role.key, level)"
+        />
+        <span v-else class="w-[100px] shrink-0" />
+      </span>
+    </div>
   </div>
 </template>

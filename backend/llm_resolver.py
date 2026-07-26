@@ -341,8 +341,12 @@ def set_catalog_cache(entries: list[dict]) -> None:
     global _catalog_cache
     _catalog_cache = {
         e['slug']: {
-            'agent_model': e.get('agent_model', 'agent'),
-            'agent_fast_model': e.get('agent_fast_model', 'agent-fast'),
+            # Default to the slug, never to a role name: a catalog row missing
+            # its role key must still resolve to a model. Defaulting to "agent"
+            # / "agent-fast" put a routing alias on the wire as if it were a
+            # model, which the provider rejects.
+            'agent_model': e.get('agent_model') or e['slug'],
+            'agent_fast_model': e.get('agent_fast_model') or e['slug'],
             'max_context_tokens': int(e.get('max_context_tokens') or _FALLBACK_CONTEXT),
             'reasoning': e.get('reasoning') or {},
             'is_default': bool(e.get('is_default')),
@@ -446,15 +450,21 @@ def get_max_context_tokens(model_slug: Optional[str]) -> int:
 
 
 def _resolve_catalog_alias(slug: str, role: str) -> str:
-    """Look up the model alias for a catalog slug + role.
+    """Look up the model name for a catalog slug + wire role.
 
     Checks the live cache first (populated from cloud), then falls back
     to built-in mappings.
+
+    The catalog spells its keys ``agent_model`` / ``agent_fast_model``, while the
+    wire role is ``agent-fast`` — so the hyphen has to be normalized. Without
+    that, every fast-role call missed the lookup and fell through to sending the
+    literal string "agent-fast" as the model, which the provider rejects once
+    reasoning fields ride along with it.
     """
-    key = f'{role}_model'
+    key = f"{role.replace('-', '_')}_model"
     entry = _lookup_catalog(slug)
     if entry:
-        return entry.get(key, role)
+        return entry.get(key, slug)
     # Unknown slug — try using it as a direct alias
     return slug
 

@@ -161,7 +161,7 @@
             <div class="flex-1 min-w-0">
               <div class="text-sm text-content">{{ model.name }}</div>
               <div v-if="model.source === 'stimma_cloud'" class="truncate text-[11px] leading-snug">
-                <span v-if="modelVendorLabel(model)" class="text-content-muted">{{ modelVendorLabel(model) }} · </span><span class="stimma-cloud-text font-medium">via Stimma</span><span v-if="model.cost_tier" class="text-content-muted"> · {{ model.cost_tier }}</span>
+                <span class="text-content-muted"><span v-if="modelVendorLabel(model)">{{ modelVendorLabel(model) }} · </span>{{ modelSourceLine(model) }}<span v-if="model.cost_tier"> · {{ model.cost_tier }}</span></span>
               </div>
               <div
                 v-else-if="model.endpoint_model"
@@ -182,13 +182,13 @@
               @click="showCollapsedCloud = !showCollapsedCloud"
               class="flex w-full items-center justify-between border-t border-edge px-3 py-2 text-left text-[11px] text-content-muted hover:text-content-secondary"
             >
-              <span>Also via Stimma ({{ displayCollapsedCloudModels.length }})</span>
+              <span>Also on your Stimma Account ({{ displayCollapsedCloudModels.length }})</span>
               <svg class="h-3 w-3 transition-transform" :class="showCollapsedCloud ? 'rotate-180' : ''" viewBox="0 0 12 12" fill="currentColor">
                 <path d="M3 4.5L6 8l3-3.5H3z" />
               </svg>
             </button>
             <div v-else class="border-t border-edge px-3 pb-1 pt-2 text-xs font-semibold text-content-secondary">
-              Also via Stimma
+              Also on your Stimma Account
             </div>
             <button
               v-if="showCollapsedCloud || hasSearch"
@@ -201,7 +201,7 @@
               <ModelVendorIcon :model="model" size="sm" />
               <div class="min-w-0 flex-1">
                 <div class="text-sm text-content">{{ model.name }}</div>
-                <div class="text-[11px] text-content-muted">{{ modelVendorLabel(model) }} · via Stimma<span v-if="model.cost_tier"> · {{ model.cost_tier }}</span><span v-if="model.shadowed_by_provider"> · also available via {{ model.shadowed_by_provider }}</span></div>
+                <div class="text-[11px] text-content-muted">{{ modelVendorLabel(model) }} · {{ modelSourceLine(model) }}<span v-if="model.cost_tier"> · {{ model.cost_tier }}</span><span v-if="model.shadowed_by_provider"> · also on {{ model.shadowed_by_provider }}</span></div>
               </div>
               <svg v-if="isSelectedModel(model)" class="h-4 w-4 flex-shrink-0 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
@@ -241,6 +241,7 @@ import { normalizeModelSlug, useAvailableModels } from '../../composables/useAva
 import { makeProfileKey } from '../../utils/storageKeys'
 import ModelVendorIcon from '../models/ModelVendorIcon.vue'
 import { getModelVendorInfo, sortModelsByBrand } from '../../utils/modelVendors'
+import { modelSourceLine } from '../../utils/modelFunding'
 
 const MAX_RECENT_MODELS = 4
 
@@ -300,7 +301,7 @@ const currentReasoningLevel = computed(() => {
   // map, kept as a fallback for chats saved before effort moved onto the chat.
   return props.reasoningEffort
     || reasoningLevels.value[model.slug]
-    || roleDefaults.value?.chat?.effort_resolved
+    || roleDefaults.value?.chat?.resolved?.effort
     || model.reasoning?.default
     || null
 })
@@ -445,7 +446,7 @@ function modelVendorLabel(model) {
 
 function modelSubtitle(model) {
   if (model.source === 'stimma_cloud') {
-    return [modelVendorLabel(model), 'via Stimma', model.cost_tier].filter(Boolean).join(' · ')
+    return [modelVendorLabel(model), modelSourceLine(model), model.cost_tier].filter(Boolean).join(' · ')
   }
   if (model.endpoint_model) return model.endpoint_model
   return [modelVendorLabel(model), model.description].filter(Boolean).join(' · ')
@@ -468,7 +469,7 @@ function modelMatchesSearch(model) {
     model.cost_tier,
     model.shadowed_by_provider,
     modelVendorLabel(model),
-    model.source === 'stimma_cloud' ? 'via Stimma' : '',
+    modelSourceLine(model),
   ].filter(Boolean).join(' ').toLocaleLowerCase()
   return searchTokens.value.every(token => text.includes(token))
 }

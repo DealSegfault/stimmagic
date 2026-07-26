@@ -377,9 +377,9 @@ analysis = llm(
 )
 ```
 
-``model`` names the model this call runs on, written into the program. Flows are
-long-lived: a flow the user builds today should still run on the model it was
-built and tested against months from now, so the choice is recorded in the source
+``model`` names the model this call uses, written into the program. Flows are
+long-lived: a flow the user builds today should still use the model it was built
+and tested against months from now, so the choice is recorded in the source
 rather than resolved from Settings at run time.
 
 - **Omit ``model=``** to use the model the user configured for flows. That is the

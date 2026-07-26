@@ -87,6 +87,9 @@ class ChatResponse(PydanticBaseModel):
     throttle: Optional[str]
     generation_settings: Optional[dict]
     model_slug: Optional[str] = None
+    # Per-chat reasoning effort. The picker writes it and reads it back to show
+    # the level in effect; without it here the write lands but never returns.
+    reasoning_effort: Optional[str] = None
 
 
 class ChatListResponse(PydanticBaseModel):

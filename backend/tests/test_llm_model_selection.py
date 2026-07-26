@@ -71,15 +71,15 @@ def test_config_migration_rewrites_retired_model_aliases(tmp_path):
     assert _migrate_legacy_llm_model_slugs(config_path) is False
 
 
-def test_global_model_settings_migrate_into_each_profile(tmp_path):
-    """The two globals seed all four per-profile roles, then disappear.
+def test_retired_global_model_keys_are_dropped_not_migrated(tmp_path):
+    """The old globals do not seed the per-role settings.
 
-    Quick tasks seeds both background roles and the chat default seeds chats —
-    the closest reading of what each global meant. Flows had no predecessor.
+    They were a chat model and a background model, picked before roles existed.
+    Carrying them forward would pin every upgraded install to yesterday's answer
+    — most visibly by putting bulk flow work on whatever model the user had
+    chosen for conversation. Dropping them lets each role fall to `auto`.
     """
-    import yaml
-
-    from config import _migrate_global_models_to_profiles
+    from config import Settings
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -88,44 +88,20 @@ def test_global_model_settings_migrate_into_each_profile(tmp_path):
         "profiles:\n"
         "  - id: default\n"
         "    name: Default\n"
-        "  - id: work\n"
-        "    name: Work\n"
-        "    agent:\n"
-        "      models:\n"
-        "        chat: stimma:gpt-5.6-sol\n"
+        "    database: stimma_v1.db\n"
+        "clip: {model: ViT-g-14, pretrained: laion2b}\n"
+        "face_detection: {}\n"
+        "server: {host: 127.0.0.1, port: 8000}\n"
     )
 
-    assert _migrate_global_models_to_profiles(config_path) is True
-    migrated = yaml.safe_load(config_path.read_text())
+    settings = Settings.load_config(str(config_path))
 
-    assert "default_model" not in migrated
-    assert "quick_task_model" not in migrated
-
-    default_models = migrated["profiles"][0]["agent"]["models"]
-    assert default_models == {
-        "quick_task": "stimma:claude-haiku-4.5",
-        "tool_assistant": "stimma:claude-haiku-4.5",
-        "chat": "stimma:claude-opus-5",
-    }
-    # `flow` is a new setting, not a renamed old one. Seeding it from the chat
-    # default would put bulk flow work on the user's conversation model, which
-    # is usually the priciest thing they have; it starts on `auto` instead.
-    assert "flow" not in default_models
-
-    # An explicit per-profile choice is never overwritten by the seed.
-    assert migrated["profiles"][1]["agent"]["models"]["chat"] == "stimma:gpt-5.6-sol"
-
-    # Idempotent: nothing left to migrate on a second pass.
-    assert _migrate_global_models_to_profiles(config_path) is False
-
-
-def test_migration_of_a_config_with_no_global_models_is_a_noop(tmp_path):
-    from config import _migrate_global_models_to_profiles
-
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("profiles:\n  - id: default\n    name: Default\n")
-
-    assert _migrate_global_models_to_profiles(config_path) is False
+    # Loading must not choke on the retired keys...
+    assert not hasattr(settings, "default_model")
+    # ...and every role starts automatic rather than inheriting them.
+    for role in ("quick_task", "tool_assistant", "chat", "flow"):
+        assert settings.get_role_model_slug(role, "default") == "auto"
+        assert settings.get_role_effort(role, "default") is None
 
 
 def test_chat_cloud_default_becomes_auto_in_privacy_lockdown(monkeypatch):
@@ -613,8 +589,8 @@ async def test_available_models_auto_and_quick_task_resolve_to_provider_model(mo
     # can't be called — `resolved` reports the model that actually will be, so
     # the settings UI never shows a dead selection.
     assert payload["role_defaults"]["quick_task"]["profile"] == "stimma:minimax-m3"
-    assert payload["role_defaults"]["quick_task"]["resolved"] == "local-abc123:qwen3-vl"
-    assert payload["role_defaults"]["chat"]["resolved"] == "local-abc123:qwen3-vl"
+    assert payload["role_defaults"]["quick_task"]["resolved"]["model"] == "local-abc123:qwen3-vl"
+    assert payload["role_defaults"]["chat"]["resolved"]["model"] == "local-abc123:qwen3-vl"
 
 
 @pytest.mark.asyncio
@@ -740,11 +716,11 @@ async def test_remote_providers_are_dropped_in_lockdown(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_role_defaults_describe_the_fallback_options_not_the_selection(monkeypatch):
-    """The picker labels its Automatic / Inherit rows from `auto` and
-    `profile_resolved`. Both must describe what choosing that row would GIVE
-    you, independent of what is currently saved — labelling them from the
-    active selection makes the row claim it would keep the current model."""
+async def test_role_defaults_carry_the_fallback_outcomes_not_just_the_selection(monkeypatch):
+    """A row renders straight from these blocks, so clearing a pin (or resetting
+    the section) can repaint in the same frame instead of showing the old value
+    until a refetch lands. `auto` must therefore describe what the role falls to
+    with nothing saved, independent of what IS saved."""
     from routes import models as models_route
     import firebase_auth
 
@@ -769,10 +745,12 @@ async def test_role_defaults_describe_the_fallback_options_not_the_selection(mon
     entry = (await models_route.get_available_models())["role_defaults"]["quick_task"]
 
     assert entry["profile"] == "local-abc123:qwen3-vl"
+    # In effect right now: the pin.
+    assert entry["resolved"]["model"] == "local-abc123:qwen3-vl"
     # `auto` ignores the pin and reports the tier-matched model for the role.
-    assert entry["auto"] == "local-fast:tiny-3b"
-    # `profile_resolved` is what a project inheriting would land on.
-    assert entry["profile_resolved"] == "local-abc123:qwen3-vl"
+    assert entry["auto"]["model"] == "local-fast:tiny-3b"
+    # `inherited` is what a project row inheriting this profile would land on.
+    assert entry["inherited"]["model"] == "local-abc123:qwen3-vl"
 
 
 @pytest.mark.asyncio
@@ -915,3 +893,52 @@ def test_chat_effort_resolves_chat_then_project_then_profile(monkeypatch):
     assert llm_resolver.resolve_chat_effort("max", "low") == "max"
     assert llm_resolver.resolve_chat_effort(None, "low") == "low"
     assert llm_resolver.resolve_chat_effort(None, None) == "high"
+
+
+class TestCatalogAlias:
+    """The catalog spells its keys agent_model / agent_fast_model; the wire role
+    is "agent-fast". The hyphen has to be normalized or the lookup misses."""
+
+    def _catalog(self):
+        import llm_resolver
+        llm_resolver.set_catalog_cache([{
+            "slug": "stimma:claude-haiku-4.5",
+            "name": "Claude Haiku 4.5",
+            "agent_model": "stimma:claude-haiku-4.5",
+            "agent_fast_model": "stimma:claude-haiku-4.5",
+            "max_context_tokens": 200_000,
+        }])
+
+    def test_fast_role_resolves_to_the_model_not_the_role_name(self, monkeypatch):
+        """Regression: this returned the literal string "agent-fast" as the
+        model. It went unnoticed while no reasoning fields rode along; once they
+        did, the provider rejected every background request with a 400."""
+        import llm_resolver
+
+        self._catalog()
+        try:
+            for role in ("agent-fast", "agent"):
+                resolved = llm_resolver._resolve_catalog_alias(
+                    "stimma:claude-haiku-4.5", role
+                )
+                assert resolved == "stimma:claude-haiku-4.5", role
+        finally:
+            llm_resolver.set_catalog_cache([])
+
+    def test_unknown_slug_is_passed_through(self):
+        import llm_resolver
+
+        assert llm_resolver._resolve_catalog_alias("mystery", "agent") == "mystery"
+
+    def test_entry_without_the_key_falls_back_to_the_slug(self, monkeypatch):
+        """A catalog row missing its role key must still name a model, never a
+        role — the same failure in a different disguise."""
+        import llm_resolver
+
+        llm_resolver.set_catalog_cache([
+            {"slug": "stimma:odd", "name": "Odd", "max_context_tokens": 1000},
+        ])
+        try:
+            assert llm_resolver._resolve_catalog_alias("stimma:odd", "agent-fast") == "stimma:odd"
+        finally:
+            llm_resolver.set_catalog_cache([])

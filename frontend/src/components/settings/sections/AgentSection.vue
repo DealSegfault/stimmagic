@@ -27,7 +27,7 @@
         <p class="mt-1 max-w-xl text-xs leading-relaxed text-content-tertiary">
           Projects can override any of these.
         </p>
-        <div class="mt-3 max-w-[680px]">
+        <div class="mt-3">
           <RoleModelRows
             :model-value="roleSlugs"
             :efforts="roleEfforts"
@@ -255,13 +255,18 @@ const hasExplicitModels = computed(() => ROLE_KEYS.some(role => {
   return (sel?.model && sel.model !== 'auto') || !!sel?.effort
 }))
 
-/** Back to a clean slate: every role decides for itself again. */
+/**
+ * Back to a clean slate: every role decides for itself again.
+ *
+ * The rows repaint from the `auto` block the server already sent, so this is
+ * instant. Persisting happens behind it; there is no second, visible flip when
+ * the request lands.
+ */
 async function resetModels() {
   const cleared = emptyModels()
   localModels.value = cleared
   try {
     await axios.patch(`${getApiBase()}/settings/agent`, { models: cleared })
-    await fetchModels(null, true)
   } catch (err) {
     console.error('Failed to reset models:', err)
   }

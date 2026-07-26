@@ -24,6 +24,7 @@ from config import (
 from config_writer import patch_global_section
 from core.logging import get_logger
 from cloud_runtime import with_cloud_access_headers
+from model_tiers import seed_effort
 from llm_resolver import (
     PROJECT_EFFORT_COLUMNS,
     PROJECT_ROLE_COLUMNS,
@@ -1160,20 +1161,19 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
         entry = next((m for m in catalog if m.get("slug") == slug), None)
         return (entry or {}).get("reasoning") or {}
 
-    def _effective_effort(role: str, slug: Optional[str], pinned: Optional[str]) -> Optional[str]:
-        """The concrete level this role will actually run at.
+    def _block(role: str, slug: Optional[str], pinned_effort: Optional[str]) -> dict:
+        """One resolution outcome: the model, the level, and that model's ladder.
 
-        The settings row shows exactly this — never a word standing in for it —
-        so a pin this model has no rung for reads as the seeded level instead.
+        The client renders straight from these, so switching a row (or resetting
+        the section) can repaint immediately instead of waiting on a round trip
+        and visibly flipping from the old value to the new one.
         """
-        from model_tiers import seed_effort
         reasoning = _reasoning_for(slug, models)
         levels = reasoning.get("levels") or []
-        if pinned and pinned in levels:
-            return pinned
-        return seed_effort(
+        effort = pinned_effort if pinned_effort in levels else seed_effort(
             role, levels, reasoning.get("default"), reasoning.get("quick_task")
         )
+        return {"model": slug, "effort": effort, "levels": levels}
 
     role_defaults = {}
     for role in SETTINGS_ROLES:
@@ -1181,34 +1181,26 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
             normalize_model_slug(settings.get_role_model_slug(role))
         )
         override = _lockdown_safe(normalize_model_slug(project_overrides.get(role)))
+        profile_effort = settings.get_role_effort(role)
+        project_effort = project_efforts.get(role)
+
         resolved_for_role = await resolve_role_model_slug(
             role, project_slug=override,
         ) if override else await resolve_role_model_slug(role)
+
         role_defaults[role] = {
             "profile": profile_setting or "auto",
             "project": override,
-            # What the app will actually call right now, with `auto` expanded.
-            "resolved": resolved_for_role,
-            # What choosing "Automatic" would land on, independent of what is
-            # saved. The picker labels its Automatic row with this, so the label
-            # describes the option rather than the current selection.
-            "auto": await resolve_auto_slug(role),
-            # What inheriting from the profile would land on, ignoring any
-            # project override — the label on a project's Inherit row.
-            "profile_resolved": await resolve_role_model_slug(role),
-            # Reasoning effort. None at a level means nothing is pinned there,
-            # and the role's own intent decides once the model is known.
-            "effort": await resolve_role_effort(
-                role, project_effort=project_efforts.get(role),
+            # In effect right now, given whatever is saved.
+            "resolved": _block(role, resolved_for_role, project_effort or profile_effort),
+            # What this role falls to with nothing saved at all — what a reset
+            # lands on, so the client can show it without asking again.
+            "auto": _block(role, await resolve_auto_slug(role), None),
+            # What the profile resolves to, ignoring any project override —
+            # what a project row inherits.
+            "inherited": _block(
+                role, await resolve_role_model_slug(role), profile_effort
             ),
-            "profile_effort": settings.get_role_effort(role),
-            "project_effort": project_efforts.get(role),
-            # The concrete level in effect, and the ladder to render.
-            "effort_resolved": _effective_effort(
-                role, resolved_for_role,
-                project_efforts.get(role) or settings.get_role_effort(role),
-            ),
-            "effort_levels": _reasoning_for(resolved_for_role, models).get("levels") or [],
         }
 
     # The chat role keeps its own top-level keys — the model picker and several

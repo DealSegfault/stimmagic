@@ -805,69 +805,6 @@ def _migrate_legacy_llm_model_slugs(config_file: Path) -> bool:
     return True
 
 
-def _migrate_global_models_to_profiles(config_file: Path) -> bool:
-    """Move the two global model choices into each profile's agent.models.
-
-    ``quick_task_model`` and ``default_model`` used to be single global values
-    shared by every profile, which made a profile's privacy posture impossible to
-    express — a local-only profile still resolved background work through
-    whatever the last cloud selection was. Each profile now owns four role
-    settings; the old globals seed them and are then removed.
-    """
-    from ruamel.yaml import YAML
-    import shutil
-    import tempfile
-
-    parser = YAML()
-    parser.preserve_quotes = True
-    parser.width = 120
-    with config_file.open("r") as handle:
-        data = parser.load(handle) or {}
-
-    if "quick_task_model" not in data and "default_model" not in data:
-        return False
-
-    quick = LEGACY_LLM_MODEL_SLUGS.get(data.get("quick_task_model"), data.get("quick_task_model"))
-    chat = LEGACY_LLM_MODEL_SLUGS.get(data.get("default_model"), data.get("default_model"))
-
-    for profile in data.get("profiles", []) or []:
-        agent = profile.setdefault("agent", {})
-        models = agent.setdefault("models", {})
-        # Only seed roles the profile has not already set — re-running this
-        # migration must never overwrite a deliberate choice.
-        #
-        # `flow` is deliberately NOT seeded. The old globals were a chat model
-        # and a background model; neither was ever a choice about flows. Seeding
-        # it from the chat default silently puts bulk flow work on whatever the
-        # user picked for conversation — typically the most expensive model they
-        # have. It starts on `auto`, which tier-matches flows to a mid model.
-        for key, value in (
-            ("quick_task", quick),
-            ("tool_assistant", quick),
-            ("chat", chat),
-        ):
-            if key not in models and value:
-                # Bare slug, not the {model, effort} mapping: effort had no
-                # predecessor either, so it stays automatic. RoleModelSelection
-                # accepts both shapes.
-                models[key] = value
-
-    data.pop("quick_task_model", None)
-    data.pop("default_model", None)
-
-    fd, temp_path = tempfile.mkstemp(suffix=".yaml", dir=config_file.parent)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            parser.dump(data, handle)
-        shutil.copy2(config_file, config_file.with_suffix(".yaml.bak"))
-        os.replace(temp_path, config_file)
-    except Exception:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
-        raise
-    return True
-
-
 class Settings(BaseSettings):
     # Profile-based configuration (new structure)
     profiles: List[ProfileConfig] = []
@@ -1058,13 +995,19 @@ class Settings(BaseSettings):
 
         _migrate_source_folder_config(config_file)
         _migrate_legacy_llm_model_slugs(config_file)
-        _migrate_global_models_to_profiles(config_file)
         with open(config_file, 'r') as f:
             config_data = yaml.safe_load(f)
 
         # Expand environment variables in all string values
         config_data = expand_env_vars(config_data)
 
+        # Retired global model choices. Deliberately NOT migrated into the
+        # per-profile settings: they were a chat model and a background model,
+        # chosen before roles existed, and carrying them forward would pin every
+        # install to yesterday's answer. Dropping them lets each role fall to
+        # `auto`, which picks per role against what the install actually has.
+        config_data.pop('default_model', None)
+        config_data.pop('quick_task_model', None)
         # Remove deprecated thumbnail_cache_dir (now computed via app_dirs)
         config_data.pop('thumbnail_cache_dir', None)
         # Remove deprecated posthog_session_recording (PostHog removed)

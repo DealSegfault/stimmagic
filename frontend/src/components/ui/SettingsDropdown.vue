@@ -5,9 +5,10 @@
       :disabled="disabled"
       @click="toggle"
       @keydown="handleButtonKeydown"
-      class="flex items-center gap-1.5 text-content-secondary text-sm cursor-pointer hover:text-content transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-content-secondary"
+      class="relative flex items-center gap-1.5 text-content-secondary text-sm cursor-pointer hover:text-content transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-content-secondary"
       :class="[
-        control ? 'max-w-[min(28rem,calc(100vw-2rem))] justify-between rounded-md border border-edge bg-surface-raised px-3 py-2 text-left hover:border-accent/50' : 'max-w-full',
+        control ? 'max-w-[min(28rem,calc(100vw-2rem))] justify-between rounded-md border border-edge bg-surface-raised py-2 text-left hover:border-accent/50' : 'max-w-full',
+        control ? (compact ? 'px-2' : 'px-3') : '',
         control && !compact ? 'min-w-52' : '',
         fill ? 'w-full' : '',
       ]"
@@ -23,6 +24,14 @@
           :class="selectedOption.tone === 'cloud' ? 'stimma-cloud-text font-medium' : 'text-content-muted'"
         >{{ selectedOption.description }}</span>
       </span>
+      <!-- Status dot: this value was set here rather than inherited or chosen
+           automatically. Sits right after the name, and is the only thing in
+           the trigger that appears conditionally. -->
+      <span
+        v-if="marked"
+        class="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500"
+        aria-hidden="true"
+      />
       <span v-if="!hideTriggerDetails && selectedOption?.meta" class="shrink-0 text-[11px] tabular-nums text-content-muted">{{ selectedOption.meta }}</span>
       <svg
         class="w-3 h-3 text-content-muted transition-transform"
@@ -97,7 +106,13 @@
             <ModelVendorIcon v-if="showVendorIcons" :model="option.vendor" size="sm" />
             <span class="min-w-0 flex-1">
               <span class="flex items-baseline justify-between gap-3">
-                <span class="truncate font-medium" :class="option.disabled ? 'text-content-muted' : 'text-content'">{{ option.label }}</span>
+                <span class="flex min-w-0 items-center gap-1.5">
+                  <span class="truncate font-medium" :class="option.disabled ? 'text-content-muted' : 'text-content'">{{ option.label }}</span>
+                  <span
+                    v-if="option.tag"
+                    class="shrink-0 rounded border border-edge-subtle px-1 text-[9.5px] uppercase tracking-wide text-content-muted"
+                  >{{ option.tag }}</span>
+                </span>
                 <span v-if="option.meta" class="shrink-0 text-[11px] tabular-nums text-content-muted">{{ option.meta }}</span>
               </span>
               <span
@@ -149,6 +164,8 @@ interface Option {
   triggerLabel?: string
   description?: string
   meta?: string
+  /** Small pill beside the label, e.g. marking which option is the default. */
+  tag?: string
   tone?: 'cloud'
   vendor?: ModelVendorId
   disabled?: boolean
@@ -167,6 +184,8 @@ const props = defineProps<{
       of the bold bright settings-page treatment. */
   quiet?: boolean
   hideTriggerDetails?: boolean
+  /** Show a status dot: this value was set on this screen, not inherited. */
+  marked?: boolean
   /** More generous search and option spacing for rich option catalogs. */
   spacious?: boolean
   menuWidth?: number
