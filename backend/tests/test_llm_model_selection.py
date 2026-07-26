@@ -72,8 +72,8 @@ def test_config_migration_rewrites_retired_model_aliases(tmp_path):
 def test_global_model_settings_migrate_into_each_profile(tmp_path):
     """The two globals seed all four per-profile roles, then disappear.
 
-    Quick tasks seeds both background roles, the chat default seeds chats and
-    flows — the closest reading of what each global meant.
+    Quick tasks seeds both background roles and the chat default seeds chats —
+    the closest reading of what each global meant. Flows had no predecessor.
     """
     import yaml
 
@@ -104,12 +104,14 @@ def test_global_model_settings_migrate_into_each_profile(tmp_path):
         "quick_task": "stimma:claude-haiku-4.5",
         "tool_assistant": "stimma:claude-haiku-4.5",
         "chat": "stimma:claude-opus-5",
-        "flow": "stimma:claude-opus-5",
     }
+    # `flow` is a new setting, not a renamed old one. Seeding it from the chat
+    # default would put bulk flow work on the user's conversation model, which
+    # is usually the priciest thing they have; it starts on `auto` instead.
+    assert "flow" not in default_models
 
     # An explicit per-profile choice is never overwritten by the seed.
     assert migrated["profiles"][1]["agent"]["models"]["chat"] == "stimma:gpt-5.6-sol"
-    assert migrated["profiles"][1]["agent"]["models"]["flow"] == "stimma:claude-opus-5"
 
     # Idempotent: nothing left to migrate on a second pass.
     assert _migrate_global_models_to_profiles(config_path) is False

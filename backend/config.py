@@ -813,11 +813,16 @@ def _migrate_global_models_to_profiles(config_file: Path) -> bool:
         models = agent.setdefault("models", {})
         # Only seed roles the profile has not already set — re-running this
         # migration must never overwrite a deliberate choice.
+        #
+        # `flow` is deliberately NOT seeded. The old globals were a chat model
+        # and a background model; neither was ever a choice about flows. Seeding
+        # it from the chat default silently puts bulk flow work on whatever the
+        # user picked for conversation — typically the most expensive model they
+        # have. It starts on `auto`, which tier-matches flows to a mid model.
         for key, value in (
             ("quick_task", quick),
             ("tool_assistant", quick),
             ("chat", chat),
-            ("flow", chat),
         ):
             if key not in models and value:
                 models[key] = value

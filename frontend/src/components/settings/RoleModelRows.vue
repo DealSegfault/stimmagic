@@ -44,7 +44,7 @@ const ROLES = [
   {
     key: 'flow',
     label: 'LLM for Flows',
-    description: 'The model written into new flow programs.',
+    description: 'The model new flows run on.',
   },
 ]
 
@@ -53,20 +53,36 @@ function endpointHost(url?: string) {
   try { return new URL(url).host } catch { return url }
 }
 
-const modelOptions = computed(() => selectableModels.value
-  .filter(model => model.source !== 'auto' && !model.collapsed)
-  .map(model => ({
+/** A model you host yourself: no bill, and the hostname is plumbing. */
+function isLocal(model: any) {
+  return model?.provider_kind === 'local' || model?.source === 'endpoint'
+}
+
+function optionFor(model: any) {
+  const base = {
     value: model.slug,
     label: model.name,
+    vendor: resolveModelVendorId(model) || undefined,
+  }
+  // Local models carry neither of the trailing details: there is no cost, and
+  // which box serves it says nothing you'd choose on. Dropping them also gives
+  // the long self-hosted names the whole trigger instead of an ellipsis.
+  if (isLocal(model)) return base
+  return {
+    ...base,
     description: `via ${model.source === 'stimma_cloud' ? 'Stimma' : (model.provider_name || endpointHost(model.endpoint_url) || 'your endpoint')}`,
     meta: model.cost_tier || '',
     tone: model.source === 'stimma_cloud' ? 'cloud' : undefined,
-    vendor: resolveModelVendorId(model) || undefined,
-  })))
+  }
+}
 
-function modelName(slug?: string | null) {
-  if (!slug) return ''
-  return selectableModels.value.find(m => m.slug === slug)?.name || slug
+const modelOptions = computed(() => selectableModels.value
+  .filter(model => model.source !== 'auto' && !model.collapsed)
+  .map(optionFor))
+
+function modelFor(slug?: string | null) {
+  if (!slug) return null
+  return selectableModels.value.find(m => m.slug === slug) || null
 }
 
 /**
@@ -75,21 +91,26 @@ function modelName(slug?: string | null) {
  * (ignoring this project's override), and at profile level it means what the
  * tier heuristic picks, whether or not `auto` is what's saved.
  */
-function fallbackName(role: string) {
+function fallbackModel(role: string) {
   const entry = roleDefaults.value[role]
-  return modelName(props.inherits ? entry?.profile_resolved : entry?.auto)
+  return modelFor(props.inherits ? entry?.profile_resolved : entry?.auto)
 }
 
+/**
+ * The row you land on when nothing is pinned. In the MENU it names the mode
+ * ("Automatic"); on the TRIGGER it shows the model actually in effect, tagged so
+ * the tracking state is still legible. Showing the mode alone on the trigger
+ * would hide the one thing you came to check.
+ */
 function inheritOption(role: string) {
-  const name = fallbackName(role)
-  // "Inherit" not "Inherit from profile": the section header already says these
-  // override the profile, and the longer phrasing truncates the model name away,
-  // which is the only part that tells you what you'd actually get.
-  const base = props.inherits ? 'Inherit' : 'Automatic'
-  // No `description`: in this control that slot is a short trailing hint on the
-  // trigger ("via Stimma"), not a sentence. What the option means is already in
-  // the row's own description.
-  return { value: '', label: name ? `${base} (${name})` : base }
+  const model = fallbackModel(role)
+  return {
+    value: '',
+    label: props.inherits ? 'Inherit from profile' : 'Automatic',
+    triggerLabel: model?.name || (props.inherits ? 'Inherit from profile' : 'Automatic'),
+    triggerMeta: props.inherits ? 'Inherited' : 'Auto',
+    vendor: model ? (resolveModelVendorId(model) || undefined) : undefined,
+  }
 }
 
 function optionsFor(role: string) {
@@ -117,8 +138,8 @@ onMounted(() => fetchModels(props.projectId ?? null, true))
       <SettingsDropdown
         control
         fill
-        class="w-72"
-        :menu-width="320"
+        class="w-80"
+        :menu-width="340"
         :model-value="selectedFor(role.key)"
         :options="optionsFor(role.key)"
         @update:model-value="slug => emit('update:role', role.key, slug)"

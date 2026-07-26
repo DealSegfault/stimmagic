@@ -17,7 +17,7 @@
       <div>
         <h4 class="text-xs font-semibold text-content-secondary">Models</h4>
         <p class="mt-1 max-w-xl text-xs leading-relaxed text-content-tertiary">
-          Each kind of work can run on a different model. Projects can override any of these.
+          Projects can override any of these.
         </p>
         <div class="mt-3 max-w-[680px]">
           <RoleModelRows :model-value="localModels" @update:role="saveRoleModel" />

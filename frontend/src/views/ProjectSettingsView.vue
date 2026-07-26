@@ -16,10 +16,7 @@
 
       <!-- Models -->
       <div class="mb-6">
-        <h4 class="text-xs font-semibold text-content-secondary mb-1">Models</h4>
-        <p class="text-xs text-content-tertiary mb-3">
-          Override the profile's model choices for work done in this project.
-        </p>
+        <h4 class="text-xs font-semibold text-content-secondary mb-3">Models</h4>
         <RoleModelRows
           :model-value="localModels"
           :project-id="project.id"
