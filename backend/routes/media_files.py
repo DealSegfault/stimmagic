@@ -40,6 +40,20 @@ CACHE_HEADERS = {
     'Access-Control-Allow-Origin': '*',
 }
 
+# For URLs keyed by media id rather than by content. `media_items.id` is a plain
+# SQLite rowid alias (no AUTOINCREMENT), so permanently deleting the highest
+# rows frees those ids and the next insert REUSES them: /media/{id}/file can
+# mean different bytes tomorrow than it does today. Promising immutability there
+# taught WKWebView to keep serving a deleted image forever, ignoring the ETag we
+# also send. Store it, but revalidate every time — FileResponse's ETag makes
+# that a 304 with no payload. Only content-addressed URLs (by-hash, thumbnails)
+# may claim immutability.
+ID_KEYED_CACHE_HEADERS = {
+    'Cache-Control': 'no-cache',
+    'X-Content-Type-Options': 'nosniff',
+    'Access-Control-Allow-Origin': '*',
+}
+
 THEMED_FORMATS = {'md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'}
 
 
@@ -1736,7 +1750,12 @@ async def get_file_by_media_id(
     media_id: int,
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Get full media file by media ID."""
+    """Get full media file by media ID.
+
+    Id-keyed, so no-cache (see ID_KEYED_CACHE_HEADERS): without an explicit
+    Cache-Control, WebKit heuristically caches off Last-Modified, which a
+    recycled id makes wrong.
+    """
     result = await session.execute(
         select(MediaItem).where(MediaItem.id == media_id, MediaItem.ephemeral_run_id.is_(None))
     )
@@ -1757,7 +1776,7 @@ async def get_file_by_media_id(
             return FileResponse(
                 index_path,
                 media_type='text/html',
-                headers={'Access-Control-Allow-Origin': '*'}
+                headers=ID_KEYED_CACHE_HEADERS
             )
         raise HTTPException(status_code=404, detail="Layout index.html not found")
 
@@ -1781,7 +1800,7 @@ async def get_file_by_media_id(
     return FileResponse(
         file_path,
         media_type=media_type,
-        headers={'Access-Control-Allow-Origin': '*'}
+        headers=ID_KEYED_CACHE_HEADERS
     )
 
 
@@ -2921,6 +2940,9 @@ async def get_file_by_media_id_and_db_guid(
     """
     Get full media file by db_guid and media ID.
     This is the preferred endpoint as the URL is globally unique.
+
+    Served with ID_KEYED_CACHE_HEADERS: unique is not the same as stable, since
+    media ids get recycled after a permanent delete.
     """
     result = await session.execute(
         select(MediaItem).where(MediaItem.id == media_id, MediaItem.ephemeral_run_id.is_(None))
@@ -2942,7 +2964,7 @@ async def get_file_by_media_id_and_db_guid(
             return FileResponse(
                 index_path,
                 media_type='text/html',
-                headers={**CACHE_HEADERS, 'Content-Disposition': content_disposition('inline', f'{file_path.name}.html')}
+                headers={**ID_KEYED_CACHE_HEADERS, 'Content-Disposition': content_disposition('inline', f'{file_path.name}.html')}
             )
         raise HTTPException(status_code=404, detail="Layout index.html not found")
 
@@ -2974,7 +2996,7 @@ async def get_file_by_media_id_and_db_guid(
 
     filename = file_path.name
     headers = {
-        **CACHE_HEADERS,
+        **ID_KEYED_CACHE_HEADERS,
         'Content-Disposition': content_disposition('inline', filename)
     }
     _ensure_readable(file_path)

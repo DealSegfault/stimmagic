@@ -52,9 +52,16 @@
     <!-- Image display. Fit mode shows the original full-resolution file — this is
          the user's review surface and must be sharp. Crop mode uses a bounded
          thumbnail for cover-cropped tiles. Unlike videos, images can render the
-         original directly in fit mode, so they do. -->
+         original directly in fit mode, so they do.
+
+         file-hash makes the URL content-addressed (MediaImage prefers it over
+         media-id), which the slideshow already does. Media ids are recycled
+         after a permanent delete, so an id-keyed URL can name different bytes
+         than the browser has cached under it — that showed up here as tiles
+         painting a deleted generation. media-id stays for drag/context-menu. -->
     <MediaImage
       v-else-if="!isVideo && job.result_media_id"
+      :file-hash="getMediaHash(job.result_media_id) || undefined"
       :media-id="job.result_media_id"
       :asset-id="job.result_asset_id"
       :is-audio="isAudio"

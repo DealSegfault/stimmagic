@@ -77,6 +77,44 @@ def test_set_preview_placeholder_for_unavailable_member_does_not_retry(tmp_path)
     assert placeholder.called
 
 
+class TestFileCacheHeaders:
+    """Only content-addressed URLs may be cached immutably.
+
+    media_items.id is a recycled SQLite rowid, so /media/{id}/file can name
+    different bytes after a permanent delete. Serving it `immutable` made
+    WKWebView keep painting a deleted image.
+    """
+
+    async def test_id_keyed_file_is_revalidated_not_immutable(self, client: AsyncClient, db_session, tmp_path):
+        file_path = tmp_path / "id-keyed.png"
+        file_hash = generate_test_image(file_path, color=(10, 20, 30))
+
+        async with db_session() as session:
+            media = await create_media_item(session, file_path=file_path, file_hash=file_hash)
+            media_id = media.id
+
+        db_guid = get_database_registry().get_db_guid("default")
+
+        for url in (f"/api/media/{media_id}/file", f"/api/db/{db_guid}/media/{media_id}/file"):
+            response = await client.get(url)
+            assert response.status_code == 200, url
+            assert "immutable" not in response.headers.get("cache-control", ""), url
+            assert response.headers["cache-control"] == "no-cache", url
+
+    async def test_hash_keyed_file_stays_immutable(self, client: AsyncClient, db_session, tmp_path):
+        file_path = tmp_path / "hash-keyed.png"
+        file_hash = generate_test_image(file_path, color=(30, 20, 10))
+
+        async with db_session() as session:
+            await create_media_item(session, file_path=file_path, file_hash=file_hash)
+
+        db_guid = get_database_registry().get_db_guid("default")
+
+        response = await client.get(f"/api/db/{db_guid}/media/by-hash/{file_hash}/file")
+        assert response.status_code == 200
+        assert "immutable" in response.headers["cache-control"]
+
+
 class TestThumbnailDeletionRaces:
     async def test_thumbnail_generation_does_not_lazy_load_expired_media(self, client: AsyncClient, db_session, tmp_path):
         file_path = tmp_path / "existing-source.png"
