@@ -7,8 +7,7 @@
  * step is created by the first real gesture.
  */
 import { computed } from 'vue'
-import { TOOL_FAMILIES, FAMILY_EDITOR_ICON } from '../../composables/imageStack/toolFamilies'
-import { icons as editorIcons } from '@stimma/image-editor'
+import { TOOL_FAMILIES } from '../../composables/imageStack/toolFamilies'
 import type { FamilyId } from '../../composables/imageStack/toolFamilies'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 import Tooltip from '../ui/Tooltip.vue'
@@ -16,24 +15,14 @@ import Tooltip from '../ui/Tooltip.vue'
 defineProps<{ active: FamilyId | null }>()
 const emit = defineEmits<{ select: [FamilyId] }>()
 
-/**
- * A family's mark: the snapshot editor's own icon where it has one, so a tool
- * looks like itself across both editors, and a drawn fragment for the two verbs
- * that are new.
- */
 const families = computed(() =>
-  TOOL_FAMILIES.map(family => {
-    const editorIcon = FAMILY_EDITOR_ICON[family.id]
-    return {
-      ...family,
-      svg: sanitizeSvg(
-        editorIcon
-          ? (editorIcons as any)[editorIcon]
-          : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
-              stroke-linecap="round" stroke-linejoin="round">${family.icon}</svg>`
-      ),
-    }
-  })
+  TOOL_FAMILIES.map(family => ({
+    ...family,
+    svg: sanitizeSvg(
+      `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">${family.icon}</svg>`
+    ),
+  }))
 )
 </script>
 

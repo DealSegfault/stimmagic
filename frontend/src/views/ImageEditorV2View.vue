@@ -24,10 +24,11 @@ import Spinner from '../components/ui/Spinner.vue'
 import EditRow from '../components/imageStack/EditRow.vue'
 import EditorToolbar from '../components/imageStack/EditorToolbar.vue'
 import EditorSubbar from '../components/imageStack/EditorSubbar.vue'
-import ModeSurface from '../components/imageStack/ModeSurface.vue'
-// The plugin panels are the snapshot editor's own components and carry its CSS.
-import '@stimma/image-editor/style.css'
+import StackPaintCanvas from '../components/imageStack/StackPaintCanvas.vue'
+import StackSelectCanvas from '../components/imageStack/StackSelectCanvas.vue'
+import StackAnnotateCanvas from '../components/imageStack/StackAnnotateCanvas.vue'
 import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
+import DevelopInspector from '../components/imageStack/DevelopInspector.vue'
 import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
 import { useStackDocument, newOpId } from '../composables/imageStack/useStackDocument'
 import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
@@ -42,9 +43,11 @@ import {
 import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
 } from '../composables/imageStack/geometryTransform'
-import { useEditorContext } from '../composables/imageStack/useEditorContext'
+import {
+  CROP_ASPECTS, cropRectForAspect, developLabel,
+} from '../composables/imageStack/developSections'
 import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
-import type { FamilyId } from '../composables/imageStack/toolFamilies'
+import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -83,15 +86,24 @@ const upscaleFactor = ref(2)
 /** Catalog tool picker for the active Generate sub-tool. */
 const toolPickerOpen = ref(false)
 
-/**
- * A live selection from the retouch plugin, consumed by the next gesture.
- * Read lazily: the adapter that owns it is created further down, once the refs
- * it closes over exist.
- */
-const selection = computed<HTMLCanvasElement | null>(() => {
-  const mask = editorContext?.selectionMask.value
-  return mask instanceof HTMLCanvasElement ? mask : null
-})
+// Select
+const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
+const selection = ref<HTMLCanvasElement | null>(null)
+const selectCombine = ref<SelectionMode>('new')
+const selectFeather = ref(8)
+
+// Paint
+const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
+const paintOpId = ref<string | null>(null)
+const paintEngineId = ref('round-soft')
+const paintOpacity = ref(1)
+const paintColor = ref('#c9a276')
+
+// Annotate
+const annotateOpId = ref<string | null>(null)
+const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
+const shapeKind = ref<'rectangle' | 'ellipse' | 'line'>('rectangle')
+const annotateColor = ref('#ffffff')
 
 // -- compositing -----------------------------------------------------------
 
@@ -447,21 +459,6 @@ const family = ref<FamilyId | null>(null)
 /** The active sub-tool within that family. */
 const sub = ref<string | null>(null)
 
-/** Selecting a row re-enters ITS step, so the plugin edits that one. */
-function reenterOp(op: any) {
-  const kind = op.exec?.kind
-  const target: Record<string, FamilyId> = {
-    crop: 'crop', develop: 'develop', annotate: 'annotate',
-    retouch: 'paint', paint: 'paint',
-  }
-  const familyId = target[kind]
-  if (!familyId) return
-  family.value = familyId
-  sub.value = familyById(familyId).defaultSub
-  editorContext.enterOp(op)
-  void refreshModeInput()
-}
-
 function selectFamily(id: FamilyId) {
   // Clicking the active family leaves it — entering and leaving are the same
   // gesture, and leaving with nothing drawn leaves nothing to undo.
@@ -470,7 +467,6 @@ function selectFamily(id: FamilyId) {
   family.value = id
   sub.value = familyById(id).defaultSub
   if (id === 'generate') mode.value = (sub.value as Mode) ?? null
-  void refreshModeInput()
 }
 
 function selectSub(id: string) {
@@ -478,20 +474,26 @@ function selectSub(id: string) {
   if (family.value === 'generate') mode.value = id as Mode
 }
 
-/**
- * Only Generate has a sub-toolbar of ours; the other families' controls are
- * their plugin panel's. The strip stays reserved either way so entering a mode
- * never pushes the canvas around.
- */
-const showsSubbar = computed(() => family.value === 'generate')
-
-/** Sub-toolbar state. Generate only — the rest is the plugin panel's. */
+/** Sub-toolbar state, flattened so the sub-bar stays a dumb renderer. */
 const subbarState = computed(() => ({
   prompt: prompt.value,
   brushSize: brushSize.value,
   candidateCount: candidateCount.value,
   expandFactor: expandFactor.value,
   upscaleFactor: upscaleFactor.value,
+  cropAspect: cropAspect.value,
+  rotation: cropParamsOf().rotation ?? 0,
+  flipX: !!cropParamsOf().flipX,
+  flipY: !!cropParamsOf().flipY,
+  combine: selectCombine.value,
+  featherPx: selectFeather.value,
+  hasSelection: !!selection.value,
+  engineId: paintEngineId.value,
+  paintOpacity: paintOpacity.value,
+  paintColor: paintColor.value,
+  textStyle: textStyle.value,
+  shapeKind: shapeKind.value,
+  annotateColor: annotateColor.value,
 }))
 
 function onSubbarSet(patch: Record<string, any>) {
@@ -500,9 +502,24 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
   if ('expandFactor' in patch) expandFactor.value = patch.expandFactor
   if ('upscaleFactor' in patch) upscaleFactor.value = patch.upscaleFactor
+  if ('combine' in patch) selectCombine.value = patch.combine
+  if ('featherPx' in patch) selectFeather.value = patch.featherPx
+  if ('engineId' in patch) paintEngineId.value = patch.engineId
+  if ('paintOpacity' in patch) paintOpacity.value = patch.paintOpacity
+  if ('paintColor' in patch) paintColor.value = patch.paintColor
+  if ('textStyle' in patch) textStyle.value = patch.textStyle
+  if ('shapeKind' in patch) shapeKind.value = patch.shapeKind
+  if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
+  if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
+  if ('rotation' in patch) void applyCropChange({ rotation: patch.rotation })
+  if ('rotateQuarter' in patch) rotateQuarter()
+  if ('flipX' in patch) void applyCropChange({ flipX: patch.flipX })
+  if ('flipY' in patch) void applyCropChange({ flipY: patch.flipY })
+  if ('clearSelection' in patch) { selectRef.value?.clear(); selection.value = null }
+  if ('newLayer' in patch) startNewPaintLayer()
 }
 
-/** One line of fact per mode. */
+/** One line of fact per mode: what to do, and what it will cost. */
 const subbarHint = computed(() => {
   if (regionTargetOpId.value) return 'Brush the area to limit that edit to'
   if (family.value === 'generate') {
@@ -510,6 +527,18 @@ const subbarHint = computed(() => {
     if (sub.value === 'whole') return 'Creates a checkpoint · everything below feeds it'
     if (sub.value === 'expand') return 'Grows the canvas · the new border is auto-masked'
     if (sub.value === 'upscale') return 'Creates a checkpoint · output continues at the new size'
+  }
+  if (family.value === 'crop') return 'Picking an aspect adds or updates the Crop step — free, reversible'
+  if (family.value === 'select') {
+    return selection.value
+      ? 'Inpaint will use this selection · adjustments can be limited to it'
+      : 'Drag on the canvas · selections become masks and region scopes'
+  }
+  if (family.value === 'paint') {
+    return paintOpId.value ? 'Painting into the current layer' : 'The first stroke creates a Paint layer'
+  }
+  if (family.value === 'annotate') {
+    return sub.value === 'text' ? 'Click the canvas to place text' : 'Drag on the canvas'
   }
   return null
 })
@@ -700,20 +729,225 @@ function growCanvas(source: HTMLCanvasElement, factor: number) {
   return { image, borderMask }
 }
 
-/**
- * The composite the active mode edits ON TOP OF.
- *
- * A mode edits ONE step, so its canvas must show everything below that step and
- * nothing above — otherwise dragging a crop handle would appear to move edits
- * that actually sit on top of it.
- */
-const modeInputCanvas = ref<HTMLCanvasElement | null>(null)
-const modeInputImage = ref<HTMLImageElement | null>(null)
+// -- develop ----------------------------------------------------------------
 
 /**
- * A selection made in the retouch plugin pre-fills the next mask. Consumed by
- * COPY at the moment it is used, never live-linked — the op ends up
- * referencing only its own payload.
+ * The Develop step this session is editing. One step per mode session: entering
+ * Develop and moving a slider creates it, and every further move edits that
+ * same step rather than stacking one per slider.
+ */
+const developOpId = ref<string | null>(null)
+
+const developParams = computed<Record<string, any>>(() => {
+  const op = developOpId.value ? stack.opById(developOpId.value) : null
+  return (op as any)?.params || {}
+})
+
+function onDevelopChange(patch: Record<string, any>, coalesceKey: string) {
+  if (!stack.doc.value) return
+  if (!developOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId, class: 'parametric', enabled: true,
+      label: developLabel(patch), exec: { kind: 'develop' }, params: patch,
+    } as any)
+    developOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    stack.setParams(developOpId.value, patch, coalesceKey)
+    const op = stack.opById(developOpId.value)
+    if (op) stack.setLabel(developOpId.value, developLabel((op as any).params || {}))
+  }
+  void render()
+}
+
+/**
+ * Selecting a Develop row makes the inspector edit THAT row, which is how an
+ * earlier session's step is re-entered rather than a new one being stacked.
+ */
+const selectedDevelopOp = computed(() => {
+  const op = selectedOpId.value ? stack.opById(selectedOpId.value) : null
+  return op && op.class === 'parametric' && (op as any).exec?.kind === 'develop' ? op : null
+})
+
+/**
+ * The inspector shows for a selected Develop row, and also whenever the Develop
+ * family is open with nothing selected — otherwise the FIRST Develop step could
+ * never be created, since there would be no row to select to get its controls.
+ */
+const showsDevelopInspector = computed(
+  () => !!selectedDevelopOp.value || family.value === 'develop'
+)
+
+const developInspectorParams = computed<Record<string, any>>(
+  () => (selectedDevelopOp.value as any)?.params || developParams.value
+)
+
+function onDevelopInspectorChange(patch: Record<string, any>, coalesceKey: string) {
+  // Selecting a row re-enters THAT step; with nothing selected the session's
+  // own step is created on the first move and edited thereafter.
+  if (selectedDevelopOp.value) developOpId.value = selectedDevelopOp.value.id
+  onDevelopChange(patch, coalesceKey)
+}
+
+// -- crop ---------------------------------------------------------------------
+
+const cropOpId = ref<string | null>(null)
+const cropAspect = ref<string>('free')
+
+function cropParamsOf() {
+  const op = cropOpId.value ? stack.opById(cropOpId.value) : null
+  return (op as any)?.params || { rect: { x: 0.5, y: 0.5, width: 1, height: 1 } }
+}
+
+async function applyCropChange(patch: Record<string, any>) {
+  if (!stack.doc.value) return
+  const before = JSON.parse(JSON.stringify(stack.doc.value))
+  if (!cropOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId, class: 'parametric', enabled: true, label: 'Crop',
+      exec: { kind: 'crop' },
+      params: {
+        rect: { x: 0.5, y: 0.5, width: 1, height: 1 },
+        rotation: 0, rotation90: 0, flipX: false, flipY: false, ...patch,
+      },
+    } as any)
+    cropOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    stack.setParams(cropOpId.value, patch, 'crop')
+  }
+  // A geometry change moves every payload above it into a new space.
+  await afterGeometryChange(before)
+  void render()
+}
+
+function chooseAspect(id: string) {
+  cropAspect.value = id
+  const preset = CROP_ASPECTS.find(a => a.id === id)
+  const doc = stack.doc.value
+  if (!doc) return
+  void applyCropChange({
+    rect: cropRectForAspect(preset?.ratio ?? null, doc.canvas.width, doc.canvas.height),
+  })
+}
+
+function rotateQuarter() {
+  void applyCropChange({ rotation90: (((cropParamsOf().rotation90 ?? 0) + 1) % 4) as 0 | 1 | 2 | 3 })
+}
+
+function flip(axis: 'flipX' | 'flipY') {
+  void applyCropChange({ [axis]: !cropParamsOf()[axis] })
+}
+
+// -- paint ---------------------------------------------------------------------
+
+/**
+ * The Paint layer this session is painting into. A layer IS a step, so
+ * "New layer" simply forgets the current one and the next stroke creates the
+ * next Paint row.
+ */
+async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
+  if (!stack.doc.value) return
+  const opId = paintOpId.value || newOpId()
+  const blob = await canvasToBlob(layer)
+  const ref = await stack.uploadPayload(`${opId}-layer.png`, blob)
+
+  if (!paintOpId.value) {
+    const { head } = stackHashes(stack.doc.value)
+    stack.addOp({
+      id: opId,
+      class: 'container',
+      enabled: true,
+      label: readsPixels ? 'Retouch' : 'Paint',
+      exec: { kind: readsPixels ? 'retouch' : 'paint' },
+      raster_ref: ref,
+      blend: { feather_px: 0, opacity: 1 },
+      // A pixel-reading engine baked what was underneath, so its layer carries
+      // an advisory hash exactly like a generative patch.
+      ...(readsPixels ? { sampled_input_hash: head } : {}),
+    } as any)
+    paintOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    // The payload changed under the same ref; nudge the cache so the composite
+    // picks it up.
+    payloadCache.delete(ref)
+    stack.touchOp(opId)
+  }
+  void render()
+}
+
+/**
+ * Double-clicking a container row re-enters its session — the plan's
+ * re-enterable containers: a Paint layer keeps painting into itself, an
+ * Annotate step keeps accumulating shapes.
+ */
+function enterContainerOp(op: any) {
+  if (op.class !== 'container') return
+  if (op.exec?.kind === 'annotate') {
+    family.value = 'annotate'
+    sub.value = 'text'
+    annotateOpId.value = op.id
+    return
+  }
+  void enterPaintOp(op.id)
+}
+
+function startNewPaintLayer() {
+  paintOpId.value = null
+  paintRef.value?.reset()
+}
+
+/** Re-entering a Paint row paints into ITS layer rather than starting another. */
+const paintInitialLayer = ref<HTMLCanvasElement | null>(null)
+
+async function enterPaintOp(opId: string) {
+  const op = stack.opById(opId) as any
+  if (!op?.raster_ref) return
+  family.value = 'paint'
+  paintOpId.value = opId
+  const image = await loadImage(stack.payloadUrl(op.raster_ref))
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  canvas.getContext('2d')!.drawImage(image, 0, 0)
+  paintInitialLayer.value = canvas
+}
+
+// -- annotate --------------------------------------------------------------------
+
+/**
+ * Annotations accumulate into one Annotate step per session. The shapes are the
+ * params, so the step stays vector and re-entering it is lossless.
+ */
+function onAnnotationAdd(shape: any) {
+  if (!stack.doc.value) return
+  if (!annotateOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId,
+      class: 'container',
+      enabled: true,
+      label: 'Annotate',
+      exec: { kind: 'annotate' },
+      params: { shapes: [shape] },
+    } as any)
+    annotateOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    const op = stack.opById(annotateOpId.value) as any
+    stack.setParams(annotateOpId.value, { shapes: [...(op?.params?.shapes || []), shape] })
+  }
+  void render()
+}
+
+// -- selection handoff ------------------------------------------------------------
+
+/**
+ * A live selection pre-fills the next mask. Consumed by COPY at the moment it
+ * is used, never live-linked — the op ends up referencing only its own payload.
  */
 function selectionAsMask(): HTMLCanvasElement | null {
   if (!selection.value) return null
@@ -726,42 +960,6 @@ function selectionAsMask(): HTMLCanvasElement | null {
 
 /** The mask a Generate run will use: the brush if painted, else the selection. */
 const effectiveMask = computed(() => maskCanvas.value || selection.value)
-
-/**
- * The snapshot editor's plugin controls, driven against the op stack. The
- * adapter is the only translation: which family of fields belongs to which step.
- */
-const editorContext = useEditorContext({
-  stack,
-  inputImage: () => modeInputImage.value,
-  inputCanvas: () => modeInputCanvas.value,
-  render: () => { void render() },
-  inputHash: () => (stack.doc.value ? stackHashes(stack.doc.value).head : ''),
-})
-
-async function refreshModeInput() {
-  const doc = stack.doc.value
-  if (!doc || !family.value) { modeInputCanvas.value = null; return }
-  const targetId = editorContext.targets[
-    family.value === 'select' || family.value === 'paint' ? 'retouch'
-      : family.value === 'crop' ? 'crop'
-      : family.value === 'annotate' ? 'annotate' : 'develop'
-  ]
-  const index = targetId
-    ? doc.edits.findIndex(op => op.id === targetId)
-    : doc.edits.length
-  modeInputCanvas.value = await compositor.renderUpTo(doc, index < 0 ? doc.edits.length : index)
-  modeInputImage.value = await canvasToImage(modeInputCanvas.value)
-}
-
-function canvasToImage(canvas: HTMLCanvasElement): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error('composite failed to decode'))
-    image.src = canvas.toDataURL()
-  })
-}
 
 // -- compare -------------------------------------------------------------------
 
@@ -871,7 +1069,11 @@ function leaveMode() {
   maskCanvas.value = null
   maskRef.value?.clear()
   // Ending a mode session ends its STEP: the next entry starts a new one.
-  editorContext.endSession()
+  developOpId.value = null
+  cropOpId.value = null
+  paintOpId.value = null
+  paintInitialLayer.value = null
+  annotateOpId.value = null
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -934,52 +1136,39 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
 </script>
 
 <template>
-  <div class="h-full flex flex-col bg-base">
-    <!-- Tool row across the top: families, then the document verbs. -->
-    <header class="flex items-center gap-3 px-3 h-12 border-b border-edge-subtle shrink-0">
-      <h1 class="text-sm font-medium text-content shrink-0">Edit image</h1>
-      <span v-if="stack.dirtySinceSave.value" class="text-xs text-content-tertiary shrink-0">
-        Unsaved edits
-      </span>
+  <!--
+    Layout, top level:
 
-      <EditorToolbar :active="family" class="ml-2" @select="selectFamily" />
+      ┌──────────────────────────────┬────────────┐
+      │  toolbars (stacked, shrink)  │            │
+      │──────────────────────────────│   Edits    │
+      │                              │  sidebar   │
+      │   canvas — flex-1, matte     │ (full      │
+      │                              │  height)   │
+      │──────────────────────────────│            │
+      │  document bar (undo/save)    │            │
+      └──────────────────────────────┴────────────┘
 
-      <div class="flex-1" />
+    The sidebar sits OUTSIDE the toolbars and spans top to bottom, so nothing a
+    mode does can disturb it. The toolbars are shrink-0 above a flex-1 canvas,
+    so opening one takes matte space from the canvas and closing one gives it
+    back — the image itself never gets pushed around.
+  -->
+  <div class="h-full flex bg-base">
+    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+      <!-- Toolbar 1: the families. -->
+      <div class="flex items-center gap-3 px-3 h-11 shrink-0 border-b border-edge-subtle">
+        <h1 class="text-sm font-medium text-content shrink-0">Edit image</h1>
+        <span v-if="stack.dirtySinceSave.value" class="text-xs text-content-tertiary shrink-0">
+          Unsaved edits
+        </span>
+        <EditorToolbar :active="family" class="ml-2" @select="selectFamily" />
+      </div>
 
-      <Tooltip text="Undo">
-        <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
-          <ArrowUturnLeftIcon class="w-4 h-4" />
-        </IconButton>
-      </Tooltip>
-      <Tooltip text="Redo">
-        <IconButton :disabled="!stack.canRedo.value" @click="stack.redo(); render()">
-          <ArrowUturnRightIcon class="w-4 h-4" />
-        </IconButton>
-      </Tooltip>
-      <Button
-        variant="secondary" size="sm"
-        @pointerdown="setComparing(true)"
-        @pointerup="setComparing(false)"
-        @pointerleave="setComparing(false)"
-      >
-        Hold to compare
-      </Button>
-      <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
-        Save as new
-      </Button>
-      <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
-        Save version
-      </Button>
-    </header>
-
-    <!-- The sub-bar's row is always present, so entering a mode never pushes
-         the canvas around. Only its contents change. -->
-    <div
-      class="h-10 shrink-0"
-      :class="showsSubbar && 'border-b border-edge-subtle bg-surface/40'"
-    >
+      <!-- Toolbar 2: the active family's controls. Present only when a family
+           is open; the canvas below simply gets more or less matte. -->
       <EditorSubbar
-        v-if="showsSubbar"
+        v-if="family"
         :family="family"
         :sub="sub"
         :state="subbarState"
@@ -987,56 +1176,71 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         :busy="busy"
         :can-run="canRun"
         :hint="subbarHint"
+        class="shrink-0"
         @sub="selectSub"
         @set="onSubbarSet"
         @run="run"
         @open-tool-picker="toolPickerOpen = true"
       />
-    </div>
 
-    <div v-if="loading" class="flex-1 grid place-items-center">
-      <Spinner size="md" />
-    </div>
+      <div v-if="loading" class="flex-1 grid place-items-center">
+        <Spinner size="md" />
+      </div>
 
-    <div v-else class="flex-1 flex min-h-0">
-      <div class="flex-1 flex flex-col min-w-0">
-        <!-- A mode hands the canvas to the snapshot editor's own surface, so
-             crop handles, shape manipulation, text editing and the selection
-             suite are the ones that were already built and polished. -->
-        <ModeSurface
-          v-if="family && family !== 'generate'"
-          :family="family"
-          :sub="sub"
-          :editor="editorContext.context.value"
-          :source-image="modeInputImage"
-          class="flex-1 min-h-0"
-        />
-
-        <div v-else ref="viewport" class="flex-1 min-h-0 grid place-items-center bg-matte p-6">
-          <div class="relative" :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }">
-            <canvas
-              ref="displayCanvas"
-              class="rounded-media w-full h-full"
-              :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }"
-            />
-            <!-- Inpaint and region scoping keep their own brush: the mask is
-                 the stack's own concept, not one of the old plugins'. -->
-            <StackMaskCanvas
-              v-if="mode === 'inpaint' || regionTargetOpId"
-              ref="maskRef"
-              :source="composite"
-              :display-width="displayBox.width"
-              :display-height="displayBox.height"
-              :mode="brushMode"
-              :brush-size="brushSize"
-              @change="maskCanvas = $event"
-            />
-          </div>
+      <!-- Canvas. Centred in whatever matte is left. -->
+      <div v-else ref="viewport" class="flex-1 min-h-0 grid place-items-center bg-matte p-6">
+        <div class="relative" :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }">
+          <canvas
+            ref="displayCanvas"
+            class="rounded-media w-full h-full"
+            :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }"
+          />
+          <StackMaskCanvas
+            v-if="mode === 'inpaint' || regionTargetOpId"
+            ref="maskRef"
+            :source="composite"
+            :display-width="displayBox.width"
+            :display-height="displayBox.height"
+            :mode="brushMode"
+            :brush-size="brushSize"
+            @change="maskCanvas = $event"
+          />
         </div>
       </div>
 
-      <!-- Edits -->
-      <aside class="w-80 shrink-0 border-l border-edge-subtle flex flex-col min-h-0">
+      <!-- Document verbs live at the bottom: they act on the document, not on
+           whatever tool happens to be open. -->
+      <footer class="flex items-center gap-2 px-3 h-11 shrink-0 border-t border-edge-subtle">
+        <Tooltip text="Undo">
+          <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
+            <ArrowUturnLeftIcon class="w-4 h-4" />
+          </IconButton>
+        </Tooltip>
+        <Tooltip text="Redo">
+          <IconButton :disabled="!stack.canRedo.value" @click="stack.redo(); render()">
+            <ArrowUturnRightIcon class="w-4 h-4" />
+          </IconButton>
+        </Tooltip>
+        <div class="flex-1" />
+        <Button
+          variant="secondary" size="sm"
+          @pointerdown="setComparing(true)"
+          @pointerup="setComparing(false)"
+          @pointerleave="setComparing(false)"
+        >
+          Hold to compare
+        </Button>
+        <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
+          Save as new
+        </Button>
+        <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
+          Save version
+        </Button>
+      </footer>
+    </div>
+
+    <!-- Edits: full height, outside everything a mode can touch. -->
+    <aside class="w-80 shrink-0 border-l border-edge-subtle flex flex-col min-h-0">
         <div class="px-3 h-10 flex items-center border-b border-edge-subtle">
           <h2 class="text-xs font-medium text-content-secondary">Edits</h2>
           <div class="flex-1" />
@@ -1087,13 +1291,26 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               @intent-hover="intentOpId = $event ? row.op.id : null"
               @drag-start="onDragStart(row.op.id, $event)"
               @drop="onDrop(row.op.id)"
-              @reenter="reenterOp(row.op)"
+              @reenter="enterContainerOp(row.op)"
             />
           </template>
 
           <p v-if="!stack.ops.value.length" class="px-2 py-3 text-xs text-content-tertiary">
             No edits yet.
           </p>
+        </div>
+
+        <!-- Inspector: the selected row's full control surface, under the
+             stack. The row keeps only the eye as an immediate affordance. -->
+        <div
+          v-if="showsDevelopInspector"
+          class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
+        >
+          <DevelopInspector
+            :params="developInspectorParams"
+            @change="onDevelopInspectorChange"
+            @commit="stack.flush()"
+          />
         </div>
 
         <p v-if="migrationNote" class="px-3 py-2 text-xs text-content-tertiary border-t border-edge-subtle">
@@ -1106,6 +1323,5 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           {{ candidates.lastError.value }}
         </p>
       </aside>
-    </div>
   </div>
 </template>

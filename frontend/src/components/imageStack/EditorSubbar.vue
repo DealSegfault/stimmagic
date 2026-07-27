@@ -10,8 +10,14 @@
 import { computed } from 'vue'
 import Button from '../ui/Button.vue'
 import Tooltip from '../ui/Tooltip.vue'
-import { familyById } from '../../composables/imageStack/toolFamilies'
-import type { FamilyId } from '../../composables/imageStack/toolFamilies'
+import {
+  CROP_ASPECTS,
+} from '../../composables/imageStack/developSections'
+import {
+  PAINT_ENGINES, PAINT_SWATCHES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
+  familyById,
+} from '../../composables/imageStack/toolFamilies'
+import type { FamilyId, SelectionMode } from '../../composables/imageStack/toolFamilies'
 
 const props = defineProps<{
   family: FamilyId
@@ -151,10 +157,191 @@ function chipClass(active: boolean, pending = false) {
       </Button>
     </template>
 
-    <!-- Every other family's controls are the plugin panel's, not a second
-         copy of them here. -->
+    <!-- Crop ------------------------------------------------------------ -->
+    <template v-else-if="family.id === 'crop'">
+      <button
+        v-for="preset in CROP_ASPECTS"
+        :key="preset.id"
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+        :class="chipClass(state.cropAspect === preset.id)"
+        @click="emit('set', { cropAspect: preset.id })"
+      >
+        {{ preset.label }}
+      </button>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        Straighten
+        <input
+          type="range" min="-0.4" max="0.4" step="0.005" class="w-28"
+          :value="state.rotation ?? 0"
+          @input="emit('set', { rotation: Number(($event.target as HTMLInputElement).value) })"
+        />
+      </label>
+      <button type="button" class="px-2.5 py-1.5 text-xs rounded-md" :class="chipClass(false)" @click="emit('set', { rotateQuarter: true })">
+        Rotate 90°
+      </button>
+      <button type="button" class="px-2.5 py-1.5 text-xs rounded-md" :class="chipClass(!!state.flipX)" @click="emit('set', { flipX: !state.flipX })">
+        Flip H
+      </button>
+      <button type="button" class="px-2.5 py-1.5 text-xs rounded-md" :class="chipClass(!!state.flipY)" @click="emit('set', { flipY: !state.flipY })">
+        Flip V
+      </button>
+    </template>
+
+    <!-- Select ---------------------------------------------------------- -->
+    <template v-else-if="family.id === 'select'">
+      <button
+        v-for="option in SELECTION_MODES"
+        :key="option.id"
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+        :class="chipClass(state.combine === option.id)"
+        @click="emit('set', { combine: option.id as SelectionMode })"
+      >
+        {{ option.label }}
+      </button>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <label v-if="sub === 'brush'" class="flex items-center gap-2 text-xs text-content-tertiary">
+        Size
+        <input
+          type="range" min="8" max="300" class="w-24"
+          :value="state.brushSize"
+          @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        Feather
+        <input
+          type="range" min="0" max="48" class="w-24"
+          :value="state.featherPx"
+          @input="emit('set', { featherPx: Number(($event.target as HTMLInputElement).value) })"
+        />
+        <span class="tabular-nums w-8">{{ state.featherPx }}px</span>
+      </label>
+      <span v-if="state.hasSelection" class="w-px h-5 bg-edge-subtle mx-1" />
+      <button
+        v-if="state.hasSelection"
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+        @click="emit('set', { clearSelection: true })"
+      >
+        Clear selection
+      </button>
+    </template>
+
+    <!-- Paint ----------------------------------------------------------- -->
+    <template v-else-if="family.id === 'paint'">
+      <Tooltip
+        v-for="engine in PAINT_ENGINES"
+        :key="engine.id"
+        :text="engine.pending
+          ? 'Not built yet'
+          : engine.readsPixels
+            ? 'Reads the pixels below — its layer carries an advisory'
+            : engine.label"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+          :class="chipClass(state.engineId === engine.id, engine.pending)"
+          :disabled="engine.pending"
+          @click="emit('set', { engineId: engine.id })"
+        >
+          <!-- Stroke preview: the brush's own falloff, so the chip shows what
+               it lays down rather than naming it. -->
+          <span
+            class="w-4 h-2 rounded-full"
+            :style="{
+              background: engine.readsPixels
+                ? 'linear-gradient(90deg, rgb(var(--color-text-tertiary-rgb)/.7), transparent)'
+                : `radial-gradient(circle, currentColor ${Math.round(engine.hardness * 100)}%, transparent 100%)`,
+              opacity: engine.flow,
+            }"
+          />
+          {{ engine.label }}
+        </button>
+      </Tooltip>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        Size
+        <input
+          type="range" min="2" max="200" class="w-24"
+          :value="state.brushSize"
+          @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
+        />
+      </label>
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        Opacity
+        <input
+          type="range" min="0" max="1" step="0.05" class="w-20"
+          :value="state.paintOpacity"
+          @input="emit('set', { paintOpacity: Number(($event.target as HTMLInputElement).value) })"
+        />
+      </label>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <button
+        v-for="swatch in PAINT_SWATCHES"
+        :key="swatch"
+        type="button"
+        class="w-5 h-5 rounded-md border transition-transform"
+        :class="state.paintColor === swatch ? 'border-selection scale-110' : 'border-edge-subtle'"
+        :style="{ background: swatch }"
+        @click="emit('set', { paintColor: swatch })"
+      />
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <button
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+        @click="emit('set', { newLayer: true })"
+      >
+        New layer
+      </button>
+    </template>
+
+    <!-- Develop --------------------------------------------------------- -->
     <template v-else-if="family.id === 'develop'">
-      <span class="text-xs text-content-tertiary">Sections switch the panel on the right.</span>
+      <span class="text-xs text-content-tertiary">
+        All controls are in the inspector below the stack — every one is free.
+      </span>
+    </template>
+
+    <!-- Annotate -------------------------------------------------------- -->
+    <template v-else-if="family.id === 'annotate'">
+      <template v-if="sub === 'text'">
+        <button
+          v-for="style in TEXT_STYLES"
+          :key="style.id"
+          type="button"
+          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+          :class="chipClass(state.textStyle === style.id)"
+          @click="emit('set', { textStyle: style.id })"
+        >
+          {{ style.label }}
+        </button>
+      </template>
+      <template v-else-if="sub === 'shape'">
+        <button
+          v-for="kind in SHAPE_KINDS"
+          :key="kind.id"
+          type="button"
+          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+          :class="chipClass(state.shapeKind === kind.id)"
+          @click="emit('set', { shapeKind: kind.id })"
+        >
+          {{ kind.label }}
+        </button>
+      </template>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <button
+        v-for="swatch in PAINT_SWATCHES"
+        :key="swatch"
+        type="button"
+        class="w-5 h-5 rounded-md border transition-transform"
+        :class="state.annotateColor === swatch ? 'border-selection scale-110' : 'border-edge-subtle'"
+        :style="{ background: swatch }"
+        @click="emit('set', { annotateColor: swatch })"
+      />
     </template>
 
     <div class="flex-1" />
