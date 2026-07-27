@@ -31,25 +31,50 @@ export interface ToolFamily {
   defaultSub: string | null
 }
 
+/**
+ * Family glyphs. Where the snapshot editor already has the mark (crop, sliders,
+ * pencil, retouch), we use ITS icon so a tool looks like itself across both
+ * editors; Generate and Select are new verbs and get new marks drawn to match.
+ */
 export const FAMILY_ICONS: Record<FamilyId, string> = {
-  // Sparkle: every model-backed verb lives under one family, and the family
-  // name is what carries the cost meaning.
+  // Generate and Select are new verbs, so they get new marks. The rest reuse
+  // the snapshot editor's own icons via `editorIcons` below.
   generate:
     '<path d="M12 3l1.9 5.9L20 11l-6.1 2.1L12 19l-1.9-5.9L4 11l6.1-2.1z" fill="currentColor" stroke="none"/>'
     + '<path d="M19 3l.8 2.2L22 6l-2.2.8L19 9l-.8-2.2L16 6l2.2-.8z" fill="currentColor" stroke="none"/>',
-  crop:
-    '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/>',
-  select:
-    '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="4 3"/>',
-  paint:
-    '<path d="M9.1 11.9l8.1-8.1a2.85 2.85 0 1 1 4 4l-8.1 8.1"/>'
-    + '<path d="M7.1 14.9c-1.7 0-3 1.4-3 3 0 1.3-1.5 2-2 2 1.1 1.1 2.5 2 4 2 2.2 0 4-1.8 4-4a3 3 0 0 0-3-3z"/>',
-  develop:
-    '<line x1="4" y1="7" x2="20" y2="7"/><circle cx="14" cy="7" r="2.2"/>'
-    + '<line x1="4" y1="12" x2="20" y2="12"/><circle cx="8" cy="12" r="2.2"/>'
-    + '<line x1="4" y1="17" x2="20" y2="17"/><circle cx="16" cy="17" r="2.2"/>',
-  annotate:
-    '<path d="M4 7V5h16v2"/><path d="M9 19h6"/><path d="M12 5v14"/>',
+  crop: '',
+  select: '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="4 3"/>',
+  paint: '',
+  develop: '',
+  annotate: '',
+}
+
+/**
+ * The snapshot editor's icon ids for the families it already owns. Using ITS
+ * marks means a tool looks like itself across both editors instead of two
+ * near-miss drawings of the same thing.
+ */
+export const FAMILY_EDITOR_ICON: Partial<Record<FamilyId, string>> = {
+  crop: 'crop',
+  paint: 'retouch',
+  develop: 'sliders',
+  annotate: 'pencil',
+}
+
+/**
+ * Which snapshot-editor plugin owns a family's controls. Generate is the only
+ * family with no counterpart — it is the new capability.
+ *
+ * Select and Paint both map to the retouch plugin because that is where the
+ * selection suite and the brush engines actually live; the family only decides
+ * which half the user came for.
+ */
+export const FAMILY_PLUGIN: Partial<Record<FamilyId, string>> = {
+  crop: 'crop',
+  select: 'retouch',
+  paint: 'retouch',
+  develop: 'finetune',
+  annotate: 'annotate',
 }
 
 export const TOOL_FAMILIES: ToolFamily[] = [
@@ -66,43 +91,20 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'upscale', label: 'Upscale' },
     ],
   },
-  {
-    id: 'crop',
-    label: 'Crop',
-    key: 'c',
-    icon: FAMILY_ICONS.crop,
-    defaultSub: null,
-    subTools: [],
-  },
-  {
-    id: 'select',
-    label: 'Select',
-    key: 's',
-    icon: FAMILY_ICONS.select,
-    defaultSub: 'rect',
-    subTools: [
-      { id: 'rect', label: 'Rectangle' },
-      { id: 'ellipse', label: 'Ellipse' },
-      { id: 'lasso', label: 'Lasso' },
-      { id: 'brush', label: 'Brush' },
-      { id: 'magnetic', label: 'Magnetic', pending: true },
-      { id: 'wand', label: 'Wand', pending: true },
-    ],
-  },
-  {
-    id: 'paint',
-    label: 'Paint',
-    key: 'p',
-    icon: FAMILY_ICONS.paint,
-    defaultSub: null,
-    subTools: [],
-  },
+  // Crop, Select, Paint and Annotate carry no sub-tool row of ours: their
+  // plugin panel already presents the tools, and duplicating that in a strip
+  // above it would be a second, worse copy of the same choice.
+  { id: 'crop', label: 'Crop', key: 'c', icon: FAMILY_ICONS.crop, defaultSub: null, subTools: [] },
+  { id: 'select', label: 'Select', key: 's', icon: FAMILY_ICONS.select, defaultSub: null, subTools: [] },
+  { id: 'paint', label: 'Paint', key: 'p', icon: FAMILY_ICONS.paint, defaultSub: null, subTools: [] },
   {
     id: 'develop',
     label: 'Develop',
     key: 'd',
     icon: FAMILY_ICONS.develop,
     defaultSub: 'light',
+    // Develop spans three of the old plugins; the sub-tool picks which panel is
+    // in front, because the stack's unit is a develop session, not a plugin tab.
     subTools: [
       { id: 'light', label: 'Light' },
       { id: 'colour', label: 'Colour' },
@@ -110,20 +112,7 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'effects', label: 'Effects' },
     ],
   },
-  {
-    id: 'annotate',
-    label: 'Annotate',
-    key: 'a',
-    icon: FAMILY_ICONS.annotate,
-    defaultSub: 'text',
-    subTools: [
-      { id: 'text', label: 'Text' },
-      { id: 'shape', label: 'Shape' },
-      { id: 'redact', label: 'Redact' },
-      { id: 'sticker', label: 'Sticker', pending: true },
-      { id: 'frame', label: 'Frame', pending: true },
-    ],
-  },
+  { id: 'annotate', label: 'Annotate', key: 'a', icon: FAMILY_ICONS.annotate, defaultSub: null, subTools: [] },
 ]
 
 export function familyById(id: FamilyId): ToolFamily {
@@ -131,42 +120,10 @@ export function familyById(id: FamilyId): ToolFamily {
 }
 
 /**
- * Paint engines as chips, Krita-style. Heal, Clone, Dodge, Burn and Blur are
- * ENGINES, not separate tools — the thing the user picks is a brush, and what
- * differs is how it lays down pixels.
- *
- * The pixel-reading engines (heal, clone, dodge, burn, blur) sample the
- * composite below, which is why their layers carry an advisory hash like
- * patches do.
+ * Selection combine modes, kept only because the op stack needs the vocabulary
+ * when a selection becomes a region. Every other brush, engine, swatch and text
+ * style now comes from the plugin panels rather than from a second list here.
  */
-export interface PaintEngine {
-  id: string
-  label: string
-  hardness: number
-  flow: number
-  /** Reads the composite below rather than laying down the colour. */
-  readsPixels?: boolean
-  /** Not yet implemented. */
-  pending?: boolean
-}
-
-export const PAINT_ENGINES: PaintEngine[] = [
-  { id: 'round-soft', label: 'Round soft', hardness: 0.25, flow: 1 },
-  { id: 'round-hard', label: 'Round hard', hardness: 0.95, flow: 1 },
-  { id: 'ink', label: 'Ink', hardness: 0.9, flow: 1 },
-  { id: 'airbrush', label: 'Airbrush', hardness: 0.05, flow: 0.35 },
-  { id: 'blur', label: 'Blur', hardness: 0.3, flow: 0.6, readsPixels: true },
-  { id: 'dodge', label: 'Dodge', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'burn', label: 'Burn', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'heal', label: 'Heal', hardness: 0.4, flow: 1, readsPixels: true, pending: true },
-  { id: 'clone', label: 'Clone', hardness: 0.4, flow: 1, readsPixels: true, pending: true },
-]
-
-export const PAINT_SWATCHES = [
-  '#ffffff', '#000000', '#c9a276', '#5d4128', '#b0342c', '#2a4a6b', '#3f7a4f',
-]
-
-/** Combine modes for Select — how a new selection meets the existing one. */
 export const SELECTION_MODES = [
   { id: 'new', label: 'New' },
   { id: 'add', label: 'Add' },
@@ -175,17 +132,3 @@ export const SELECTION_MODES = [
 ] as const
 
 export type SelectionMode = typeof SELECTION_MODES[number]['id']
-
-/** Text style presets, parity with the annotate plugin's text effects. */
-export const TEXT_STYLES = [
-  { id: 'pill', label: 'Pill' },
-  { id: 'plain', label: 'Plain' },
-  { id: 'outline', label: 'Outline' },
-  { id: 'neon', label: 'Neon' },
-] as const
-
-export const SHAPE_KINDS = [
-  { id: 'rectangle', label: 'Rectangle' },
-  { id: 'ellipse', label: 'Ellipse' },
-  { id: 'line', label: 'Line' },
-] as const
