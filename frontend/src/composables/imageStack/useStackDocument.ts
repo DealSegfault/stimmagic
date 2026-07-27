@@ -259,6 +259,28 @@ export function useStackDocument() {
     )
   }
 
+  /**
+   * Scope an op to a region, or clear it.
+   *
+   * Regions are copied at creation, never live-linked to whatever they were
+   * copied from — an op references only its own payloads, which is what makes
+   * "drag a row" mean exactly one thing.
+   */
+  function setRegion(
+    opId: string,
+    region: { mask_ref: string; feather_px: number; invert: boolean } | null
+  ) {
+    const op = opById(opId)
+    if (!op) return
+    const was = op.region ? { ...op.region } : null
+    record(
+      'set_region',
+      { op_id: opId, region },
+      { op_id: opId, region: was },
+      () => { op.region = region }
+    )
+  }
+
   function pickCandidate(opId: string, candidateId: string | null) {
     const op = opById(opId) as any
     if (!op || op.picked === candidateId) return
@@ -343,6 +365,11 @@ export function useStackDocument() {
         if (op) op.blend = inv.blend
         break
       }
+      case 'set_region': {
+        const op = d.edits.find(o => o.id === inv.op_id)
+        if (op) op.region = inv.region
+        break
+      }
     }
   }
 
@@ -387,6 +414,11 @@ export function useStackDocument() {
       case 'set_blend': {
         const op = d.edits.find(o => o.id === fwd.op_id) as any
         if (op) op.blend = fwd.blend
+        break
+      }
+      case 'set_region': {
+        const op = d.edits.find(o => o.id === fwd.op_id)
+        if (op) op.region = fwd.region
         break
       }
     }
@@ -477,6 +509,7 @@ export function useStackDocument() {
     setParams,
     setLabel,
     setBlend,
+    setRegion,
     pickCandidate,
     attachCandidates,
     undo,

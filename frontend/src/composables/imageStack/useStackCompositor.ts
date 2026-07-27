@@ -21,6 +21,8 @@
 
 import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
+import { canonicalOp, stackHashes } from './stackHashes'
+export { canonicalOp, stackHashes }
 import {
   applyAnnotations,
   applyCrop,
@@ -35,47 +37,6 @@ export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
   inputHash: string
   op: Op
-}
-
-/** FNV-1a over a string. Fast, stable, and only ever compared for equality. */
-function hashString(input: string): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(16).padStart(8, '0')
-}
-
-/**
- * The part of an op that changes its output. Anything not in here must not
- * affect pixels — labels and selection state deliberately do not.
- */
-export function canonicalOp(op: Op): string {
-  if (!op.enabled) return 'identity'
-  const anyOp = op as any
-  const picked = pickedCandidate(op)
-  return JSON.stringify([
-    op.class,
-    anyOp.exec,
-    anyOp.params ?? null,
-    op.region ? [op.region.mask_ref, op.region.feather_px, op.region.invert] : null,
-    anyOp.mask_ref ?? null,
-    anyOp.raster_ref ?? null,
-    anyOp.blend ?? null,
-    picked ? [picked.file_hash, picked.patch_ref ?? null, picked.patch_origin ?? null] : null,
-  ])
-}
-
-/** Input hashes for every op, plus the hash of the finished composite. */
-export function stackHashes(doc: StackDocument): { inputs: string[]; head: string } {
-  let hash = doc.base.file_hash
-  const inputs: string[] = []
-  for (const op of doc.edits) {
-    inputs.push(hash)
-    hash = hashString(hash + '|' + canonicalOp(op))
-  }
-  return { inputs, head: hash }
 }
 
 /**
@@ -267,6 +228,8 @@ export interface CompositorDeps {
  */
 export class StackCompositor {
   private cache = new Map<string, HTMLCanvasElement>()
+  /** Ops that could not be applied on the last render, for the UI to report. */
+  readonly failedOpIds = new Set<string>()
   private maxEntries: number
 
   constructor(private deps: CompositorDeps, maxEntries = 12) {
@@ -291,10 +254,20 @@ export class StackCompositor {
     this.cache.set(key, canvas)
   }
 
+  /**
+   * The composite an op at `index` applies to — everything strictly below it.
+   * Resampling a step needs this, not the head: a step re-samples against what
+   * it actually sits on.
+   */
+  async renderUpTo(doc: StackDocument, index: number): Promise<HTMLCanvasElement> {
+    return this.render({ ...doc, edits: doc.edits.slice(0, index) })
+  }
+
   async render(doc: StackDocument): Promise<HTMLCanvasElement> {
     const { inputs, head } = stackHashes(doc)
     const cachedHead = this.cache.get(head)
     if (cachedHead) return cachedHead
+    this.failedOpIds.clear()
 
     const width = doc.canvas.width
     const height = doc.canvas.height
@@ -322,7 +295,16 @@ export class StackCompositor {
       // A geometry op resizes the frame, and every op above it works in the
       // new space — which is why the working size is carried forward rather
       // than read from the document.
-      current = await this.applyOp(current, op, current.width, current.height)
+      //
+      // An op whose payload cannot be loaded contributes nothing rather than
+      // failing the render: one unreadable mask must not blank the canvas and
+      // hide every other step's work.
+      try {
+        current = await this.applyOp(current, op, current.width, current.height)
+      } catch (error) {
+        this.failedOpIds.add(op.id)
+        console.warn(`[imageStack] step "${op.label}" could not be applied`, error)
+      }
       const nextHash = i + 1 < inputs.length ? inputs[i + 1] : head
       this.remember(nextHash, current)
     }

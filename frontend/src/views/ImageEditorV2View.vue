@@ -22,6 +22,7 @@ import IconButton from '../components/ui/IconButton.vue'
 import Tooltip from '../components/ui/Tooltip.vue'
 import Spinner from '../components/ui/Spinner.vue'
 import EditRow from '../components/imageStack/EditRow.vue'
+import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
 import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
 import { useStackDocument, newOpId } from '../composables/imageStack/useStackDocument'
 import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
@@ -30,6 +31,12 @@ import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
 import { apiErrorMessage } from '../composables/imageStack/errors'
 import { migrateLegacyProject } from '../composables/imageStack/migrateLegacyProject'
+import {
+  blastRadius, canMoveWithinSegment, checkpointStatus, deriveStackState, foldedCount,
+} from '../composables/imageStack/stackState'
+import {
+  geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
+} from '../composables/imageStack/geometryTransform'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -47,7 +54,7 @@ const baseInfo = ref<any>(null)
 
 /** Generate sub-tool modes. Clicking a tool enters a mode; it never edits the
  *  stack. The step is created on the first real gesture — an explicit Run. */
-type Mode = null | 'inpaint' | 'whole'
+type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale'
 const mode = ref<Mode>(null)
 const prompt = ref('')
 const candidateCount = ref(4)
@@ -61,6 +68,9 @@ const maskRef = ref<InstanceType<typeof StackMaskCanvas> | null>(null)
 const tools = ref<any[]>([])
 const inpaintToolId = ref<string | null>(null)
 const wholeToolId = ref<string | null>(null)
+const upscaleToolId = ref<string | null>(null)
+/** Expand grows the canvas and auto-masks the new border. */
+const expandFactor = ref(1.25)
 
 // -- compositing -----------------------------------------------------------
 
@@ -94,7 +104,10 @@ const compositor = new StackCompositor({
 })
 
 async function render() {
-  if (!stack.doc.value) return
+  // The ops watcher fires the moment open() populates the document, which is
+  // before the base is assigned — without this the first render asks for the
+  // base revision's media id and finds nothing.
+  if (!stack.doc.value || !baseInfo.value) return
   rendering.value = true
   try {
     composite.value = await compositor.render(stack.doc.value)
@@ -166,24 +179,278 @@ const candidateThumbs = computed(() => {
   return thumbs
 })
 
+// -- derived stack state ----------------------------------------------------
+
+/** Staleness, segments and folding are DERIVED, never stored. */
+const stackState = computed(() => deriveStackState(stack.doc.value))
+
+function stalenessOf(opId: string) {
+  return stackState.value.ops.find(o => o.op.id === opId)?.staleness ?? 'clean'
+}
+
+/** Which rows the currently hovered gesture would disturb. */
+const intentOpId = ref<string | null>(null)
+const preview = computed(() =>
+  intentOpId.value ? blastRadius(stack.doc.value, intentOpId.value) : null
+)
+function previewStalenessOf(opId: string) {
+  if (!preview.value) return null
+  if (preview.value.hard.has(opId)) return 'hard' as const
+  if (preview.value.advisory.has(opId)) return 'advisory' as const
+  return null
+}
+
+/** Checkpoint bands fold their inputs; a stale one always shows them. */
+const expandedCheckpoints = ref<Set<string>>(new Set())
+function toggleCheckpoint(opId: string) {
+  const next = new Set(expandedCheckpoints.value)
+  next.has(opId) ? next.delete(opId) : next.add(opId)
+  expandedCheckpoints.value = next
+}
+
+/**
+ * Rows the list actually shows, top-first. A clean checkpoint hides the steps
+ * it folds, which is what keeps the resting state short.
+ */
+const visibleRows = computed(() => {
+  const state = stackState.value
+  const hidden = new Set<string>()
+  for (const index of state.checkpoints) {
+    const checkpoint = state.ops[index]
+    if (!checkpoint) continue
+    const stale = checkpoint.staleness === 'hard'
+    if (stale || expandedCheckpoints.value.has(checkpoint.op.id)) continue
+    for (const row of state.ops) {
+      if (row.checkpointIndex === index) hidden.add(row.op.id)
+    }
+  }
+  return [...state.ops].reverse().filter(row => !hidden.has(row.op.id))
+})
+
+/** A payload whose geometry has moved it entirely off the frame. */
+const outOfFrame = computed(() => {
+  const doc = stack.doc.value
+  const result: Record<string, boolean> = {}
+  if (!doc) return result
+  for (let index = 0; index < doc.edits.length; index++) {
+    const op = doc.edits[index] as any
+    if (!op.mask_ref && !op.raster_ref) continue
+    const geometry = geometryBelow(doc, index)
+    result[op.id] = !intersectsFrame(
+      geometry.matrix, doc.canvas.width, doc.canvas.height,
+      geometry.width, geometry.height
+    )
+  }
+  return result
+})
+
+// -- row verbs --------------------------------------------------------------
+
+/**
+ * The common ordering intents, as verbs that perform the move mechanically.
+ * Expressing intent is the user's job; where the row ends up is ours.
+ */
+function verbsFor(opId: string) {
+  const doc = stack.doc.value
+  if (!doc) return []
+  const index = doc.edits.findIndex(op => op.id === opId)
+  const op = doc.edits[index]
+  const lowestPatch = doc.edits.findIndex(o => o.class === 'patch')
+  const isParametric = op?.class === 'parametric' || op?.class === 'container'
+
+  return [
+    {
+      id: 'under-patches',
+      label: 'Apply under the patches',
+      disabled: lowestPatch < 0 || index < lowestPatch || !canMoveWithinSegment(doc, opId, lowestPatch),
+    },
+    {
+      id: 'on-top',
+      label: 'Apply on top',
+      disabled: index === doc.edits.length - 1 || !canMoveWithinSegment(doc, opId, doc.edits.length),
+    },
+    { id: 'limit-to-region', label: op?.region ? 'Clear the region' : 'Limit to a region…' },
+    { id: 'duplicate', label: 'Duplicate', disabled: !isParametric },
+  ]
+}
+
+async function runVerb(opId: string, verb: string) {
+  const doc = stack.doc.value
+  if (!doc) return
+  const before = JSON.parse(JSON.stringify(doc))
+
+  if (verb === 'under-patches') {
+    const target = doc.edits.findIndex(o => o.class === 'patch')
+    if (target >= 0) stack.moveOp(opId, target)
+  } else if (verb === 'on-top') {
+    stack.moveOp(opId, doc.edits.length - 1)
+  } else if (verb === 'limit-to-region') {
+    const op = stack.opById(opId)
+    if (op?.region) {
+      stack.setRegion(opId, null)
+    } else {
+      // A region is a mask like any other, so scoping an adjustment reuses the
+      // same brush the inpaint flow uses.
+      regionTargetOpId.value = opId
+      mode.value = 'inpaint'
+      return
+    }
+  } else if (verb === 'duplicate') {
+    const op = stack.opById(opId)
+    if (op) {
+      const copy = JSON.parse(JSON.stringify(op))
+      copy.id = newOpId()
+      copy.label = `${op.label} copy`
+      stack.addOp(copy, doc.edits.findIndex(o => o.id === opId) + 1)
+    }
+  }
+
+  await afterGeometryChange(before)
+  void render()
+}
+
+/** The op a brushed region will be attached to, when scoping rather than inpainting. */
+const regionTargetOpId = ref<string | null>(null)
+
+// -- reorder ----------------------------------------------------------------
+
+const dragOpId = ref<string | null>(null)
+
+function onDragStart(opId: string, event: DragEvent) {
+  dragOpId.value = opId
+  intentOpId.value = opId
+  event.dataTransfer?.setData('text/plain', opId)
+}
+
+async function onDrop(targetOpId: string) {
+  const doc = stack.doc.value
+  const source = dragOpId.value
+  dragOpId.value = null
+  intentOpId.value = null
+  if (!doc || !source || source === targetOpId) return
+
+  const target = doc.edits.findIndex(op => op.id === targetOpId)
+  if (target < 0 || !canMoveWithinSegment(doc, source, target)) return
+
+  const before = JSON.parse(JSON.stringify(doc))
+  stack.moveOp(source, target)
+  await afterGeometryChange(before)
+  void render()
+}
+
+// -- geometry co-transform ---------------------------------------------------
+
+/**
+ * Rewrite spatial payloads whose geometry below them has changed.
+ *
+ * Derived from the AS-CREATED master each time rather than from the previous
+ * derivative, so cropping and then un-cropping restores a mask exactly instead
+ * of compounding resampling loss.
+ */
+async function afterGeometryChange(before: any) {
+  const doc = stack.doc.value
+  if (!doc) return
+  const hasGeometry = doc.edits.some(
+    op => op.class === 'parametric' && (op as any).exec?.kind === 'crop'
+  ) || before.edits.some(
+    (op: any) => op.class === 'parametric' && op.exec?.kind === 'crop'
+  )
+  if (!hasGeometry) return
+
+  for (let index = 0; index < doc.edits.length; index++) {
+    const op = doc.edits[index] as any
+    const refs: Array<[string, string]> = []
+    if (op.mask_ref) refs.push(['mask_ref', op.mask_ref])
+    if (op.raster_ref) refs.push(['raster_ref', op.raster_ref])
+    if (op.region?.mask_ref) refs.push(['region', op.region.mask_ref])
+    if (!refs.length) continue
+
+    const previousIndex = before.edits.findIndex((candidate: any) => candidate.id === op.id)
+    if (previousIndex < 0) continue
+
+    const oldGeometry = geometryBelow(before, previousIndex)
+    const newGeometry = geometryBelow(doc, index)
+    const matrix = coTransform(oldGeometry.matrix, newGeometry.matrix)
+    if (!matrix || isIdentity(matrix)) continue
+
+    for (const [, ref] of refs) {
+      try {
+        const master = await loadImage(stack.payloadUrl(masterRef(ref)))
+        const rewritten = rewritePayload(master, matrix, newGeometry.width, newGeometry.height)
+        // Derivatives live in cache/: they are reconstructible from the master,
+        // so they must never displace it.
+        await stack.uploadPayload(derivedName(ref), await canvasToBlob(rewritten), 'cache')
+      } catch {
+        // A payload that cannot be rewritten keeps its master; the row will
+        // report Out of frame if it no longer lands anywhere.
+      }
+    }
+  }
+}
+
+/** Payload refs always name the master; derivatives are cache entries beside it. */
+function masterRef(ref: string): string {
+  return ref.startsWith('cache/') ? `payloads/${ref.slice('cache/'.length)}` : ref
+}
+function derivedName(ref: string): string {
+  return ref.split('/').pop()!
+}
+
 // -- running a generative step ---------------------------------------------
 
 const canRun = computed(() => {
   if (!composite.value || busy.value) return false
+  if (regionTargetOpId.value) return !!maskCanvas.value
   if (mode.value === 'inpaint') return !!maskCanvas.value && !!inpaintToolId.value
   if (mode.value === 'whole') return !!prompt.value.trim() && !!wholeToolId.value
+  // Expand auto-masks the border it adds, and Upscale takes no prompt, so
+  // neither has anything to wait for beyond a tool.
+  if (mode.value === 'expand') return !!inpaintToolId.value
+  if (mode.value === 'upscale') return !!upscaleToolId.value
   return false
 })
 
 const busy = ref(false)
 
+const generateSubTools = [
+  { id: 'inpaint', label: 'Inpaint' },
+  { id: 'whole', label: 'Whole image' },
+  { id: 'expand', label: 'Expand' },
+  { id: 'upscale', label: 'Upscale' },
+] as const
+
+const promptPlaceholder = computed(() => {
+  if (regionTargetOpId.value) return 'Optional label for this region'
+  if (mode.value === 'inpaint') return 'Describe what belongs here'
+  if (mode.value === 'expand') return 'Describe what surrounds it'
+  return 'Describe the change'
+})
+
 async function run() {
   if (!canRun.value || !stack.doc.value || !composite.value) return
+
+  // A brushed region scopes an existing step rather than creating one.
+  if (regionTargetOpId.value && maskCanvas.value) {
+    const targetId = regionTargetOpId.value
+    const ref = await stack.uploadPayload(
+      `${targetId}-region.png`, await canvasToBlob(maskCanvas.value)
+    )
+    stack.setRegion(targetId, { mask_ref: ref, feather_px: 8, invert: false })
+    regionTargetOpId.value = null
+    mode.value = null
+    maskCanvas.value = null
+    maskRef.value?.clear()
+    void render()
+    return
+  }
+
   busy.value = true
   error.value = null
   try {
-    const isPatch = mode.value === 'inpaint'
-    const toolId = isPatch ? inpaintToolId.value! : wholeToolId.value!
+    const isPatch = mode.value === 'inpaint' || mode.value === 'expand'
+    const toolId = mode.value === 'upscale'
+      ? upscaleToolId.value!
+      : isPatch ? inpaintToolId.value! : wholeToolId.value!
     const tool = tools.value.find(t => t.full_tool_id === toolId)
     if (!tool) throw new Error('That tool is no longer in the catalog.')
 
@@ -192,6 +459,18 @@ async function run() {
     const { head } = stackHashes(stack.doc.value)
 
     const opId = newOpId()
+
+    // Expand grows the frame and auto-masks the border it added — the same
+    // extend-pad invariant the prep flow uses — then fills it like any patch.
+    let submitInput = composite.value
+    let submitMask = isPatch ? maskCanvas.value : null
+    if (mode.value === 'expand') {
+      const grown = growCanvas(composite.value, expandFactor.value)
+      submitInput = grown.image
+      submitMask = grown.borderMask
+      maskCanvas.value = grown.borderMask
+    }
+
     let maskPayloadRef: string | undefined
     if (isPatch && maskCanvas.value) {
       maskPayloadRef = await stack.uploadPayload(
@@ -200,8 +479,10 @@ async function run() {
       )
     }
 
-    const label = isPatch
-      ? `Inpaint${prompt.value.trim() ? ` — ${prompt.value.trim()}` : ''}`
+    const label =
+      mode.value === 'upscale' ? 'Upscale'
+      : mode.value === 'expand' ? 'Expand'
+      : isPatch ? `Inpaint${prompt.value.trim() ? ` — ${prompt.value.trim()}` : ''}`
       : `Edit — ${prompt.value.trim()}`
 
     const op: GenerativeOp = {
@@ -222,8 +503,8 @@ async function run() {
     await candidates.submit({
       opId,
       tool,
-      inputCanvas: composite.value,
-      maskCanvas: isPatch ? maskCanvas.value : null,
+      inputCanvas: submitInput,
+      maskCanvas: submitMask,
       prompt: prompt.value,
       count: candidateCount.value,
       sampledInputHash: head,
@@ -239,6 +520,87 @@ async function run() {
   } finally {
     busy.value = false
   }
+}
+
+/**
+ * Re-run a generative step against its CURRENT input.
+ *
+ * Patch rows resample, checkpoints regenerate — the same mechanism, named for
+ * what each costs the user's mental model. Old candidates are kept and marked
+ * as sampled from a previous state: switching back to one is free and restores
+ * the prior look, which is what makes a regeneration safe to try.
+ */
+const resamplingOpId = ref<string | null>(null)
+
+async function resample(opId: string) {
+  const doc = stack.doc.value
+  const op = stack.opById(opId) as GenerativeOp | undefined
+  if (!doc || !op || !composite.value) return
+
+  const index = doc.edits.findIndex(o => o.id === opId)
+  const inputHash = stackHashes(doc).inputs[index]
+  const tool = tools.value.find(t => t.full_tool_id === op.exec.tool_id)
+  if (!tool) {
+    error.value = 'That tool is no longer in the catalog.'
+    return
+  }
+
+  resamplingOpId.value = opId
+  error.value = null
+  try {
+    // The op's input composite, not the head: a step re-samples against what it
+    // actually sits on.
+    const inputCanvas = await compositor.renderUpTo(doc, index)
+    let mask: HTMLCanvasElement | null = null
+    if (op.class === 'patch' && (op as any).mask_ref) {
+      const image = await loadImage(stack.payloadUrl((op as any).mask_ref))
+      mask = document.createElement('canvas')
+      mask.width = inputCanvas.width
+      mask.height = inputCanvas.height
+      mask.getContext('2d')!.drawImage(image, 0, 0, mask.width, mask.height)
+    }
+    await candidates.submit({
+      opId,
+      tool,
+      inputCanvas,
+      maskCanvas: mask,
+      prompt: (op.params as any)?.prompt || '',
+      count: candidateCount.value,
+      sampledInputHash: inputHash,
+    })
+  } catch (err: any) {
+    error.value = apiErrorMessage(err, 'Could not resample.')
+  } finally {
+    resamplingOpId.value = null
+  }
+}
+
+/**
+ * Grow a canvas about its centre and return the border it added as a mask.
+ * The border is what the model fills; the original pixels are preserved by the
+ * patch composite exactly as with any other mask.
+ */
+function growCanvas(source: HTMLCanvasElement, factor: number) {
+  const width = Math.round(source.width * factor)
+  const height = Math.round(source.height * factor)
+  const offsetX = Math.round((width - source.width) / 2)
+  const offsetY = Math.round((height - source.height) / 2)
+
+  const image = document.createElement('canvas')
+  image.width = width
+  image.height = height
+  image.getContext('2d')!.drawImage(source, offsetX, offsetY)
+
+  const borderMask = document.createElement('canvas')
+  borderMask.width = width
+  borderMask.height = height
+  const maskCtx = borderMask.getContext('2d')!
+  maskCtx.fillStyle = '#fff'
+  maskCtx.fillRect(0, 0, width, height)
+  maskCtx.fillStyle = '#000'
+  maskCtx.fillRect(offsetX, offsetY, source.width, source.height)
+
+  return { image, borderMask }
 }
 
 // -- save ------------------------------------------------------------------
@@ -335,6 +697,7 @@ onMounted(async () => {
     tools.value = all
     inpaintToolId.value = all.find(t => (t.task_types || []).includes('inpaint-image'))?.full_tool_id ?? null
     wholeToolId.value = all.find(t => (t.task_types || []).includes('image-to-image'))?.full_tool_id ?? null
+    upscaleToolId.value = all.find(t => (t.task_types || []).includes('upscale-image'))?.full_tool_id ?? null
 
     await render()
   } catch (err: any) {
@@ -433,7 +796,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <div class="flex items-center gap-2">
             <span class="text-xs text-content-tertiary mr-1">Generate</span>
             <button
-              v-for="option in ([{ id: 'inpaint', label: 'Inpaint' }, { id: 'whole', label: 'Whole image' }] as const)"
+              v-for="option in generateSubTools"
               :key="option.id"
               type="button"
               class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
@@ -444,6 +807,15 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             >
               {{ option.label }}
             </button>
+
+            <template v-if="mode === 'expand'">
+              <div class="w-px h-5 bg-edge-subtle mx-1" />
+              <label class="flex items-center gap-2 text-xs text-content-tertiary">
+                Grow
+                <input v-model.number="expandFactor" type="range" min="1.05" max="2" step="0.05" class="w-24" />
+                <span class="tabular-nums">{{ Math.round(expandFactor * 100) }}%</span>
+              </label>
+            </template>
 
             <template v-if="mode === 'inpaint'">
               <div class="w-px h-5 bg-edge-subtle mx-1" />
@@ -468,9 +840,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
 
           <div v-if="mode" class="flex items-center gap-2">
             <input
+              v-if="mode !== 'upscale'"
               v-model="prompt"
               type="text"
-              :placeholder="mode === 'inpaint' ? 'Describe what belongs here' : 'Describe the change'"
+              :placeholder="promptPlaceholder"
               class="flex-1 px-3 py-2 text-sm bg-surface-raised rounded-md text-content placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
               @keydown.enter="run"
             />
@@ -482,7 +855,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             <Button size="sm" :disabled="!canRun" :loading="busy" @click="run">Run</Button>
           </div>
 
-          <p v-if="mode === 'inpaint' && !maskCanvas" class="text-xs text-content-tertiary">
+          <p v-if="regionTargetOpId" class="text-xs text-content-tertiary">
+            Brush the area to limit that edit to, then Run.
+          </p>
+          <p v-else-if="mode === 'inpaint' && !maskCanvas" class="text-xs text-content-tertiary">
             Brush over the area to change.
           </p>
         </div>
@@ -504,18 +880,44 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           </div>
 
           <!-- Top of the stack reads first, the way the image is built up. -->
-          <EditRow
-            v-for="op in [...stack.ops.value].reverse()"
-            :key="op.id"
-            :op="op"
-            :selected="selectedOpId === op.id"
-            :candidate-thumbs="candidateThumbs[op.id]"
-            :pending-count="pendingByOp[op.id]"
-            @select="selectedOpId = op.id"
-            @toggle="stack.setEnabled(op.id, $event); render()"
-            @pick="stack.pickCandidate(op.id, $event); render()"
-            @remove="stack.removeOp(op.id); render()"
-          />
+          <template v-for="row in visibleRows" :key="row.op.id">
+            <CheckpointBand
+              v-if="row.op.class === 'whole'"
+              :op="row.op"
+              :selected="selectedOpId === row.op.id"
+              :staleness="row.staleness"
+              :folded-count="foldedCount(stack.doc.value, row.index)"
+              :expanded="expandedCheckpoints.has(row.op.id)"
+              :status-line="checkpointStatus(stackState, row.index)"
+              :regenerating="resamplingOpId === row.op.id"
+              @select="selectedOpId = row.op.id"
+              @toggle-expanded="toggleCheckpoint(row.op.id)"
+              @toggle-enabled="stack.setEnabled(row.op.id, $event); render()"
+              @regenerate="resample(row.op.id)"
+            />
+            <EditRow
+              v-else
+              :op="row.op"
+              :selected="selectedOpId === row.op.id"
+              :staleness="row.staleness"
+              :candidate-thumbs="candidateThumbs[row.op.id]"
+              :pending-count="pendingByOp[row.op.id]"
+              :preview-staleness="previewStalenessOf(row.op.id)"
+              :out-of-frame="outOfFrame[row.op.id]"
+              :verbs="verbsFor(row.op.id)"
+              :resampling="resamplingOpId === row.op.id"
+              :draggable="true"
+              @select="selectedOpId = row.op.id"
+              @toggle="stack.setEnabled(row.op.id, $event); render()"
+              @pick="stack.pickCandidate(row.op.id, $event); render()"
+              @remove="stack.removeOp(row.op.id); render()"
+              @resample="resample(row.op.id)"
+              @verb="runVerb(row.op.id, $event)"
+              @intent-hover="intentOpId = $event ? row.op.id : null"
+              @drag-start="onDragStart(row.op.id, $event)"
+              @drop="onDrop(row.op.id)"
+            />
+          </template>
 
           <p v-if="!stack.ops.value.length" class="px-2 py-3 text-xs text-content-tertiary">
             No edits yet.
