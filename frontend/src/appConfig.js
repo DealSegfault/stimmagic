@@ -14,6 +14,11 @@ let settingsLoaded = false
 // Reactive ref for developer mode - allows Vue components to react to changes
 const devModeRef = ref(false)
 
+// Release channel: 'production' | 'beta' | 'canary' | 'dev'. Set from backend
+// settings. Used to gate parallel implementations by channel rather than by
+// per-user flag, so a rollout is decided by which build you are running.
+const appBranchRef = ref('dev')
+
 // Reactive ref for hiding all price/cost display in the UI. A developer-only
 // toggle. Persisted to localStorage (frontend-only, no backend).
 const HIDE_PRICES_KEY = 'stimma_hide_prices'
@@ -74,6 +79,26 @@ export function getSandbox() {
 }
 
 /**
+ * Set the release channel from backend settings.
+ */
+export function setAppBranch(branch) {
+  appBranchRef.value = branch || 'dev'
+}
+
+export function getAppBranch() {
+  return appBranchRef.value
+}
+
+/**
+ * The op-stack image editor ships alongside the snapshot editor and takes over
+ * the `edit-image` entry verbs on debug and canary builds only. Production and
+ * beta keep the old editor until an explicit cutover.
+ */
+export function isImageEditorV2Enabled() {
+  return appBranchRef.value === 'dev' || appBranchRef.value === 'canary'
+}
+
+/**
  * Set developer mode from backend settings.
  * Shows/hides debug tools and developer options in the UI.
  */
@@ -115,4 +140,4 @@ export function setHideAccount(enabled) {
  * Reactive ref for developer mode.
  * Use this in Vue components for reactive updates.
  */
-export { devModeRef, captioningEnabledRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }
+export { devModeRef, appBranchRef, captioningEnabledRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }

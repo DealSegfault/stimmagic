@@ -180,6 +180,16 @@ const routes = [
     props: true
   },
   {
+    // Op-stack editor. Keyed by ASSET, not by an editor instance counter:
+    // one stack per asset, so reopening the same asset resumes the same
+    // document instead of starting a second one. Reached only on the channels
+    // where v2 is enabled — see openImageEditor().
+    path: '/edit-image-v2/:assetId',
+    name: 'edit-image-v2',
+    component: () => import('../views/ImageEditorV2View.vue'),
+    props: true
+  },
+  {
     path: '/lineage/:mediaId',
     name: 'lineage',
     component: LineageView,

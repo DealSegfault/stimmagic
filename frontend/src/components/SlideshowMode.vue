@@ -1228,6 +1228,7 @@ import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, Svg
 import { makeProfileKey, makeToolDbKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { useWorkspaceTabs, toolInstanceScopedId, toolInstanceRoute } from '../composables/useWorkspaceTabs'
+import { openImageEditor } from '../composables/imageStack/openImageEditor'
 import { getCurrentProfileId } from '../composables/useProfile'
 import { getCachedPin } from '../composables/usePinLock'
 import { getApiBase } from '../apiConfig'
@@ -1241,6 +1242,7 @@ import {
 
 const router = useRouter()
 const { nextEditorId } = useWorkspaceTabs()
+
 const { setKeywordFilter, setTagFilter, setSimilarFilter } = useBrowseFilters()
 
 const props = defineProps({
@@ -4460,7 +4462,7 @@ function isImageFormat(format) {
 function handleEditImage(mediaId = null) {
   const targetMediaId = mediaId || currentPayloadId.value
   if (!targetMediaId) return
-  router.push({ name: 'edit-image', params: { editorId: nextEditorId(), mediaId: targetMediaId } })
+  void openImageEditor(router, targetMediaId)
 }
 
 // Exporting a specific version routes through the same Export modal as the

@@ -879,6 +879,7 @@ import { planToolHandoff } from '../../utils/toolHandoff'
 import { isImage as isImageType, getMediaType, MediaType } from '../../utils/mediaTypes'
 import axios from 'axios'
 import { useWorkspaceTabs, toolInstanceRoute, toolTabRoute, type WorkspaceTab } from '../../composables/useWorkspaceTabs'
+import { openImageEditor } from '../../composables/imageStack/openImageEditor'
 import { usePrint } from '../../composables/usePrint'
 import { useTelemetry } from '../../composables/useTelemetry'
 import { mediaIdOf } from '../../utils/assetIdentity'
@@ -1702,7 +1703,7 @@ function handleEditImage() {
   const mediaId = contextMenu.state.value.mediaId
   contextMenu.hide()
   trackTelemetry('edit_image_used')
-  router.push({ name: 'edit-image', params: { editorId: nextEditorId(), mediaId } })
+  void openImageEditor(router, mediaId)
 }
 
 

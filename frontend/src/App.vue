@@ -211,6 +211,7 @@ import {
   devModeRef,
   setAppModifier,
   setDevMode,
+  setAppBranch,
   setCaptioningEnabled,
   setTelemetryEnabled,
 } from './appConfig'
@@ -729,6 +730,7 @@ async function loadAppSettings() {
   runStartupCleanup()
   setCloudBaseUrl(settings.cloud_base_url)
   setDevMode(settings.developer_mode)
+  setAppBranch(settings.app_branch)
   setCaptioningEnabled(settings.background_work?.captioning?.enabled)
   setTelemetryEnabled(settings.telemetry_enabled)
   const privacyLockdown = settings.privacy_lockdown_active === true
