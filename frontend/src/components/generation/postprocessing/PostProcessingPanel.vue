@@ -161,9 +161,11 @@ const candidateTools = computed(() => {
   return allTools.value.filter(t => {
     if (t.full_tool_id === props.currentToolId) return false
     if (t.availability === 'unconfigured') return false
-    // Built-in filters are catalog tools too, but the menu presents them in
-    // its dedicated Filters group — don't list them twice.
-    if (t.provider_id === 'builtin' && t.task_type === 'filter') return false
+    // The built-in image-editor filters are catalog tools too, but the menu
+    // presents them in its dedicated Filters group — don't list them twice.
+    // Match on filter-def identity, not provider+task_type: other builtin
+    // "filter" tools (Darkroom) have no filter def and belong in this list.
+    if (t.provider_id === 'builtin' && getChainFilterDef(t.tool_id)) return false
     const tts = (t.task_types?.length ? t.task_types : [t.task_type]).filter(tt => chainTypes.has(tt))
     if (!tts.length) return false
     return tts.some(tt => stageTypes.value.has(stepInputMedia(tt, 'tool')))

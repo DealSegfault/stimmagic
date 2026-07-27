@@ -152,6 +152,7 @@ const TOOL_CATEGORIES: { label: string; taskTypes: string[] }[] = [
   { label: 'Image edit', taskTypes: ['image-to-image'] },
   { label: 'Image to video', taskTypes: ['image-to-video'] },
   { label: 'Video edit', taskTypes: ['video-to-video'] },
+  { label: 'Image effects', taskTypes: ['filter'] },
 ]
 
 const toolGroups = computed(() => {
@@ -159,10 +160,9 @@ const toolGroups = computed(() => {
   const other = { label: 'Other', tools: [] as ProviderTool[] }
   for (const tool of filteredTools.value) {
     const tt = chainTaskType(tool)
-    // Built-in filters are surfaced authoritatively by the Filters section
-    // above; the provider also registers them as 'filter' STP tools, so skip
-    // those here to avoid listing every filter twice.
-    if (tt === 'filter') continue
+    // No filter-task skip here: the caller already drops the image-editor
+    // filters (surfaced authoritatively by the Filters section above), so any
+    // 'filter' tool still in this list — Darkroom — is one only we can show.
     const idx = TOOL_CATEGORIES.findIndex(c => c.taskTypes.includes(tt))
     if (idx >= 0) buckets[idx].tools.push(tool)
     else other.tools.push(tool)
