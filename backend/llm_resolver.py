@@ -538,9 +538,44 @@ def _settings_role(role: str) -> str:
     return "quick_task" if _is_quick(role) else "chat"
 
 
+async def ensure_catalog_cache() -> None:
+    """Populate the cloud catalog if `auto` is about to choose without one.
+
+    The cache is normally filled as a side effect of the models route, which
+    means any resolution that happens before the client asks for the model list
+    sees only _BUILTIN_CATALOG — one cloud model. `auto` would then pick that
+    one model no matter what the install actually has. Fetching here costs one
+    request per backend lifetime and only on installs that have cloud at all.
+    """
+    if _catalog_cache:
+        return
+    try:
+        import httpx
+        from cloud_runtime import with_cloud_access_headers
+        from firebase_auth import get_valid_id_token
+
+        id_token = await get_valid_id_token()
+        if not id_token:
+            return
+        url = f"{get_settings().cloud.base_url}/api/llm/v1/models"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url,
+                headers=with_cloud_access_headers({"Authorization": f"Bearer {id_token}"}),
+                timeout=10.0,
+            )
+        if response.status_code == 200:
+            set_catalog_cache(response.json().get("data", []))
+    except Exception as e:  # noqa: BLE001 — a cold catalog is not fatal
+        log.warning("failed to warm model catalog", error=str(e))
+
+
 async def resolve_auto_slug(role: str) -> Optional[str]:
     """The concrete model `auto` means for a role on this install right now."""
-    candidates = auto_candidates(cloud_available=await _cloud_is_available())
+    cloud_available = await _cloud_is_available()
+    if cloud_available:
+        await ensure_catalog_cache()
+    candidates = auto_candidates(cloud_available=cloud_available)
     return select_auto_model(candidates, _settings_role(role))
 
 

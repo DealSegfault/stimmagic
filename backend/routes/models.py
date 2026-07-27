@@ -1068,14 +1068,24 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
         "resolved_slug": None,
         "max_context_tokens": get_max_context_tokens('stimma:minimax-m3'),
     }
-    if cloud_status == "available":
+    # What `auto` means for a chat has to come from the resolver, not from a
+    # hardcoded slug: the picker showing one model while Settings and the
+    # actual call use another is worse than showing nothing.
+    auto_chat_slug = await resolve_auto_slug("chat")
+    auto_chat_entry = next(
+        (m for m in models if m.get("slug") == auto_chat_slug and m.get("available")),
+        None,
+    )
+    if auto_chat_entry:
         auto_model.update({
-            "name": "Auto: MiniMax M3",
-            "description": "Uses MiniMax M3 via Stimma.",
+            "name": f"Auto: {auto_chat_entry['name']}",
+            "description": auto_chat_entry.get("description", ""),
             "available": True,
             "status": "available",
-            "resolved_slug": "stimma:minimax-m3",
-            "max_context_tokens": get_max_context_tokens('stimma:minimax-m3'),
+            "resolved_slug": auto_chat_slug,
+            "max_context_tokens": auto_chat_entry.get(
+                "max_context_tokens", get_max_context_tokens(auto_chat_slug)
+            ),
         })
     elif agent_has_endpoint and agent_fast_has_endpoint:
         auto_model.update({

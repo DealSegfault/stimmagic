@@ -942,3 +942,125 @@ class TestCatalogAlias:
             assert llm_resolver._resolve_catalog_alias("stimma:odd", "agent-fast") == "stimma:odd"
         finally:
             llm_resolver.set_catalog_cache([])
+
+
+@pytest.mark.asyncio
+async def test_auto_row_names_the_model_the_resolver_picks(monkeypatch):
+    """The picker's `auto` row must agree with Settings and with the call that
+    actually goes out. It used to be hardcoded to MiniMax M3 whenever cloud was
+    reachable, so a profile on `auto` showed MiniMax in chat while Settings and
+    the resolver both said Opus 5."""
+    from routes import models as models_route
+    import firebase_auth
+    import llm_resolver
+
+    catalog = [
+        {"slug": "stimma:minimax-m3", "name": "MiniMax M3",
+         "model_vendor": "minimax", "canonical_model_id": "minimax-m3"},
+        {"slug": "stimma:claude-opus-5", "name": "Claude Opus 5",
+         "model_vendor": "anthropic", "canonical_model_id": "claude-opus-5"},
+        {"slug": "stimma:claude-haiku-4.5", "name": "Claude Haiku 4.5",
+         "model_vendor": "anthropic", "canonical_model_id": "claude-haiku-4-5"},
+    ]
+
+    settings = _stub_settings(
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llm_providers=[],
+        llms={
+            "agent": LLMRoleConfig(source="auto"),
+            "agent-fast": LLMRoleConfig(source="auto"),
+        },
+    )
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": catalog}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Response()
+
+    async def a_token():
+        return "token"
+
+    monkeypatch.setattr(models_route, "get_settings", lambda: settings)
+    monkeypatch.setattr("llm_resolver.get_settings", lambda: settings)
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", a_token)
+    monkeypatch.setattr(models_route.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr("privacy_lockdown.is_privacy_lockdown_enabled", lambda: False)
+    monkeypatch.setattr("auth_storage.load_auth_state", lambda: {"credits": 100})
+
+    try:
+        payload = await models_route.get_available_models()
+    finally:
+        llm_resolver.set_catalog_cache([])
+
+    auto_model = payload["models"][0]
+    assert auto_model["slug"] == "auto"
+    assert auto_model["resolved_slug"] == "stimma:claude-opus-5"
+    assert auto_model["name"] == "Auto: Claude Opus 5"
+    # The row the picker shows and the row Settings shows are the same model.
+    assert payload["role_defaults"]["chat"]["resolved"]["model"] == "stimma:claude-opus-5"
+
+
+@pytest.mark.asyncio
+async def test_auto_warms_the_catalog_before_choosing(monkeypatch):
+    """`auto` resolving off a cold cache saw only the compiled-in fallback rows —
+    one cloud model — and picked it regardless of what the account can reach."""
+    import llm_resolver
+
+    settings = _stub_settings(
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llm_providers=[],
+    )
+    catalog = [
+        {"slug": "stimma:minimax-m3", "name": "MiniMax M3", "model_vendor": "minimax"},
+        {"slug": "stimma:claude-opus-5", "name": "Claude Opus 5",
+         "model_vendor": "anthropic"},
+    ]
+
+    class _Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": catalog}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Response()
+
+    async def cloud_up():
+        return True
+
+    async def a_token():
+        return "token"
+
+    import httpx as _httpx
+
+    monkeypatch.setattr(llm_resolver, "get_settings", lambda: settings)
+    monkeypatch.setattr(llm_resolver, "_cloud_is_available", cloud_up)
+    monkeypatch.setattr("firebase_auth.get_valid_id_token", a_token)
+    monkeypatch.setattr(_httpx, "AsyncClient", _Client)
+    monkeypatch.setattr("privacy_lockdown.is_privacy_lockdown_enabled", lambda: False)
+
+    llm_resolver.set_catalog_cache([])  # cold
+    try:
+        assert await llm_resolver.resolve_auto_slug("chat") == "stimma:claude-opus-5"
+    finally:
+        llm_resolver.set_catalog_cache([])
