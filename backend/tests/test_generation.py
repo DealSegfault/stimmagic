@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 from sqlalchemy import select
 
-from database import Asset, AssetRevision, GenerationJob, MediaItem
+from database import Asset, AssetRevision, GenerationJob, MediaItem, MediaOwner
 from providers.test_provider import TestToolConfig
 from tests.helpers import (
     create_media_item,
@@ -340,6 +340,158 @@ class TestJobSubmission:
         assert response.status_code == 500
         mock_queue.submit_job.assert_not_called()
         mock_queue.decline_work_request.assert_awaited_once_with("forever-client", "test")
+
+
+class TestSubmitOutputDisposition:
+    """The submit route lets a client place output outside the library.
+
+    The editor needs this so candidate generations are durable and reachable
+    without ever becoming library Assets. The route is deliberately narrower
+    than the queue: only 'context' rooted at an existing working document.
+    """
+
+    async def _working_document(self, generation_db_session) -> int:
+        from asset_service import create_asset_from_media, create_working_document
+
+        async with generation_db_session() as session:
+            media = await create_media_item(
+                session,
+                file_path=Path("/managed/objects/editor-base.png"),
+                file_hash="editor-base-hash",
+                width=64,
+                height=64,
+            )
+            asset = await create_asset_from_media(session, media_id=media.id)
+            document = await create_working_document(
+                session, asset_id=asset.id, editor_type="image-stack"
+            )
+            await session.commit()
+            return document.id
+
+    async def test_context_output_is_owned_by_the_working_document(
+        self,
+        generation_client: httpx.AsyncClient,
+        generation_db_session,
+        generation_queue,
+        output_folder: str,
+    ):
+        document_id = await self._working_document(generation_db_session)
+
+        response = await generation_client.post(
+            "/api/generate/submit",
+            json={
+                "tool_id": "test:text-to-image:test-model",
+                "folder_path": output_folder,
+                "task_type": "text-to-image",
+                "parameters": {"prompt": "candidate", "width": 64, "height": 64, "seed": 1},
+                "output_disposition": "context",
+                "output_context_kind": "working_document",
+                "output_context_id": str(document_id),
+            },
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+
+        await process_job(generation_queue, job_id)
+
+        async with generation_db_session() as session:
+            job = await session.get(GenerationJob, job_id)
+            assert job.status == "completed"
+            assert job.output_disposition == "context"
+            assert job.output_context_kind == "working_document"
+            assert job.output_context_id == str(document_id)
+            # The whole point: durable Media, no library Asset.
+            assert job.result_asset_id is None
+
+            owner = (
+                await session.execute(
+                    select(MediaOwner).where(
+                        MediaOwner.media_id == job.result_media_id,
+                        MediaOwner.deleted_at.is_(None),
+                    )
+                )
+            ).scalars().all()
+            assert [(o.root_kind, o.root_id, o.role) for o in owner] == [
+                ("working_document", str(document_id), "result")
+            ]
+
+    async def test_default_submission_still_creates_an_asset(
+        self,
+        generation_client: httpx.AsyncClient,
+        generation_db_session,
+        generation_queue,
+        output_folder: str,
+    ):
+        """Omitting the field must not change existing behaviour."""
+        response = await generation_client.post(
+            "/api/generate/submit",
+            json={
+                "tool_id": "test:text-to-image:test-model",
+                "folder_path": output_folder,
+                "task_type": "text-to-image",
+                "parameters": {"prompt": "library item", "width": 64, "height": 64, "seed": 2},
+            },
+        )
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+        await process_job(generation_queue, job_id)
+
+        async with generation_db_session() as session:
+            job = await session.get(GenerationJob, job_id)
+            assert job.output_disposition == "asset"
+            assert job.result_asset_id is not None
+
+    async def test_unknown_working_document_is_rejected(
+        self, generation_client: httpx.AsyncClient, output_folder: str
+    ):
+        response = await generation_client.post(
+            "/api/generate/submit",
+            json={
+                "tool_id": "test:text-to-image:test-model",
+                "folder_path": output_folder,
+                "task_type": "text-to-image",
+                "parameters": {"prompt": "x"},
+                "output_disposition": "context",
+                "output_context_kind": "working_document",
+                "output_context_id": "999999",
+            },
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        "disposition,kind,context_id",
+        [
+            # Server-owned dispositions a client must not be able to mint.
+            ("ephemeral", None, None),
+            ("container_member", "batch", "batch-1"),
+            # A context root outside the allowlist.
+            ("context", "chat", "1"),
+            # Context without a root, and a root without context.
+            ("context", "working_document", None),
+            ("asset", "working_document", "1"),
+        ],
+    )
+    async def test_disallowed_dispositions_are_rejected(
+        self,
+        generation_client: httpx.AsyncClient,
+        output_folder: str,
+        disposition,
+        kind,
+        context_id,
+    ):
+        response = await generation_client.post(
+            "/api/generate/submit",
+            json={
+                "tool_id": "test:text-to-image:test-model",
+                "folder_path": output_folder,
+                "task_type": "text-to-image",
+                "parameters": {"prompt": "x"},
+                "output_disposition": disposition,
+                "output_context_kind": kind,
+                "output_context_id": context_id,
+            },
+        )
+        assert response.status_code == 400
 
 
 # =============================================================================
