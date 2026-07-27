@@ -27,6 +27,8 @@ import { useStackDocument, newOpId } from '../composables/imageStack/useStackDoc
 import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../composables/imageStack/useStackCompositor'
 import { useProvidersApi } from '../composables/useProvidersApi'
+import { useMediaApi } from '../composables/useMediaApi'
+import { apiErrorMessage } from '../composables/imageStack/errors'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -34,6 +36,9 @@ const router = useRouter()
 
 const stack = useStackDocument()
 const { listAllTools } = useProvidersApi()
+// <img> cannot send the X-Profile-ID header the profile middleware requires,
+// which is why media URLs carry their database in the path.
+const { getMediaFileUrl } = useMediaApi()
 
 const loading = ref(true)
 const error = ref<string | null>(null)
@@ -85,7 +90,7 @@ const compositor = new StackCompositor({
     payloadCache.set(ref, img)
     return img
   },
-  loadBase: async () => loadImage(`/api/media/${baseInfo.value.media_id}/file`),
+  loadBase: async () => loadImage(getMediaFileUrl(Number(baseInfo.value.media_id))),
 })
 
 async function render() {
@@ -130,6 +135,7 @@ const candidates = useStackCandidates({
   documentId: () => stack.documentId.value,
   uploadPayload: stack.uploadPayload,
   attachCandidates: stack.attachCandidates,
+  mediaFileUrl: (mediaId: number) => getMediaFileUrl(mediaId),
   onFirstCandidate: (opId, candidate) => {
     // A staged op with no pick contributes nothing, so the first arrival
     // auto-applies. Switching to another candidate afterwards is free.
@@ -229,7 +235,7 @@ async function run() {
     maskRef.value?.clear()
     prompt.value = ''
   } catch (err: any) {
-    error.value = err?.response?.data?.detail || err?.message || 'Could not start the edit.'
+    error.value = apiErrorMessage(err, 'Could not start the edit.')
   } finally {
     busy.value = false
   }
@@ -265,7 +271,7 @@ async function save(asNew = false) {
       router.push({ name: 'edit-image-v2', params: { assetId: String(data.asset_id) } })
     }
   } catch (err: any) {
-    error.value = err?.response?.data?.detail || err?.message || 'Could not save.'
+    error.value = apiErrorMessage(err, 'Could not save.')
   } finally {
     saving.value = false
   }
@@ -306,20 +312,26 @@ onMounted(async () => {
 
     await render()
   } catch (err: any) {
-    error.value = err?.response?.data?.detail || err?.message || 'Could not open this image.'
+    error.value = apiErrorMessage(err, 'Could not open this image.')
   } finally {
     loading.value = false
   }
 
   window.addEventListener('keydown', onKeydown)
-  if (viewport.value) {
-    resizeObserver = new ResizeObserver(entries => {
-      const box = entries[0].contentRect
-      viewportSize.value = { width: box.width, height: box.height }
-    })
-    resizeObserver.observe(viewport.value)
-  }
 })
+
+// The viewport only exists once loading finishes, so the observer attaches when
+// the element appears rather than at mount — otherwise the canvas is sized
+// against a viewport of 0x0 and never paints.
+watch(viewport, element => {
+  resizeObserver?.disconnect()
+  if (!element) return
+  resizeObserver = new ResizeObserver(entries => {
+    const box = entries[0].contentRect
+    viewportSize.value = { width: box.width, height: box.height }
+  })
+  resizeObserver.observe(element)
+}, { flush: 'post' })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -329,7 +341,10 @@ onBeforeUnmount(() => {
 })
 
 watch(() => stack.ops.value.length, () => { void render() })
-watch(composite, () => nextTick(paint))
+// The composite is usually ready BEFORE the canvas exists (rendering happens
+// while `loading` still hides it), so repaint on either changing rather than
+// only on the composite.
+watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'post' })
 </script>
 
 <template>
@@ -341,12 +356,12 @@ watch(composite, () => nextTick(paint))
         Unsaved edits
       </span>
       <div class="flex-1" />
-      <Tooltip content="Undo">
+      <Tooltip text="Undo">
         <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
           <ArrowUturnLeftIcon class="w-4 h-4" />
         </IconButton>
       </Tooltip>
-      <Tooltip content="Redo">
+      <Tooltip text="Redo">
         <IconButton :disabled="!stack.canRedo.value" @click="stack.redo(); render()">
           <ArrowUturnRightIcon class="w-4 h-4" />
         </IconButton>
@@ -376,7 +391,6 @@ watch(composite, () => nextTick(paint))
             <StackMaskCanvas
               v-if="mode === 'inpaint'"
               ref="maskRef"
-              class="absolute inset-0"
               :source="composite"
               :display-width="displayBox.width"
               :display-height="displayBox.height"

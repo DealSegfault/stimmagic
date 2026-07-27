@@ -193,10 +193,10 @@ onBeforeUnmount(() => { mask = null })
 </script>
 
 <template>
-  <div class="relative">
+  <div class="absolute inset-0">
     <canvas
       ref="overlay"
-      class="absolute inset-0 w-full h-full cursor-crosshair touch-none"
+      class="w-full h-full cursor-crosshair touch-none"
       :style="{ width: displayWidth + 'px', height: displayHeight + 'px' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"

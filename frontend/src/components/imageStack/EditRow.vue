@@ -65,7 +65,7 @@ const staged = computed(() => candidates.value.length > 0 && !picked.value)
     :class="selected ? 'bg-selection/15' : 'hover:bg-overlay-subtle'"
     @click="emit('select')"
   >
-    <Tooltip :content="op.enabled ? 'Hide this edit' : 'Show this edit'">
+    <Tooltip :text="op.enabled ? 'Hide this edit' : 'Show this edit'">
       <IconButton @click.stop="emit('toggle', !op.enabled)">
         <EyeIcon v-if="op.enabled" class="w-4 h-4" />
         <EyeSlashIcon v-else class="w-4 h-4 text-content-tertiary" />
@@ -106,7 +106,7 @@ const staged = computed(() => candidates.value.length > 0 && !picked.value)
       <p v-if="staged" class="mt-1 text-xs text-content-tertiary">Pick one to apply it.</p>
     </div>
 
-    <Tooltip content="Remove this edit">
+    <Tooltip text="Remove this edit">
       <IconButton
         variant="danger"
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"

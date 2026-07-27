@@ -14,6 +14,7 @@
 
 import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
+import { getCurrentProfileId } from '../useProfile'
 import type { JournalEntry, Op, StackDocument } from './types'
 import { DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
 
@@ -428,9 +429,15 @@ export function useStackDocument() {
 
   // -- payloads ------------------------------------------------------------
 
+  /**
+   * Payloads are fetched by <img>, which cannot send the X-Profile-ID header
+   * the profile middleware requires — so the profile rides the query string,
+   * the same fallback the media file routes use.
+   */
   function payloadUrl(ref: string): string {
     const [subdir, name] = ref.split('/')
-    return `${API_BASE}/image-stack/${documentId.value}/payloads/${name}?subdir=${subdir}`
+    return `${API_BASE}/image-stack/${documentId.value}/payloads/${name}`
+      + `?subdir=${subdir}&profile=${getCurrentProfileId()}`
   }
 
   async function uploadPayload(name: string, blob: Blob, subdir = 'payloads'): Promise<string> {

@@ -28,12 +28,42 @@ import {
   extractPatch,
   maskBounds,
 } from './useStackCompositor'
+import { convertMaskPixels } from '../../utils/maskFormat'
+import type { MaskFormat } from '../useToolSchemaFeatures'
 import type { Candidate } from './types'
 
 const API_BASE = '/api'
 
 /** Feather needs pixels to blend into, so the patch keeps a margin. */
 const PATCH_MARGIN_PX = 24
+
+/**
+ * The editor brushes masks white-on-black, but what a tool expects is declared
+ * per-tool by `x-mask-format`. Sending the wrong one is silent: a tool that
+ * reads alpha sees a fully opaque image, finds nothing to inpaint, and returns
+ * its input unchanged.
+ */
+const EDITOR_MASK_FORMAT: MaskFormat = 'white-black'
+
+function maskFormatFor(tool: PayloadBuilderConfig['tool']): MaskFormat {
+  const format = (tool.parameter_schema?.properties as any)?.mask?.['x-mask-format']
+  return format === 'white-black' || format === 'black-white' ? format : 'alpha'
+}
+
+/** Re-encode the brushed mask into the format this tool declares. */
+function maskDataUrlFor(canvas: HTMLCanvasElement, target: MaskFormat): string {
+  if (target === EDITOR_MASK_FORMAT) return canvas.toDataURL('image/png')
+  const context = canvas.getContext('2d', { willReadFrequently: true })!
+  const source = context.getImageData(0, 0, canvas.width, canvas.height)
+  const converted = convertMaskPixels(source.data, EDITOR_MASK_FORMAT, target)
+
+  const out = document.createElement('canvas')
+  out.width = canvas.width
+  out.height = canvas.height
+  const outContext = out.getContext('2d')!
+  outContext.putImageData(new ImageData(converted, canvas.width, canvas.height), 0, 0)
+  return out.toDataURL('image/png')
+}
 
 export interface PendingSubmission {
   opId: string
@@ -60,6 +90,8 @@ export function useStackCandidates(deps: {
   documentId: () => number | null
   uploadPayload: (name: string, blob: Blob, subdir?: string) => Promise<string>
   attachCandidates: (opId: string, candidates: Candidate[]) => void
+  /** Media URL resolver — <img> cannot send the profile header. */
+  mediaFileUrl: (mediaId: number) => string
   /** Called for the first candidate of a staged op so a pick can auto-apply. */
   onFirstCandidate?: (opId: string, candidate: Candidate) => void
 }) {
@@ -93,10 +125,26 @@ export function useStackCandidates(deps: {
     return data.path
   }
 
+  /**
+   * Copy a canvas. The caller owns the live brush surface and clears it as soon
+   * as the step is created, so anything that has to outlive the gesture — the
+   * mask a candidate will be cropped against, minutes later — must be a
+   * snapshot, not a reference to it.
+   */
+  function snapshot(canvas: HTMLCanvasElement): HTMLCanvasElement {
+    const copy = document.createElement('canvas')
+    copy.width = canvas.width
+    copy.height = canvas.height
+    copy.getContext('2d')!.drawImage(canvas, 0, 0)
+    return copy
+  }
+
   async function submit(request: SubmitRequest): Promise<number[]> {
     lastError.value = null
     const documentId = deps.documentId()
     if (!documentId) throw new Error('No stack document')
+
+    const maskSnapshot = request.maskCanvas ? snapshot(request.maskCanvas) : null
 
     // The op's input composite is what the model sees. It is synthetic, so it
     // has no library media id of its own — lineage back to the base asset
@@ -104,13 +152,16 @@ export function useStackCandidates(deps: {
     const inputPath = await uploadCanvasAsInput(request.inputCanvas)
 
     const maskDataUrl = request.maskCanvas
-      ? request.maskCanvas.toDataURL('image/png')
+      ? maskDataUrlFor(request.maskCanvas, maskFormatFor(request.tool))
       : null
 
     const config: PayloadBuilderConfig = {
       tool: request.tool,
       generatorInstanceId: generatorInstanceId(),
-      autoDeleteDuration: 0,
+      // Candidates live as long as their step, so they never auto-delete.
+      // (The builder's type says number; the wire field is the duration
+      // string the queue parses.)
+      autoDeleteDuration: 'never' as unknown as number,
     }
     const state: PayloadBuilderState = {
       globalPrefs: {
@@ -163,8 +214,8 @@ export function useStackCandidates(deps: {
       jobIds.push(jobId)
       jobIntents.set(jobId, {
         opId: request.opId,
-        isPatch: !!request.maskCanvas,
-        maskCanvas: request.maskCanvas || null,
+        isPatch: !!maskSnapshot,
+        maskCanvas: maskSnapshot,
         sampledInputHash: request.sampledInputHash,
       })
       pending.value = [...pending.value, { opId: request.opId, jobId, status: 'queued' }]
@@ -191,7 +242,7 @@ export function useStackCandidates(deps: {
     // Trust the media record, not the job: the job says an output exists, the
     // media record says what it actually is.
     const { data: media } = await axios.get(`${API_BASE}/media/${mediaId}`)
-    const output = await loadImage(`${API_BASE}/media/${mediaId}/file`)
+    const output = await loadImage(deps.mediaFileUrl(mediaId))
 
     const candidateId = `cand-${jobId}`
     let candidate: Candidate
