@@ -144,6 +144,7 @@ from routes import (
     feedback,
     flags,
     generation,
+    image_stack,
     keywords,
     markers,
     media,
@@ -197,6 +198,7 @@ app.include_router(tags.router)
 app.include_router(trash.router)
 app.include_router(keywords.router)
 app.include_router(generation.router)
+app.include_router(image_stack.router)
 app.include_router(postprocessing.router)
 app.include_router(processing.router)
 app.include_router(media_files.router)

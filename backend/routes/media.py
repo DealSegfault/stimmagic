@@ -1819,6 +1819,8 @@ async def save_edited_image(
     editor_project: Optional[str] = Form(None),
     save_as_new: bool = Form(False),
     base_revision_id: Optional[int] = Form(None),
+    working_document_id: Optional[int] = Form(None),
+    stack_summary: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_db_session)
 ):
     """
@@ -1829,6 +1831,14 @@ async def save_edited_image(
     2. Uploads the edited image via UploadService
     3. Records lineage with task_type="image-to-image"
     4. Returns the new media item ID and file hash
+
+    Two editors share this route. The snapshot editor posts ``editor_project``
+    and gets a per-generation sidecar. The op-stack editor posts
+    ``working_document_id`` (its own document, already persisted as a directory)
+    plus ``stack_summary`` — the ops that were enabled at save time — and gets
+    that document's base advanced to the committed Revision. The stack document
+    is never rewritten here: it is the recipe, and it keeps applying from its own
+    base.
     """
     from upload_service import UploadService, UploadError
     from utils.lineage import record_lineage, propagate_tool_lineage
@@ -1848,6 +1858,25 @@ async def save_edited_image(
             parsed_project = json.loads(editor_project)
         except (json.JSONDecodeError, TypeError) as exc:
             raise HTTPException(status_code=400, detail="Invalid editor project JSON") from exc
+
+    parsed_stack_summary = None
+    if stack_summary:
+        try:
+            parsed_stack_summary = json.loads(stack_summary)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail="Invalid stack summary JSON") from exc
+
+    stack_document = None
+    if working_document_id is not None:
+        import image_stack_service as stack_service
+        from database import WorkingDocument
+        stack_document = await session.get(WorkingDocument, working_document_id)
+        if (
+            stack_document is None
+            or stack_document.deleted_at is not None
+            or stack_document.editor_type != stack_service.EDITOR_TYPE
+        ):
+            raise HTTPException(status_code=404, detail="Stack document not found")
 
     # Read file content
     try:
@@ -1936,12 +1965,16 @@ async def save_edited_image(
         db_media_item.tool_id = "builtin:stimma:image-editor"
         await propagate_tool_lineage(session, db_media_item.id, [source_media_id], own_tool_id="builtin:stimma:image-editor")
 
-        # Set generation_metadata for lineage display in frontend
+        # Set generation_metadata for lineage display in frontend. The op-stack
+        # editor also records which ops actually ran, following the chains
+        # discipline — enabled steps only, volatile ids stripped client-side —
+        # so Remix's config-from-media keeps working on editor-made versions.
         from generation_metadata import dump_generation_metadata
         db_media_item.generation_metadata = dump_generation_metadata(
             task_type="image-to-image",
             source="stimma",
             tool_id="builtin:stimma:image-editor",
+            parameters={"stack": parsed_stack_summary} if parsed_stack_summary else None,
             source_inputs=[{
                 "media_id": source_media_id,
                 "role": "source_image",
@@ -1981,13 +2014,28 @@ async def save_edited_image(
             )
             target_asset = source_asset
 
-        document = await create_working_document(
-            session,
-            asset_id=target_asset.id,
-            editor_type="image",
-            base_revision_id=committed_revision.id,
-            branch_key=f"revision-{parent_revision.id}",
-        )
+        if stack_document is not None and not save_as_new:
+            # The stack keeps its own document; Save only moves what it commits
+            # onto. Its `base` in document.json is deliberately NOT rewritten —
+            # the stack stays the recipe from the revision it was built against.
+            document = stack_document
+            document.base_revision_id = committed_revision.id
+        elif stack_document is not None:
+            # Save As New forks the working document with the asset.
+            document = await create_working_document(
+                session,
+                asset_id=target_asset.id,
+                editor_type=stack_document.editor_type,
+                base_revision_id=committed_revision.id,
+            )
+        else:
+            document = await create_working_document(
+                session,
+                asset_id=target_asset.id,
+                editor_type="image",
+                base_revision_id=committed_revision.id,
+                branch_key=f"revision-{parent_revision.id}",
+            )
         if parsed_project is not None:
             from core.profile_context import get_current_profile
             from editor_service import save_working_document_state
