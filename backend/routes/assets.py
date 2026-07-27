@@ -1632,7 +1632,7 @@ async def get_asset_containers(
             "asset_id": container.id,
             "media_id": media.id,
             "asset_type": container.asset_type,
-            "title": container.title or media.to_dict().get("title"),
+            "title": container.title,
             "member_order": member.member_order,
             "row_index": member.row_index,
             "column_index": member.column_index,

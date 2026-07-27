@@ -397,9 +397,14 @@ async def _materialize_migrated_asset(
 
     from asset_service import acquire_media_owner, infer_asset_type
 
+    from container_service import payload_title_from_media
+
     now = media.indexed_date
     asset = Asset(
         asset_type=infer_asset_type(media),
+        title=payload_title_from_media(media)
+        if media.file_format in {"stimmaset.json", "stimmagrid.json"}
+        else None,
         state="trashed" if trashed else "active",
         expires_at=media.auto_delete_at,
         origin_type="legacy_migration",

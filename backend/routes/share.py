@@ -848,14 +848,14 @@ async def suggest_share_title(request: SuggestTitleRequest, session: AsyncSessio
     log.info("share title suggest", media_id=request.media_id, media_type=media_type, format=media_item.file_format)
 
     # --- Sets & grids: use existing title if available ---
-    if media_type in ("set", "grid") and media_item.raw_metadata:
-        try:
-            content = json.loads(media_item.raw_metadata)
-            existing_title = content.get("title")
-            if existing_title and existing_title != "Untitled":
-                return SuggestTitleResponse(title=existing_title, source="existing")
-        except json.JSONDecodeError:
-            pass
+    if media_type in ("set", "grid"):
+        from container_service import container_title_for_media
+
+        existing_title = await container_title_for_media(
+            session, media_id=request.media_id
+        )
+        if existing_title and existing_title != "Untitled":
+            return SuggestTitleResponse(title=existing_title, source="existing")
 
     # --- Per-type context gathering ---
     context_parts = []

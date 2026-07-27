@@ -165,6 +165,55 @@ async def populate_container_revision_members(
     )
 
 
+def payload_title_from_media(media: MediaItem | None) -> str | None:
+    """Read the creation-time title seed out of a container Media payload.
+
+    The payload is a write-once seed: Asset.title owns the title from promotion
+    onward, so this is only consulted when an Asset is first created.
+    """
+    if media is None or not media.raw_metadata:
+        return None
+    try:
+        payload = json.loads(media.raw_metadata)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    title = payload.get("title")
+    if not isinstance(title, str):
+        return None
+    return title.strip() or None
+
+
+async def container_payload_title(
+    session: AsyncSession,
+    *,
+    media_id: int,
+) -> str | None:
+    """Payload title seed for a container Media id."""
+    return payload_title_from_media(await session.get(MediaItem, media_id))
+
+
+async def container_title_for_media(
+    session: AsyncSession,
+    *,
+    media_id: int,
+) -> str | None:
+    """Return the owning Asset's title for a container Media, if promoted."""
+    revision = await session.scalar(
+        select(AssetRevision).where(
+            AssetRevision.primary_media_id == media_id,
+            AssetRevision.deleted_at.is_(None),
+        )
+    )
+    if revision is None:
+        return None
+    asset = await session.get(Asset, revision.asset_id)
+    if asset is None or asset.deleted_at is not None:
+        return None
+    return asset.title
+
+
 async def create_container_asset_from_media(
     session: AsyncSession,
     *,
@@ -179,6 +228,8 @@ async def create_container_asset_from_media(
     """Create one container Asset; embedded cells remain Media, not Assets."""
     if container_type not in {"set", "grid"}:
         raise AssetServiceError("Container type must be set or grid")
+    if title is None:
+        title = await container_payload_title(session, media_id=media_id)
     asset = await create_asset_from_media(
         session,
         media_id=media_id,
@@ -308,6 +359,8 @@ async def get_normalized_container_content(
         base = json.loads(container_media.raw_metadata or "{}")
     except (json.JSONDecodeError, TypeError):
         base = {}
+    # Asset.title owns the title; the payload copy is a stale creation seed.
+    base.pop("title", None)
     asset = await session.get(Asset, revision.asset_id)
     if asset is not None:
         base["title"] = asset.title

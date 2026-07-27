@@ -1,12 +1,16 @@
 """Tests for normalized linked and embedded container membership."""
 
+import json
+
 import pytest
 from sqlalchemy import func, select
 
 from asset_service import commit_revision, create_asset_from_media
 from container_service import (
+    container_title_for_media,
     create_container_asset_from_media,
     explode_container,
+    get_normalized_container_content,
     resolve_container_members,
     save_container_members_as_assets,
 )
@@ -110,3 +114,34 @@ async def test_linked_member_follows_current_revision_and_supports_multiple_memb
                 session, revision_id=container.current_revision_id
             )
             assert resolved[0]["media_id"] == replacement.id
+
+
+@pytest.mark.asyncio
+async def test_container_title_comes_from_the_payload_seed_then_the_asset(db_session):
+    async with db_session() as session:
+        set_media = await create_media_item(
+            session,
+            file_format="stimmaset.json",
+            raw_metadata=json.dumps({"version": 1, "title": "Wool Coat Variations", "items": []}),
+        )
+        member = await create_media_item(session, file_format="png")
+        container = await create_container_asset_from_media(
+            session,
+            media_id=set_media.id,
+            container_type="set",
+            members=[{"embedded_media_id": member.id}],
+        )
+        await session.commit()
+
+        # Promotion seeds Asset.title from the payload, so both the browser
+        # projection and the set content endpoint agree.
+        assert container.title == "Wool Coat Variations"
+        content = await get_normalized_container_content(session, container_media=set_media)
+        assert content["title"] == "Wool Coat Variations"
+
+        # Renames land on the Asset only; the stale payload must not win.
+        container.title = "Renamed"
+        await session.commit()
+        content = await get_normalized_container_content(session, container_media=set_media)
+        assert content["title"] == "Renamed"
+        assert await container_title_for_media(session, media_id=set_media.id) == "Renamed"

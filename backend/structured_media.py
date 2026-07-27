@@ -916,67 +916,6 @@ def get_set_content_type(set_data: dict) -> Optional[str]:
     return None
 
 
-async def update_set_title(
-    session: AsyncSession,
-    set_media_id: int,
-    new_title: str,
-) -> MediaItem:
-    """
-    Update a set's title in both the JSON file and database.
-
-    Uses per-set locking to prevent race conditions with concurrent modifications.
-
-    Args:
-        session: Database session
-        set_media_id: ID of the set MediaItem to update
-        new_title: New title for the set
-
-    Returns:
-        The updated set MediaItem
-    """
-    from utils.websocket import broadcast_media_updated
-
-    # Get the set MediaItem
-    result = await session.execute(
-        select(MediaItem).where(
-            MediaItem.id == set_media_id,
-            MediaItem.deleted_at.is_(None)
-        )
-    )
-    set_item = result.scalar_one_or_none()
-
-    if not set_item:
-        raise ValueError(f"Set MediaItem {set_media_id} not found")
-
-    if set_item.file_format != 'stimmaset.json':
-        raise ValueError(f"MediaItem {set_media_id} is not a set (format: {set_item.file_format})")
-
-    # Use locking to prevent concurrent modification race conditions
-    async with _get_modification_lock(set_media_id):
-        # Read current content (with cache validation)
-        set_data = await read_composite_content(session, set_item)
-        if not set_data:
-            raise ValueError(f"Failed to read set content for {set_media_id}")
-
-        # Update the title
-        set_data['title'] = new_title
-        item_count = len(set_data.get('items', []))
-
-        # Write back atomically (updates disk + DB cache)
-        await write_composite_content(session, set_item, set_data)
-
-    # Note: vlm_caption is intentionally NOT set for sets - it's for AI captions of visual media
-
-    await session.commit()
-    await session.refresh(set_item)
-
-    # Broadcast media_updated
-    await broadcast_media_updated([set_item], ["file_hash", "file_size", "raw_metadata", "vlm_caption"], session)
-
-    log.info(f"Updated set {set_media_id} title to: {new_title}")
-    return set_item
-
-
 async def generate_smart_batch_title(
     session: AsyncSession,
     tool_name: str,
@@ -1011,24 +950,13 @@ async def generate_smart_batch_title(
 
         # Get input set titles
         if input_set_ids:
+            from container_service import container_title_for_media
+
             for set_id in input_set_ids[:3]:  # Max 3 input sets
-                result = await session.execute(
-                    select(MediaItem).where(
-                        MediaItem.id == set_id,
-                        MediaItem.deleted_at.is_(None)
-                    )
-                )
-                set_item = result.scalar_one_or_none()
-                log.info(f"SMART TITLE: Input set {set_id} - found={set_item is not None}, has_metadata={set_item.raw_metadata is not None if set_item else False}")
-                if set_item and set_item.raw_metadata:
-                    try:
-                        set_data = json.loads(set_item.raw_metadata)
-                        title = set_data.get('title')
-                        log.info(f"SMART TITLE: Input set {set_id} title='{title}'")
-                        if title and title != 'Untitled':
-                            context_parts.append(f"Input set: \"{title}\"")
-                    except json.JSONDecodeError:
-                        pass
+                title = await container_title_for_media(session, media_id=set_id)
+                log.info(f"SMART TITLE: Input set {set_id} title='{title}'")
+                if title and title != 'Untitled':
+                    context_parts.append(f"Input set: \"{title}\"")
 
         # Get prompts from INPUT set items (not results) - these are the original images being processed
         if input_set_ids and not context_parts:

@@ -213,7 +213,7 @@ async def media_compatibility_projections(
                         if asset.state == "active" and asset.expires_at
                         else None
                     ),
-                    "title": asset.title or item.get("title"),
+                    "title": asset.title,
                     "markers": markers[asset.id],
                     "tags": tags[asset.id],
                     "has_working_document": asset.id in working_document_assets,

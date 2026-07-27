@@ -260,7 +260,8 @@ class MediaItem(Base):
         else:
             result["tags"] = []
 
-        # Add member_count and title for structured media (sets/grids)
+        # Add member_count for structured media (sets/grids). The title lives on
+        # the owning Asset, never on the Media payload.
         if self.file_format:
             fmt = self.file_format.lower()
             if fmt in ('stimmaset.json', 'stimmagrid.json'):
@@ -282,12 +283,8 @@ class MediaItem(Base):
                 if content:
                     if fmt == 'stimmaset.json':
                         result["member_count"] = len(content.get('items', []))
-                        if content.get('title'):
-                            result["title"] = content.get('title')
                     elif fmt == 'stimmagrid.json':
                         result["member_count"] = len(content.get('cells', []))
-                        if content.get('title'):
-                            result["title"] = content.get('title')
 
         return result
 

@@ -1656,9 +1656,13 @@ class StimmaSDK:
                     "rebuild it with create_parameter_sweep instead."
                 )
 
+        from container_service import container_title_for_media
+
+        title = await container_title_for_media(self.session, media_id=grid_id)
+
         return {
             "media_id": grid_id,
-            "title": content.get("title") or "",
+            "title": title or "",
             "description": content.get("description") or "",
             "rows": rows,
             "cols": cols,
