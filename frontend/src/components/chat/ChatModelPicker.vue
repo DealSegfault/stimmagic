@@ -299,11 +299,23 @@ const currentReasoningLevel = computed(() => {
   // This chat's own effort first, then what a new chat would start on (the
   // "LLM for new Chats" row). `reasoningLevels` is the older global per-model
   // map, kept as a fallback for chats saved before effort moved onto the chat.
-  return props.reasoningEffort
+  const stored = props.reasoningEffort
     || reasoningLevels.value[model.slug]
     || roleDefaults.value?.chat?.resolved?.effort
     || model.reasoning?.default
     || null
+  // The stored level belongs to whichever model the chat was on when it was
+  // set, and models don't share a level vocabulary — a chat carrying 'medium'
+  // from Sonnet lands on a model offering only off/high. The request never
+  // uses the stale value: the cloud's selectReasoning falls back to the
+  // model's default, then its first level. Mirror that exactly so the label
+  // reports what actually goes on the wire, and so the matching toggle
+  // button reads as selected. The stored value is deliberately left alone —
+  // switching back to a model that offers 'medium' should restore it.
+  const levels = reasoningOptions.value
+  if (!levels.length || stored === null) return stored
+  if (levels.includes(stored)) return stored
+  return levels.includes(model.reasoning?.default) ? model.reasoning.default : levels[0]
 })
 const currentReasoningLabel = computed(() => currentReasoningLevel.value ? reasoningLabel(currentReasoningLevel.value) : '')
 
