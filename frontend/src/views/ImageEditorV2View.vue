@@ -23,6 +23,7 @@ import Tooltip from '../components/ui/Tooltip.vue'
 import Spinner from '../components/ui/Spinner.vue'
 import EditRow from '../components/imageStack/EditRow.vue'
 import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
+import DevelopInspector from '../components/imageStack/DevelopInspector.vue'
 import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
 import { useStackDocument, newOpId } from '../composables/imageStack/useStackDocument'
 import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
@@ -37,6 +38,9 @@ import {
 import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
 } from '../composables/imageStack/geometryTransform'
+import {
+  CROP_ASPECTS, cropRectForAspect, developLabel,
+} from '../composables/imageStack/developSections'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -54,7 +58,7 @@ const baseInfo = ref<any>(null)
 
 /** Generate sub-tool modes. Clicking a tool enters a mode; it never edits the
  *  stack. The step is created on the first real gesture — an explicit Run. */
-type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale'
+type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale' | 'develop' | 'crop'
 const mode = ref<Mode>(null)
 const prompt = ref('')
 const candidateCount = ref(4)
@@ -139,7 +143,10 @@ function paint() {
   target.height = source.height
   const ctx = target.getContext('2d')!
   ctx.clearRect(0, 0, target.width, target.height)
-  ctx.drawImage(source, 0, 0)
+  // Comparing draws the base into the composite's frame, so geometry ops do
+  // not make the two jump around while the key is held.
+  const shown = comparing.value && baseImage.value ? baseImage.value : source
+  ctx.drawImage(shown, 0, 0, target.width, target.height)
 }
 
 // -- candidates ------------------------------------------------------------
@@ -412,6 +419,19 @@ const canRun = computed(() => {
 
 const busy = ref(false)
 
+/**
+ * Tool families. Clicking one enters a MODE and opens its sub-toolbar; the step
+ * is created on the first real gesture — a slider move, an aspect choice, an
+ * explicit Run. Empty steps cannot exist, and Esc leaves a mode with nothing to
+ * undo.
+ */
+const families = [
+  { id: 'generate', label: 'Generate' },
+  { id: 'crop', label: 'Crop' },
+  { id: 'develop', label: 'Develop' },
+] as const
+const family = ref<'generate' | 'crop' | 'develop'>('generate')
+
 const generateSubTools = [
   { id: 'inpaint', label: 'Inpaint' },
   { id: 'whole', label: 'Whole image' },
@@ -603,6 +623,135 @@ function growCanvas(source: HTMLCanvasElement, factor: number) {
   return { image, borderMask }
 }
 
+// -- develop ----------------------------------------------------------------
+
+/**
+ * The Develop step this session is editing. One step per mode session: entering
+ * Develop and moving a slider creates it, and every further move edits that
+ * same step rather than stacking one per slider.
+ */
+const developOpId = ref<string | null>(null)
+
+const developParams = computed<Record<string, any>>(() => {
+  const op = developOpId.value ? stack.opById(developOpId.value) : null
+  return (op as any)?.params || {}
+})
+
+function onDevelopChange(patch: Record<string, any>, coalesceKey: string) {
+  if (!stack.doc.value) return
+  if (!developOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId, class: 'parametric', enabled: true,
+      label: developLabel(patch), exec: { kind: 'develop' }, params: patch,
+    } as any)
+    developOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    stack.setParams(developOpId.value, patch, coalesceKey)
+    const op = stack.opById(developOpId.value)
+    if (op) stack.setLabel(developOpId.value, developLabel((op as any).params || {}))
+  }
+  void render()
+}
+
+/**
+ * Selecting a Develop row makes the inspector edit THAT row, which is how an
+ * earlier session's step is re-entered rather than a new one being stacked.
+ */
+const selectedDevelopOp = computed(() => {
+  const op = selectedOpId.value ? stack.opById(selectedOpId.value) : null
+  return op && op.class === 'parametric' && (op as any).exec?.kind === 'develop' ? op : null
+})
+
+/**
+ * The inspector shows for a selected Develop row, and also whenever the Develop
+ * family is open with nothing selected — otherwise the FIRST Develop step could
+ * never be created, since there would be no row to select to get its controls.
+ */
+const showsDevelopInspector = computed(
+  () => !!selectedDevelopOp.value || family.value === 'develop'
+)
+
+const developInspectorParams = computed<Record<string, any>>(
+  () => (selectedDevelopOp.value as any)?.params || developParams.value
+)
+
+function onDevelopInspectorChange(patch: Record<string, any>, coalesceKey: string) {
+  // Selecting a row re-enters THAT step; with nothing selected the session's
+  // own step is created on the first move and edited thereafter.
+  if (selectedDevelopOp.value) developOpId.value = selectedDevelopOp.value.id
+  onDevelopChange(patch, coalesceKey)
+}
+
+// -- crop ---------------------------------------------------------------------
+
+const cropOpId = ref<string | null>(null)
+const cropAspect = ref<string>('free')
+
+function cropParamsOf() {
+  const op = cropOpId.value ? stack.opById(cropOpId.value) : null
+  return (op as any)?.params || { rect: { x: 0.5, y: 0.5, width: 1, height: 1 } }
+}
+
+async function applyCropChange(patch: Record<string, any>) {
+  if (!stack.doc.value) return
+  const before = JSON.parse(JSON.stringify(stack.doc.value))
+  if (!cropOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId, class: 'parametric', enabled: true, label: 'Crop',
+      exec: { kind: 'crop' },
+      params: {
+        rect: { x: 0.5, y: 0.5, width: 1, height: 1 },
+        rotation: 0, rotation90: 0, flipX: false, flipY: false, ...patch,
+      },
+    } as any)
+    cropOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    stack.setParams(cropOpId.value, patch, 'crop')
+  }
+  // A geometry change moves every payload above it into a new space.
+  await afterGeometryChange(before)
+  void render()
+}
+
+function chooseAspect(id: string) {
+  cropAspect.value = id
+  const preset = CROP_ASPECTS.find(a => a.id === id)
+  const doc = stack.doc.value
+  if (!doc) return
+  void applyCropChange({
+    rect: cropRectForAspect(preset?.ratio ?? null, doc.canvas.width, doc.canvas.height),
+  })
+}
+
+function rotateQuarter() {
+  void applyCropChange({ rotation90: (((cropParamsOf().rotation90 ?? 0) + 1) % 4) as 0 | 1 | 2 | 3 })
+}
+
+function flip(axis: 'flipX' | 'flipY') {
+  void applyCropChange({ [axis]: !cropParamsOf()[axis] })
+}
+
+// -- compare -------------------------------------------------------------------
+
+/**
+ * Hold to see the base. Nearly free with an op stack — toggling the whole stack
+ * off is what the cache already does — and the snapshot editor never had it.
+ */
+const comparing = ref(false)
+const baseImage = ref<HTMLImageElement | null>(null)
+
+async function setComparing(value: boolean) {
+  comparing.value = value
+  if (value && !baseImage.value && baseInfo.value) {
+    baseImage.value = await loadImage(getMediaFileUrl(Number(baseInfo.value.media_id)))
+  }
+  paint()
+}
+
 // -- save ------------------------------------------------------------------
 
 const saving = ref(false)
@@ -671,12 +820,29 @@ function onKeydown(event: KeyboardEvent) {
     else stack.undo()
     void render()
   }
-  if (event.key === 'Escape' && mode.value) {
+  if (event.key === 'Escape' && (mode.value || regionTargetOpId.value)) {
     // Esc leaves a mode with nothing to undo — empty steps cannot exist.
-    mode.value = null
-    maskCanvas.value = null
-    maskRef.value?.clear()
+    leaveMode()
   }
+  // Hold to compare against the base.
+  if (event.key === '\\' && !event.repeat) void setComparing(true)
+  if (event.key === 'g') family.value = 'generate'
+  if (event.key === 'c') { family.value = 'crop'; mode.value = 'crop' }
+  if (event.key === 'd') { family.value = 'develop'; mode.value = 'develop' }
+}
+
+function onKeyup(event: KeyboardEvent) {
+  if (event.key === '\\') void setComparing(false)
+}
+
+/** Leaving a mode ends its session: the next entry starts a new step. */
+function leaveMode() {
+  mode.value = null
+  regionTargetOpId.value = null
+  maskCanvas.value = null
+  maskRef.value?.clear()
+  developOpId.value = null
+  cropOpId.value = null
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -707,6 +873,7 @@ onMounted(async () => {
   }
 
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('keyup', onKeyup)
 })
 
 // The viewport only exists once loading finishes, so the observer attaches when
@@ -724,6 +891,7 @@ watch(viewport, element => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('keyup', onKeyup)
   resizeObserver?.disconnect()
   candidates.stop()
   void stack.flush().catch(() => {})
@@ -790,11 +958,64 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           </div>
         </div>
 
-        <!-- Generate family sub-toolbar. Entering a mode never edits the
-             stack; the step is created by Run. -->
+        <!-- Tool families and their sub-toolbars. Entering a mode never edits
+             the stack; the step is created by the first real gesture. -->
         <div class="border-t border-edge-subtle px-4 py-3 shrink-0 space-y-3">
-          <div class="flex items-center gap-2">
-            <span class="text-xs text-content-tertiary mr-1">Generate</span>
+          <div class="flex items-center gap-1">
+            <button
+              v-for="entry in families"
+              :key="entry.id"
+              type="button"
+              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+              :class="family === entry.id
+                ? 'bg-overlay-subtle text-content'
+                : 'text-content-tertiary hover:text-content-secondary'"
+              @click="family = entry.id; mode = entry.id === 'generate' ? null : entry.id"
+            >
+              {{ entry.label }}
+            </button>
+            <div class="flex-1" />
+            <span class="text-[11px] text-content-tertiary">Hold \\ to compare</span>
+          </div>
+
+          <div v-if="family === 'crop'" class="flex items-center gap-2 flex-wrap">
+            <button
+              v-for="preset in CROP_ASPECTS"
+              :key="preset.id"
+              type="button"
+              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+              :class="cropAspect === preset.id
+                ? 'bg-selection/15 text-content'
+                : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+              @click="chooseAspect(preset.id)"
+            >
+              {{ preset.label }}
+            </button>
+            <div class="w-px h-5 bg-edge-subtle mx-1" />
+            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="rotateQuarter">
+              Rotate 90°
+            </button>
+            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="flip('flipX')">
+              Flip H
+            </button>
+            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="flip('flipY')">
+              Flip V
+            </button>
+            <label class="flex items-center gap-2 text-xs text-content-tertiary ml-1">
+              Straighten
+              <input
+                type="range" min="-0.4" max="0.4" step="0.005" class="w-28"
+                :value="cropParamsOf().rotation ?? 0"
+                @input="applyCropChange({ rotation: Number(($event.target as HTMLInputElement).value) })"
+              />
+            </label>
+          </div>
+
+          <p v-if="family === 'develop'" class="text-xs text-content-tertiary">
+            Adjustments live in the inspector below the stack. Every control is free.
+          </p>
+
+          <div v-if="family === 'generate'" class="flex items-center gap-2">
             <button
               v-for="option in generateSubTools"
               :key="option.id"
@@ -838,7 +1059,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             </template>
           </div>
 
-          <div v-if="mode" class="flex items-center gap-2">
+          <div v-if="family === 'generate' && mode" class="flex items-center gap-2">
             <input
               v-if="mode !== 'upscale'"
               v-model="prompt"
@@ -922,6 +1143,19 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <p v-if="!stack.ops.value.length" class="px-2 py-3 text-xs text-content-tertiary">
             No edits yet.
           </p>
+        </div>
+
+        <!-- Inspector: the selected row's full control surface, under the
+             stack. The row keeps only the eye as an immediate affordance. -->
+        <div
+          v-if="showsDevelopInspector"
+          class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
+        >
+          <DevelopInspector
+            :params="developInspectorParams"
+            @change="onDevelopInspectorChange"
+            @commit="stack.flush()"
+          />
         </div>
 
         <p v-if="migrationNote" class="px-3 py-2 text-xs text-content-tertiary border-t border-edge-subtle">
