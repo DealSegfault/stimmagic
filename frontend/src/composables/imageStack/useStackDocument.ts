@@ -15,31 +15,18 @@
 import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
 import { getCurrentProfileId } from '../useProfile'
+import { newOpId } from './opId'
 import type { JournalEntry, Op, StackDocument } from './types'
 import { DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
+
+// Re-exported so callers keep one import for the document surface.
+export { newOpId }
 
 const API_BASE = '/api'
 
 /** Debounce for document.json writes. Slider drags must not thrash the disk. */
 const PERSIST_DEBOUNCE_MS = 400
 
-/**
- * Monotonic, sortable, collision-resistant enough for a single-writer document.
- * Crockford base32 of the timestamp plus randomness, i.e. a ULID in shape.
- */
-const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
-export function newOpId(): string {
-  let time = Date.now()
-  let out = ''
-  for (let i = 0; i < 10; i++) {
-    out = B32[time % 32] + out
-    time = Math.floor(time / 32)
-  }
-  for (let i = 0; i < 16; i++) {
-    out += B32[Math.floor(Math.random() * 32)]
-  }
-  return out
-}
 
 export interface StackEditOptions {
   /** Coalesce with the previous entry when it shares this key (slider drags). */

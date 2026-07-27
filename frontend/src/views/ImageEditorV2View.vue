@@ -29,6 +29,7 @@ import { StackCompositor, stackHashes, canvasToBlob } from '../composables/image
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
 import { apiErrorMessage } from '../composables/imageStack/errors'
+import { migrateLegacyProject } from '../composables/imageStack/migrateLegacyProject'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -43,7 +44,6 @@ const { getMediaFileUrl } = useMediaApi()
 const loading = ref(true)
 const error = ref<string | null>(null)
 const baseInfo = ref<any>(null)
-const legacyProject = ref<any>(null)
 
 /** Generate sub-tool modes. Clicking a tool enters a mode; it never edits the
  *  stack. The step is created on the first real gesture — an explicit Run. */
@@ -277,6 +277,27 @@ async function save(asNew = false) {
   }
 }
 
+// -- legacy migration ------------------------------------------------------
+
+const migrationNote = ref<string | null>(null)
+
+async function importLegacyProject(project: any) {
+  const { ops, rasters, dropped } = migrateLegacyProject(project)
+  if (!ops.length && !dropped.length) return
+
+  // Payloads first: an op whose raster is missing would render as a no-op.
+  for (const raster of rasters) {
+    const blob = await (await fetch(raster.dataUrl)).blob()
+    await stack.uploadPayload(raster.name, blob)
+  }
+  for (const op of ops) stack.addOp(op)
+  await stack.flush()
+
+  migrationNote.value = dropped.length
+    ? `Imported ${ops.length} ${ops.length === 1 ? 'edit' : 'edits'}. ${dropped.join(' ')}`
+    : `Imported ${ops.length} ${ops.length === 1 ? 'edit' : 'edits'} from the previous editor.`
+}
+
 // -- lifecycle -------------------------------------------------------------
 
 function onKeydown(event: KeyboardEvent) {
@@ -302,8 +323,13 @@ onMounted(async () => {
   try {
     const opened = await stack.open(Number(props.assetId), props.revisionId ? Number(props.revisionId) : undefined)
     baseInfo.value = opened.base
-    legacyProject.value = opened.legacyProject
     candidates.start()
+
+    // A project saved by the snapshot editor converts on first open. The
+    // sidecar itself is left untouched, so the old editor keeps reading it.
+    if (opened.legacyProject && !stack.ops.value.length) {
+      await importLegacyProject(opened.legacyProject)
+    }
 
     const all = await listAllTools()
     tools.value = all
@@ -496,6 +522,9 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           </p>
         </div>
 
+        <p v-if="migrationNote" class="px-3 py-2 text-xs text-content-tertiary border-t border-edge-subtle">
+          {{ migrationNote }}
+        </p>
         <p v-if="error" class="px-3 py-2 text-xs text-red-400 border-t border-edge-subtle">
           {{ error }}
         </p>

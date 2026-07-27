@@ -21,6 +21,15 @@
 
 import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
+import {
+  applyAnnotations,
+  applyCrop,
+  applyDevelop,
+  applyRasterLayer,
+  applyThroughRegion,
+  cropOutputSize,
+  developIsIdentity,
+} from './opExecutors'
 
 export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
@@ -310,7 +319,10 @@ export class StackCompositor {
 
     for (let i = startIndex; i < doc.edits.length; i++) {
       const op = doc.edits[i]
-      current = await this.applyOp(current, op, width, height)
+      // A geometry op resizes the frame, and every op above it works in the
+      // new space — which is why the working size is carried forward rather
+      // than read from the document.
+      current = await this.applyOp(current, op, current.width, current.height)
       const nextHash = i + 1 < inputs.length ? inputs[i + 1] : head
       this.remember(nextHash, current)
     }
@@ -349,9 +361,51 @@ export class StackCompositor {
       return compositeWhole(result, width, height, anyOp.blend?.opacity ?? 1)
     }
 
-    // Parametric and container ops arrive in Phase 1.5 with the migrated op
-    // kinds. Until then an unknown op is a no-op rather than an error: a
+    if (op.class === 'parametric') {
+      const kind = anyOp.exec?.kind
+      if (kind === 'crop') {
+        // Geometry is never scoped to a region: cropping part of an image is
+        // not a thing, and a region would have no space to be expressed in.
+        return applyCrop(input, input.width, input.height, anyOp.params || {})
+      }
+      if (kind === 'develop') {
+        if (developIsIdentity(anyOp.params || {})) return input
+        const result = applyDevelop(input, width, height, anyOp.params || {})
+        return this.scopeToRegion(input, result, op, width, height)
+      }
+      return input
+    }
+
+    if (op.class === 'container') {
+      const kind = anyOp.exec?.kind
+      if (kind === 'annotate') {
+        const result = applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
+        return this.scopeToRegion(input, result, op, width, height)
+      }
+      if (!anyOp.raster_ref) return input
+      const layer = await this.deps.loadPayload(anyOp.raster_ref)
+      const result = applyRasterLayer(input, layer, width, height, anyOp.blend?.opacity ?? 1)
+      return this.scopeToRegion(input, result, op, width, height)
+    }
+
+    // An op kind this build does not know is a no-op rather than an error: a
     // document written by a newer build must still open and render.
     return input
+  }
+
+  /** Limit an op's effect to its region, when it has one. */
+  private async scopeToRegion(
+    input: HTMLCanvasElement,
+    result: HTMLCanvasElement,
+    op: Op,
+    width: number,
+    height: number
+  ): Promise<HTMLCanvasElement> {
+    if (!op.region?.mask_ref) return result
+    const mask = await this.deps.loadPayload(op.region.mask_ref)
+    return applyThroughRegion(input, result, mask, width, height, {
+      featherPx: op.region.feather_px,
+      invert: op.region.invert,
+    })
   }
 }

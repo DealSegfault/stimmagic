@@ -71,7 +71,17 @@ export {
   saturationMatrix,
   combineAdjustments,
   applyColorMatrix,
+  applySplitToning,
+  applyGradientMap,
+  applyColorIsolation,
 } from './utils/colorMatrix';
+
+// Pixel executors, exported so another editor can consume them as a library
+// rather than reimplement the math. Purely additive: this editor's own render
+// path (useImageWriter) still imports them directly and is unchanged.
+export { hasEffects, applyEffects } from './utils/effects';
+export { renderShape, renderShapes } from './utils/shapes';
+export { FILTER_MATRICES } from './constants';
 
 // Composables (for building custom editors)
 export { useEditor } from './composables/useEditor';
