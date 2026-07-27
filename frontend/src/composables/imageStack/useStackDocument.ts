@@ -294,6 +294,21 @@ export function useStackDocument() {
   }
 
   /**
+   * Mark an op's payload as having changed under the same ref.
+   *
+   * Composites are keyed by content hash, and a payload rewritten in place
+   * leaves that hash untouched — a stroke added to an existing Paint layer
+   * would otherwise be invisible. Not journaled: the stroke session itself is
+   * the undoable unit, not each dab.
+   */
+  function touchOp(opId: string) {
+    const op = opById(opId) as any
+    if (!op) return
+    op._revision = (op._revision || 0) + 1
+    schedulePersist()
+  }
+
+  /**
    * Attach staged candidates as they arrive. Not an undoable document edit:
    * a job completing is not something the user did, and undoing it would
    * throw away work that was paid for.
@@ -510,6 +525,7 @@ export function useStackDocument() {
     setLabel,
     setBlend,
     setRegion,
+    touchOp,
     pickCandidate,
     attachCandidates,
     undo,

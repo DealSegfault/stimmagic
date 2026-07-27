@@ -52,6 +52,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: []
+  /** Double-click: re-enter a container op's session. */
+  reenter: []
   toggle: [boolean]
   pick: [string]
   remove: []
@@ -107,6 +109,7 @@ const previewTint = computed(() => {
     ]"
     :draggable="draggable"
     @click="emit('select')"
+    @dblclick="emit('reenter')"
     @dragstart="emit('dragStart', $event)"
     @dragover.prevent="emit('dragOver', $event)"
     @drop.prevent="emit('drop', $event)"

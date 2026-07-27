@@ -22,6 +22,11 @@ import IconButton from '../components/ui/IconButton.vue'
 import Tooltip from '../components/ui/Tooltip.vue'
 import Spinner from '../components/ui/Spinner.vue'
 import EditRow from '../components/imageStack/EditRow.vue'
+import EditorToolbar from '../components/imageStack/EditorToolbar.vue'
+import EditorSubbar from '../components/imageStack/EditorSubbar.vue'
+import StackPaintCanvas from '../components/imageStack/StackPaintCanvas.vue'
+import StackSelectCanvas from '../components/imageStack/StackSelectCanvas.vue'
+import StackAnnotateCanvas from '../components/imageStack/StackAnnotateCanvas.vue'
 import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
 import DevelopInspector from '../components/imageStack/DevelopInspector.vue'
 import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
@@ -41,6 +46,8 @@ import {
 import {
   CROP_ASPECTS, cropRectForAspect, developLabel,
 } from '../composables/imageStack/developSections'
+import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
+import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
 import type { GenerativeOp } from '../composables/imageStack/types'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -75,6 +82,28 @@ const wholeToolId = ref<string | null>(null)
 const upscaleToolId = ref<string | null>(null)
 /** Expand grows the canvas and auto-masks the new border. */
 const expandFactor = ref(1.25)
+const upscaleFactor = ref(2)
+/** Catalog tool picker for the active Generate sub-tool. */
+const toolPickerOpen = ref(false)
+
+// Select
+const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
+const selection = ref<HTMLCanvasElement | null>(null)
+const selectCombine = ref<SelectionMode>('new')
+const selectFeather = ref(8)
+
+// Paint
+const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
+const paintOpId = ref<string | null>(null)
+const paintEngineId = ref('round-soft')
+const paintOpacity = ref(1)
+const paintColor = ref('#c9a276')
+
+// Annotate
+const annotateOpId = ref<string | null>(null)
+const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
+const shapeKind = ref<'rectangle' | 'ellipse' | 'line'>('rectangle')
+const annotateColor = ref('#ffffff')
 
 // -- compositing -----------------------------------------------------------
 
@@ -407,8 +436,8 @@ function derivedName(ref: string): string {
 
 const canRun = computed(() => {
   if (!composite.value || busy.value) return false
-  if (regionTargetOpId.value) return !!maskCanvas.value
-  if (mode.value === 'inpaint') return !!maskCanvas.value && !!inpaintToolId.value
+  if (regionTargetOpId.value) return !!effectiveMask.value
+  if (mode.value === 'inpaint') return !!effectiveMask.value && !!inpaintToolId.value
   if (mode.value === 'whole') return !!prompt.value.trim() && !!wholeToolId.value
   // Expand auto-masks the border it adds, and Upscale takes no prompt, so
   // neither has anything to wait for beyond a tool.
@@ -425,37 +454,116 @@ const busy = ref(false)
  * explicit Run. Empty steps cannot exist, and Esc leaves a mode with nothing to
  * undo.
  */
-const families = [
-  { id: 'generate', label: 'Generate' },
-  { id: 'crop', label: 'Crop' },
-  { id: 'develop', label: 'Develop' },
-] as const
-const family = ref<'generate' | 'crop' | 'develop'>('generate')
+/** The open family, or null when no mode is active. */
+const family = ref<FamilyId | null>(null)
+/** The active sub-tool within that family. */
+const sub = ref<string | null>(null)
 
-const generateSubTools = [
-  { id: 'inpaint', label: 'Inpaint' },
-  { id: 'whole', label: 'Whole image' },
-  { id: 'expand', label: 'Expand' },
-  { id: 'upscale', label: 'Upscale' },
-] as const
+function selectFamily(id: FamilyId) {
+  // Clicking the active family leaves it — entering and leaving are the same
+  // gesture, and leaving with nothing drawn leaves nothing to undo.
+  if (family.value === id) { leaveMode(); return }
+  leaveMode()
+  family.value = id
+  sub.value = familyById(id).defaultSub
+  if (id === 'generate') mode.value = (sub.value as Mode) ?? null
+}
 
-const promptPlaceholder = computed(() => {
-  if (regionTargetOpId.value) return 'Optional label for this region'
-  if (mode.value === 'inpaint') return 'Describe what belongs here'
-  if (mode.value === 'expand') return 'Describe what surrounds it'
-  return 'Describe the change'
+function selectSub(id: string) {
+  sub.value = id
+  if (family.value === 'generate') mode.value = id as Mode
+}
+
+/** Sub-toolbar state, flattened so the sub-bar stays a dumb renderer. */
+const subbarState = computed(() => ({
+  prompt: prompt.value,
+  brushSize: brushSize.value,
+  candidateCount: candidateCount.value,
+  expandFactor: expandFactor.value,
+  upscaleFactor: upscaleFactor.value,
+  cropAspect: cropAspect.value,
+  rotation: cropParamsOf().rotation ?? 0,
+  flipX: !!cropParamsOf().flipX,
+  flipY: !!cropParamsOf().flipY,
+  combine: selectCombine.value,
+  featherPx: selectFeather.value,
+  hasSelection: !!selection.value,
+  engineId: paintEngineId.value,
+  paintOpacity: paintOpacity.value,
+  paintColor: paintColor.value,
+  textStyle: textStyle.value,
+  shapeKind: shapeKind.value,
+  annotateColor: annotateColor.value,
+}))
+
+function onSubbarSet(patch: Record<string, any>) {
+  if ('prompt' in patch) prompt.value = patch.prompt
+  if ('brushSize' in patch) brushSize.value = patch.brushSize
+  if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
+  if ('expandFactor' in patch) expandFactor.value = patch.expandFactor
+  if ('upscaleFactor' in patch) upscaleFactor.value = patch.upscaleFactor
+  if ('combine' in patch) selectCombine.value = patch.combine
+  if ('featherPx' in patch) selectFeather.value = patch.featherPx
+  if ('engineId' in patch) paintEngineId.value = patch.engineId
+  if ('paintOpacity' in patch) paintOpacity.value = patch.paintOpacity
+  if ('paintColor' in patch) paintColor.value = patch.paintColor
+  if ('textStyle' in patch) textStyle.value = patch.textStyle
+  if ('shapeKind' in patch) shapeKind.value = patch.shapeKind
+  if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
+  if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
+  if ('rotation' in patch) void applyCropChange({ rotation: patch.rotation })
+  if ('rotateQuarter' in patch) rotateQuarter()
+  if ('flipX' in patch) void applyCropChange({ flipX: patch.flipX })
+  if ('flipY' in patch) void applyCropChange({ flipY: patch.flipY })
+  if ('clearSelection' in patch) { selectRef.value?.clear(); selection.value = null }
+  if ('newLayer' in patch) startNewPaintLayer()
+}
+
+/** One line of fact per mode: what to do, and what it will cost. */
+const subbarHint = computed(() => {
+  if (regionTargetOpId.value) return 'Brush the area to limit that edit to'
+  if (family.value === 'generate') {
+    if (sub.value === 'inpaint') return 'Paint the area, then Run · Esc leaves'
+    if (sub.value === 'whole') return 'Creates a checkpoint · everything below feeds it'
+    if (sub.value === 'expand') return 'Grows the canvas · the new border is auto-masked'
+    if (sub.value === 'upscale') return 'Creates a checkpoint · output continues at the new size'
+  }
+  if (family.value === 'crop') return 'Picking an aspect adds or updates the Crop step — free, reversible'
+  if (family.value === 'select') {
+    return selection.value
+      ? 'Inpaint will use this selection · adjustments can be limited to it'
+      : 'Drag on the canvas · selections become masks and region scopes'
+  }
+  if (family.value === 'paint') {
+    return paintOpId.value ? 'Painting into the current layer' : 'The first stroke creates a Paint layer'
+  }
+  if (family.value === 'annotate') {
+    return sub.value === 'text' ? 'Click the canvas to place text' : 'Drag on the canvas'
+  }
+  return null
+})
+
+/** The catalog tool that will run the active Generate sub-tool. */
+const activeToolId = computed(() => {
+  if (sub.value === 'upscale') return upscaleToolId.value
+  if (sub.value === 'whole') return wholeToolId.value
+  return inpaintToolId.value
+})
+const activeToolLabel = computed(() => {
+  const tool = tools.value.find(t => t.full_tool_id === activeToolId.value)
+  return tool ? tool.name : null
 })
 
 async function run() {
   if (!canRun.value || !stack.doc.value || !composite.value) return
 
   // A brushed region scopes an existing step rather than creating one.
-  if (regionTargetOpId.value && maskCanvas.value) {
+  if (regionTargetOpId.value && effectiveMask.value) {
     const targetId = regionTargetOpId.value
     const ref = await stack.uploadPayload(
-      `${targetId}-region.png`, await canvasToBlob(maskCanvas.value)
+      `${targetId}-region.png`, await canvasToBlob(effectiveMask.value)
     )
-    stack.setRegion(targetId, { mask_ref: ref, feather_px: 8, invert: false })
+    stack.setRegion(targetId, { mask_ref: ref, feather_px: selectFeather.value, invert: false })
     regionTargetOpId.value = null
     mode.value = null
     maskCanvas.value = null
@@ -483,19 +591,17 @@ async function run() {
     // Expand grows the frame and auto-masks the border it added — the same
     // extend-pad invariant the prep flow uses — then fills it like any patch.
     let submitInput = composite.value
-    let submitMask = isPatch ? maskCanvas.value : null
+    let submitMask = isPatch ? (maskCanvas.value || selectionAsMask()) : null
     if (mode.value === 'expand') {
       const grown = growCanvas(composite.value, expandFactor.value)
       submitInput = grown.image
       submitMask = grown.borderMask
-      maskCanvas.value = grown.borderMask
     }
 
     let maskPayloadRef: string | undefined
-    if (isPatch && maskCanvas.value) {
+    if (isPatch && submitMask) {
       maskPayloadRef = await stack.uploadPayload(
-        `${opId}-mask.png`,
-        await canvasToBlob(maskCanvas.value)
+        `${opId}-mask.png`, await canvasToBlob(submitMask)
       )
     }
 
@@ -735,6 +841,126 @@ function flip(axis: 'flipX' | 'flipY') {
   void applyCropChange({ [axis]: !cropParamsOf()[axis] })
 }
 
+// -- paint ---------------------------------------------------------------------
+
+/**
+ * The Paint layer this session is painting into. A layer IS a step, so
+ * "New layer" simply forgets the current one and the next stroke creates the
+ * next Paint row.
+ */
+async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
+  if (!stack.doc.value) return
+  const opId = paintOpId.value || newOpId()
+  const blob = await canvasToBlob(layer)
+  const ref = await stack.uploadPayload(`${opId}-layer.png`, blob)
+
+  if (!paintOpId.value) {
+    const { head } = stackHashes(stack.doc.value)
+    stack.addOp({
+      id: opId,
+      class: 'container',
+      enabled: true,
+      label: readsPixels ? 'Retouch' : 'Paint',
+      exec: { kind: readsPixels ? 'retouch' : 'paint' },
+      raster_ref: ref,
+      blend: { feather_px: 0, opacity: 1 },
+      // A pixel-reading engine baked what was underneath, so its layer carries
+      // an advisory hash exactly like a generative patch.
+      ...(readsPixels ? { sampled_input_hash: head } : {}),
+    } as any)
+    paintOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    // The payload changed under the same ref; nudge the cache so the composite
+    // picks it up.
+    payloadCache.delete(ref)
+    stack.touchOp(opId)
+  }
+  void render()
+}
+
+/**
+ * Double-clicking a container row re-enters its session — the plan's
+ * re-enterable containers: a Paint layer keeps painting into itself, an
+ * Annotate step keeps accumulating shapes.
+ */
+function enterContainerOp(op: any) {
+  if (op.class !== 'container') return
+  if (op.exec?.kind === 'annotate') {
+    family.value = 'annotate'
+    sub.value = 'text'
+    annotateOpId.value = op.id
+    return
+  }
+  void enterPaintOp(op.id)
+}
+
+function startNewPaintLayer() {
+  paintOpId.value = null
+  paintRef.value?.reset()
+}
+
+/** Re-entering a Paint row paints into ITS layer rather than starting another. */
+const paintInitialLayer = ref<HTMLCanvasElement | null>(null)
+
+async function enterPaintOp(opId: string) {
+  const op = stack.opById(opId) as any
+  if (!op?.raster_ref) return
+  family.value = 'paint'
+  paintOpId.value = opId
+  const image = await loadImage(stack.payloadUrl(op.raster_ref))
+  const canvas = document.createElement('canvas')
+  canvas.width = image.naturalWidth
+  canvas.height = image.naturalHeight
+  canvas.getContext('2d')!.drawImage(image, 0, 0)
+  paintInitialLayer.value = canvas
+}
+
+// -- annotate --------------------------------------------------------------------
+
+/**
+ * Annotations accumulate into one Annotate step per session. The shapes are the
+ * params, so the step stays vector and re-entering it is lossless.
+ */
+function onAnnotationAdd(shape: any) {
+  if (!stack.doc.value) return
+  if (!annotateOpId.value) {
+    const opId = newOpId()
+    stack.addOp({
+      id: opId,
+      class: 'container',
+      enabled: true,
+      label: 'Annotate',
+      exec: { kind: 'annotate' },
+      params: { shapes: [shape] },
+    } as any)
+    annotateOpId.value = opId
+    selectedOpId.value = opId
+  } else {
+    const op = stack.opById(annotateOpId.value) as any
+    stack.setParams(annotateOpId.value, { shapes: [...(op?.params?.shapes || []), shape] })
+  }
+  void render()
+}
+
+// -- selection handoff ------------------------------------------------------------
+
+/**
+ * A live selection pre-fills the next mask. Consumed by COPY at the moment it
+ * is used, never live-linked — the op ends up referencing only its own payload.
+ */
+function selectionAsMask(): HTMLCanvasElement | null {
+  if (!selection.value) return null
+  const copy = document.createElement('canvas')
+  copy.width = selection.value.width
+  copy.height = selection.value.height
+  copy.getContext('2d')!.drawImage(selection.value, 0, 0)
+  return copy
+}
+
+/** The mask a Generate run will use: the brush if painted, else the selection. */
+const effectiveMask = computed(() => maskCanvas.value || selection.value)
+
 // -- compare -------------------------------------------------------------------
 
 /**
@@ -826,9 +1052,8 @@ function onKeydown(event: KeyboardEvent) {
   }
   // Hold to compare against the base.
   if (event.key === '\\' && !event.repeat) void setComparing(true)
-  if (event.key === 'g') family.value = 'generate'
-  if (event.key === 'c') { family.value = 'crop'; mode.value = 'crop' }
-  if (event.key === 'd') { family.value = 'develop'; mode.value = 'develop' }
+  const shortcut = TOOL_FAMILIES.find(f => f.key === event.key.toLowerCase())
+  if (shortcut && !event.metaKey && !event.ctrlKey) selectFamily(shortcut.id)
 }
 
 function onKeyup(event: KeyboardEvent) {
@@ -837,12 +1062,18 @@ function onKeyup(event: KeyboardEvent) {
 
 /** Leaving a mode ends its session: the next entry starts a new step. */
 function leaveMode() {
+  family.value = null
+  sub.value = null
   mode.value = null
   regionTargetOpId.value = null
   maskCanvas.value = null
   maskRef.value?.clear()
+  // Ending a mode session ends its STEP: the next entry starts a new one.
   developOpId.value = null
   cropOpId.value = null
+  paintOpId.value = null
+  paintInitialLayer.value = null
+  annotateOpId.value = null
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -906,13 +1137,17 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
 
 <template>
   <div class="h-full flex flex-col bg-base">
-    <!-- Header -->
-    <header class="flex items-center gap-3 px-4 h-12 border-b border-edge-subtle shrink-0">
-      <h1 class="text-sm font-medium text-content">Edit image</h1>
-      <span v-if="stack.dirtySinceSave.value" class="text-xs text-content-tertiary">
+    <!-- Tool row across the top: families, then the document verbs. -->
+    <header class="flex items-center gap-3 px-3 h-12 border-b border-edge-subtle shrink-0">
+      <h1 class="text-sm font-medium text-content shrink-0">Edit image</h1>
+      <span v-if="stack.dirtySinceSave.value" class="text-xs text-content-tertiary shrink-0">
         Unsaved edits
       </span>
+
+      <EditorToolbar :active="family" class="ml-2" @select="selectFamily" />
+
       <div class="flex-1" />
+
       <Tooltip text="Undo">
         <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
           <ArrowUturnLeftIcon class="w-4 h-4" />
@@ -923,20 +1158,44 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <ArrowUturnRightIcon class="w-4 h-4" />
         </IconButton>
       </Tooltip>
+      <Button
+        variant="secondary" size="sm"
+        @pointerdown="setComparing(true)"
+        @pointerup="setComparing(false)"
+        @pointerleave="setComparing(false)"
+      >
+        Hold to compare
+      </Button>
       <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
         Save as new
       </Button>
       <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
-        Save
+        Save version
       </Button>
     </header>
+
+    <!-- The active family's sub-toolbar, directly beneath. -->
+    <EditorSubbar
+      v-if="family"
+      :family="family"
+      :sub="sub"
+      :state="subbarState"
+      :tool-label="activeToolLabel"
+      :busy="busy"
+      :can-run="canRun"
+      :hint="subbarHint"
+      class="shrink-0"
+      @sub="selectSub"
+      @set="onSubbarSet"
+      @run="run"
+      @open-tool-picker="toolPickerOpen = true"
+    />
 
     <div v-if="loading" class="flex-1 grid place-items-center">
       <Spinner size="md" />
     </div>
 
     <div v-else class="flex-1 flex min-h-0">
-      <!-- Canvas -->
       <div class="flex-1 flex flex-col min-w-0">
         <div ref="viewport" class="flex-1 min-h-0 grid place-items-center bg-matte p-6">
           <div class="relative" :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }">
@@ -945,8 +1204,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               class="rounded-media w-full h-full"
               :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }"
             />
+
+            <!-- One canvas overlay per mode; only the active family draws. -->
             <StackMaskCanvas
-              v-if="mode === 'inpaint'"
+              v-if="mode === 'inpaint' || regionTargetOpId"
               ref="maskRef"
               :source="composite"
               :display-width="displayBox.width"
@@ -955,133 +1216,43 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :brush-size="brushSize"
               @change="maskCanvas = $event"
             />
-          </div>
-        </div>
-
-        <!-- Tool families and their sub-toolbars. Entering a mode never edits
-             the stack; the step is created by the first real gesture. -->
-        <div class="border-t border-edge-subtle px-4 py-3 shrink-0 space-y-3">
-          <div class="flex items-center gap-1">
-            <button
-              v-for="entry in families"
-              :key="entry.id"
-              type="button"
-              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-              :class="family === entry.id
-                ? 'bg-overlay-subtle text-content'
-                : 'text-content-tertiary hover:text-content-secondary'"
-              @click="family = entry.id; mode = entry.id === 'generate' ? null : entry.id"
-            >
-              {{ entry.label }}
-            </button>
-            <div class="flex-1" />
-            <span class="text-[11px] text-content-tertiary">Hold \\ to compare</span>
-          </div>
-
-          <div v-if="family === 'crop'" class="flex items-center gap-2 flex-wrap">
-            <button
-              v-for="preset in CROP_ASPECTS"
-              :key="preset.id"
-              type="button"
-              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-              :class="cropAspect === preset.id
-                ? 'bg-selection/15 text-content'
-                : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
-              @click="chooseAspect(preset.id)"
-            >
-              {{ preset.label }}
-            </button>
-            <div class="w-px h-5 bg-edge-subtle mx-1" />
-            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="rotateQuarter">
-              Rotate 90°
-            </button>
-            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="flip('flipX')">
-              Flip H
-            </button>
-            <button type="button" class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle" @click="flip('flipY')">
-              Flip V
-            </button>
-            <label class="flex items-center gap-2 text-xs text-content-tertiary ml-1">
-              Straighten
-              <input
-                type="range" min="-0.4" max="0.4" step="0.005" class="w-28"
-                :value="cropParamsOf().rotation ?? 0"
-                @input="applyCropChange({ rotation: Number(($event.target as HTMLInputElement).value) })"
-              />
-            </label>
-          </div>
-
-          <p v-if="family === 'develop'" class="text-xs text-content-tertiary">
-            Adjustments live in the inspector below the stack. Every control is free.
-          </p>
-
-          <div v-if="family === 'generate'" class="flex items-center gap-2">
-            <button
-              v-for="option in generateSubTools"
-              :key="option.id"
-              type="button"
-              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-              :class="mode === option.id
-                ? 'bg-selection/15 text-content'
-                : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
-              @click="mode = mode === option.id ? null : option.id"
-            >
-              {{ option.label }}
-            </button>
-
-            <template v-if="mode === 'expand'">
-              <div class="w-px h-5 bg-edge-subtle mx-1" />
-              <label class="flex items-center gap-2 text-xs text-content-tertiary">
-                Grow
-                <input v-model.number="expandFactor" type="range" min="1.05" max="2" step="0.05" class="w-24" />
-                <span class="tabular-nums">{{ Math.round(expandFactor * 100) }}%</span>
-              </label>
-            </template>
-
-            <template v-if="mode === 'inpaint'">
-              <div class="w-px h-5 bg-edge-subtle mx-1" />
-              <button
-                v-for="brush in (['paint', 'erase'] as const)"
-                :key="brush"
-                type="button"
-                class="px-2.5 py-1.5 text-xs rounded-md capitalize transition-colors"
-                :class="brushMode === brush
-                  ? 'bg-selection/15 text-content'
-                  : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
-                @click="brushMode = brush"
-              >
-                {{ brush }}
-              </button>
-              <label class="flex items-center gap-2 text-xs text-content-tertiary ml-1">
-                Size
-                <input v-model.number="brushSize" type="range" min="8" max="300" class="w-24" />
-              </label>
-            </template>
-          </div>
-
-          <div v-if="family === 'generate' && mode" class="flex items-center gap-2">
-            <input
-              v-if="mode !== 'upscale'"
-              v-model="prompt"
-              type="text"
-              :placeholder="promptPlaceholder"
-              class="flex-1 px-3 py-2 text-sm bg-surface-raised rounded-md text-content placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-              @keydown.enter="run"
+            <StackSelectCanvas
+              v-else-if="family === 'select'"
+              ref="selectRef"
+              :source="composite"
+              :display-width="displayBox.width"
+              :display-height="displayBox.height"
+              :tool="(sub as any)"
+              :combine="selectCombine"
+              :feather-px="selectFeather"
+              :brush-size="brushSize"
+              @change="selection = $event"
             />
-            <label class="flex items-center gap-2 text-xs text-content-tertiary">
-              Count
-              <input v-model.number="candidateCount" type="number" min="1" max="8"
-                class="w-14 px-2 py-1.5 bg-surface-raised rounded-md text-content" />
-            </label>
-            <Button size="sm" :disabled="!canRun" :loading="busy" @click="run">Run</Button>
+            <StackPaintCanvas
+              v-else-if="family === 'paint'"
+              ref="paintRef"
+              :source="composite"
+              :initial-layer="paintInitialLayer"
+              :display-width="displayBox.width"
+              :display-height="displayBox.height"
+              :engine-id="paintEngineId"
+              :brush-size="brushSize"
+              :opacity="paintOpacity"
+              :color="paintColor"
+              @stroke="onPaintStroke"
+            />
+            <StackAnnotateCanvas
+              v-else-if="family === 'annotate'"
+              :source="composite"
+              :display-width="displayBox.width"
+              :display-height="displayBox.height"
+              :tool="(sub as any)"
+              :shape-kind="shapeKind"
+              :text-style="textStyle"
+              :color="annotateColor"
+              @add="onAnnotationAdd"
+            />
           </div>
-
-          <p v-if="regionTargetOpId" class="text-xs text-content-tertiary">
-            Brush the area to limit that edit to, then Run.
-          </p>
-          <p v-else-if="mode === 'inpaint' && !maskCanvas" class="text-xs text-content-tertiary">
-            Brush over the area to change.
-          </p>
         </div>
       </div>
 
@@ -1137,6 +1308,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               @intent-hover="intentOpId = $event ? row.op.id : null"
               @drag-start="onDragStart(row.op.id, $event)"
               @drop="onDrop(row.op.id)"
+              @reenter="enterContainerOp(row.op)"
             />
           </template>
 

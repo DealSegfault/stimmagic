@@ -11,6 +11,7 @@
  * the gradient path is the one that renders the same everywhere.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { drawMaskTint, tokenRgb } from '../../composables/imageStack/maskTint'
 
 const props = withDefaults(defineProps<{
   /** The composite this mask applies to; sets the mask's dimensions. */
@@ -117,14 +118,8 @@ function drawOverlay() {
 
   // Tint the masked area so it reads as a selection over the artwork rather
   // than as a white shape covering it.
-  ctx.save()
-  ctx.globalAlpha = 0.45
-  ctx.drawImage(mask, 0, 0, canvas.width, canvas.height)
-  ctx.globalCompositeOperation = 'source-in'
-  ctx.fillStyle = `rgb(${getComputedStyle(document.documentElement)
-    .getPropertyValue('--color-selection-rgb').trim() || '129 140 248'})`
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.restore()
+  drawMaskTint(ctx, mask, canvas.width, canvas.height,
+    tokenRgb('--color-selection-rgb', [129, 140, 248]), 0.45)
 }
 
 function onPointerDown(event: PointerEvent) {

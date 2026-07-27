@@ -38,6 +38,9 @@ export function canonicalOp(op: Op): string {
     op.region ? [op.region.mask_ref, op.region.feather_px, op.region.invert] : null,
     anyOp.mask_ref ?? null,
     anyOp.raster_ref ?? null,
+    // Bumped when a payload is rewritten under the same ref, so a stroke added
+    // to an existing layer actually invalidates the composite above it.
+    anyOp._revision ?? 0,
     anyOp.blend ?? null,
     picked ? [picked.file_hash, picked.patch_ref ?? null, picked.patch_origin ?? null] : null,
   ])
