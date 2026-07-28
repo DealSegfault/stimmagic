@@ -66,6 +66,43 @@ const hasFill = computed(() =>
   !!props.shape && ['rectangle', 'ellipse'].includes(props.shape.type)
 )
 const isText = computed(() => props.shape?.type === 'text')
+const isPath = computed(() => props.shape?.type === 'path')
+const isLine = computed(() =>
+  props.shape?.type === 'line' || props.shape?.type === 'curved-arrow'
+)
+const isRect = computed(() => props.shape?.type === 'rectangle')
+
+/**
+ * How the stroke is laid down, as opposed to what colour it is.
+ *
+ * A pen stroke has a character — how hard its edge is, how much paint each
+ * stamp lays, how far apart the stamps fall, and how much they wander. The old
+ * editor exposed all of it and a Path without it is just a coloured line.
+ */
+const PATH_STYLE = [
+  { key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, fallback: 100 },
+  { key: 'flow', label: 'Flow', min: 1, max: 100, step: 1, fallback: 100 },
+  { key: 'spacing', label: 'Spacing', min: 1, max: 100, step: 1, fallback: 25 },
+  { key: 'jitter', label: 'Jitter', min: 0, max: 100, step: 1, fallback: 0 },
+  { key: 'scatter', label: 'Scatter', min: 0, max: 100, step: 1, fallback: 0 },
+]
+
+/** Ends, so an arrow can be an arrow at either end or neither. */
+const LINE_ENDS = [
+  { id: 'none', label: 'None' },
+  { id: 'arrow', label: 'Arrow' },
+  { id: 'arrow-solid', label: 'Solid arrow' },
+  { id: 'circle', label: 'Circle' },
+  { id: 'circle-solid', label: 'Solid circle' },
+  { id: 'square', label: 'Square' },
+  { id: 'square-solid', label: 'Solid square' },
+  { id: 'bar', label: 'Bar' },
+]
+
+function numberOr(key: string, fallback: number): number {
+  const value = any.value?.[key]
+  return typeof value === 'number' ? value : fallback
+}
 
 /** Neon is a universal shape style; text spells it as a text effect. */
 const glowOn = computed(() =>
@@ -203,6 +240,60 @@ const glowIntensity = computed(() =>
           @input="emit('change', { strokeWidth: Number(($event.target as HTMLInputElement).value) })"
         />
         <span class="w-8 text-right tabular-nums">{{ Math.round(any.strokeWidth ?? 8) }}</span>
+      </label>
+    </section>
+
+    <!-- Stroke style: how the line is laid down, not what colour it is. -->
+    <section v-if="isPath" class="px-3 py-2 space-y-2">
+      <label
+        v-for="control in PATH_STYLE"
+        :key="control.key"
+        class="flex items-center gap-2 text-xs text-content-tertiary"
+      >
+        <span class="w-16 shrink-0">{{ control.label }}</span>
+        <input
+          type="range"
+          class="flex-1"
+          :min="control.min" :max="control.max" :step="control.step"
+          :value="numberOr(control.key, control.fallback)"
+          @input="emit('change', { [control.key]: Number(($event.target as HTMLInputElement).value) })"
+        />
+        <span class="w-8 text-right tabular-nums">{{ numberOr(control.key, control.fallback) }}</span>
+      </label>
+    </section>
+
+    <section v-if="isLine" class="px-3 py-2 space-y-2">
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        <span class="w-16 shrink-0">Start</span>
+        <select
+          class="flex-1 px-2 py-1 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :value="any.lineStart ?? 'none'"
+          @change="emit('change', { lineStart: ($event.target as HTMLSelectElement).value })"
+        >
+          <option v-for="end in LINE_ENDS" :key="end.id" :value="end.id">{{ end.label }}</option>
+        </select>
+      </label>
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        <span class="w-16 shrink-0">End</span>
+        <select
+          class="flex-1 px-2 py-1 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :value="any.lineEnd ?? 'none'"
+          @change="emit('change', { lineEnd: ($event.target as HTMLSelectElement).value })"
+        >
+          <option v-for="end in LINE_ENDS" :key="end.id" :value="end.id">{{ end.label }}</option>
+        </select>
+      </label>
+    </section>
+
+    <section v-if="isRect" class="px-3 py-2">
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        <span class="w-16 shrink-0">Corners</span>
+        <input
+          type="range" min="0" max="80" step="1" class="flex-1"
+          :value="numberOr('cornerRadius', 0)"
+          @input="emit('change', { cornerRadius: Number(($event.target as HTMLInputElement).value) })"
+        />
+        <span class="w-8 text-right tabular-nums">{{ numberOr('cornerRadius', 0) }}</span>
       </label>
     </section>
 
