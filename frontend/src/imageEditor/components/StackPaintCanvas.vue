@@ -62,6 +62,14 @@ const overlay = ref<HTMLCanvasElement | null>(null)
 const layer = useRetouchLayer()
 
 const cursor = ref<{ x: number; y: number } | null>(null)
+/**
+ * True once the stroke is in the composite and the overlay has stopped drawing
+ * it. Not just a one-off clear: the overlay repaints whenever the composite
+ * changes, so without a latch it redrew the layer on the very next render and
+ * the paint came back — outliving its own step being switched off, and
+ * double-drawing its feathered edge as a halo.
+ */
+const handedOff = ref(false)
 /** Where clone samples from, set by alt-click and kept across strokes. */
 const cloneAnchor = ref<Point | null>(null)
 let drawing = false
@@ -137,7 +145,7 @@ function drawOverlay() {
   if (!canvas) return
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  if (source) ctx.drawImage(source, 0, 0)
+  if (source && !handedOff.value) ctx.drawImage(source, 0, 0)
 }
 
 function onPointerDown(event: PointerEvent) {
@@ -158,7 +166,9 @@ function onPointerDown(event: PointerEvent) {
   }
 
   drawing = true
-  // The layer batches a stroke, so a drag is one operation rather than N.
+  // A new stroke takes the layer back: the overlay is the only place it exists
+  // until the composite catches up.
+  handedOff.value = false
   layer.startStroke()
   stamp(point)
 }
@@ -180,6 +190,7 @@ function onPointerUp(event: PointerEvent) {
 
 /** Start a new layer: the next stroke creates the next Paint step. */
 function reset() {
+  handedOff.value = false
   layer.clearLayer()
   drawOverlay()
 }
@@ -194,7 +205,22 @@ function resize() {
   drawOverlay()
 }
 
-defineExpose({ reset })
+defineExpose({
+  reset,
+  /**
+   * Drop what the overlay is showing, keeping the layer itself.
+   *
+   * Called once the stroke is in the composite. Until then the overlay is the
+   * only place the stroke exists, so it has to draw; afterwards it is a second
+   * copy of pixels the composite already has — which double-draws the feathered
+   * edge as a halo, and survives switching the step's visibility off, so a
+   * hidden layer went on showing its paint.
+   */
+  clearDisplay() {
+    handedOff.value = true
+    drawOverlay()
+  },
+})
 
 // Strokes respect the active selection, which is what makes Select → Paint work
 // without either side knowing about the other.

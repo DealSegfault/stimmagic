@@ -209,14 +209,24 @@ async function render() {
 }
 
 /** Fit the composite into the viewport; the mask overlay uses the same box. */
+/**
+ * Fit the COMPOSITE into the viewport — not the document's base canvas.
+ *
+ * Geometry ops change the frame: a 16:9 base cropped square composites to a
+ * square canvas. Fitting the base instead stretched that square back out to
+ * 16:9, and because every overlay takes its size from this box, Select, Paint
+ * and Annotate all drew into the same wrong aspect and their coordinates were
+ * skewed with it.
+ */
 const displayBox = computed(() => {
   const doc = stack.doc.value
   const vp = viewportSize.value
   if (!doc || !vp.width || !vp.height) return { width: 0, height: 0 }
-  const scale = Math.min(vp.width / doc.canvas.width, vp.height / doc.canvas.height, 1)
+  const frame = composite.value ?? doc.canvas
+  const scale = Math.min(vp.width / frame.width, vp.height / frame.height, 1)
   return {
-    width: Math.round(doc.canvas.width * scale),
-    height: Math.round(doc.canvas.height * scale),
+    width: Math.round(frame.width * scale),
+    height: Math.round(frame.height * scale),
   }
 })
 
@@ -1148,7 +1158,11 @@ async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
     payloadCache.delete(ref)
     stack.touchOp(opId)
   }
-  void render()
+  // The composite owns the stroke from here; the overlay handing off rather
+  // than keeping a copy is what stops the halo and the paint that outlived
+  // its own step being switched off.
+  await render()
+  paintRef.value?.clearDisplay()
 }
 
 /**

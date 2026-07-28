@@ -351,9 +351,20 @@ export function useCropInteraction(
     const currentAngle = Math.atan2(canvasPoint.y - cy, canvasPoint.x - cx)
     const deltaAngle = currentAngle - state.startAngle
 
+    // Which way the handle turns the picture.
+    //
+    // `cropRotation` is the WINDOW's tilt, and a window tilted one way shows
+    // its contents tilted the other. Pinned, the window does not visibly move,
+    // so adding the drag straight onto it turned the image against the hand:
+    // drag clockwise, picture goes anticlockwise. Subtracting makes the thing
+    // the user can actually see follow the thing they are dragging, which is
+    // what every straighten control does.
+    //
     // Straightening, not free rotation: past 45° the crop would be better
     // described by a quarter turn, which is a separate control.
-    let newRotation = state.startRotation + deltaAngle
+    let newRotation = pinned
+      ? state.startRotation - deltaAngle
+      : state.startRotation + deltaAngle
     const maxRotation = Math.PI / 4
     newRotation = Math.max(-maxRotation, Math.min(maxRotation, newRotation))
 

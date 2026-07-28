@@ -190,14 +190,16 @@ function chipClass(active: boolean, pending = false) {
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <!-- The lollipop on the crop is the primary straightening control; this
            mirrors it for fine values and shows the angle in degrees. -->
+      <!-- Shown as the angle the PICTURE turns, which is what the user sees
+           and the opposite sign of the crop window's own tilt. -->
       <label class="flex items-center gap-2 text-xs text-content-tertiary">
         Straighten
         <input
           type="range" min="-0.7854" max="0.7854" step="0.002" class="w-28"
-          :value="state.rotation ?? 0"
-          @input="emit('set', { rotation: Number(($event.target as HTMLInputElement).value) })"
+          :value="-(state.rotation ?? 0)"
+          @input="emit('set', { rotation: -Number(($event.target as HTMLInputElement).value) })"
         />
-        <span class="tabular-nums w-10">{{ ((state.rotation ?? 0) * 180 / Math.PI).toFixed(1) }}°</span>
+        <span class="tabular-nums w-10">{{ (-(state.rotation ?? 0) * 180 / Math.PI).toFixed(1) }}°</span>
       </label>
       <button
         v-if="state.rotation"
