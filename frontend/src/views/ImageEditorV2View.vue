@@ -503,6 +503,26 @@ async function afterGeometryChange(before: any) {
   }
 }
 
+/**
+ * The geometry a payload is being created in — its anchor.
+ *
+ * Stored on the op so the payload's pixels stay addressable in the ORIGINAL
+ * image's coordinates no matter what happens to the crops below it. The
+ * compositor carries it forward with `M_now ∘ M_created⁻¹`; without it there
+ * is nothing to translate through, and a crop removed after the fact leaves
+ * the payload at coordinates that meant something in a frame that is gone.
+ *
+ * `index` is where the op sits, or the top of the stack for one about to be
+ * appended.
+ */
+function payloadFrame(index?: number) {
+  const doc = stack.doc.value
+  if (!doc) return undefined
+  const at = index ?? doc.edits.length
+  const geometry = geometryBelow(doc, at)
+  return { matrix: geometry.matrix, width: geometry.width, height: geometry.height }
+}
+
 /** Payload refs always name the master; derivatives are cache entries beside it. */
 function masterRef(ref: string): string {
   return ref.startsWith('cache/') ? `payloads/${ref.slice('cache/'.length)}` : ref
@@ -692,6 +712,9 @@ async function run() {
     const ref = await stack.uploadPayload(
       `${targetId}-region.png`, await canvasToBlob(effectiveMask.value)
     )
+    const targetIndex = stack.doc.value?.edits.findIndex(o => o.id === targetId) ?? 0
+    stack.setParams(targetId, {})
+    ;(stack.opById(targetId) as any).payload_frame = payloadFrame(targetIndex)
     stack.setRegion(targetId, { mask_ref: ref, feather_px: selectFeather.value, invert: false })
     regionTargetOpId.value = null
     mode.value = null
@@ -748,6 +771,9 @@ async function run() {
       exec: { kind: 'tool', tool_id: toolId, task_type: tool.task_type },
       params: { prompt: prompt.value },
       ...(maskPayloadRef ? { mask_ref: maskPayloadRef } : {}),
+      // The mask, and the candidates generated for it, are anchored to the
+      // frame they were made in.
+      payload_frame: payloadFrame(),
       blend: { feather_px: 6, opacity: 1 },
       picked: null,
       candidates: [],
@@ -1145,6 +1171,7 @@ async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
       label: readsPixels ? 'Retouch' : 'Paint',
       exec: { kind: readsPixels ? 'retouch' : 'paint' },
       raster_ref: ref,
+      payload_frame: payloadFrame(),
       blend: { feather_px: 0, opacity: 1 },
       // A pixel-reading engine baked what was underneath, so its layer carries
       // an advisory hash exactly like a generative patch.
@@ -1673,10 +1700,14 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           />
         </div>
 
-        <div
-          v-else-if="showsAdjustInspector"
-          class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
-        >
+        <!-- Properties names the panel, so it is a level above the groups
+             inside it: fixed, outside the scroll region, styled like the
+             Edits header rather than like a section within. -->
+        <div v-else-if="showsAdjustInspector" class="shrink-0 border-t border-edge-subtle">
+          <div class="px-3 h-11 flex items-center border-b border-edge-subtle">
+            <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
+          </div>
+          <div class="max-h-72 overflow-y-auto custom-scrollbar">
           <AdjustInspector
             :family="adjustFamily"
             :source="composite"
@@ -1684,6 +1715,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             @change="onAdjustInspectorChange"
             @commit="stack.flush()"
           />
+          </div>
         </div>
 
         <p v-if="migrationNote" class="px-3 py-2 text-xs text-content-tertiary border-t border-edge-subtle">

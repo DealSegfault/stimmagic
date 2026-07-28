@@ -22,6 +22,10 @@
 import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
 import { canonicalOp, stackHashes } from './stackHashes'
+import {
+  coTransform, geometryBelow, isIdentity, rewritePayload,
+} from './geometryTransform'
+import type { Affine } from './geometryTransform'
 export { canonicalOp, stackHashes }
 import {
   applyAnnotations,
@@ -310,7 +314,7 @@ export class StackCompositor {
       // failing the render: one unreadable mask must not blank the canvas and
       // hide every other step's work.
       try {
-        current = await this.applyOp(current, op, current.width, current.height)
+        current = await this.applyOp(current, op, current.width, current.height, doc, i)
       } catch (error) {
         this.failedOpIds.add(op.id)
         console.warn(`[imageStack] step "${op.label}" could not be applied`, error)
@@ -322,11 +326,48 @@ export class StackCompositor {
     return current
   }
 
+  /**
+   * A payload, carried from the frame it was MADE in into the frame it is
+   * being USED in.
+   *
+   * Every spatial payload — a mask, a paint layer, a region — records the
+   * geometry that was below it when it was created (`payload_frame`). That
+   * recording is the anchor: it makes the payload's pixels addressable in the
+   * ORIGINAL image's coordinates, `M_created⁻¹`, and from there they can be
+   * carried into whatever the geometry is now, `M_now ∘ M_created⁻¹`. Without
+   * an anchor there is nothing to translate through: a crop removed after the
+   * payload was made leaves it sitting at coordinates that meant something in
+   * a frame that no longer exists.
+   *
+   * Derived at composite time rather than baked, so removing a crop and
+   * putting it back lands the payload exactly where it started instead of
+   * resampling it twice.
+   */
+  private async loadAnchored(
+    ref: string,
+    doc: StackDocument,
+    index: number,
+    width: number,
+    height: number
+  ): Promise<CanvasImageSource> {
+    const payload = await this.deps.loadPayload(ref)
+    const op = doc.edits[index] as any
+    const created = op?.payload_frame
+    if (!created) return payload
+
+    const now = geometryBelow(doc, index)
+    const matrix = coTransform(created.matrix as Affine, now.matrix)
+    if (!matrix || isIdentity(matrix)) return payload
+    return rewritePayload(payload, matrix, width, height)
+  }
+
   private async applyOp(
     input: HTMLCanvasElement,
     op: Op,
     width: number,
-    height: number
+    height: number,
+    doc: StackDocument,
+    index: number
   ): Promise<HTMLCanvasElement> {
     if (!op.enabled) return input
 
@@ -336,9 +377,11 @@ export class StackCompositor {
     if (op.class === 'patch') {
       // No pick yet — the op is staged, and a staged op contributes nothing.
       if (!picked?.patch_ref || !anyOp.mask_ref) return input
+      // The patch was generated FOR this mask in the same frame, so the two
+      // travel together.
       const [patch, mask] = await Promise.all([
-        this.deps.loadPayload(picked.patch_ref),
-        this.deps.loadPayload(anyOp.mask_ref),
+        this.loadAnchored(picked.patch_ref, doc, index, width, height),
+        this.loadAnchored(anyOp.mask_ref, doc, index, width, height),
       ])
       return compositePatch(input, patch, mask, width, height, {
         origin: picked.patch_origin || [0, 0],
@@ -349,7 +392,7 @@ export class StackCompositor {
 
     if (op.class === 'whole') {
       if (!picked?.patch_ref) return input
-      const result = await this.deps.loadPayload(picked.patch_ref)
+      const result = await this.loadAnchored(picked.patch_ref, doc, index, width, height)
       return compositeWhole(result, width, height, anyOp.blend?.opacity ?? 1)
     }
 
@@ -365,7 +408,7 @@ export class StackCompositor {
         // The op's id seeds its noise, so a step's grain belongs to that step
         // and survives every re-render of everything around it.
         const result = applyAdjust(input, width, height, anyOp.params || {}, seedFrom(op.id))
-        return this.scopeToRegion(input, result, op, width, height)
+        return this.scopeToRegion(input, result, op, width, height, doc, index)
       }
       return input
     }
@@ -374,12 +417,12 @@ export class StackCompositor {
       const kind = anyOp.exec?.kind
       if (kind === 'annotate') {
         const result = applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
-        return this.scopeToRegion(input, result, op, width, height)
+        return this.scopeToRegion(input, result, op, width, height, doc, index)
       }
       if (!anyOp.raster_ref) return input
-      const layer = await this.deps.loadPayload(anyOp.raster_ref)
+      const layer = await this.loadAnchored(anyOp.raster_ref, doc, index, width, height)
       const result = applyRasterLayer(input, layer, width, height, anyOp.blend?.opacity ?? 1)
-      return this.scopeToRegion(input, result, op, width, height)
+      return this.scopeToRegion(input, result, op, width, height, doc, index)
     }
 
     // An op kind this build does not know is a no-op rather than an error: a
@@ -393,10 +436,12 @@ export class StackCompositor {
     result: HTMLCanvasElement,
     op: Op,
     width: number,
-    height: number
+    height: number,
+    doc: StackDocument,
+    index: number
   ): Promise<HTMLCanvasElement> {
     if (!op.region?.mask_ref) return result
-    const mask = await this.deps.loadPayload(op.region.mask_ref)
+    const mask = await this.loadAnchored(op.region.mask_ref, doc, index, width, height)
     return applyThroughRegion(input, result, mask, width, height, {
       featherPx: op.region.feather_px,
       invert: op.region.invert,

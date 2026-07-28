@@ -37,6 +37,9 @@ export interface MediaInputConfig {
   label: string
   description?: string
   control?: string  // x-control value: 'image_picker' | 'video_frame_picker' | 'audio_picker'
+  // Audio slots only (STP x-audio-role): 'driving' means the output reproduces
+  // this track; 'reference' means it only steers audio the tool generates.
+  audioRole?: 'driving' | 'reference'
 }
 
 export interface GenericParam {
@@ -389,6 +392,10 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
       label: schema?.['x-label'] || 'Audio',
       description: schema?.description,
       control: schema?.['x-control'],
+      // STP x-audio-role: 'driving' (the output reproduces this track) vs
+      // 'reference' (a voice sample steering audio the tool still generates).
+      // Absent means driving.
+      audioRole: schema?.['x-audio-role'] || 'driving',
     }
   })
 

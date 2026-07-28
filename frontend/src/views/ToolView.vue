@@ -3131,8 +3131,12 @@ const enhanceInputImageCount = computed(() => {
 // Audio-conditioned video (LTX image+audio-to-video, lip-sync, avatar): the tool
 // reproduces the supplied track rather than scoring the clip, so the enhancer must
 // stop writing sound design and write the visible performance instead.
+// A 'reference' clip (voice sample for speaker identity) doesn't count — the tool
+// still writes its own audio there, so the prompt should still describe sound.
 const enhanceAudioConditioned = computed(() =>
-  !!audioInputConfig.value && (globalPrefs.value.inputAudios?.length ?? 0) > 0
+  audioInputConfig.value?.audioRole !== 'reference' &&
+  !!audioInputConfig.value &&
+  (globalPrefs.value.inputAudios?.length ?? 0) > 0
 )
 
 // image-to-video: the start frame, fed to the enhancer so the cinematography

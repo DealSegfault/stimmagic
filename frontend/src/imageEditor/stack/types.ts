@@ -51,6 +51,19 @@ export interface BaseOp {
   enabled: boolean
   label: string
   region?: OpRegion | null
+  /**
+   * The geometry below this op when its spatial payloads were created — the
+   * anchor that makes those pixels addressable in the ORIGINAL image's
+   * coordinates.
+   *
+   * Everything spatial an op owns (its mask, its raster layer, its region, the
+   * candidates generated against its mask) lives in this frame. The compositor
+   * carries them into whatever the geometry is now with `M_now ∘ M_created⁻¹`.
+   * Absent on documents written before this existed, which render as they
+   * always did: unanchored, correct only while the geometry below them has not
+   * changed.
+   */
+  payload_frame?: { matrix: number[]; width: number; height: number }
 }
 
 export interface ParametricOp extends BaseOp {
