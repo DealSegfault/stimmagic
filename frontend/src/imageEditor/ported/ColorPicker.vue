@@ -471,15 +471,13 @@ defineExpose({
       </template>
     </div>
 
-    <!-- Modal -->
-    <Teleport to="body">
-      <div
-        v-if="showModal"
-        class="stimma-color-modal__backdrop"
-        :class="{ 'stimma-editor--dark': isDarkTheme }"
-        @click="closeModal"
-      >
-        <div class="stimma-color-modal" @click.stop>
+    <!--
+      ADAPTED: the spectrum, sliders and eyedropper used to live in a modal
+      teleported to the body. Inside a toolbar popover that meant a panel
+      opening a second panel over the whole app to change one colour — so it
+      expands in place instead, and the dropdown does the whole job.
+    -->
+    <div v-if="showModal" class="stimma-color-modal stimma-color-modal--inline">
           <!-- Header -->
           <div class="stimma-color-modal__header">
             <button
@@ -491,7 +489,7 @@ defineExpose({
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m2 22 1-1h3l9-9"/><path d="M3 21v-3l9-9"/><path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z"/></svg>
             </button>
             <span v-else />
-            <span class="stimma-color-modal__title">Colors</span>
+            <span class="stimma-color-modal__title">More colors</span>
             <button class="stimma-color-modal__close" @click="closeModal">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
             </button>
@@ -645,9 +643,7 @@ defineExpose({
               @click="selectModalPreset(color)"
             />
           </div>
-        </div>
-      </div>
-    </Teleport>
+    </div>
   </div>
 </template>
 
@@ -738,6 +734,17 @@ defineExpose({
   align-items: center;
   justify-content: center;
   z-index: 10000;
+}
+
+/* Specificity, not source order: the base rule below sets a fixed 300px. */
+.stimma-color-modal.stimma-color-modal--inline {
+  width: 100%;
+  margin-top: 10px;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
+  border-top: 1px solid rgb(var(--stimma-color-foreground) / 0.1);
+  padding-top: 10px;
 }
 
 .stimma-color-modal {

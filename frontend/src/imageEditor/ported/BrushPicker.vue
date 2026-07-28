@@ -242,13 +242,25 @@ function handleMouseUp() {
 }
 
 // Theme-aware colors
+/**
+ * ADAPTED: the previews are canvas fills, so they cannot inherit a CSS token —
+ * the original hard-coded neutral greys, which read as dead grey wells against
+ * Atelier's blued surfaces. These read the app's own tokens instead, falling
+ * back to the original values when the tokens are absent (standalone use).
+ */
+function token(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value ? `rgb(${value})` : fallback;
+}
+
 const previewColors = computed(() => {
   if (isDarkTheme.value) {
     return {
-      bgStart: '#2a2a2a',
-      bgEnd: '#1a1a1a',
+      bgStart: token('--color-surface-raised-rgb', '#2a2a2a'),
+      bgEnd: token('--color-matte-rgb', '#1a1a1a'),
       brush: { r: 255, g: 255, b: 255 },
-      presetBg: '#1e1e1e',
+      presetBg: token('--color-matte-rgb', '#1e1e1e'),
     };
   } else {
     return {

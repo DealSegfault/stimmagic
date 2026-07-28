@@ -1507,6 +1507,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <StackCropCanvas
             :source="cropInput"
             :crop="cropRect"
+            :flip-x="!!cropParamsOf().flipX"
+            :flip-y="!!cropParamsOf().flipY"
+            :rotation="cropParamsOf().rotation ?? 0"
+            :rotation90="cropParamsOf().rotation90 ?? 0"
             :view-width="viewportSize.width"
             :view-height="viewportSize.height"
             @change="onCropRectChange"
@@ -1661,6 +1665,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         >
           <AdjustInspector
             :family="adjustFamily"
+            :source="composite"
             :params="adjustInspectorParams"
             @change="onAdjustInspectorChange"
             @commit="stack.flush()"

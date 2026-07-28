@@ -67,21 +67,36 @@ export function rotatePoint(px: number, py: number, cx: number, cy: number, angl
   }
 }
 
-/** The crop rect in canvas coordinates, centre-based. */
+/**
+ * The crop rect in canvas coordinates, centre-based.
+ *
+ * PINNED is the mode this editor uses: the rectangle sits still, centred and
+ * square to the viewport, and the image moves behind it. That is how every
+ * photo tool does it, and it is the only arrangement in which straightening
+ * reads correctly — you tilt the frame and the horizon visibly levels — and in
+ * which a flip is visible at all rather than only appearing after you leave.
+ */
 export function cropCanvasRect(
   crop: CropRect,
   transform: ViewTransform,
   imageSize: Size,
-  canvasSize: Size
+  canvasSize: Size,
+  pinned = false
 ) {
   const { zoom, panX, panY } = transform
-  const imgCenterX = canvasSize.width / 2 + panX
-  const imgCenterY = canvasSize.height / 2 + panY
-
-  const cx = imgCenterX + (crop.x - 0.5) * imageSize.width * zoom
-  const cy = imgCenterY + (crop.y - 0.5) * imageSize.height * zoom
   const w = crop.width * imageSize.width * zoom
   const h = crop.height * imageSize.height * zoom
+
+  if (pinned) {
+    const cx = canvasSize.width / 2
+    const cy = canvasSize.height / 2
+    return { x: cx - w / 2, y: cy - h / 2, w, h, cx, cy, rotation: 0 }
+  }
+
+  const imgCenterX = canvasSize.width / 2 + panX
+  const imgCenterY = canvasSize.height / 2 + panY
+  const cx = imgCenterX + (crop.x - 0.5) * imageSize.width * zoom
+  const cy = imgCenterY + (crop.y - 0.5) * imageSize.height * zoom
 
   return { x: cx - w / 2, y: cy - h / 2, w, h, cx, cy, rotation: crop.rotation ?? 0 }
 }
@@ -99,7 +114,9 @@ export function useCropInteraction(
   getCrop: () => CropRect,
   onCropChange: (crop: CropRect) => void,
   /** A gesture finished — one undo step. */
-  onCommit: () => void
+  onCommit: () => void,
+  /** Rectangle still, image moving. See cropCanvasRect. */
+  pinned = false
 ) {
   const interaction = ref<Interaction>({ type: 'idle' })
   const cursorStyle = ref('default')
@@ -113,7 +130,7 @@ export function useCropInteraction(
 
   function canvasRect() {
     if (!imageSize.value) return null
-    return cropCanvasRect(getCrop(), viewTransform.value, imageSize.value, canvasSize.value)
+    return cropCanvasRect(getCrop(), viewTransform.value, imageSize.value, canvasSize.value, pinned)
   }
 
   function hitTestCropHandle(canvasPoint: Point): CropHandle | null {
@@ -187,8 +204,20 @@ export function useCropInteraction(
     const { zoom } = viewTransform.value
     const imgSize = imageSize.value
 
-    const dx = (canvasPoint.x - state.startMouse.x) / (imgSize.width * zoom)
-    const dy = (canvasPoint.y - state.startMouse.y) / (imgSize.height * zoom)
+    // The pointer moves in SCREEN axes; the crop's edges run along its own,
+    // which are tilted by its rotation. Rotating the delta into crop space is
+    // what makes a corner drag follow the pointer on a straightened crop
+    // instead of skewing away from it.
+    const rotation = state.startRect.rotation ?? 0
+    const rawX = canvasPoint.x - state.startMouse.x
+    const rawY = canvasPoint.y - state.startMouse.y
+    const cos = Math.cos(-rotation)
+    const sin = Math.sin(-rotation)
+    const localX = rawX * cos - rawY * sin
+    const localY = rawX * sin + rawY * cos
+
+    const dx = localX / (imgSize.width * zoom)
+    const dy = localY / (imgSize.height * zoom)
 
     const newCrop = { ...state.startRect }
     const { handle } = state

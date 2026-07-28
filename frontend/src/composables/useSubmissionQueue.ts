@@ -46,6 +46,10 @@ export interface SubmitPromptOptions {
     // Number of input images the tool will edit (image-to-image / inpaint). >0
     // routes a natural-language image model to the edit style. 0 for text-to-image.
     inputImageCount?: number
+    // Whether an audio track is attached to an audio-conditioned tool. The model
+    // reproduces that track, so the enhancer describes the visible performance
+    // instead of writing sound design.
+    audioConditioned?: boolean
     // 'text' = pre-resolve rewrite (prose/keyword/cinematography); 'ideogram-json'
     // = post-resolve JSON conversion. Defaults to 'text' when absent.
     mode?: 'text' | 'ideogram-json'

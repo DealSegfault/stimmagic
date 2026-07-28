@@ -10,14 +10,18 @@
  * A drag is one undo step, not one per tick, which is what `coalesceKey` on the
  * document's edit recorder is for.
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   ADJUST_SECTIONS, FILTER_CATEGORIES, sectionsForFamily,
 } from '../stack/adjustSections'
 import type { AdjustFamily } from '../stack/adjustSections'
+import { applyColorMatrix } from '../ported/colorMatrix'
+import { FILTER_MATRICES } from '../ported/filterMatrices'
 
 const props = defineProps<{
   params: Record<string, any>
+  /** The composite, so each preset can be previewed on the actual picture. */
+  source?: HTMLCanvasElement | null
   /** The open doorway. With none, the row is selected and everything shows. */
   family?: AdjustFamily | null
   disabled?: boolean
@@ -52,6 +56,58 @@ const sections = computed(() =>
 const showsFilters = computed(() => !props.family || props.family === 'filters')
 const activeFilter = computed(() => props.params?.filter ?? 'none')
 
+/**
+ * A thumbnail per preset, rendered off the real image.
+ *
+ * Naming a filter tells you nothing — 'Kodachrome' and 'Portra 400' are only
+ * distinguishable by looking. Each tile is the current composite at 44px with
+ * that preset's matrix applied, which is cheap because the matrix is a
+ * per-pixel multiply over about two thousand pixels.
+ */
+const THUMB = 44
+const thumbs = ref<Record<string, string>>({})
+
+function renderThumbs() {
+  const source = props.source
+  if (!source || !source.width) { thumbs.value = {}; return }
+
+  const base = document.createElement('canvas')
+  base.width = THUMB
+  base.height = THUMB
+  const baseCtx = base.getContext('2d', { willReadFrequently: true })
+  if (!baseCtx) return
+  // Cover, not contain: a letterboxed tile would compare the matte, not the
+  // picture.
+  const side = Math.min(source.width, source.height)
+  baseCtx.drawImage(
+    source,
+    (source.width - side) / 2, (source.height - side) / 2, side, side,
+    0, 0, THUMB, THUMB
+  )
+  const pixels = baseCtx.getImageData(0, 0, THUMB, THUMB)
+
+  const out: Record<string, string> = {}
+  const tile = document.createElement('canvas')
+  tile.width = THUMB
+  tile.height = THUMB
+  const tileCtx = tile.getContext('2d')!
+  for (const category of FILTER_CATEGORIES) {
+    for (const preset of category.filters) {
+      const matrix = (FILTER_MATRICES as any)[preset.id]
+      const copy = new ImageData(
+        new Uint8ClampedArray(pixels.data), pixels.width, pixels.height
+      )
+      tileCtx.putImageData(matrix ? applyColorMatrix(copy, matrix) : copy, 0, 0)
+      out[preset.id] = tile.toDataURL()
+    }
+  }
+  thumbs.value = out
+}
+
+watch(() => [props.source, showsFilters.value], () => {
+  if (showsFilters.value) renderThumbs()
+}, { immediate: true })
+
 function chooseFilter(id: string) {
   emit('change', { filter: id === 'none' ? null : id }, 'adjust:filter')
   emit('commit')
@@ -71,19 +127,27 @@ function chooseFilter(id: string) {
         <div v-if="category.label" class="text-[11px] text-content-tertiary mb-1">
           {{ category.label }}
         </div>
-        <div class="flex flex-wrap gap-1">
+        <div class="flex flex-wrap gap-1.5">
           <button
             v-for="preset in category.filters"
             :key="preset.id"
             type="button"
-            class="px-2 py-1 text-[11px] rounded-md transition-colors"
+            class="w-[52px] rounded-md p-0.5 transition-colors"
             :class="activeFilter === preset.id
               ? 'bg-selection/20 text-content'
-              : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+              : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
             :disabled="disabled"
+            :title="preset.label"
             @click="chooseFilter(preset.id)"
           >
-            {{ preset.label }}
+            <img
+              v-if="thumbs[preset.id]"
+              :src="thumbs[preset.id]"
+              class="w-full aspect-square rounded-media object-cover"
+              alt=""
+            />
+            <div v-else class="w-full aspect-square rounded-media bg-matte" />
+            <span class="block mt-0.5 text-[10px] leading-tight truncate">{{ preset.label }}</span>
           </button>
         </div>
       </div>

@@ -354,7 +354,7 @@ function chipClass(active: boolean, pending = false) {
           @input="emit('set', { paintFlow: Number(($event.target as HTMLInputElement).value) })"
         />
       </label>
-      <ToolbarPopover label="Color">
+      <ToolbarPopover label="Color" :width="292">
         <template #trigger>
           <span
             class="w-4 h-4 rounded-md border border-edge-subtle"
@@ -418,7 +418,7 @@ function chipClass(active: boolean, pending = false) {
         </Tooltip>
       </template>
       <span v-if="sub !== 'redact'" class="w-px h-5 bg-edge-subtle mx-1" />
-      <ToolbarPopover v-if="sub !== 'redact'" label="Color">
+      <ToolbarPopover v-if="sub !== 'redact'" label="Color" :width="292">
         <template #trigger>
           <span
             class="w-4 h-4 rounded-md border border-edge-subtle"

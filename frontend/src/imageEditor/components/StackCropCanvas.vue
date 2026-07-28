@@ -2,6 +2,13 @@
 /**
  * Crop, on the image as it stands BELOW the crop step.
  *
+ * The rectangle sits still and the image moves behind it. That is the
+ * convention every photo tool follows, and it is the only arrangement where
+ * the gestures read: tilt the frame and the horizon visibly levels, flip and
+ * you see the flip immediately rather than discovering it after leaving the
+ * mode. Moving the crop moves the picture under a fixed window, which is what
+ * choosing a crop actually feels like.
+ *
  * The point of showing the uncropped image is that a crop is not destructive
  * here: the region outside it is dimmed rather than gone, so widening the crop
  * later reveals real pixels instead of edge-clamped ones. The step's input is
@@ -24,6 +31,11 @@ const props = defineProps<{
   /** The composite BELOW the crop step — the uncropped image. */
   source: HTMLCanvasElement | null
   crop: CropRect
+  /** Mirrors and quarter turns, so they are visible while cropping. */
+  flipX?: boolean
+  flipY?: boolean
+  rotation?: number
+  rotation90?: number
   /** The viewport the image is fitted into. */
   viewWidth: number
   viewHeight: number
@@ -59,9 +71,15 @@ const viewTransform = computed<ViewTransform>(() => {
   // Fitting edge-to-edge puts the lollipop off-canvas the moment the crop
   // reaches the bottom of the frame, which is its starting state.
   const margin = HANDLE_MARGIN * 2
+  // Straightening swings the image's corners out, so the fit is taken against
+  // the rotated extent — otherwise tilting clips the picture against the
+  // viewport and the dimmed surround runs out of pixels.
+  const angle = Math.abs(props.crop.rotation ?? 0)
+  const spanW = size.width * Math.cos(angle) + size.height * Math.sin(angle)
+  const spanH = size.width * Math.sin(angle) + size.height * Math.cos(angle)
   const zoom = Math.min(
-    (props.viewWidth - margin) / size.width,
-    (props.viewHeight - margin) / size.height,
+    (props.viewWidth - margin) / spanW,
+    (props.viewHeight - margin) / spanH,
     1
   )
   return { zoom, panX: 0, panY: 0, rotation: 0 }
@@ -74,7 +92,8 @@ const crop = useCropInteraction(
   canvasSize,
   () => props.crop,
   next => emit('change', next),
-  () => emit('commit')
+  () => emit('commit'),
+  true
 )
 
 function draw() {
@@ -86,17 +105,23 @@ function draw() {
 
   ctx.clearRect(0, 0, element.width, element.height)
 
-  const width = size.width * zoom
-  const height = size.height * zoom
-  ctx.drawImage(
-    props.source!,
-    (props.viewWidth - width) / 2,
-    (props.viewHeight - height) / 2,
-    width,
-    height
-  )
+  // The image is placed so the CROP CENTRE lands at the viewport centre and
+  // the crop's tilt is taken out of it — the inverse of the transform the
+  // executor will apply, which is why what you see here is what you get.
+  ctx.save()
+  ctx.translate(props.viewWidth / 2, props.viewHeight / 2)
+  // Composed in the executor's order — image rotation, then flip, then the
+  // crop's own tilt. These do not commute: flipping after the tilt mirrors
+  // about the wrong axis, and the preview would disagree with the output.
+  ctx.rotate((props.rotation ?? 0) + ((props.rotation90 ?? 0) * Math.PI) / 2)
+  if (props.flipX || props.flipY) ctx.scale(props.flipX ? -1 : 1, props.flipY ? -1 : 1)
+  ctx.rotate(-(props.crop.rotation ?? 0))
+  ctx.scale(zoom, zoom)
+  ctx.translate(-props.crop.x * size.width, -props.crop.y * size.height)
+  ctx.drawImage(props.source!, 0, 0)
+  ctx.restore()
 
-  drawCropOverlay(ctx, props.crop, viewTransform.value, size, canvasSize.value)
+  drawCropOverlay(ctx, props.crop, viewTransform.value, size, canvasSize.value, true)
 }
 
 function resize() {
@@ -109,7 +134,11 @@ function resize() {
 
 watch(() => [props.viewWidth, props.viewHeight], resize)
 watch(() => props.source, resize)
-watch(() => props.crop, () => nextTick(draw), { deep: true })
+watch(
+  () => [props.crop, props.flipX, props.flipY, props.rotation, props.rotation90],
+  () => nextTick(draw),
+  { deep: true }
+)
 
 onMounted(() => {
   resize()

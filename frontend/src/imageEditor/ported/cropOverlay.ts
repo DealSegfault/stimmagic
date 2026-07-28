@@ -22,16 +22,24 @@ export function drawCropOverlay(
   crop: CropRect,
   transform: ViewTransform,
   imageSize: Size,
-  canvasSize: Size
+  canvasSize: Size,
+  /** Rectangle still, image moving — see cropCanvasRect. */
+  pinned = false
 ) {
   const { zoom, panX, panY } = transform
-  const cropRotation = crop.rotation ?? 0
+  // Pinned, the rectangle never turns: the tilt is carried by the image drawn
+  // behind it, which is what makes straightening legible.
+  const cropRotation = pinned ? 0 : (crop.rotation ?? 0)
 
   const imgCenterX = canvasSize.width / 2 + panX
   const imgCenterY = canvasSize.height / 2 + panY
 
-  const cropCenterX = imgCenterX + (crop.x - 0.5) * imageSize.width * zoom
-  const cropCenterY = imgCenterY + (crop.y - 0.5) * imageSize.height * zoom
+  const cropCenterX = pinned
+    ? canvasSize.width / 2
+    : imgCenterX + (crop.x - 0.5) * imageSize.width * zoom
+  const cropCenterY = pinned
+    ? canvasSize.height / 2
+    : imgCenterY + (crop.y - 0.5) * imageSize.height * zoom
   const cropW = crop.width * imageSize.width * zoom
   const cropH = crop.height * imageSize.height * zoom
 
