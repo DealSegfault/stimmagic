@@ -1003,17 +1003,16 @@ export function useAnnotation(
     // Figma both split this: a creation tool always creates, and selecting is
     // its own tool.
     const shapeAspectRatio = imageSize.value ? imageSize.value.width / imageSize.value.height : 1;
-    const hit = findShapeAtPoint(state.annotations, imagePoint, 0.01, shapeAspectRatio);
-    // Three ways to pick something up, and only three: the Select tool, a
-    // held modifier, or the shape that is already selected. The last is what
-    // makes a drawing tool usable — you draw a thing, it stays selected, and
-    // you nudge it without changing tools — while a click anywhere ELSE still
-    // draws instead of grabbing whatever happened to be underneath.
-    const canGrab =
-      state.activeTool === 'select' ||
-      event.metaKey || event.ctrlKey ||
-      (!!hit && hit.id === state.selectedShapeId);
-    const shapeUnderCursor = canGrab ? hit : null;
+    // A creation tool never picks anything up; Select does, and a held Cmd or
+    // Ctrl borrows Select for one gesture. The ambiguity this used to have —
+    // does a drag on top of a shape create or move? — is not resolved here at
+    // all. It is removed by creation tools being one-shot: finishing a shape
+    // returns to Select, so there is no armed creation tool to be ambiguous
+    // with. That is what Figma, Sketch and Illustrator do.
+    const shapeUnderCursor =
+      state.activeTool === 'select' || event.metaKey || event.ctrlKey
+        ? findShapeAtPoint(state.annotations, imagePoint, 0.01, shapeAspectRatio)
+        : null;
 
     // Enter pending mode - we'll decide on mouseup/mousemove if it's a click or drag
     interactionMode.value = {

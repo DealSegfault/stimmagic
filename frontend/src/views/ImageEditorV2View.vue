@@ -1387,6 +1387,50 @@ function onAnnotationsChange(shapes: Shape[]) {
   void render()
 }
 
+/**
+ * The stack takes the keyboard.
+ *
+ * A list of things you can select is a list you expect to walk with the arrow
+ * keys and clear with Delete — and deleting should land you on the next row,
+ * not nowhere, so a run of deletions is one gesture repeated rather than a
+ * click between each.
+ */
+function focusRow(opId: string | null) {
+  if (!opId) return
+  selectedOpId.value = opId
+  void nextTick(() => {
+    const element = sidebarEl.value?.querySelector<HTMLElement>(`[data-op-id="${opId}"]`)
+    element?.focus()
+  })
+}
+
+async function onStackKeydown(event: KeyboardEvent) {
+  const doc = stack.doc.value
+  const current = selectedOpId.value
+  if (!doc || !current) return
+  const index = doc.edits.findIndex(op => op.id === current)
+  if (index < 0) return
+
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    // The list is drawn top-down with the newest first, so Down walks toward
+    // the base — the direction the rows actually run on screen.
+    const next = doc.edits[event.key === 'ArrowDown' ? index - 1 : index + 1]
+    if (next) focusRow(next.id)
+    return
+  }
+
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    // Whatever sits where this row was, once it is gone.
+    const after = doc.edits[index - 1] ?? doc.edits[index + 1] ?? null
+    const nextId = after?.id ?? null
+    await removeOpWithGeometry(current)
+    if (nextId) focusRow(nextId)
+    else selectedOpId.value = null
+  }
+}
+
 /** Selecting an annotation selects its step, so the stack follows the canvas. */
 function onShapeSelected(shapeId: string | null) {
   selectedShapeId.value = shapeId
@@ -1394,9 +1438,18 @@ function onShapeSelected(shapeId: string | null) {
   if (opId) selectedOpId.value = opId
 }
 
-/** The gesture ended: the next one starts its own undo step. */
-function onAnnotationCommit(_action: string) {
+/**
+ * The gesture ended: the next one starts its own undo step, and a tool that
+ * just CREATED something hands back to Select.
+ *
+ * One-shot creation is what removes the create-versus-move ambiguity rather
+ * than arbitrating it: with no armed creation tool, a drag on top of a shape
+ * can only mean move. Drawing another takes one keystroke, and you almost
+ * always want to adjust the thing you just made first.
+ */
+function onAnnotationCommit(action: string) {
   annotateGesture.value += 1
+  if (family.value === 'annotate' && action.startsWith('Draw')) sub.value = 'select'
 }
 
 // -- selection handoff ------------------------------------------------------------
@@ -1746,6 +1799,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
       />
       <aside
         ref="sidebarEl"
+        @keydown="onStackKeydown"
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >

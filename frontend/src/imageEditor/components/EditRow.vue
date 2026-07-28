@@ -99,7 +99,10 @@ const previewTint = computed(() => {
 
 <template>
   <div
-    class="group flex items-start gap-1.5 px-2 py-2 rounded-md cursor-default transition-colors"
+    :data-op-id="op.id"
+    tabindex="0"
+    class="group flex items-start gap-1.5 px-2 py-2 rounded-md cursor-default transition-colors
+           focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
     :class="[
       selected ? 'bg-selection/15' : 'hover:bg-overlay-subtle',
       previewTint,
