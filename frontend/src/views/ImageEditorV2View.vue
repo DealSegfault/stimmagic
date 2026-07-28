@@ -32,6 +32,7 @@ import AdjustInspector from '../imageEditor/components/AdjustInspector.vue'
 import AnnotationInspector from '../imageEditor/components/AnnotationInspector.vue'
 import StackMaskCanvas from '../imageEditor/components/StackMaskCanvas.vue'
 import StackCropCanvas from '../imageEditor/components/StackCropCanvas.vue'
+import TaskTypeToolList from '../components/TaskTypeToolList.vue'
 import { useStackDocument, newOpId } from '../imageEditor/stack/useStackDocument'
 import { useStackCandidates } from '../imageEditor/stack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../imageEditor/stack/useStackCompositor'
@@ -91,8 +92,23 @@ const upscaleToolId = ref<string | null>(null)
 /** Expand grows the canvas and auto-masks the new border. */
 const expandFactor = ref(1.25)
 const upscaleFactor = ref(2)
-/** Catalog tool picker for the active Generate sub-tool. */
+/**
+ * Catalog tool picker for the active Generate sub-tool.
+ *
+ * The button set this and nothing rendered it, so clicking did nothing at all.
+ * It uses the shared TaskTypeToolList, which is the same tool-and-provider row
+ * that Send to tool and the rest of the app use — a second treatment for the
+ * same list would be a second thing to keep in step.
+ */
 const toolPickerOpen = ref(false)
+
+function chooseTool(tool: any) {
+  const id = tool.full_tool_id
+  if (sub.value === 'upscale') upscaleToolId.value = id
+  else if (sub.value === 'whole') wholeToolId.value = id
+  else inpaintToolId.value = id
+  toolPickerOpen.value = false
+}
 
 // Select
 const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
@@ -1714,8 +1730,24 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         @sub="selectSub"
         @set="onSubbarSet"
         @run="run"
-        @open-tool-picker="toolPickerOpen = true"
+        @open-tool-picker="toolPickerOpen = !toolPickerOpen"
       />
+
+      <!-- The picker hangs under the sub-bar rather than floating, so it
+           cannot open behind the canvas the way an unlayered dropdown would. -->
+      <div v-if="toolPickerOpen" class="relative z-menu shrink-0">
+        <div
+          class="absolute left-4 top-0 w-[300px] max-h-[min(560px,60vh)] overflow-y-auto
+                 rounded-lg border border-edge-subtle bg-surface shadow-xl py-1"
+        >
+          <TaskTypeToolList
+            :tools="tools"
+            media-type="image"
+            gradient-id="stimma-gradient-editor-tools"
+            @select="chooseTool"
+          />
+        </div>
+      </div>
 
       <div v-if="loading" class="flex-1 grid place-items-center">
         <Spinner size="md" />
