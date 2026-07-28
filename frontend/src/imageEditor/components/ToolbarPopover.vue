@@ -7,12 +7,31 @@
  * not belong to any step, so they hang off the toolbar instead, the way
  * Photoshop does it.
  */
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 
 withDefaults(defineProps<{ label: string; width?: number }>(), { width: 248 })
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
+const panel = ref<HTMLElement | null>(null)
+
+/**
+ * Which edge the panel hangs from.
+ *
+ * A toolbar trigger has the whole window to its right; the same control inside
+ * the properties panel is a handful of pixels from the screen edge, and a
+ * left-aligned panel there opens mostly off-screen. Measured rather than
+ * assumed, because the answer changes with the sidebar width.
+ */
+const alignRight = ref(false)
+
+watch(open, async isOpen => {
+  if (!isOpen) return
+  alignRight.value = false
+  await nextTick()
+  const rect = panel.value?.getBoundingClientRect()
+  if (rect && rect.right > window.innerWidth - 8) alignRight.value = true
+})
 
 function onDocumentPointerDown(event: PointerEvent) {
   if (!open.value) return
@@ -52,8 +71,10 @@ onBeforeUnmount(() => {
     </button>
     <div
       v-if="open"
-      class="popover-panel absolute left-0 top-full mt-1.5 z-30 rounded-lg
+      ref="panel"
+      class="popover-panel absolute top-full mt-1.5 z-30 rounded-lg
              border border-edge-subtle bg-surface shadow-xl p-3"
+      :class="alignRight ? 'right-0' : 'left-0'"
       :style="{ width: width + 'px' }"
     >
       <slot />
