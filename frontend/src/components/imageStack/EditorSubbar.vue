@@ -210,6 +210,15 @@ function chipClass(active: boolean, pending = false) {
           @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
         />
       </label>
+      <label v-if="sub === 'wand'" class="flex items-center gap-2 text-xs text-content-tertiary">
+        Tolerance
+        <input
+          type="range" min="1" max="128" class="w-24"
+          :value="state.tolerance"
+          @input="emit('set', { tolerance: Number(($event.target as HTMLInputElement).value) })"
+        />
+        <span class="tabular-nums w-6">{{ state.tolerance }}</span>
+      </label>
       <label class="flex items-center gap-2 text-xs text-content-tertiary">
         Feather
         <input
