@@ -994,9 +994,18 @@ export function useAnnotation(
       }
     }
 
-    // Check if clicking on a shape (for potential move)
+    // Check if clicking on a shape (for potential move).
+    //
+    // ADAPTED: only the Select tool picks up what is under the cursor. In the
+    // snapshot editor every tool did, so clicking to place a shape on top of
+    // an existing one moved that one instead — the drawing tool became
+    // unusable exactly where the picture was already busy. Photoshop and
+    // Figma both split this: a creation tool always creates, and selecting is
+    // its own tool.
     const shapeAspectRatio = imageSize.value ? imageSize.value.width / imageSize.value.height : 1;
-    const shapeUnderCursor = findShapeAtPoint(state.annotations, imagePoint, 0.01, shapeAspectRatio);
+    const shapeUnderCursor = state.activeTool === 'select'
+      ? findShapeAtPoint(state.annotations, imagePoint, 0.01, shapeAspectRatio)
+      : null;
 
     // Enter pending mode - we'll decide on mouseup/mousemove if it's a click or drag
     interactionMode.value = {
@@ -1107,12 +1116,10 @@ export function useAnnotation(
     if (mode.type === 'pending') {
       // Click on a shape: select it and switch to its tool
       if (mode.shapeUnderCursor) {
-        const tool = shapeToTool(mode.shapeUnderCursor);
-        const updates: Partial<AnnotationState> = { selectedShapeId: mode.shapeUnderCursor.id };
-        if (tool) {
-          updates.activeTool = tool;
-        }
-        updateState(updates);
+        // ADAPTED: selecting no longer switches the active tool. It only ever
+        // fires under the Select tool now, and jumping out of Select the
+        // moment you select something makes the tool unusable.
+        updateState({ selectedShapeId: mode.shapeUnderCursor.id });
         interactionMode.value = { type: 'idle' };
         return;
       }

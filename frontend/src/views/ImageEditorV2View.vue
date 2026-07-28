@@ -29,6 +29,7 @@ import StackSelectCanvas from '../imageEditor/components/StackSelectCanvas.vue'
 import StackAnnotateCanvas from '../imageEditor/components/StackAnnotateCanvas.vue'
 import CheckpointBand from '../imageEditor/components/CheckpointBand.vue'
 import AdjustInspector from '../imageEditor/components/AdjustInspector.vue'
+import AnnotationInspector from '../imageEditor/components/AnnotationInspector.vue'
 import StackMaskCanvas from '../imageEditor/components/StackMaskCanvas.vue'
 import StackCropCanvas from '../imageEditor/components/StackCropCanvas.vue'
 import { useStackDocument, newOpId } from '../imageEditor/stack/useStackDocument'
@@ -199,6 +200,7 @@ async function render() {
   try {
     composite.value = await compositor.render(stack.doc.value)
     paint()
+    samplePalette()
   } catch (err: any) {
     error.value = err?.message || 'Could not render the composite.'
   } finally {
@@ -600,6 +602,7 @@ const subbarState = computed(() => ({
   annotateColor: annotateColor.value,
   annotateColorRgb: annotateColorRgb.value,
   selectedShapeId: selectedShapeId.value,
+  imagePalette: imagePalette.value,
 }))
 
 function onSubbarSet(patch: Record<string, any>) {
@@ -1021,6 +1024,53 @@ const cropAspectRatio = computed<number | null>(() => {
   if (preset.ratio === -1) return frame ? frame.width / frame.height : null
   return preset.ratio
 })
+
+/** The selected annotation, whose properties the inspector edits. */
+const selectedShape = computed<Shape | null>(() => {
+  if (family.value !== 'annotate' || !selectedShapeId.value) return null
+  return annotateShapes.value.find(s => s.id === selectedShapeId.value) ?? null
+})
+
+function onShapeChange(patch: Record<string, any>) {
+  const id = selectedShapeId.value
+  if (!id) return
+  onAnnotationsChange(
+    annotateShapes.value.map(s => (s.id === id ? { ...s, ...patch } as Shape : s))
+  )
+  annotateGesture.value += 1
+}
+
+/**
+ * Colours sampled off the composite, so the pickers can offer the image's own
+ * palette rather than only a fixed row of swatches.
+ */
+const imagePalette = ref<Array<{ r: number; g: number; b: number; a?: number }>>([])
+
+function samplePalette() {
+  const source = composite.value
+  if (!source) return
+  const scratch = document.createElement('canvas')
+  scratch.width = 48
+  scratch.height = 48
+  const ctx = scratch.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return
+  ctx.drawImage(source, 0, 0, 48, 48)
+  const data = ctx.getImageData(0, 0, 48, 48).data
+  // Coarse quantisation, most-common first: enough to surface the picture's
+  // actual colours without pretending to be a clustering algorithm.
+  const buckets = new Map<string, { r: number; g: number; b: number; n: number }>()
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 128) continue
+    const key = `${data[i] >> 5}-${data[i + 1] >> 5}-${data[i + 2] >> 5}`
+    const bucket = buckets.get(key)
+    if (bucket) { bucket.r += data[i]; bucket.g += data[i + 1]; bucket.b += data[i + 2]; bucket.n++ }
+    else buckets.set(key, { r: data[i], g: data[i + 1], b: data[i + 2], n: 1 })
+  }
+  imagePalette.value = [...buckets.values()]
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 8)
+    .map(c => ({ r: Math.round(c.r / c.n), g: Math.round(c.g / c.n), b: Math.round(c.b / c.n), a: 1 }))
+}
 
 /** A drag is many changes and one undo step. */
 const cropGesture = ref(0)
@@ -1594,7 +1644,19 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         <!-- Inspector: the selected row's full control surface, under the
              stack. The row keeps only the eye as an immediate affordance. -->
         <div
-          v-if="showsAdjustInspector"
+          v-if="selectedShape"
+          class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
+        >
+          <AnnotationInspector
+            :shape="selectedShape"
+            :palette="imagePalette"
+            @change="onShapeChange"
+            @remove="annotateRef?.deleteSelected()"
+          />
+        </div>
+
+        <div
+          v-else-if="showsAdjustInspector"
           class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
         >
           <AdjustInspector

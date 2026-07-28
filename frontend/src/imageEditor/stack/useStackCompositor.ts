@@ -226,6 +226,16 @@ export interface CompositorDeps {
  * 8MP frames is hundreds of megabytes, and the common editing motion (append at
  * top, adjust the top op) only ever needs the one entry below the edit.
  */
+/** A stable 32-bit seed from an op id — same step, same grain, every render. */
+function seedFrom(id: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < id.length; i++) {
+    hash ^= id.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
+}
+
 export class StackCompositor {
   private cache = new Map<string, HTMLCanvasElement>()
   /** Ops that could not be applied on the last render, for the UI to report. */
@@ -352,7 +362,9 @@ export class StackCompositor {
       }
       if (kind === 'adjust') {
         if (adjustIsIdentity(anyOp.params || {})) return input
-        const result = applyAdjust(input, width, height, anyOp.params || {})
+        // The op's id seeds its noise, so a step's grain belongs to that step
+        // and survives every re-render of everything around it.
+        const result = applyAdjust(input, width, height, anyOp.params || {}, seedFrom(op.id))
         return this.scopeToRegion(input, result, op, width, height)
       }
       return input

@@ -22,6 +22,9 @@ interface PromptWarmPoolOptions {
   isVideo?: Ref<boolean>
   isAudio?: Ref<boolean>
   inputImageCount?: Ref<number>
+  // True when an audio track is attached (audio-conditioned video). Part of the
+  // warmed snapshot — it changes how the prompt is enhanced.
+  audioConditioned?: Ref<boolean>
   // True only while generate-forever is actually running. The warm pool only
   // exists for the duration of a forever-mode registration - there's no duty
   // cycle to preserve for a single manual generation, so we don't speculate
@@ -52,6 +55,7 @@ export function usePromptWarmPool(options: PromptWarmPoolOptions) {
     isVideo,
     isAudio,
     inputImageCount,
+    audioConditioned,
     active,
     concurrency,
     debounceMs = 1500,
@@ -96,6 +100,7 @@ export function usePromptWarmPool(options: PromptWarmPoolOptions) {
       is_video: isVideo?.value ?? false,
       is_audio: isAudio?.value ?? false,
       input_image_count: inputImageCount?.value ?? 0,
+      audio_conditioned: audioConditioned?.value ?? false,
       prompt_sources_signature: promptSourcesSignature(),
       concurrency: concurrency.value,
     }).catch(err => {
@@ -169,6 +174,7 @@ export function usePromptWarmPool(options: PromptWarmPoolOptions) {
       ...(isVideo ? [isVideo] : []),
       ...(isAudio ? [isAudio] : []),
       ...(inputImageCount ? [inputImageCount] : []),
+      ...(audioConditioned ? [audioConditioned] : []),
     ],
     () => {
       if (active.value) scheduleUpdate()

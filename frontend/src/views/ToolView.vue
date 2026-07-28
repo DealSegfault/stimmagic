@@ -3128,6 +3128,13 @@ const enhanceInputImageCount = computed(() => {
   return globalPrefs.value.inputImages?.length ?? 0
 })
 
+// Audio-conditioned video (LTX image+audio-to-video, lip-sync, avatar): the tool
+// reproduces the supplied track rather than scoring the clip, so the enhancer must
+// stop writing sound design and write the visible performance instead.
+const enhanceAudioConditioned = computed(() =>
+  !!audioInputConfig.value && (globalPrefs.value.inputAudios?.length ?? 0) > 0
+)
+
 // image-to-video: the start frame, fed to the enhancer so the cinematography
 // prompt animates the actual image. Only when it's a library item (has a mediaId).
 const enhanceSourceMediaId = computed<number | null>(() =>
@@ -3161,6 +3168,7 @@ const { clear: clearPromptWarmPool } = usePromptWarmPool({
   isVideo: enhanceIsVideo,
   isAudio: enhanceIsAudio,
   inputImageCount: enhanceInputImageCount,
+  audioConditioned: enhanceAudioConditioned,
   active: computed(() => uiState.value.generateForeverMode ?? false),
   concurrency: computed(() => uiState.value.generateForeverConcurrency ?? 1),
 })
@@ -4437,6 +4445,8 @@ async function submitOneJob(options: ForeverSubmitOptions = {}): Promise<SubmitJ
           isAudio: enhanceIsAudio.value,
           // Input images on a non-video tool → edit-style enhancement.
           inputImageCount: enhanceInputImageCount.value,
+          // Supplied soundtrack → the enhancer describes the picture, not the sound.
+          audioConditioned: enhanceAudioConditioned.value,
           mode: enhanceMode.value,
           // i2v: source frame for the enhancer (used on the cinematography path).
           mediaId: enhanceSourceMediaId.value,

@@ -23,7 +23,7 @@ import {
   combineAdjustments,
   multiplyColorMatrices,
 } from '../ported/colorMatrix'
-import { applyEffects, hasEffects } from '../ported/effects'
+import { applyEffects, hasEffects, setEffectsSeed } from '../ported/effects'
 import { FILTER_MATRICES } from '../ported/filterMatrices'
 import { renderShapes } from '../ported/shapes'
 
@@ -236,7 +236,13 @@ export function applyAdjust(
   input: CanvasImageSource,
   width: number,
   height: number,
-  params: AdjustParams
+  params: AdjustParams,
+  /**
+   * Seeds the grain, VHS and glitch noise. Pass the op's id so a step's noise
+   * is its own and never changes: without it every recomposite reshuffles the
+   * frame, so dragging an annotation reprints the grain underneath it.
+   */
+  seed = 0
 ): HTMLCanvasElement {
   const out = makeCanvas(width, height)
   const ctx = out.getContext('2d', { willReadFrequently: true })!
@@ -314,6 +320,7 @@ export function applyAdjust(
 
   const effects = effectsStateFrom(params)
   if (hasEffects(effects)) {
+    setEffectsSeed(seed)
     const result = applyEffects(out, effects)
     ctx.clearRect(0, 0, width, height)
     ctx.drawImage(result, 0, 0)

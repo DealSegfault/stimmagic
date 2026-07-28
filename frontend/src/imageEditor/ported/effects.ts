@@ -4,7 +4,33 @@
  * Vignette, clarity, blur, sharpen, grain, glow, fringing, halftone, VHS and
  * glitch — the Effects family's pixel work, copied with the colour pipeline it
  * runs after.
+ *
+ * ONE deliberate change from the original: grain, VHS and glitch drew from
+ * Math.random(), which was harmless in an editor that baked its result once.
+ * Here every step recomposites whenever anything above or below it moves, so
+ * unseeded noise reshuffled the whole frame while you dragged an annotation
+ * that had nothing to do with it. The noise is now seeded per step, which also
+ * makes the content hash mean what it claims: the same parameters produce the
+ * same pixels.
  */
+
+/**
+ * mulberry32 — small, fast, and good enough for film grain. Deterministic from
+ * the seed the executor sets, so a re-render reproduces the previous frame.
+ */
+let randomState = 0x9e3779b9
+
+export function setEffectsSeed(seed: number): void {
+  randomState = (seed >>> 0) || 0x9e3779b9
+}
+
+function random(): number {
+  randomState |= 0
+  randomState = (randomState + 0x6d2b79f5) | 0
+  let t = Math.imul(randomState ^ (randomState >>> 15), 1 | randomState)
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+}
 /**
  * Spatial effects utilities for image processing
  */
@@ -200,7 +226,7 @@ export function applyNoise(canvas: HTMLCanvasElement, amount: number): HTMLCanva
   const intensity = amount * 2.55; // Scale to 0-255 range
 
   for (let i = 0; i < data.length; i += 4) {
-    const noise = (Math.random() - 0.5) * intensity;
+    const noise = (random() - 0.5) * intensity;
     data[i] = Math.max(0, Math.min(255, data[i] + noise));
     data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
     data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
@@ -491,12 +517,12 @@ export function applyVHS(canvas: HTMLCanvasElement, amount: number): HTMLCanvasE
   // Pre-calculate random seeds for consistent noise
   const scanlineNoise: number[] = [];
   for (let y = 0; y < height; y++) {
-    scanlineNoise[y] = (Math.random() - 0.5) * 2;
+    scanlineNoise[y] = (random() - 0.5) * 2;
   }
 
   for (let y = 0; y < height; y++) {
     // Horizontal distortion (wobble)
-    const wobble = Math.sin(y * 0.1 + Math.random() * 0.5) * intensity * 5;
+    const wobble = Math.sin(y * 0.1 + random() * 0.5) * intensity * 5;
     const jitter = scanlineNoise[y] * intensity * 3;
 
     for (let x = 0; x < width; x++) {
@@ -537,8 +563,8 @@ export function applyVHS(canvas: HTMLCanvasElement, amount: number): HTMLCanvasE
   ctx.globalAlpha = intensity * 0.5;
   const numGlitches = Math.floor(intensity * 5);
   for (let i = 0; i < numGlitches; i++) {
-    const glitchY = Math.floor(Math.random() * height);
-    const glitchHeight = Math.floor(Math.random() * 10 + 2);
+    const glitchY = Math.floor(random() * height);
+    const glitchHeight = Math.floor(random() * 10 + 2);
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
     ctx.fillRect(0, glitchY, width, glitchHeight);
   }
@@ -582,15 +608,15 @@ export function applyGlitch(canvas: HTMLCanvasElement, amount: number, blockSize
   // Create glitch blocks
   for (let b = 0; b < numBlocks; b++) {
     // Random block position and size
-    const blockY = Math.floor(Math.random() * height);
-    const blockHeight = Math.floor(Math.random() * blockSize * 2) + blockSize;
-    const blockWidth = Math.floor(Math.random() * (width * 0.8)) + width * 0.2;
-    const blockX = Math.floor(Math.random() * (width - blockWidth));
+    const blockY = Math.floor(random() * height);
+    const blockHeight = Math.floor(random() * blockSize * 2) + blockSize;
+    const blockWidth = Math.floor(random() * (width * 0.8)) + width * 0.2;
+    const blockX = Math.floor(random() * (width - blockWidth));
 
     // Random channel offsets
-    const rOffset = Math.floor((Math.random() - 0.5) * intensity * 30);
-    const gOffset = Math.floor((Math.random() - 0.5) * intensity * 30);
-    const bOffset = Math.floor((Math.random() - 0.5) * intensity * 30);
+    const rOffset = Math.floor((random() - 0.5) * intensity * 30);
+    const gOffset = Math.floor((random() - 0.5) * intensity * 30);
+    const bOffset = Math.floor((random() - 0.5) * intensity * 30);
 
     // Apply to block
     for (let y = blockY; y < Math.min(blockY + blockHeight, height); y++) {
@@ -616,9 +642,9 @@ export function applyGlitch(canvas: HTMLCanvasElement, amount: number, blockSize
   // Add some horizontal line shifts
   const numShifts = Math.floor(intensity * 10);
   for (let s = 0; s < numShifts; s++) {
-    const shiftY = Math.floor(Math.random() * height);
-    const shiftHeight = Math.floor(Math.random() * 5) + 1;
-    const shiftAmount = Math.floor((Math.random() - 0.5) * intensity * 50);
+    const shiftY = Math.floor(random() * height);
+    const shiftHeight = Math.floor(random() * 5) + 1;
+    const shiftAmount = Math.floor((random() - 0.5) * intensity * 50);
 
     for (let y = shiftY; y < Math.min(shiftY + shiftHeight, height); y++) {
       for (let x = 0; x < width; x++) {
