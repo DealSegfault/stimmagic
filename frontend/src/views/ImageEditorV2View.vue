@@ -1122,7 +1122,18 @@ function onShapeChange(patch: Record<string, any>) {
  * a long stack wants the opposite. Neither is a constant worth guessing.
  */
 const sidebarWidth = ref(Number(localStorage.getItem('stimma_editor_sidebar')) || 320)
-const propertiesHeight = ref(Number(localStorage.getItem('stimma_editor_properties')) || 320)
+const propertiesHeight = ref(Number(localStorage.getItem('stimma_editor_properties')) || 0)
+const sidebarEl = ref<HTMLElement | null>(null)
+
+/**
+ * Two fifths of the stack by default, measured rather than guessed — a pixel
+ * constant is the wrong height on every window that is not the one it was
+ * picked on. Only until the user drags it, after which their number wins.
+ */
+watch(sidebarEl, element => {
+  if (!element || propertiesHeight.value) return
+  propertiesHeight.value = Math.round(element.getBoundingClientRect().height * 0.4)
+}, { flush: 'post' })
 
 /** Drag along one axis, clamped, persisted on release. */
 function startResize(
@@ -1734,6 +1745,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         @pointerdown="startSidebarResize"
       />
       <aside
+        ref="sidebarEl"
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >
