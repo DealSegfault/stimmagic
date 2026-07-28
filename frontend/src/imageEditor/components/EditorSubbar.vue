@@ -18,9 +18,10 @@ import {
   CROP_ASPECTS,
 } from '../stack/adjustSections'
 import {
-  PAINT_ENGINES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
+  PAINT_ENGINES, SELECTION_MODES, TEXT_STYLES,
   familyById,
 } from '../stack/toolFamilies'
+import { FILTER_CATEGORIES } from '../stack/adjustSections'
 import type { FamilyId, SelectionMode } from '../stack/toolFamilies'
 
 const props = defineProps<{
@@ -380,6 +381,41 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
+    <!-- Filters: picking one IS applying it, so the strip belongs where the
+         decision is made rather than behind a selected step. -->
+    <template v-else-if="family.id === 'filters'">
+      <!-- One row that scrolls, rather than wrapping: the strip is a strip,
+           and wrapping it would push the canvas down every time it grew. -->
+      <div class="w-full min-w-0 flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5">
+        <template v-for="category in FILTER_CATEGORIES" :key="category.id">
+          <span v-if="category.label" class="w-px h-10 bg-edge-subtle mx-1 shrink-0" />
+          <Tooltip
+            v-for="preset in category.filters"
+            :key="preset.id"
+            :text="category.label ? `${category.label} · ${preset.label}` : preset.label"
+          >
+            <button
+              type="button"
+              class="w-14 shrink-0 rounded-md p-0.5 transition-colors"
+              :class="state.activeFilter === preset.id
+                ? 'bg-selection/25 text-content'
+                : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
+              @click="emit('set', { applyFilter: preset.id })"
+            >
+              <img
+                v-if="state.filterThumbs?.[preset.id]"
+                :src="state.filterThumbs[preset.id]"
+                class="w-full h-12 rounded-media object-cover"
+                alt=""
+              />
+              <div v-else class="w-full h-12 rounded-media bg-matte" />
+              <span class="block text-[10px] leading-tight truncate">{{ preset.label }}</span>
+            </button>
+          </Tooltip>
+        </template>
+      </div>
+    </template>
+
     <!-- Levels ---------------------------------------------------------- -->
     <template v-else-if="family.id === 'levels'">
       <button
@@ -407,34 +443,6 @@ function chipClass(active: boolean, pending = false) {
           {{ style.label }}
         </button>
       </template>
-      <template v-else-if="sub === 'shape'">
-        <Tooltip v-for="kind in SHAPE_KINDS" :key="kind.id" :text="kind.label">
-          <button
-            type="button"
-            class="p-1.5 rounded-md transition-colors"
-            :class="chipClass(state.shapeKind === kind.id)"
-            :aria-label="kind.label"
-            @click="emit('set', { shapeKind: kind.id })"
-          >
-            <ToolIcon :name="(kind.icon as any)" />
-          </button>
-        </Tooltip>
-      </template>
-      <span v-if="sub !== 'redact'" class="w-px h-5 bg-edge-subtle mx-1" />
-      <ToolbarPopover v-if="sub !== 'redact'" label="Color" :width="292">
-        <template #trigger>
-          <span
-            class="w-4 h-4 rounded-md border border-edge-subtle"
-            :style="{ background: state.annotateColor }"
-          />
-        </template>
-        <ColorPicker
-          :model-value="state.annotateColorRgb"
-          :image-palette="state.imagePalette"
-          embedded
-          @update:model-value="emit('set', { annotateColorRgb: $event })"
-        />
-      </ToolbarPopover>
     </template>
 
     <div class="flex-1" />

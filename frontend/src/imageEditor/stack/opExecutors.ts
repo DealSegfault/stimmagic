@@ -62,6 +62,8 @@ export interface AdjustParams {
   temperature?: number
   gamma?: number
   filter?: string | null
+  /** Preset strength, 0-100; below 100 blends the preset toward identity. */
+  filterAmount?: number
   colorMatrix?: number[] | null
   // Film
   splitToningEnabled?: boolean
@@ -271,7 +273,16 @@ export function applyAdjust(
     const identity = combineAdjustments({
       brightness: 0, contrast: 0, saturation: 0, exposure: 0, temperature: 0, gamma: 1,
     })
-    const matrix = multiplyColorMatrices((FILTER_MATRICES as any)[params.filter], identity)
+    // A preset at less than full strength is the preset blended back toward
+    // identity — which is what an amount slider means for a colour matrix, and
+    // is why a filter step has something to adjust rather than being a switch.
+    const amount = params.filterAmount ?? 100
+    const preset = (FILTER_MATRICES as any)[params.filter] as number[]
+    const IDENTITY_MATRIX = [1,0,0,0,0, 0,1,0,0,0, 0,0,1,0,0, 0,0,0,1,0]
+    const blended = amount >= 100
+      ? preset
+      : preset.map((value, i) => IDENTITY_MATRIX[i] + (value - IDENTITY_MATRIX[i]) * (amount / 100))
+    const matrix = multiplyColorMatrices(blended, identity)
     const data = ctx.getImageData(0, 0, width, height)
     applyColorMatrix(data, matrix)
     ctx.putImageData(data, 0, 0)

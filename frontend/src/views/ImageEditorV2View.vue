@@ -56,6 +56,9 @@ import type { GenerativeOp } from '../imageEditor/stack/types'
 import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
 import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
+import { FILTER_LABELS, FILTER_STRIP } from '../imageEditor/stack/adjustSections'
+import { applyColorMatrix } from '../imageEditor/ported/colorMatrix'
+import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices'
 import type { AdjustFamily } from '../imageEditor/stack/adjustSections'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 
@@ -139,7 +142,6 @@ const paintSaturate = ref(true)
 // Annotate
 const annotateRef = ref<InstanceType<typeof StackAnnotateCanvas> | null>(null)
 const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
-const shapeKind = ref<'rectangle' | 'ellipse' | 'line'>('rectangle')
 const annotateColor = ref('#ffffff')
 const selectedShapeId = ref<string | null>(null)
 
@@ -154,7 +156,9 @@ const annotateTool = computed<AnnotateTool>(() => {
   if (sub.value === 'select') return 'select'
   if (sub.value === 'draw') return 'sharpie'
   if (sub.value === 'arrow') return 'arrow'
-  if (sub.value === 'shape') return shapeKind.value as AnnotateTool
+  if (sub.value === 'rectangle' || sub.value === 'ellipse' || sub.value === 'line') {
+    return sub.value as AnnotateTool
+  }
   return 'arrow'
 })
 
@@ -243,6 +247,7 @@ async function render() {
     composite.value = await compositor.render(stack.doc.value)
     paint()
     samplePalette()
+    if (family.value === 'filters') renderFilterThumbs()
   } catch (err: any) {
     error.value = err?.message || 'Could not render the composite.'
   } finally {
@@ -631,6 +636,16 @@ function selectFamily(id: FamilyId) {
   family.value = id
   sub.value = familyById(id).defaultSub
   if (id === 'generate') mode.value = (sub.value as Mode) ?? null
+  // Entering an adjustment family starts a fresh session. Without this the
+  // panel kept editing whatever was selected before — so Effects showed the
+  // last filter's Amount, and Auto contrast wrote its levels into that filter's
+  // step instead of making one.
+  if (ADJUST_FAMILIES.includes(id)) {
+    adjustOpId.value = null
+    selectedOpId.value = null
+    selectedShapeId.value = null
+  }
+  if (id === 'filters') renderFilterThumbs()
   if (id === 'crop') {
     // Each visit to Crop is its own step. Cropping twice is a real thing to
     // want — frame roughly, work, then tighten — and it stays non-destructive
@@ -670,11 +685,12 @@ const subbarState = computed(() => ({
   paintFlow: paintFlow.value,
   paintSaturate: paintSaturate.value,
   textStyle: textStyle.value,
-  shapeKind: shapeKind.value,
   annotateColor: annotateColor.value,
   annotateColorRgb: annotateColorRgb.value,
   selectedShapeId: selectedShapeId.value,
   imagePalette: imagePalette.value,
+  activeFilter: (selectedFilterOp.value as any)?.params?.filter ?? 'none',
+  filterThumbs: filterThumbs.value,
 }))
 
 function onSubbarSet(patch: Record<string, any>) {
@@ -695,7 +711,6 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('paintFlow' in patch) paintFlow.value = patch.paintFlow
   if ('paintSaturate' in patch) paintSaturate.value = patch.paintSaturate
   if ('textStyle' in patch) textStyle.value = patch.textStyle
-  if ('shapeKind' in patch) shapeKind.value = patch.shapeKind
   if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
   if ('annotateColorRgb' in patch) {
     const { r, g, b } = patch.annotateColorRgb
@@ -704,6 +719,7 @@ function onSubbarSet(patch: Record<string, any>) {
   }
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('auto' in patch) runAuto(patch.auto)
+  if ('applyFilter' in patch) applyFilter(patch.applyFilter)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   // Straighten and the lollipop are the same control: the crop window's tilt.
   if ('rotation' in patch) void applyCropChange({ cropRotation: patch.rotation })
@@ -985,9 +1001,103 @@ const adjustFamily = computed<AdjustFamily | null>(() =>
   ADJUST_FAMILIES.includes(family.value as FamilyId) ? (family.value as AdjustFamily) : null
 )
 
-const showsAdjustInspector = computed(
-  () => !!selectedAdjustOp.value || !!adjustFamily.value
-)
+/**
+ * What the properties panel is showing.
+ *
+ * The SELECTED STEP decides, and only when nothing is selected does the open
+ * family get to. Before this the annotation panel simply won on a v-if, so
+ * selecting a rectangle and then opening Effects left the rectangle's
+ * properties on screen and made Effects look like it had none — and with the
+ * Levels sliders living in this panel, an unreachable panel meant an
+ * unreachable family.
+ */
+const inspectorKind = computed<'annotation' | 'adjust' | null>(() => {
+  const op = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
+  if (op?.exec?.kind === 'annotate') return 'annotation'
+  if (op?.exec?.kind === 'adjust') return 'adjust'
+  if (adjustFamily.value) return 'adjust'
+  return null
+})
+
+const showsAdjustInspector = computed(() => inspectorKind.value === 'adjust')
+
+/**
+ * Picking a filter IS applying it.
+ *
+ * Each click makes its own step, named for the preset, so the stack reads as
+ * what was done rather than as a settings object — and stacking two filters is
+ * a thing you can do and then reorder or remove. Clicking the ACTIVE filter
+ * takes it off again, which is the only sensible meaning for pressing a
+ * pressed button.
+ */
+/**
+ * A thumbnail per preset, off the real picture, for the strip.
+ *
+ * Naming a filter tells you nothing — Kodachrome and Portra 400 are only
+ * distinguishable by looking.
+ */
+const filterThumbs = ref<Record<string, string>>({})
+const FILTER_THUMB = 40
+
+function renderFilterThumbs() {
+  const source = composite.value
+  if (!source?.width) return
+
+  const base = document.createElement('canvas')
+  base.width = FILTER_THUMB
+  base.height = FILTER_THUMB
+  const ctx = base.getContext('2d', { willReadFrequently: true })
+  if (!ctx) return
+  const side = Math.min(source.width, source.height)
+  ctx.drawImage(
+    source,
+    (source.width - side) / 2, (source.height - side) / 2, side, side,
+    0, 0, FILTER_THUMB, FILTER_THUMB
+  )
+  const pixels = ctx.getImageData(0, 0, FILTER_THUMB, FILTER_THUMB)
+
+  const tile = document.createElement('canvas')
+  tile.width = FILTER_THUMB
+  tile.height = FILTER_THUMB
+  const tileCtx = tile.getContext('2d')!
+  const out: Record<string, string> = {}
+  for (const preset of FILTER_STRIP) {
+    const matrix = (FILTER_MATRICES as any)[preset.id]
+    const copy = new ImageData(new Uint8ClampedArray(pixels.data), FILTER_THUMB, FILTER_THUMB)
+    tileCtx.putImageData(matrix ? applyColorMatrix(copy, matrix) : copy, 0, 0)
+    out[preset.id] = tile.toDataURL()
+  }
+  filterThumbs.value = out
+}
+
+function applyFilter(id: string) {
+  const current = selectedFilterOp.value
+  if (current && (current as any).params?.filter === id) {
+    void removeOpWithGeometry(current.id)
+    return
+  }
+  if (id === 'none') {
+    if (current) void removeOpWithGeometry(current.id)
+    return
+  }
+  const opId = newOpId()
+  stack.addOp({
+    id: opId, class: 'parametric', enabled: true,
+    label: FILTER_LABELS.get(id) ?? 'Filter',
+    exec: { kind: 'adjust' },
+    params: { filter: id, filterAmount: 100 },
+  } as any)
+  selectedOpId.value = opId
+  adjustOpId.value = opId
+  void render()
+}
+
+/** The filter step this family is looking at — the topmost one. */
+const selectedFilterOp = computed(() => {
+  const selected = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
+  if (selected?.params?.filter) return selected
+  return [...(stack.doc.value?.edits || [])].reverse().find(op => (op as any).params?.filter) ?? null
+})
 
 /**
  * The three Auto buttons from the old Levels panel. They read the histogram of
@@ -999,7 +1109,10 @@ function runAuto(kind: 'levels' | 'contrast' | 'balance') {
   const patch = kind === 'levels' ? autoLevels(source)
     : kind === 'contrast' ? autoContrast(source)
     : autoBalance(source)
-  if (!patch) return
+  // An auto that computes no change makes no step. The histogram is already
+  // where it wants it, and a row that says 'Adjust' and does nothing is worse
+  // than no row at all.
+  if (!patch || Object.values(patch).every(value => value === 0)) return
   if (selectedAdjustOp.value) adjustOpId.value = selectedAdjustOp.value.id
   onAdjustChange(patch, `adjust:auto:${kind}`)
 }
@@ -1932,7 +2045,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           @pointerdown="startPropertiesResize"
         />
         <div
-          v-if="selectedShape"
+          v-if="inspectorKind === 'annotation' && selectedShape"
           class="shrink-0 border-t border-edge-subtle flex flex-col"
           :style="{ height: propertiesHeight + 'px' }"
         >

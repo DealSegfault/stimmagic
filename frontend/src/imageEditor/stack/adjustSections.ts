@@ -131,6 +131,9 @@ export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: Arra
   },
 ]
 
+/** Flat, in the order the strip shows them. */
+export const FILTER_STRIP = FILTER_CATEGORIES.flatMap(category => category.filters)
+
 export const FILTER_LABELS = new Map(
   FILTER_CATEGORIES.flatMap(category => category.filters.map(f => [f.id, f.label]))
 )

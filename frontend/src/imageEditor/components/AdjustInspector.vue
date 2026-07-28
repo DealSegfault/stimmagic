@@ -32,7 +32,13 @@ const emit = defineEmits<{
   commit: []
 }>()
 
+// Open the group the family came in for. Defaulting to a fixed one meant
+// Effects opened showing a collapsed Effects header and nothing else, which
+// reads as an empty panel.
 const openSection = ref<string>('levels')
+watch(() => props.family, family => {
+  if (family) openSection.value = sectionsForFamily(family)[0]?.id ?? openSection.value
+}, { immediate: true })
 
 function valueOf(key: string, fallback: number) {
   const value = props.params?.[key]
@@ -117,36 +123,19 @@ function chooseFilter(id: string) {
 <template>
   <div class="divide-y divide-edge-subtle">
 
-    <!-- Filter presets: a grid, the way the old Filters panel showed them. -->
-    <section v-if="showsFilters" class="px-3 py-2">
-      <div v-for="category in FILTER_CATEGORIES" :key="category.id" class="mb-2 last:mb-0">
-        <div v-if="category.label" class="text-[11px] text-content-tertiary mb-1">
-          {{ category.label }}
-        </div>
-        <div class="flex flex-wrap gap-1.5">
-          <button
-            v-for="preset in category.filters"
-            :key="preset.id"
-            type="button"
-            class="w-[52px] rounded-md p-0.5 transition-colors"
-            :class="activeFilter === preset.id
-              ? 'bg-selection/20 text-content'
-              : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
-            :disabled="disabled"
-            :title="preset.label"
-            @click="chooseFilter(preset.id)"
-          >
-            <img
-              v-if="thumbs[preset.id]"
-              :src="thumbs[preset.id]"
-              class="w-full aspect-square rounded-media object-cover"
-              alt=""
-            />
-            <div v-else class="w-full aspect-square rounded-media bg-matte" />
-            <span class="block mt-0.5 text-[10px] leading-tight truncate">{{ preset.label }}</span>
-          </button>
-        </div>
-      </div>
+    <!-- A chosen filter's only property: how much of it. -->
+    <section v-if="params?.filter && (!family || family === 'filters')" class="px-3 py-2">
+      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+        <span class="w-16 shrink-0">Amount</span>
+        <input
+          type="range" min="0" max="100" step="1" class="flex-1"
+          :disabled="disabled"
+          :value="params.filterAmount ?? 100"
+          @input="emit('change', { filterAmount: Number(($event.target as HTMLInputElement).value) }, 'adjust:filterAmount')"
+          @change="emit('commit')"
+        />
+        <span class="w-8 text-right tabular-nums">{{ params.filterAmount ?? 100 }}</span>
+      </label>
     </section>
     <section v-for="section in sections" :key="section.id">
       <button
