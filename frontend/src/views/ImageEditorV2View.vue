@@ -97,9 +97,30 @@ const selectTolerance = ref(32)
 // Paint
 const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
 const paintOpId = ref<string | null>(null)
-const paintEngineId = ref('round-soft')
+const paintEngineId = ref('paint')
 const paintOpacity = ref(1)
 const paintColor = ref('#c9a276')
+const paintBrushSize = ref(26)
+const paintHardness = ref(60)
+
+/** Brush parameters in the shape the ported layer expects. */
+const paintBrush = computed(() => ({
+  size: paintBrushSize.value,
+  hardness: paintHardness.value,
+  opacity: Math.round(paintOpacity.value * 100),
+  flow: 100,
+  spacing: 10,
+}))
+
+const paintColorRgb = computed(() => {
+  const hex = paintColor.value.replace('#', '')
+  return {
+    r: parseInt(hex.slice(0, 2), 16),
+    g: parseInt(hex.slice(2, 4), 16),
+    b: parseInt(hex.slice(4, 6), 16),
+    a: 1,
+  }
+})
 
 // Annotate
 const annotateOpId = ref<string | null>(null)
@@ -510,6 +531,8 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('tolerance' in patch) selectTolerance.value = patch.tolerance
   if ('invertSelection' in patch) selectRef.value?.invert()
   if ('engineId' in patch) paintEngineId.value = patch.engineId
+  if ('paintBrushSize' in patch) paintBrushSize.value = patch.paintBrushSize
+  if ('paintHardness' in patch) paintHardness.value = patch.paintHardness
   if ('paintOpacity' in patch) paintOpacity.value = patch.paintOpacity
   if ('paintColor' in patch) paintColor.value = patch.paintColor
   if ('textStyle' in patch) textStyle.value = patch.textStyle
@@ -1214,6 +1237,19 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             :feather-px="selectFeather"
             :tolerance="selectTolerance"
             @change="selection = $event"
+          />
+          <StackPaintCanvas
+            v-else-if="family === 'paint'"
+            ref="paintRef"
+            :source="composite"
+            :initial-layer="paintInitialLayer"
+            :selection-mask="selection"
+            :display-width="displayBox.width"
+            :display-height="displayBox.height"
+            :engine-id="paintEngineId"
+            :brush="paintBrush"
+            :color="paintColorRgb"
+            @stroke="onPaintStroke"
           />
           <StackMaskCanvas
             v-else-if="mode === 'inpaint' || regionTargetOpId"
