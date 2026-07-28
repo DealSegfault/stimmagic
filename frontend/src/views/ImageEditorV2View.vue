@@ -90,7 +90,9 @@ const toolPickerOpen = ref(false)
 const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
 const selection = ref<HTMLCanvasElement | null>(null)
 const selectCombine = ref<SelectionMode>('new')
-const selectFeather = ref(8)
+const selectFeather = ref(0)
+/** Magic wand colour tolerance, 0-255. */
+const selectTolerance = ref(32)
 
 // Paint
 const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
@@ -487,6 +489,7 @@ const subbarState = computed(() => ({
   flipY: !!cropParamsOf().flipY,
   combine: selectCombine.value,
   featherPx: selectFeather.value,
+  tolerance: selectTolerance.value,
   hasSelection: !!selection.value,
   engineId: paintEngineId.value,
   paintOpacity: paintOpacity.value,
@@ -504,6 +507,8 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('upscaleFactor' in patch) upscaleFactor.value = patch.upscaleFactor
   if ('combine' in patch) selectCombine.value = patch.combine
   if ('featherPx' in patch) selectFeather.value = patch.featherPx
+  if ('tolerance' in patch) selectTolerance.value = patch.tolerance
+  if ('invertSelection' in patch) selectRef.value?.invert()
   if ('engineId' in patch) paintEngineId.value = patch.engineId
   if ('paintOpacity' in patch) paintOpacity.value = patch.paintOpacity
   if ('paintColor' in patch) paintColor.value = patch.paintColor
@@ -1196,8 +1201,22 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             class="rounded-media w-full h-full"
             :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }"
           />
+          <!-- Select draws over the composite; its output becomes the next
+               mask or region rather than a step of its own. -->
+          <StackSelectCanvas
+            v-if="family === 'select'"
+            ref="selectRef"
+            :source="composite"
+            :display-width="displayBox.width"
+            :display-height="displayBox.height"
+            :tool="(sub as any)"
+            :combine="selectCombine"
+            :feather-px="selectFeather"
+            :tolerance="selectTolerance"
+            @change="selection = $event"
+          />
           <StackMaskCanvas
-            v-if="mode === 'inpaint' || regionTargetOpId"
+            v-else-if="mode === 'inpaint' || regionTargetOpId"
             ref="maskRef"
             :source="composite"
             :display-width="displayBox.width"

@@ -85,8 +85,8 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'ellipse', label: 'Ellipse' },
       { id: 'lasso', label: 'Lasso' },
       { id: 'brush', label: 'Brush' },
-      { id: 'magnetic', label: 'Magnetic', pending: true },
-      { id: 'wand', label: 'Wand', pending: true },
+      { id: 'magnetic', label: 'Magnetic' },
+      { id: 'wand', label: 'Wand' },
     ],
   },
   {
