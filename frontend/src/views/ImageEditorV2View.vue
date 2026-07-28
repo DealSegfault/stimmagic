@@ -1154,8 +1154,9 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
     so opening one takes matte space from the canvas and closing one gives it
     back — the image itself never gets pushed around.
   -->
-  <div class="h-full flex bg-base">
-    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+  <div class="h-full flex flex-col bg-base">
+    <div class="flex-1 flex min-h-0">
+      <div class="flex-1 flex flex-col min-w-0 min-h-0">
       <!-- Toolbar 1: the families. -->
       <div class="flex items-center gap-3 px-3 h-11 shrink-0 border-b border-edge-subtle">
         <h1 class="text-sm font-medium text-content shrink-0">Edit image</h1>
@@ -1208,40 +1209,12 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         </div>
       </div>
 
-      <!-- Document verbs live at the bottom: they act on the document, not on
-           whatever tool happens to be open. -->
-      <footer class="flex items-center gap-2 px-3 h-11 shrink-0 border-t border-edge-subtle">
-        <Tooltip text="Undo">
-          <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
-            <ArrowUturnLeftIcon class="w-4 h-4" />
-          </IconButton>
-        </Tooltip>
-        <Tooltip text="Redo">
-          <IconButton :disabled="!stack.canRedo.value" @click="stack.redo(); render()">
-            <ArrowUturnRightIcon class="w-4 h-4" />
-          </IconButton>
-        </Tooltip>
-        <div class="flex-1" />
-        <Button
-          variant="secondary" size="sm"
-          @pointerdown="setComparing(true)"
-          @pointerup="setComparing(false)"
-          @pointerleave="setComparing(false)"
-        >
-          Hold to compare
-        </Button>
-        <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
-          Save as new
-        </Button>
-        <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
-          Save version
-        </Button>
-      </footer>
+
     </div>
 
-    <!-- Edits: full height, outside everything a mode can touch. -->
-    <aside class="w-80 shrink-0 border-l border-edge-subtle flex flex-col min-h-0">
-        <div class="px-3 h-10 flex items-center border-b border-edge-subtle">
+      <!-- Edits: outside everything a mode can touch. -->
+      <aside class="w-80 shrink-0 border-l border-edge-subtle flex flex-col min-h-0">
+        <div class="px-3 h-11 flex items-center border-b border-edge-subtle">
           <h2 class="text-xs font-medium text-content-secondary">Edits</h2>
           <div class="flex-1" />
           <Spinner v-if="rendering" size="sm" />
@@ -1323,5 +1296,36 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           {{ candidates.lastError.value }}
         </p>
       </aside>
+    </div>
+
+      <!-- Document verbs live at the bottom: they act on the document, not on
+         whatever tool happens to be open. -->
+    <footer class="flex items-center gap-2 px-3 h-11 shrink-0 border-t border-edge-subtle">
+      <Tooltip text="Undo">
+        <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
+          <ArrowUturnLeftIcon class="w-4 h-4" />
+        </IconButton>
+      </Tooltip>
+      <Tooltip text="Redo">
+        <IconButton :disabled="!stack.canRedo.value" @click="stack.redo(); render()">
+          <ArrowUturnRightIcon class="w-4 h-4" />
+        </IconButton>
+      </Tooltip>
+      <div class="flex-1" />
+      <Button
+        variant="secondary" size="sm"
+        @pointerdown="setComparing(true)"
+        @pointerup="setComparing(false)"
+        @pointerleave="setComparing(false)"
+      >
+        Hold to compare
+      </Button>
+      <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
+        Save as new
+      </Button>
+      <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
+        Save version
+      </Button>
+    </footer>
   </div>
 </template>
