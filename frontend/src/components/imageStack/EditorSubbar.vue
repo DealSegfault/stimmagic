@@ -17,7 +17,7 @@ import {
   CROP_ASPECTS,
 } from '../../composables/imageStack/developSections'
 import {
-  PAINT_ENGINES, PAINT_SWATCHES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
+  PAINT_ENGINES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
   familyById,
 } from '../../composables/imageStack/toolFamilies'
 import type { FamilyId, SelectionMode } from '../../composables/imageStack/toolFamilies'
@@ -406,16 +406,29 @@ function chipClass(active: boolean, pending = false) {
           {{ kind.label }}
         </button>
       </template>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <button
-        v-for="swatch in PAINT_SWATCHES"
-        :key="swatch"
-        type="button"
-        class="w-5 h-5 rounded-md border transition-transform"
-        :class="state.annotateColor === swatch ? 'border-selection scale-110' : 'border-edge-subtle'"
-        :style="{ background: swatch }"
-        @click="emit('set', { annotateColor: swatch })"
-      />
+      <span v-if="sub !== 'redact'" class="w-px h-5 bg-edge-subtle mx-1" />
+      <ToolbarPopover v-if="sub !== 'redact'" label="Color">
+        <template #trigger>
+          <span
+            class="w-4 h-4 rounded-md border border-edge-subtle"
+            :style="{ background: state.annotateColor }"
+          />
+        </template>
+        <ColorPicker
+          :model-value="state.annotateColorRgb"
+          @update:model-value="emit('set', { annotateColorRgb: $event })"
+        />
+      </ToolbarPopover>
+      <template v-if="state.selectedShapeId">
+        <span class="w-px h-5 bg-edge-subtle mx-1" />
+        <button
+          type="button"
+          class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          @click="emit('set', { deleteShape: true })"
+        >
+          Delete
+        </button>
+      </template>
     </template>
 
     <div class="flex-1" />

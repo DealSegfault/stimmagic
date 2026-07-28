@@ -23,9 +23,11 @@ import {
   combineAdjustments,
   hasEffects,
   multiplyColorMatrices,
-  renderShapes,
   FILTER_MATRICES,
 } from '@stimma/image-editor'
+// The annotation renderer is the copied one, so an Annotate step composites
+// through exactly the code its gestures were authored against.
+import { renderShapes } from '../../imageEditor/ported/shapes'
 
 export interface CropParams {
   /**

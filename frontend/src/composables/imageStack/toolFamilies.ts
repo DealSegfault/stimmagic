@@ -115,13 +115,15 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     label: 'Annotate',
     key: 'a',
     icon: FAMILY_ICONS.annotate,
-    defaultSub: 'text',
+    defaultSub: 'arrow',
     subTools: [
-      { id: 'text', label: 'Text' },
+      { id: 'select', label: 'Select' },
+      { id: 'arrow', label: 'Arrow' },
+      { id: 'draw', label: 'Draw' },
       { id: 'shape', label: 'Shape' },
+      { id: 'text', label: 'Text' },
       { id: 'redact', label: 'Redact' },
       { id: 'sticker', label: 'Sticker', pending: true },
-      { id: 'frame', label: 'Frame', pending: true },
     ],
   },
 ]

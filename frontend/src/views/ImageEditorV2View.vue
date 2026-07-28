@@ -49,6 +49,7 @@ import {
 import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
 import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
 import type { GenerativeOp } from '../composables/imageStack/types'
+import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -114,10 +115,44 @@ const paintFlow = ref(50)
 const paintSaturate = ref(true)
 
 // Annotate
+const annotateRef = ref<InstanceType<typeof StackAnnotateCanvas> | null>(null)
 const annotateOpId = ref<string | null>(null)
 const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
 const shapeKind = ref<'rectangle' | 'ellipse' | 'line'>('rectangle')
 const annotateColor = ref('#ffffff')
+const selectedShapeId = ref<string | null>(null)
+
+/**
+ * The sub-bar names a family of tools; the ported gesture code wants the
+ * specific one. Shape and Text carry a second choice, so the mapping is not
+ * one-to-one.
+ */
+const annotateTool = computed<AnnotateTool>(() => {
+  if (sub.value === 'redact') return 'redact'
+  if (sub.value === 'text') return 'text'
+  if (sub.value === 'select') return 'select'
+  if (sub.value === 'draw') return 'sharpie'
+  if (sub.value === 'arrow') return 'arrow'
+  if (sub.value === 'shape') return shapeKind.value as AnnotateTool
+  return 'arrow'
+})
+
+const annotateColorRgb = computed(() => {
+  const hex = annotateColor.value.replace('#', '')
+  return {
+    r: parseInt(hex.slice(0, 2), 16),
+    g: parseInt(hex.slice(2, 4), 16),
+    b: parseInt(hex.slice(4, 6), 16),
+    a: 1,
+  }
+})
+
+/** The active Annotate step's shapes, or nothing until one exists. */
+const annotateShapes = computed<Shape[]>(() => {
+  if (!annotateOpId.value) return []
+  const op = stack.opById(annotateOpId.value) as any
+  return op?.params?.shapes ?? []
+})
 
 // -- compositing -----------------------------------------------------------
 
@@ -513,6 +548,8 @@ const subbarState = computed(() => ({
   textStyle: textStyle.value,
   shapeKind: shapeKind.value,
   annotateColor: annotateColor.value,
+  annotateColorRgb: annotateColorRgb.value,
+  selectedShapeId: selectedShapeId.value,
 }))
 
 function onSubbarSet(patch: Record<string, any>) {
@@ -535,6 +572,12 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('textStyle' in patch) textStyle.value = patch.textStyle
   if ('shapeKind' in patch) shapeKind.value = patch.shapeKind
   if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
+  if ('annotateColorRgb' in patch) {
+    const { r, g, b } = patch.annotateColorRgb
+    annotateColor.value =
+      '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+  }
+  if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   if ('rotation' in patch) void applyCropChange({ rotation: patch.rotation })
   if ('rotateQuarter' in patch) rotateQuarter()
@@ -947,9 +990,22 @@ async function enterPaintOp(opId: string) {
  * Annotations accumulate into one Annotate step per session. The shapes are the
  * params, so the step stays vector and re-entering it is lossless.
  */
-function onAnnotationAdd(shape: any) {
+/**
+ * Dragging a shape reports a new shape list on every mouse move. Every one of
+ * those is written — nothing is held back, so a text edit that never announces
+ * itself cannot be lost — but they all coalesce into a single journal entry,
+ * which the gesture's own commit then closes. One gesture, one undo.
+ */
+const annotateGesture = ref(0)
+const annotateGestureKey = computed(
+  () => `annotate:${annotateOpId.value}:${annotateGesture.value}`
+)
+
+function onAnnotationsChange(shapes: Shape[]) {
   if (!stack.doc.value) return
+  // The step is created by the first real gesture, not by entering the mode.
   if (!annotateOpId.value) {
+    if (!shapes.length) return
     const opId = newOpId()
     stack.addOp({
       id: opId,
@@ -957,15 +1013,19 @@ function onAnnotationAdd(shape: any) {
       enabled: true,
       label: 'Annotate',
       exec: { kind: 'annotate' },
-      params: { shapes: [shape] },
+      params: { shapes },
     } as any)
     annotateOpId.value = opId
     selectedOpId.value = opId
   } else {
-    const op = stack.opById(annotateOpId.value) as any
-    stack.setParams(annotateOpId.value, { shapes: [...(op?.params?.shapes || []), shape] })
+    stack.setParams(annotateOpId.value, { shapes }, annotateGestureKey.value)
   }
   void render()
+}
+
+/** The gesture ended: the next one starts its own undo step. */
+function onAnnotationCommit(_action: string) {
+  annotateGesture.value += 1
 }
 
 // -- selection handoff ------------------------------------------------------------
@@ -1251,6 +1311,20 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             :flow="paintFlow"
             :saturate="paintSaturate"
             @stroke="onPaintStroke"
+          />
+          <StackAnnotateCanvas
+            v-else-if="family === 'annotate'"
+            ref="annotateRef"
+            :source="composite"
+            :shapes="annotateShapes"
+            :display-width="displayBox.width"
+            :display-height="displayBox.height"
+            :tool="annotateTool"
+            :stroke-color="annotateColorRgb"
+            :text-style="textStyle"
+            @change="onAnnotationsChange"
+            @commit="onAnnotationCommit"
+            @select="selectedShapeId = $event"
           />
           <StackMaskCanvas
             v-else-if="mode === 'inpaint' || regionTargetOpId"
