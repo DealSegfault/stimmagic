@@ -95,7 +95,7 @@ const glowIntensity = computed(() =>
 <template>
   <div v-if="shape" class="divide-y divide-edge-subtle">
     <header class="px-3 py-2 flex items-center gap-2">
-      <h3 class="text-xs font-medium text-content flex-1 capitalize">
+      <h3 class="text-sm text-content flex-1 capitalize">
         {{ shape.type.replace('-', ' ') }}
       </h3>
       <button
@@ -184,10 +184,9 @@ const glowIntensity = computed(() =>
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Text' : 'Stroke' }}</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
-            <span
-              class="w-4 h-4 rounded-md border border-edge-subtle"
-              :style="{ background: rgbaCss(isText ? any.textColor : any.strokeColor) }"
-            />
+            <span class="colour-well">
+              <span :style="{ background: rgbaCss(isText ? any.textColor : any.strokeColor) }" />
+            </span>
           </template>
           <ColorPicker
             :model-value="isText ? any.textColor : any.strokeColor"
@@ -212,11 +211,9 @@ const glowIntensity = computed(() =>
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Background' : 'Fill' }}</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
-            <span
-              class="w-4 h-4 rounded-md border border-edge-subtle"
-              :class="any.backgroundColor ? '' : 'bg-transparent'"
-              :style="{ background: rgbaCss(any.backgroundColor) }"
-            />
+            <span class="colour-well">
+              <span :style="{ background: rgbaCss(any.backgroundColor) }" />
+            </span>
           </template>
           <ColorPicker
             :model-value="any.backgroundColor ?? null"
@@ -253,3 +250,32 @@ const glowIntensity = computed(() =>
     </section>
   </div>
 </template>
+
+<style scoped>
+/*
+ * A colour well, not a dot. Wide enough to read the colour at a glance and
+ * backed by a checkerboard so "no fill" is visibly no fill rather than
+ * whatever the panel behind it happens to be.
+ */
+.colour-well {
+  width: 34px;
+  height: 20px;
+  border-radius: 4px;
+  border: 1px solid rgb(var(--color-text-primary-rgb) / 0.18);
+  overflow: hidden;
+  display: block;
+  background-image:
+    linear-gradient(45deg, rgb(var(--color-text-primary-rgb) / 0.14) 25%, transparent 25%),
+    linear-gradient(-45deg, rgb(var(--color-text-primary-rgb) / 0.14) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgb(var(--color-text-primary-rgb) / 0.14) 75%),
+    linear-gradient(-45deg, transparent 75%, rgb(var(--color-text-primary-rgb) / 0.14) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+}
+
+.colour-well > span {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+</style>

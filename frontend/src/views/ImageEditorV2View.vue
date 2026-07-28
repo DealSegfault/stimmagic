@@ -1803,8 +1803,13 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >
-        <div class="px-3 h-11 flex items-center border-b border-edge-subtle">
-          <h2 class="text-xs font-medium text-content-secondary">Edits</h2>
+        <div
+          class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
+                 border-b border-edge-strong"
+        >
+          <h2 class="text-xs font-medium uppercase tracking-wide text-content-secondary">
+            Edits
+          </h2>
           <div class="flex-1" />
           <Spinner v-if="rendering" size="sm" />
         </div>
@@ -1878,8 +1883,13 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           class="shrink-0 border-t border-edge-subtle flex flex-col"
           :style="{ height: propertiesHeight + 'px' }"
         >
-          <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
-            <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
+          <div
+            class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
+                   border-b border-edge-strong"
+          >
+            <h2 class="text-xs font-medium uppercase tracking-wide text-content-secondary">
+              Properties
+            </h2>
           </div>
           <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             <AnnotationInspector
@@ -1899,8 +1909,13 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           class="shrink-0 border-t border-edge-subtle flex flex-col"
           :style="{ height: propertiesHeight + 'px' }"
         >
-          <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
-            <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
+          <div
+            class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
+                   border-b border-edge-strong"
+          >
+            <h2 class="text-xs font-medium uppercase tracking-wide text-content-secondary">
+              Properties
+            </h2>
           </div>
           <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <AdjustInspector
