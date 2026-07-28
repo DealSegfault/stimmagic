@@ -14,7 +14,7 @@
 
 import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
-import { getCurrentProfileId } from '../useProfile'
+import { getCurrentProfileId } from '../../composables/useProfile'
 import { newOpId } from './opId'
 import type { JournalEntry, Op, StackDocument } from './types'
 import { DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'

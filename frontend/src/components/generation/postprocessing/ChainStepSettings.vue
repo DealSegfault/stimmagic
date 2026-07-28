@@ -29,8 +29,12 @@
         class="my-2"
         :model-value="upscalePickerValue"
         @update:model-value="onUpscalePickerUpdate"
-        :support-scale-factor="showUpscalePicker"
-        :support-resolution="showUpscalePicker"
+        :support-scale-factor="hasScaleFactor"
+        :support-resolution="hasUpscaleResolution"
+        :scale-min="scaleFactorConstraints.min"
+        :scale-max="scaleFactorConstraints.max"
+        :scale-step="scaleFactorConstraints.step"
+        :scale-allowed-values="scaleFactorConstraints.allowedValues"
         compact
       />
 
@@ -250,6 +254,9 @@ const {
   hasPrompt,
   promptPlaceholder,
   showUpscalePicker,
+  hasScaleFactor,
+  hasUpscaleResolution,
+  scaleFactorConstraints,
   hasWidthHeight,
   hasAspectRatio,
   aspectRatioChoices,

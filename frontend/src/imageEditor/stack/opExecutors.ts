@@ -1,10 +1,11 @@
 /**
  * Executors for the op kinds that carry over from the snapshot editor.
  *
- * The pixel math is the snapshot editor's, consumed as a library from
- * `@stimma/image-editor` rather than reimplemented — a second copy of the
- * colour and effect math would drift, and the migrated documents have to look
- * identical or the migration is a lie.
+ * The pixel math is the snapshot editor's, copied into `imageEditor/ported/`
+ * rather than reimplemented — a second implementation of the colour and effect
+ * maths would drift, and the migrated documents have to look identical or the
+ * migration is a lie. Copied rather than imported because the snapshot editor
+ * is frozen and this editor has to outlive its package.
  *
  * What changes is the *shape*: the snapshot editor applied these as fields on
  * one flat state object in a fixed order, and here each is a step in a stack
@@ -17,17 +18,14 @@ import { featherAlpha } from './useStackCompositor'
 import {
   applyColorIsolation,
   applyColorMatrix,
-  applyEffects,
   applyGradientMap,
   applySplitToning,
   combineAdjustments,
-  hasEffects,
   multiplyColorMatrices,
-  FILTER_MATRICES,
-} from '@stimma/image-editor'
-// The annotation renderer is the copied one, so an Annotate step composites
-// through exactly the code its gestures were authored against.
-import { renderShapes } from '../../imageEditor/ported/shapes'
+} from '../ported/colorMatrix'
+import { applyEffects, hasEffects } from '../ported/effects'
+import { FILTER_MATRICES } from '../ported/filterMatrices'
+import { renderShapes } from '../ported/shapes'
 
 export interface CropParams {
   /**
@@ -40,6 +38,13 @@ export interface CropParams {
    * An identity crop is therefore `{ x: 0.5, y: 0.5, width: 1, height: 1 }`.
    */
   rect: { x: number; y: number; width: number; height: number }
+  /**
+   * The crop WINDOW's own tilt, in radians — what the rotation lollipop sets.
+   * Distinct from `rotation`, which turns the image inside the frame: tilting
+   * the window turns the content the opposite way, which is what straightening
+   * a horizon means.
+   */
+  cropRotation?: number
   /** Fine straightening, radians. */
   rotation?: number
   /** Quarter turns clockwise. */
@@ -165,11 +170,24 @@ export function applyCrop(
     drawHeight = width
   }
 
-  ctx.drawImage(
-    input,
-    sourceX, sourceY, sourceWidth, sourceHeight,
-    -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight
-  )
+  const cropRotation = params.cropRotation ?? 0
+  if (cropRotation !== 0) {
+    // A tilted crop window is the image counter-tilted: the window's own axes
+    // become the output's, so the content turns the OTHER way. Sampling has to
+    // be done by transform rather than by a source rectangle, because the
+    // region wanted is a rotated quadrilateral and drawImage only takes an
+    // axis-aligned one. Output size equals the crop size in source pixels, so
+    // no scale is needed — the same reasoning the snapshot editor's writer used.
+    ctx.rotate(-cropRotation)
+    ctx.translate(-rect.x * inputWidth, -rect.y * inputHeight)
+    ctx.drawImage(input, 0, 0)
+  } else {
+    ctx.drawImage(
+      input,
+      sourceX, sourceY, sourceWidth, sourceHeight,
+      -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight
+    )
+  }
   ctx.restore()
   return out
 }

@@ -15,7 +15,7 @@
 import type { Router } from 'vue-router'
 import axios from 'axios'
 import { isImageEditorV2Enabled } from '../../appConfig'
-import { useWorkspaceTabs } from '../useWorkspaceTabs'
+import { useWorkspaceTabs } from '../../composables/useWorkspaceTabs'
 
 /**
  * Resolve the Asset a media id belongs to. Entry points hand us a media id

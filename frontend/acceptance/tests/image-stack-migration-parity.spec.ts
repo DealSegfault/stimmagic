@@ -13,7 +13,7 @@ import { test, expect } from '@playwright/test'
  * by its CENTRE, and the migrator had been reading it as a top-left.)
  *
  * Both renders happen in the page, through the shared harness in
- * `src/composables/imageStack/migrationParity.ts`, so this spec and any ad-hoc
+ * `src/imageEditor/stack/migrationParity.ts`, so this spec and any ad-hoc
  * runner exercise identical code.
  */
 
@@ -30,6 +30,7 @@ const FAMILY_NAMES = [
   'geometry-flip',
   'geometry-quarter-turn',
   'geometry-straighten',
+  'geometry-crop-tilt',
   'combined',
 ]
 
@@ -38,7 +39,7 @@ test('every migrated field family renders identically to the snapshot editor', a
   await page.waitForLoadState('domcontentloaded')
 
   const results = await page.evaluate(async () => {
-    const harness: any = await import('/src/composables/imageStack/migrationParity.ts')
+    const harness: any = await import('/src/imageEditor/stack/migrationParity.ts')
     const reports = []
     for (const family of harness.PARITY_FAMILIES) {
       reports.push({

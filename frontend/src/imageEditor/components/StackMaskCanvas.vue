@@ -11,7 +11,7 @@
  * the gradient path is the one that renders the same everywhere.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { drawMaskTint, tokenRgb } from '../../composables/imageStack/maskTint'
+import { drawMaskTint, tokenRgb } from '../stack/maskTint'
 
 const props = withDefaults(defineProps<{
   /** The composite this mask applies to; sets the mask's dimensions. */

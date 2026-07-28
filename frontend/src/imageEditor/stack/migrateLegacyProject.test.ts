@@ -87,8 +87,19 @@ test('geometry carries straighten and flips, not just the rectangle', () => {
   }))
   assert.deepEqual((ops[0] as any).params, {
     rect: { x: 0.5, y: 0.5, width: 1, height: 1 },
-    rotation: 0.05, rotation90: 1, flipX: true, flipY: false,
+    rotation: 0.05, cropRotation: 0, rotation90: 1, flipX: true, flipY: false,
   })
+})
+
+test('a tilted crop window survives, and is not confused with image rotation', () => {
+  // The two turn opposite ways, so carrying one across as the other does not
+  // merely lose the straightening — it applies it backwards.
+  const { ops } = migrateLegacyProject(untouched({
+    crop: { x: 0.5, y: 0.5, width: 1, height: 1, rotation: 0.12 },
+  }))
+  assert.equal(ops.length, 1, 'a straightened crop is not an identity crop')
+  assert.equal((ops[0] as any).params.cropRotation, 0.12)
+  assert.equal((ops[0] as any).params.rotation, 0)
 })
 
 test('what the stack cannot represent is named, not silently lost', () => {

@@ -17,11 +17,11 @@
  * This component is the adapter between those two and nothing else.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { useAnnotation } from '../../imageEditor/ported/useAnnotation'
-import type { AnnotationState } from '../../imageEditor/ported/useAnnotation'
-import { renderShapes, drawSelectionHandles, getShapeBounds, getShapeCenter } from '../../imageEditor/ported/shapes'
-import type { Shape, AnnotateTool } from '../../imageEditor/ported/shapeTypes'
-import type { Color, ViewTransform } from '../../imageEditor/ported/geometry'
+import { useAnnotation } from '../ported/useAnnotation'
+import type { AnnotationState } from '../ported/useAnnotation'
+import { renderShapes, drawSelectionHandles, getShapeBounds, getShapeCenter } from '../ported/shapes'
+import type { Shape, AnnotateTool } from '../ported/shapeTypes'
+import type { Color, ViewTransform } from '../ported/geometry'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null

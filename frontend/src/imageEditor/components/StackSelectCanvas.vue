@@ -14,9 +14,9 @@
  * referencing only its own payload.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useSelection } from '../../imageEditor/ported/useSelection'
-import { useMagneticLasso } from '../../imageEditor/ported/useMagneticLasso'
-import type { Point, SelectionMode } from '../../imageEditor/ported/geometry'
+import { useSelection } from '../ported/useSelection'
+import { useMagneticLasso } from '../ported/useMagneticLasso'
+import type { Point, SelectionMode } from '../ported/geometry'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null

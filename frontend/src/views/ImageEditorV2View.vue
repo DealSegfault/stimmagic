@@ -21,40 +21,40 @@ import Button from '../components/ui/Button.vue'
 import IconButton from '../components/ui/IconButton.vue'
 import Tooltip from '../components/ui/Tooltip.vue'
 import Spinner from '../components/ui/Spinner.vue'
-import EditRow from '../components/imageStack/EditRow.vue'
-import EditorToolbar from '../components/imageStack/EditorToolbar.vue'
-import EditorSubbar from '../components/imageStack/EditorSubbar.vue'
-import StackPaintCanvas from '../components/imageStack/StackPaintCanvas.vue'
-import StackSelectCanvas from '../components/imageStack/StackSelectCanvas.vue'
-import StackAnnotateCanvas from '../components/imageStack/StackAnnotateCanvas.vue'
-import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
-import AdjustInspector from '../components/imageStack/AdjustInspector.vue'
-import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
-import StackCropCanvas from '../components/imageStack/StackCropCanvas.vue'
-import { useStackDocument, newOpId } from '../composables/imageStack/useStackDocument'
-import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
-import { StackCompositor, stackHashes, canvasToBlob } from '../composables/imageStack/useStackCompositor'
+import EditRow from '../imageEditor/components/EditRow.vue'
+import EditorToolbar from '../imageEditor/components/EditorToolbar.vue'
+import EditorSubbar from '../imageEditor/components/EditorSubbar.vue'
+import StackPaintCanvas from '../imageEditor/components/StackPaintCanvas.vue'
+import StackSelectCanvas from '../imageEditor/components/StackSelectCanvas.vue'
+import StackAnnotateCanvas from '../imageEditor/components/StackAnnotateCanvas.vue'
+import CheckpointBand from '../imageEditor/components/CheckpointBand.vue'
+import AdjustInspector from '../imageEditor/components/AdjustInspector.vue'
+import StackMaskCanvas from '../imageEditor/components/StackMaskCanvas.vue'
+import StackCropCanvas from '../imageEditor/components/StackCropCanvas.vue'
+import { useStackDocument, newOpId } from '../imageEditor/stack/useStackDocument'
+import { useStackCandidates } from '../imageEditor/stack/useStackCandidates'
+import { StackCompositor, stackHashes, canvasToBlob } from '../imageEditor/stack/useStackCompositor'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
-import { apiErrorMessage } from '../composables/imageStack/errors'
-import { migrateLegacyProject } from '../composables/imageStack/migrateLegacyProject'
+import { apiErrorMessage } from '../imageEditor/stack/errors'
+import { migrateLegacyProject } from '../imageEditor/stack/migrateLegacyProject'
 import {
   blastRadius, canMoveWithinSegment, checkpointStatus, deriveStackState, foldedCount,
-} from '../composables/imageStack/stackState'
+} from '../imageEditor/stack/stackState'
 import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
   transformShapes,
-} from '../composables/imageStack/geometryTransform'
+} from '../imageEditor/stack/geometryTransform'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
-} from '../composables/imageStack/adjustSections'
-import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
-import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
-import type { GenerativeOp } from '../composables/imageStack/types'
+} from '../imageEditor/stack/adjustSections'
+import { familyById, TOOL_FAMILIES } from '../imageEditor/stack/toolFamilies'
+import type { FamilyId, SelectionMode } from '../imageEditor/stack/toolFamilies'
+import type { GenerativeOp } from '../imageEditor/stack/types'
 import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
 import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
-import type { AdjustFamily } from '../composables/imageStack/adjustSections'
+import type { AdjustFamily } from '../imageEditor/stack/adjustSections'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -581,7 +581,7 @@ const subbarState = computed(() => ({
   expandFactor: expandFactor.value,
   upscaleFactor: upscaleFactor.value,
   cropAspect: cropAspect.value,
-  rotation: cropParamsOf().rotation ?? 0,
+  rotation: cropParamsOf().cropRotation ?? 0,
   flipX: !!cropParamsOf().flipX,
   flipY: !!cropParamsOf().flipY,
   combine: selectCombine.value,
@@ -630,7 +630,8 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('auto' in patch) runAuto(patch.auto)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
-  if ('rotation' in patch) void applyCropChange({ rotation: patch.rotation })
+  // Straighten and the lollipop are the same control: the crop window's tilt.
+  if ('rotation' in patch) void applyCropChange({ cropRotation: patch.rotation })
   if ('rotateQuarter' in patch) rotateQuarter()
   if ('flipX' in patch) void applyCropChange({ flipX: patch.flipX })
   if ('flipY' in patch) void applyCropChange({ flipY: patch.flipY })
@@ -961,7 +962,8 @@ async function applyCropChange(
       exec: { kind: 'crop' },
       params: {
         rect: { x: 0.5, y: 0.5, width: 1, height: 1 },
-        rotation: 0, rotation90: 0, flipX: false, flipY: false, ...patch,
+        rotation: 0, cropRotation: 0, rotation90: 0,
+        flipX: false, flipY: false, ...patch,
       },
     } as any)
     cropOpId.value = opId
@@ -1008,7 +1010,7 @@ const cropRect = computed<CropRect>(() => {
   return {
     x: rect.x, y: rect.y, width: rect.width, height: rect.height,
     aspectRatio: cropAspectRatio.value,
-    rotation: params.rotation ?? 0,
+    rotation: params.cropRotation ?? 0,
   }
 })
 
@@ -1031,7 +1033,7 @@ const cropGestureKey = computed(() => `crop:${cropOpId.value}:${cropGesture.valu
 function onCropRectChange(next: CropRect) {
   void applyCropChange(
     { rect: { x: next.x, y: next.y, width: next.width, height: next.height },
-      rotation: next.rotation ?? 0 },
+      cropRotation: next.rotation ?? 0 },
     cropGestureKey.value,
     true
   )

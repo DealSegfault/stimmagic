@@ -15,10 +15,10 @@
  * crop that tracks the pointer and one that snaps between axes.
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import { useCropInteraction } from '../../imageEditor/ported/useCropInteraction'
-import type { CropRect } from '../../imageEditor/ported/useCropInteraction'
-import { drawCropOverlay } from '../../imageEditor/ported/cropOverlay'
-import type { ViewTransform } from '../../imageEditor/ported/geometry'
+import { useCropInteraction } from '../ported/useCropInteraction'
+import type { CropRect } from '../ported/useCropInteraction'
+import { drawCropOverlay } from '../ported/cropOverlay'
+import type { ViewTransform } from '../ported/geometry'
 
 const props = defineProps<{
   /** The composite BELOW the crop step — the uncropped image. */

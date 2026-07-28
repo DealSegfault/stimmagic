@@ -15,21 +15,21 @@
 
 import { ref, shallowRef } from 'vue'
 import axios from 'axios'
-import { useWebSocket } from '../useWebSocket'
+import { useWebSocket } from '../../composables/useWebSocket'
 import {
   buildBasePayload,
   buildCapturedState,
   getPreUploadTasks,
   type PayloadBuilderConfig,
   type PayloadBuilderState,
-} from '../useJobPayloadBuilder'
+} from '../../composables/useJobPayloadBuilder'
 import {
   canvasToBlob,
   extractPatch,
   maskBounds,
 } from './useStackCompositor'
 import { convertMaskPixels } from '../../utils/maskFormat'
-import type { MaskFormat } from '../useToolSchemaFeatures'
+import type { MaskFormat } from '../../composables/useToolSchemaFeatures'
 import type { Candidate } from './types'
 
 const API_BASE = '/api'

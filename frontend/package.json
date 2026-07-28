@@ -19,7 +19,7 @@
     "test:settings-readiness": "node --test --experimental-strip-types src/utils/settingsReadiness.test.ts",
     "test:update-schedule": "node --test --experimental-strip-types src/utils/updateCheckSchedule.test.ts",
     "test:database-cleanup": "node --test tests/databaseCleanupState.test.mjs",
-    "test:image-stack": "node --test --experimental-strip-types src/composables/imageStack/*.test.ts"
+    "test:image-stack": "node --test --experimental-strip-types src/imageEditor/stack/*.test.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.2",

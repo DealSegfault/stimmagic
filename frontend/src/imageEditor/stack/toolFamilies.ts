@@ -150,7 +150,6 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'shape', label: 'Shape' },
       { id: 'text', label: 'Text' },
       { id: 'redact', label: 'Redact' },
-      { id: 'sticker', label: 'Sticker', pending: true },
     ],
   },
 ]

@@ -7,10 +7,10 @@
  * step is created by the first real gesture.
  */
 import { computed } from 'vue'
-import { TOOL_FAMILIES } from '../../composables/imageStack/toolFamilies'
-import type { FamilyId } from '../../composables/imageStack/toolFamilies'
+import { TOOL_FAMILIES } from '../stack/toolFamilies'
+import type { FamilyId } from '../stack/toolFamilies'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
-import Tooltip from '../ui/Tooltip.vue'
+import Tooltip from '../../components/ui/Tooltip.vue'
 
 defineProps<{ active: FamilyId | null }>()
 const emit = defineEmits<{ select: [FamilyId] }>()

@@ -18,8 +18,8 @@
  * advisory hash like a generative patch.
  */
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRetouchLayer } from '../../imageEditor/ported/useRetouchLayer'
-import type { BrushSettings, Point } from '../../imageEditor/ported/geometry'
+import { useRetouchLayer } from '../ported/useRetouchLayer'
+import type { BrushSettings, Point } from '../ported/geometry'
 
 /** Engines whose output depends on the pixels below them. */
 const PIXEL_READING = new Set([

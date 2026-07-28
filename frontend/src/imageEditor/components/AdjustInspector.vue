@@ -13,8 +13,8 @@
 import { computed, ref } from 'vue'
 import {
   ADJUST_SECTIONS, FILTER_CATEGORIES, sectionsForFamily,
-} from '../../composables/imageStack/adjustSections'
-import type { AdjustFamily } from '../../composables/imageStack/adjustSections'
+} from '../stack/adjustSections'
+import type { AdjustFamily } from '../stack/adjustSections'
 
 const props = defineProps<{
   params: Record<string, any>

@@ -12,6 +12,11 @@
  * exercise the same code. Browser-only: it needs a real Canvas 2D.
  */
 
+// The ONE import of the snapshot editor that must survive. Everywhere else the
+// pixel math is copied into imageEditor/ported/, but this file is the proof
+// that the copy matches — importing the original is the entire point. If this
+// is ever swapped for a copy, the test compares the port against itself and
+// proves nothing.
 import { useImageWriter } from '@stimma/image-editor'
 import { applyAnnotations, applyCrop, applyAdjust } from './opExecutors'
 import { migrateLegacyProject } from './migrateLegacyProject'
@@ -210,6 +215,14 @@ export const PARITY_FAMILIES: Array<{ name: string; state: Record<string, any> }
   { name: 'geometry-flip', state: { flipX: true } },
   { name: 'geometry-quarter-turn', state: { rotation90: 1 } },
   { name: 'geometry-straighten', state: { rotation: 0.06 } },
+  // A TILTED CROP WINDOW, which is not the same thing as a rotated image: the
+  // window's axes become the output's, so the content turns the other way.
+  // This family exists because the migration was dropping crop.rotation
+  // outright and the executor was applying the image rotation in its place.
+  {
+    name: 'geometry-crop-tilt',
+    state: { crop: { x: 0.5, y: 0.5, width: 0.8, height: 0.8, rotation: 0.15 } },
+  },
   {
     name: 'combined',
     state: {

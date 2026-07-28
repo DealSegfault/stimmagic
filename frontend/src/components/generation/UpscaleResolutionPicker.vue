@@ -39,13 +39,16 @@
           {{ scale }}x
         </button>
       </div>
-      <div :class="compact ? 'flex items-center gap-2' : 'flex items-center gap-3'">
+      <!-- Continuous range only when the model accepts one. Tools that declare
+           discrete factors get the preset buttons above and nothing else, so an
+           illegal in-between value is unreachable. -->
+      <div v-if="!scaleAllowedValues" :class="compact ? 'flex items-center gap-2' : 'flex items-center gap-3'">
         <input v-no-autocorrect
           type="range"
           v-model.number="scaleFactor"
-          :min="0.5"
-          :max="4"
-          :step="0.1"
+          :min="scaleMin"
+          :max="scaleMax"
+          :step="scaleStep"
           :class="compact
             ? 'flex-1 h-1 bg-overlay-subtle rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-3 [&::-moz-range-thumb]:h-3 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-accent [&::-moz-range-thumb]:border-0'
             : 'flex-1 h-1.5 bg-overlay-subtle rounded-full appearance-none cursor-pointer slider'"
@@ -57,9 +60,9 @@
           <input v-no-autocorrect
             type="number"
             v-model.number="scaleFactor"
-            :min="0.5"
-            :max="4"
-            :step="0.1"
+            :min="scaleMin"
+            :max="scaleMax"
+            :step="scaleStep"
             class="w-16 px-2 py-1 text-sm font-mono tabular-nums bg-overlay-subtle border border-transparent rounded-md text-content text-center focus:border-accent focus-visible:ring-2 ring-accent/40 outline-none"
           />
           <span class="text-xs text-content-tertiary">x</span>
@@ -124,6 +127,7 @@
 
 <script setup lang="ts">
 import { computed, watch } from 'vue'
+import { snapScaleFactor } from '../../utils/resolutionControls'
 
 const props = withDefaults(defineProps<{
   modelValue: {
@@ -138,10 +142,20 @@ const props = withDefaults(defineProps<{
   supportScaleFactor?: boolean
   /** Whether the tool supports resolution param */
   supportResolution?: boolean
+  /** scale_factor bounds from the tool schema (see resolutionControls.ts). */
+  scaleMin?: number
+  scaleMax?: number
+  scaleStep?: number
+  /** Discrete legal factors. When set, only these are offered. */
+  scaleAllowedValues?: number[] | null
 }>(), {
   compact: false,
   supportScaleFactor: true,
   supportResolution: true,
+  scaleMin: 0.5,
+  scaleMax: 4,
+  scaleStep: 0.1,
+  scaleAllowedValues: null,
 })
 
 const emit = defineEmits<{
@@ -172,8 +186,14 @@ const showResolutionUI = computed(() => {
   return resolutionMode.value === 'pixels'
 })
 
-// Presets
-const scalePresets = [0.5, 1, 1.5, 2, 3, 4]
+// Presets — the model's own legal factors when it declares them, otherwise the
+// generic rungs filtered to whatever range the schema allows.
+const DEFAULT_SCALE_PRESETS = [0.5, 1, 1.5, 2, 3, 4]
+const scalePresets = computed(() =>
+  props.scaleAllowedValues?.length
+    ? props.scaleAllowedValues
+    : DEFAULT_SCALE_PRESETS.filter((s) => s >= props.scaleMin && s <= props.scaleMax)
+)
 const pixelPresets = [
   { label: '720p', value: 720 },
   { label: '1080p', value: 1080 },
@@ -211,6 +231,30 @@ watch(() => [props.supportScaleFactor, props.supportResolution], ([sf, res]) => 
     emit('update:modelValue', { ...props.modelValue, resolutionMode: 'pixels' })
   }
 }, { immediate: true })
+
+// An inherited or remixed scale_factor can be illegal for the tool now in the
+// panel (2.5x carried onto Bria, 4x carried onto a 2x-only model). Snap it as
+// soon as the constraints are known so the panel never shows — or submits — a
+// factor the provider would reject.
+watch(
+  () => [props.supportScaleFactor, props.scaleMin, props.scaleMax, props.scaleStep, props.scaleAllowedValues, props.modelValue.scaleFactor] as const,
+  () => {
+    if (!props.supportScaleFactor) return
+    const legal = snapScaleFactor(
+      {
+        min: props.scaleMin,
+        max: props.scaleMax,
+        step: props.scaleStep,
+        allowedValues: props.scaleAllowedValues ?? null,
+      },
+      props.modelValue.scaleFactor
+    )
+    if (legal !== props.modelValue.scaleFactor) {
+      emit('update:modelValue', { ...props.modelValue, scaleFactor: legal })
+    }
+  },
+  { immediate: true }
+)
 
 // Calculate output dimensions for display
 const outputDimensions = computed(() => {

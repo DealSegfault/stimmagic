@@ -74,7 +74,7 @@ function isIdentityCrop(state: any): boolean {
     (Math.abs((crop.x ?? 0.5) - 0.5) < 1e-6 && Math.abs((crop.y ?? 0.5) - 0.5) < 1e-6 &&
      Math.abs((crop.width ?? 1) - 1) < 1e-6 && Math.abs((crop.height ?? 1) - 1) < 1e-6)
   return (
-    untouchedRect &&
+    untouchedRect && !crop?.rotation &&
     !state?.rotation && !state?.rotation90 && !state?.flipX && !state?.flipY
   )
 }
@@ -122,6 +122,10 @@ export function migrateLegacyProject(project: any): MigrationResult {
           height: state.crop?.height ?? 1,
         },
         rotation: state.rotation ?? 0,
+        // The crop WINDOW's tilt, which the old model kept on the crop and
+        // this one was dropping outright — a straightened legacy project
+        // migrated to an unstraightened one.
+        cropRotation: state.crop?.rotation ?? 0,
         rotation90: state.rotation90 ?? 0,
         flipX: !!state.flipX,
         flipY: !!state.flipY,

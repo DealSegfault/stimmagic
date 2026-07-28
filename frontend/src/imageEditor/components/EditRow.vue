@@ -20,12 +20,12 @@ import {
   EyeIcon, EyeSlashIcon, TrashIcon, EllipsisHorizontalIcon,
   ArrowPathIcon, Bars2Icon,
 } from '@heroicons/vue/24/outline'
-import IconButton from '../ui/IconButton.vue'
-import Tooltip from '../ui/Tooltip.vue'
+import IconButton from '../../components/ui/IconButton.vue'
+import Tooltip from '../../components/ui/Tooltip.vue'
 import { getTaskTypeIconSvg } from '../../utils/taskTypeIcons'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
-import type { Op } from '../../composables/imageStack/types'
-import type { Staleness } from '../../composables/imageStack/stackState'
+import type { Op } from '../stack/types'
+import type { Staleness } from '../stack/stackState'
 
 export interface RowVerb {
   id: string

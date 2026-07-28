@@ -1228,7 +1228,7 @@ import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, Svg
 import { makeProfileKey, makeToolDbKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { useWorkspaceTabs, toolInstanceScopedId, toolInstanceRoute } from '../composables/useWorkspaceTabs'
-import { openImageEditor } from '../composables/imageStack/openImageEditor'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 import { getCurrentProfileId } from '../composables/useProfile'
 import { getCachedPin } from '../composables/usePinLock'
 import { getApiBase } from '../apiConfig'

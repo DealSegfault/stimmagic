@@ -8,19 +8,19 @@
  * system. Nobody gets forty controls in a toolbar; nobody loses them either.
  */
 import { computed } from 'vue'
-import Button from '../ui/Button.vue'
-import Tooltip from '../ui/Tooltip.vue'
+import Button from '../../components/ui/Button.vue'
+import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
-import BrushPicker from '../../imageEditor/ported/BrushPicker.vue'
-import ColorPicker from '../../imageEditor/ported/ColorPicker.vue'
+import BrushPicker from '../ported/BrushPicker.vue'
+import ColorPicker from '../ported/ColorPicker.vue'
 import {
   CROP_ASPECTS,
-} from '../../composables/imageStack/adjustSections'
+} from '../stack/adjustSections'
 import {
   PAINT_ENGINES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
   familyById,
-} from '../../composables/imageStack/toolFamilies'
-import type { FamilyId, SelectionMode } from '../../composables/imageStack/toolFamilies'
+} from '../stack/toolFamilies'
+import type { FamilyId, SelectionMode } from '../stack/toolFamilies'
 
 const props = defineProps<{
   family: FamilyId

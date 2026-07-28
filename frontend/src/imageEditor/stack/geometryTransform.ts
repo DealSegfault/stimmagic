@@ -93,20 +93,29 @@ export function cropAffine(
   // maps the source window onto a box centred on the origin, and the flip and
   // rotation then act on THAT box — folding the flip in earlier mirrors about
   // the wrong point.
-  const toSourceOrigin: Affine = [1, 0, 0, 1, -sourceX, -sourceY]
-  const scaleToDraw: Affine = [drawWidth / sourceWidth, 0, 0, drawHeight / sourceHeight, 0, 0]
-  const centreOnOrigin: Affine = [1, 0, 0, 1, -drawWidth / 2, -drawHeight / 2]
   const flip: Affine = [params.flipX ? -1 : 1, 0, 0, params.flipY ? -1 : 1, 0, 0]
   const rotate: Affine = [cos, sin, -sin, cos, 0, 0]
   const toFrameCentre: Affine = [1, 0, 0, 1, width / 2, height / 2]
 
-  const matrix = multiply(
-    toFrameCentre,
-    multiply(
-      rotate,
-      multiply(flip, multiply(centreOnOrigin, multiply(scaleToDraw, toSourceOrigin)))
-    )
-  )
+  // Mirrors applyCrop exactly, branch for branch. If these two ever disagree,
+  // a mask co-transforms into a frame the pixels were never put in — which is
+  // invisible until something lands in the wrong place.
+  const cropRotation = params.cropRotation ?? 0
+  let inner: Affine
+  if (cropRotation !== 0) {
+    const cropCos = Math.cos(-cropRotation)
+    const cropSin = Math.sin(-cropRotation)
+    const toCropCentre: Affine = [1, 0, 0, 1, -rect.x * inputWidth, -rect.y * inputHeight]
+    const straighten: Affine = [cropCos, cropSin, -cropSin, cropCos, 0, 0]
+    inner = multiply(straighten, toCropCentre)
+  } else {
+    const toSourceOrigin: Affine = [1, 0, 0, 1, -sourceX, -sourceY]
+    const scaleToDraw: Affine = [drawWidth / sourceWidth, 0, 0, drawHeight / sourceHeight, 0, 0]
+    const centreOnOrigin: Affine = [1, 0, 0, 1, -drawWidth / 2, -drawHeight / 2]
+    inner = multiply(centreOnOrigin, multiply(scaleToDraw, toSourceOrigin))
+  }
+
+  const matrix = multiply(toFrameCentre, multiply(rotate, multiply(flip, inner)))
   return { matrix, width, height }
 }
 

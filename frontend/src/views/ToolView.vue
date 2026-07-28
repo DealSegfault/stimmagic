@@ -588,8 +588,12 @@
           @update:model-value="onResolutionPickerUpdate"
           :input-width="inputImageWidth"
           :input-height="inputImageHeight"
-          :support-scale-factor="showUpscalePicker"
-          :support-resolution="showUpscalePicker"
+          :support-scale-factor="hasScaleFactor"
+          :support-resolution="hasUpscaleResolution"
+          :scale-min="scaleFactorConstraints.min"
+          :scale-max="scaleFactorConstraints.max"
+          :scale-step="scaleFactorConstraints.step"
+          :scale-allowed-values="scaleFactorConstraints.allowedValues"
         />
 
 
@@ -3037,6 +3041,7 @@ const {
   hasScaleFactor,
   hasUpscaleResolution,
   showUpscalePicker,
+  scaleFactorConstraints,
   hasResolution,
   hasFrameCount,
   hasDuration,

@@ -1,5 +1,6 @@
 import { computed, type Ref, type ComputedRef } from 'vue'
 import { detectResolutionControls } from '../utils/resolutionControls'
+import type { ScaleFactorConstraints } from '../utils/resolutionControls'
 import { AUDIO_TASK_TYPES } from '../utils/taskTypeIcons'
 import type { ParamConstraint, ConstraintExpr } from '../utils/paramConstraints'
 
@@ -125,6 +126,7 @@ export interface UseToolSchemaFeaturesReturn {
   hasScaleFactor: ComputedRef<boolean>
   hasUpscaleResolution: ComputedRef<boolean>
   showUpscalePicker: ComputedRef<boolean>
+  scaleFactorConstraints: ComputedRef<ScaleFactorConstraints>
   hasResolution: ComputedRef<boolean>
   hasFrameCount: ComputedRef<boolean>
   hasDuration: ComputedRef<boolean>
@@ -218,6 +220,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
   const hasScaleFactor = computed(() => resControls.value.hasScaleFactor)
   const hasUpscaleResolution = computed(() => resControls.value.hasUpscaleResolution)
   const showUpscalePicker = computed(() => resControls.value.showUpscalePicker)
+  const scaleFactorConstraints = computed(() => resControls.value.scaleFactor)
 
   // Check if tool has a 'resolution' param (for config transfer purposes - any resolution param)
   const hasResolution = computed(() => {
@@ -580,6 +583,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
     hasScaleFactor,
     hasUpscaleResolution,
     showUpscalePicker,
+    scaleFactorConstraints,
     hasResolution,
     hasFrameCount,
     hasDuration,
