@@ -366,6 +366,7 @@ function chipClass(active: boolean, pending = false) {
         <ColorPicker
           :model-value="state.paintColor"
           :image-palette="state.imagePalette"
+          embedded
           @update:model-value="emit('set', { paintColor: $event })"
         />
       </ToolbarPopover>
@@ -430,6 +431,7 @@ function chipClass(active: boolean, pending = false) {
         <ColorPicker
           :model-value="state.annotateColorRgb"
           :image-palette="state.imagePalette"
+          embedded
           @update:model-value="emit('set', { annotateColorRgb: $event })"
         />
       </ToolbarPopover>

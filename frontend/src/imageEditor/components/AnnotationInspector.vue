@@ -228,6 +228,7 @@ const glowIntensity = computed(() =>
           <ColorPicker
             :model-value="isText ? any.textColor : any.strokeColor"
             :image-palette="palette"
+            embedded
             @update:model-value="emit('change', isText ? { textColor: $event } : { strokeColor: $event })"
           />
         </ToolbarPopover>
@@ -310,6 +311,7 @@ const glowIntensity = computed(() =>
             :model-value="any.backgroundColor ?? null"
             :image-palette="palette"
             allow-null
+            embedded
             @update:model-value="emit('change', { backgroundColor: $event })"
           />
         </ToolbarPopover>

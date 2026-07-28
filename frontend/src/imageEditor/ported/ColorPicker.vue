@@ -28,6 +28,14 @@ const props = withDefaults(
     modelValue: RGBAColor | null;
     allowNull?: boolean;
     imagePalette?: RGBAColor[];
+    /**
+     * ADAPTED: the picker IS the popover, rather than a compact strip that
+     * opens a second panel. In a dropdown there is nothing to be compact for —
+     * the dropdown is already the disclosure — so the whole picker shows at
+     * once: swatches, tabs, opacity, recents. One panel, no expansion inside
+     * an expansion.
+     */
+    embedded?: boolean;
   }>(),
   {
     allowNull: false,
@@ -426,7 +434,7 @@ defineExpose({
 <template>
   <div class="stimma-color-picker">
     <!-- Preview bar row -->
-    <div class="stimma-color-picker__preview-row">
+    <div v-if="!embedded" class="stimma-color-picker__preview-row">
       <button
         class="stimma-color-picker__preview"
         :style="modelValue ? { backgroundColor: colorToCss(modelValue) } : {}"
@@ -477,9 +485,13 @@ defineExpose({
       opening a second panel over the whole app to change one colour — so it
       expands in place instead, and the dropdown does the whole job.
     -->
-    <div v-if="showModal" class="stimma-color-modal stimma-color-modal--inline">
+    <div
+      v-if="embedded || showModal"
+      class="stimma-color-modal"
+      :class="embedded ? 'stimma-color-modal--embedded' : 'stimma-color-modal--inline'"
+    >
           <!-- Header -->
-          <div class="stimma-color-modal__header">
+          <div v-if="!embedded" class="stimma-color-modal__header">
             <button
               v-if="eyeDropperSupported"
               class="stimma-color-modal__eyedropper"
@@ -737,7 +749,15 @@ defineExpose({
 }
 
 /* Specificity, not source order: the base rule below sets a fixed 300px. */
-.stimma-color-modal.stimma-color-modal--inline {
+.stimma-color-modal.stimma-color-modal--embedded {
+  width: 100%;
+  padding: 0;
+  margin-top: 10px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.stimma-color-modal--inline {
   width: 100%;
   margin-top: 10px;
   padding: 0;
