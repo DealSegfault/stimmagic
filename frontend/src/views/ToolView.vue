@@ -429,20 +429,6 @@
           @explode="explodeBatch"
         />
 
-        <!-- Reference audio: its own section, separate from the visual input
-             above (audio-conditioned tools like lip-sync / avatar). -->
-        <MediaPicker
-          v-if="audioInputConfig"
-          :model-value="audioInputItems"
-          @update:model-value="updateAudioInputItems"
-          :accept="audioInputConfig.accept"
-          :min-items="audioInputConfig.min"
-          :max-items="audioInputConfig.max"
-          :reorderable="audioInputConfig.reorderable"
-          :label="audioInputConfig.label"
-          :description="audioInputConfig.description"
-        />
-
         <!-- Inpaint: Combined source image + Mask editor -->
         <MaskEditor
           ref="maskEditorRef"
@@ -495,6 +481,22 @@
           @view-media="openSingleImageSlideshow"
           @suggest-resolution="onSuggestResolution"
           @suggest-aspect="onSuggestAspect"
+        />
+
+        <!-- Reference audio: its own section, below the visual inputs — the
+             picture is what the user picks first, and the clip (a driving track
+             for lip-sync/avatar, or a voice sample for identity) reads as a
+             qualifier on it rather than a peer of it. -->
+        <MediaPicker
+          v-if="audioInputConfig"
+          :model-value="audioInputItems"
+          @update:model-value="updateAudioInputItems"
+          :accept="audioInputConfig.accept"
+          :min-items="audioInputConfig.min"
+          :max-items="audioInputConfig.max"
+          :reorderable="audioInputConfig.reorderable"
+          :label="audioInputConfig.label"
+          :description="audioInputConfig.description"
         />
 
         <!-- Video Parameters: Duration (for tools using duration param) -->
