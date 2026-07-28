@@ -22,7 +22,7 @@ const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
   displayWidth: number
   displayHeight: number
-  tool?: 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
+  tool?: 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand'
   combine?: SelectionMode
   featherPx?: number
   /** Magic wand colour tolerance, 0-255. */
@@ -88,7 +88,7 @@ function onPointerDown(event: PointerEvent) {
     startAnts()
     return
   }
-  if (props.tool === 'rect' || props.tool === 'brush') selection.startRectSelection(point)
+  if (props.tool === 'rect') selection.startRectSelection(point)
   else if (props.tool === 'ellipse') selection.startEllipseSelection(point)
   else selection.startLassoSelection(point)
   startAnts()
@@ -98,7 +98,7 @@ function onPointerMove(event: PointerEvent) {
   if (!drawing || !props.source) return
   const point = pointFrom(event)
   if (props.tool === 'magnetic') magnetic.updatePreview(point)
-  else if (props.tool === 'rect' || props.tool === 'brush') selection.updateRectSelection(point, props.combine, event.shiftKey)
+  else if (props.tool === 'rect') selection.updateRectSelection(point, props.combine, event.shiftKey)
   else if (props.tool === 'ellipse') selection.updateEllipseSelection(point, props.combine, event.shiftKey)
   else selection.continueLassoSelection(point)
   draw()
@@ -112,7 +112,7 @@ function onPointerUp(event: PointerEvent) {
   // A magnetic lasso closes on its own anchors, not on pointer-up.
   if (props.tool === 'magnetic') { draw(); return }
   drawing = false
-  if (props.tool === 'rect' || props.tool === 'brush') selection.finishRectSelection(point, props.combine, event.shiftKey)
+  if (props.tool === 'rect') selection.finishRectSelection(point, props.combine, event.shiftKey)
   else if (props.tool === 'ellipse') selection.finishEllipseSelection(point, props.combine, event.shiftKey)
   else selection.finishLassoSelection(props.combine)
   stopAnts()
@@ -175,7 +175,7 @@ function draw() {
     const points = selection.drawingPoints.value
     const start = selection.drawingStartPoint.value
     const current = selection.drawingCurrentPoint.value
-    if ((props.tool === 'rect' || props.tool === 'brush') && start && current) {
+    if ((props.tool === 'rect') && start && current) {
       ctx.strokeRect(
         Math.min(start.x, current.x), Math.min(start.y, current.y),
         Math.abs(current.x - start.x), Math.abs(current.y - start.y)

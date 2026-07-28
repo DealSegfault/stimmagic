@@ -11,6 +11,7 @@ import { computed } from 'vue'
 import Button from '../../components/ui/Button.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
+import ToolIcon from './ToolIcon.vue'
 import BrushPicker from '../ported/BrushPicker.vue'
 import ColorPicker from '../ported/ColorPicker.vue'
 import {
@@ -73,12 +74,14 @@ function chipClass(active: boolean, pending = false) {
       >
         <button
           type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
           :class="chipClass(sub === option.id, option.pending)"
           :disabled="option.pending"
+          :aria-label="option.label"
           @click="emit('sub', option.id)"
         >
-          {{ option.label }}
+          <ToolIcon v-if="option.icon" :name="option.icon" />
+          <span v-else>{{ option.label }}</span>
         </button>
       </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
@@ -217,25 +220,18 @@ function chipClass(active: boolean, pending = false) {
 
     <!-- Select ---------------------------------------------------------- -->
     <template v-else-if="family.id === 'select'">
-      <button
-        v-for="option in SELECTION_MODES"
-        :key="option.id"
-        type="button"
-        class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-        :class="chipClass(state.combine === option.id)"
-        @click="emit('set', { combine: option.id as SelectionMode })"
-      >
-        {{ option.label }}
-      </button>
+      <Tooltip v-for="option in SELECTION_MODES" :key="option.id" :text="option.label">
+        <button
+          type="button"
+          class="p-1.5 rounded-md transition-colors"
+          :class="chipClass(state.combine === option.id)"
+          :aria-label="option.label"
+          @click="emit('set', { combine: option.id as SelectionMode })"
+        >
+          <ToolIcon :name="option.icon" />
+        </button>
+      </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <label v-if="sub === 'brush'" class="flex items-center gap-2 text-xs text-content-tertiary">
-        Size
-        <input
-          type="range" min="8" max="300" class="w-24"
-          :value="state.brushSize"
-          @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
-        />
-      </label>
       <label v-if="sub === 'wand'" class="flex items-center gap-2 text-xs text-content-tertiary">
         Tolerance
         <input
@@ -285,18 +281,7 @@ function chipClass(active: boolean, pending = false) {
           :disabled="engine.pending"
           @click="emit('set', { engineId: engine.id })"
         >
-          <!-- Stroke preview: the brush's own falloff, so the chip shows what
-               it lays down rather than naming it. -->
-          <span
-            class="w-4 h-2 rounded-full"
-            :style="{
-              background: engine.readsPixels
-                ? 'linear-gradient(90deg, rgb(var(--color-text-tertiary-rgb)/.7), transparent)'
-                : `radial-gradient(circle, currentColor ${Math.round(engine.hardness * 100)}%, transparent 100%)`,
-              opacity: engine.flow,
-            }"
-          />
-          {{ engine.label }}
+          <ToolIcon :name="engine.icon" />
         </button>
       </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
@@ -402,19 +387,6 @@ function chipClass(active: boolean, pending = false) {
       >
         {{ auto.label }}
       </button>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <span class="text-xs text-content-tertiary">
-        Sliders are in the inspector below the stack — every one is free.
-      </span>
-    </template>
-
-    <!-- Filters / Effects ----------------------------------------------- -->
-    <template v-else-if="family.id === 'filters' || family.id === 'effects'">
-      <span class="text-xs text-content-tertiary">
-        {{ family.id === 'filters'
-          ? 'Presets are in the inspector below the stack.'
-          : 'All controls are in the inspector below the stack — every one is free.' }}
-      </span>
     </template>
 
     <!-- Annotate -------------------------------------------------------- -->
@@ -432,16 +404,17 @@ function chipClass(active: boolean, pending = false) {
         </button>
       </template>
       <template v-else-if="sub === 'shape'">
-        <button
-          v-for="kind in SHAPE_KINDS"
-          :key="kind.id"
-          type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-          :class="chipClass(state.shapeKind === kind.id)"
-          @click="emit('set', { shapeKind: kind.id })"
-        >
-          {{ kind.label }}
-        </button>
+        <Tooltip v-for="kind in SHAPE_KINDS" :key="kind.id" :text="kind.label">
+          <button
+            type="button"
+            class="p-1.5 rounded-md transition-colors"
+            :class="chipClass(state.shapeKind === kind.id)"
+            :aria-label="kind.label"
+            @click="emit('set', { shapeKind: kind.id })"
+          >
+            <ToolIcon :name="(kind.icon as any)" />
+          </button>
+        </Tooltip>
       </template>
       <span v-if="sub !== 'redact'" class="w-px h-5 bg-edge-subtle mx-1" />
       <ToolbarPopover v-if="sub !== 'redact'" label="Color">
@@ -456,16 +429,6 @@ function chipClass(active: boolean, pending = false) {
           @update:model-value="emit('set', { annotateColorRgb: $event })"
         />
       </ToolbarPopover>
-      <template v-if="state.selectedShapeId">
-        <span class="w-px h-5 bg-edge-subtle mx-1" />
-        <button
-          type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
-          @click="emit('set', { deleteShape: true })"
-        >
-          Delete
-        </button>
-      </template>
     </template>
 
     <div class="flex-1" />

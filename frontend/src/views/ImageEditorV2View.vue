@@ -558,12 +558,12 @@ function selectFamily(id: FamilyId) {
   sub.value = familyById(id).defaultSub
   if (id === 'generate') mode.value = (sub.value as Mode) ?? null
   if (id === 'crop') {
-    // Entering Crop resumes the topmost existing crop rather than stacking a
-    // second one on top of it: two crops in a row is never what was meant.
-    const existing = [...(stack.doc.value?.edits || [])]
-      .reverse()
-      .find(op => (op as any).exec?.kind === 'crop')
-    cropOpId.value = existing?.id ?? null
+    // Each visit to Crop is its own step. Cropping twice is a real thing to
+    // want — frame roughly, work, then tighten — and it stays non-destructive
+    // because the earlier crop is still a row you can widen or delete. The
+    // only time an existing crop is resumed is when its row is selected,
+    // which enterParametricOp handles.
+    cropOpId.value = null
     void renderCropInput()
   }
 }
@@ -640,6 +640,14 @@ function onSubbarSet(patch: Record<string, any>) {
 }
 
 /** One line of fact per mode: what to do, and what it will cost. */
+/**
+ * Only where the toolbar cannot speak for itself.
+ *
+ * A hint that narrates what the controls already show is noise — the tools are
+ * the explanation. What survives is the one case where the app is WAITING for
+ * something the user cannot see: a region brush, and the Generate sub-tools
+ * whose cost and effect are not visible until they run.
+ */
 const subbarHint = computed(() => {
   if (regionTargetOpId.value) return 'Brush the area to limit that edit to'
   if (family.value === 'generate') {
@@ -647,18 +655,6 @@ const subbarHint = computed(() => {
     if (sub.value === 'whole') return 'Creates a checkpoint · everything below feeds it'
     if (sub.value === 'expand') return 'Grows the canvas · the new border is auto-masked'
     if (sub.value === 'upscale') return 'Creates a checkpoint · output continues at the new size'
-  }
-  if (family.value === 'crop') return 'Picking an aspect adds or updates the Crop step — free, reversible'
-  if (family.value === 'select') {
-    return selection.value
-      ? 'Inpaint will use this selection · adjustments can be limited to it'
-      : 'Drag on the canvas · selections become masks and region scopes'
-  }
-  if (family.value === 'paint') {
-    return paintOpId.value ? 'Painting into the current layer' : 'The first stroke creates a Paint layer'
-  }
-  if (family.value === 'annotate') {
-    return sub.value === 'text' ? 'Click the canvas to place text' : 'Drag on the canvas'
   }
   return null
 })
@@ -1106,15 +1102,24 @@ async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
 }
 
 /**
- * Double-clicking a container row re-enters its session — the plan's
- * re-enterable containers: a Paint layer keeps painting into itself, an
- * Annotate step keeps accumulating shapes.
+ * Double-clicking a row re-enters THAT step rather than starting another: a
+ * Paint layer keeps painting into itself, an Annotate step keeps accumulating
+ * shapes, and a Crop reopens on its own input — which is what makes a second
+ * crop a deliberate act rather than the only thing you can do.
  */
 function enterContainerOp(op: any) {
+  if (op.exec?.kind === 'crop') {
+    family.value = 'crop'
+    sub.value = null
+    cropOpId.value = op.id
+    cropAspect.value = 'free'
+    void renderCropInput()
+    return
+  }
   if (op.class !== 'container') return
   if (op.exec?.kind === 'annotate') {
     family.value = 'annotate'
-    sub.value = 'text'
+    sub.value = 'arrow'
     annotateOpId.value = op.id
     return
   }
@@ -1123,6 +1128,10 @@ function enterContainerOp(op: any) {
 
 function startNewPaintLayer() {
   paintOpId.value = null
+  // Without this the next layer starts holding the previous one's pixels: the
+  // canvas reloads `initialLayer` on any source change, so leaving it set
+  // quietly copies the old strokes into the new step.
+  paintInitialLayer.value = null
   paintRef.value?.reset()
 }
 
@@ -1283,6 +1292,10 @@ async function importLegacyProject(project: any) {
 function onKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
   if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA') return
+  // Canvas text editing has no focusable element to hide behind, so the
+  // single-key tool shortcuts would eat the typing: 'e' and 'l' switched to
+  // Effects and Levels mid-word and unmounted the editor being typed into.
+  if (annotateRef.value?.isEditingText()) return
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
     event.preventDefault()
     if (event.shiftKey) stack.redo()

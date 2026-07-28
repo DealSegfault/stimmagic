@@ -12,6 +12,8 @@
  * glyph in the app.
  */
 
+import type { IconName } from '../ported/icons'
+
 export type FamilyId =
   | 'generate' | 'crop' | 'select' | 'paint'
   | 'levels' | 'filters' | 'effects'
@@ -20,6 +22,8 @@ export type FamilyId =
 export interface SubTool {
   id: string
   label: string
+  /** A glyph from the ported registry; the label becomes its tooltip. */
+  icon?: IconName
   /** Not yet implemented; shown so the shape of the family is honest. */
   pending?: boolean
 }
@@ -93,12 +97,11 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     icon: FAMILY_ICONS.select,
     defaultSub: 'rect',
     subTools: [
-      { id: 'rect', label: 'Rectangle' },
-      { id: 'ellipse', label: 'Ellipse' },
-      { id: 'lasso', label: 'Lasso' },
-      { id: 'brush', label: 'Brush' },
-      { id: 'magnetic', label: 'Magnetic' },
-      { id: 'wand', label: 'Wand' },
+      { id: 'rect', label: 'Rectangle', icon: 'squareDashed' },
+      { id: 'ellipse', label: 'Ellipse', icon: 'circleDashed' },
+      { id: 'lasso', label: 'Lasso', icon: 'lasso' },
+      { id: 'magnetic', label: 'Magnetic', icon: 'magnetLasso' },
+      { id: 'wand', label: 'Wand', icon: 'wand' },
     ],
   },
   {
@@ -144,12 +147,12 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     icon: FAMILY_ICONS.annotate,
     defaultSub: 'arrow',
     subTools: [
-      { id: 'select', label: 'Select' },
-      { id: 'arrow', label: 'Arrow' },
-      { id: 'draw', label: 'Draw' },
-      { id: 'shape', label: 'Shape' },
-      { id: 'text', label: 'Text' },
-      { id: 'redact', label: 'Redact' },
+      { id: 'select', label: 'Select', icon: 'mousePointer' },
+      { id: 'arrow', label: 'Arrow', icon: 'arrowUpRight' },
+      { id: 'draw', label: 'Draw', icon: 'pencil' },
+      { id: 'shape', label: 'Shape', icon: 'square' },
+      { id: 'text', label: 'Text', icon: 'type' },
+      { id: 'redact', label: 'Redact', icon: 'redact' },
     ],
   },
 ]
@@ -170,6 +173,7 @@ export function familyById(id: FamilyId): ToolFamily {
 export interface PaintEngine {
   id: string
   label: string
+  icon: IconName
   hardness: number
   flow: number
   /** Reads the composite below rather than laying down the colour. */
@@ -183,15 +187,15 @@ export const PAINT_ENGINES: PaintEngine[] = [
   // hangs off the toolbar, so there is one Brush engine rather than one chip
   // per shape. What is listed here is what the engine DOES, which is the part
   // the picker cannot express.
-  { id: 'paint', label: 'Brush', hardness: 0.6, flow: 1 },
-  { id: 'fill', label: 'Fill', hardness: 1, flow: 1 },
-  { id: 'blur', label: 'Blur', hardness: 0.3, flow: 0.6, readsPixels: true },
-  { id: 'sharpen', label: 'Sharpen', hardness: 0.3, flow: 0.6, readsPixels: true },
-  { id: 'dodge', label: 'Dodge', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'burn', label: 'Burn', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'sponge', label: 'Sponge', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'heal', label: 'Heal', hardness: 0.4, flow: 1, readsPixels: true },
-  { id: 'clone', label: 'Clone', hardness: 0.4, flow: 1, readsPixels: true },
+  { id: 'paint', label: 'Brush', icon: 'paintbrush', hardness: 0.6, flow: 1 },
+  { id: 'fill', label: 'Fill', icon: 'fill', hardness: 1, flow: 1 },
+  { id: 'blur', label: 'Blur', icon: 'droplet', hardness: 0.3, flow: 0.6, readsPixels: true },
+  { id: 'sharpen', label: 'Sharpen', icon: 'focus', hardness: 0.3, flow: 0.6, readsPixels: true },
+  { id: 'dodge', label: 'Dodge', icon: 'sun', hardness: 0.3, flow: 0.4, readsPixels: true },
+  { id: 'burn', label: 'Burn', icon: 'moon', hardness: 0.3, flow: 0.4, readsPixels: true },
+  { id: 'sponge', label: 'Sponge', icon: 'sponge', hardness: 0.3, flow: 0.4, readsPixels: true },
+  { id: 'heal', label: 'Heal', icon: 'bandage', hardness: 0.4, flow: 1, readsPixels: true },
+  { id: 'clone', label: 'Clone', icon: 'stamp', hardness: 0.4, flow: 1, readsPixels: true },
 ]
 
 export const PAINT_SWATCHES = [
@@ -200,10 +204,10 @@ export const PAINT_SWATCHES = [
 
 /** Combine modes for Select — how a new selection meets the existing one. */
 export const SELECTION_MODES = [
-  { id: 'new', label: 'New' },
-  { id: 'add', label: 'Add' },
-  { id: 'subtract', label: 'Subtract' },
-  { id: 'intersect', label: 'Intersect' },
+  { id: 'new', label: 'New', icon: 'selectionNew' },
+  { id: 'add', label: 'Add', icon: 'selectionAdd' },
+  { id: 'subtract', label: 'Subtract', icon: 'selectionSubtract' },
+  { id: 'intersect', label: 'Intersect', icon: 'selectionIntersect' },
 ] as const
 
 export type SelectionMode = typeof SELECTION_MODES[number]['id']
@@ -217,7 +221,7 @@ export const TEXT_STYLES = [
 ] as const
 
 export const SHAPE_KINDS = [
-  { id: 'rectangle', label: 'Rectangle' },
-  { id: 'ellipse', label: 'Ellipse' },
-  { id: 'line', label: 'Line' },
+  { id: 'rectangle', label: 'Rectangle', icon: 'square' },
+  { id: 'ellipse', label: 'Ellipse', icon: 'circle' },
+  { id: 'line', label: 'Line', icon: 'slash' },
 ] as const

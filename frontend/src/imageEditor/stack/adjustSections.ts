@@ -52,7 +52,7 @@ export const ADJUST_SECTIONS: AdjustSection[] = [
     ],
   },
   {
-    family: 'effects',
+    family: 'levels',
     id: 'split-tone',
     label: 'Split tone',
     toggle: { key: 'splitToningEnabled', label: 'Split tone' },

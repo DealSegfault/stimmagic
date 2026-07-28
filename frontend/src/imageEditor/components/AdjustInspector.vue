@@ -60,6 +60,11 @@ function chooseFilter(id: string) {
 
 <template>
   <div class="divide-y divide-edge-subtle">
+    <!-- The stack above is steps; this is the selected step's properties. The
+         header is what tells them apart. -->
+    <header class="px-3 py-2">
+      <h3 class="text-xs font-medium text-content-secondary">Properties</h3>
+    </header>
     <!-- Filter presets: a grid, the way the old Filters panel showed them. -->
     <section v-if="showsFilters" class="px-3 py-2">
       <div v-for="category in FILTER_CATEGORIES" :key="category.id" class="mb-2 last:mb-0">

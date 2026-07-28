@@ -200,6 +200,8 @@ function resize() {
 }
 
 defineExpose({
+  /** Typing goes to the canvas, so the view must hold its shortcuts. */
+  isEditingText: () => annotation.isEditingTextOnCanvas(),
   /** Delete is a document verb, so the bottom bar can reach it. */
   deleteSelected() {
     if (!selectedShapeId.value) return
