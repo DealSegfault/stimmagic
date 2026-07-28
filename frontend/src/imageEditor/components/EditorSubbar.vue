@@ -21,7 +21,7 @@ import {
   PAINT_ENGINES, SELECTION_MODES, TEXT_STYLES,
   familyById,
 } from '../stack/toolFamilies'
-import { FILTER_CATEGORIES } from '../stack/adjustSections'
+import { FILTER_CATEGORIES, sectionsForFamily } from '../stack/adjustSections'
 import type { FamilyId, SelectionMode } from '../stack/toolFamilies'
 
 const props = defineProps<{
@@ -39,12 +39,25 @@ const emit = defineEmits<{
   sub: [string]
   set: [Record<string, any>]
   run: []
-  openToolPicker: []
+  openToolPicker: [MouseEvent]
 }>()
 
 const family = computed(() => familyById(props.family))
 
 /** The three buttons the old Levels panel led with. */
+/**
+ * Effects, as things you add.
+ *
+ * Same shape as Filters, which is the point: in every adjustment family the
+ * sub-toolbar offers what you can ADD, clicking it makes a step, and the step's
+ * amount lives in its properties. An empty bar with all the controls hidden
+ * behind a selection was a third interaction model for the same kind of thing.
+ */
+const EFFECT_CHIPS = sectionsForFamily('effects').flatMap(section => section.controls)
+const activeEffect = computed(() =>
+  EFFECT_CHIPS.find(effect => effect.key === props.state.effectKey)
+)
+
 const AUTO_ACTIONS = [
   { id: 'levels', label: 'Auto levels' },
   { id: 'contrast', label: 'Auto contrast' },
@@ -89,91 +102,91 @@ function chipClass(active: boolean, pending = false) {
     </template>
 
     <!-- Generate ------------------------------------------------------- -->
+    <!--
+      Generate gets two rows: the tool and the knobs on one, the prompt on its
+      own below. It is the only family whose main input is a sentence, and a
+      sentence squeezed between a brush slider and a Run button gets forty
+      characters of room.
+    -->
     <template v-if="family.id === 'generate'">
-      <button
-        type="button"
-        class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle text-content-secondary hover:text-content hover:bg-overlay-subtle"
-        @click="emit('openToolPicker')"
-      >
-        {{ toolLabel || 'No tool' }} <span class="text-content-tertiary">▾</span>
-      </button>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <div class="w-full flex flex-col gap-2">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md border border-edge-subtle text-content-secondary hover:text-content hover:bg-overlay-subtle"
+            @click="emit('openToolPicker', $event)"
+          >
+            {{ toolLabel || 'No tool' }}
+            <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <span class="w-px h-5 bg-edge-subtle mx-1" />
 
-      <template v-if="sub === 'inpaint'">
-        <label class="flex items-center gap-2 text-xs text-content-tertiary">
-          Brush
-          <input
-            type="range" min="8" max="300" class="w-24"
-            :value="state.brushSize"
-            @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
-          />
-        </label>
-        <input
-          type="text"
-          class="flex-1 min-w-40 px-3 py-1.5 text-sm bg-surface-raised rounded-md text-content placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          placeholder="What should replace it? (blank = remove)"
+          <label v-if="sub === 'inpaint'" class="flex items-center gap-2 text-xs text-content-tertiary">
+            Brush
+            <input
+              type="range" min="8" max="300" class="w-28"
+              :value="state.brushSize"
+              @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
+            />
+          </label>
+
+          <template v-if="sub === 'expand'">
+            <button
+              v-for="factor in [1.15, 1.25, 1.5]"
+              :key="factor"
+              type="button"
+              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+              :class="chipClass(state.expandFactor === factor)"
+              @click="emit('set', { expandFactor: factor })"
+            >
+              +{{ Math.round((factor - 1) * 100) }}%
+            </button>
+          </template>
+
+          <template v-if="sub === 'upscale'">
+            <button
+              v-for="factor in [2, 4]"
+              :key="factor"
+              type="button"
+              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
+              :class="chipClass(state.upscaleFactor === factor)"
+              @click="emit('set', { upscaleFactor: factor })"
+            >
+              {{ factor }}×
+            </button>
+          </template>
+
+          <div class="flex-1" />
+
+          <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
+            Count
+            <input
+              type="number" min="1" max="8"
+              class="w-12 px-2 py-1 bg-surface-raised rounded-md text-content"
+              :value="state.candidateCount"
+              @input="emit('set', { candidateCount: Number(($event.target as HTMLInputElement).value) })"
+            />
+          </label>
+          <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
+            {{ sub === 'expand' ? 'Expand' : sub === 'upscale' ? 'Upscale' : 'Run' }}
+          </Button>
+        </div>
+
+        <textarea
+          v-if="sub !== 'upscale'"
+          rows="2"
+          class="w-full px-3 py-2 text-sm bg-surface-raised rounded-md text-content resize-none
+                 placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :placeholder="sub === 'expand'
+            ? 'Describe what surrounds it'
+            : 'Describe the change'"
           :value="state.prompt"
-          @input="emit('set', { prompt: ($event.target as HTMLInputElement).value })"
-          @keydown.enter="emit('run')"
+          @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
+          @keydown.enter.meta="emit('run')"
         />
-      </template>
-
-      <template v-else-if="sub === 'whole'">
-        <input
-          type="text"
-          class="flex-1 min-w-40 px-3 py-1.5 text-sm bg-surface-raised rounded-md text-content placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          placeholder="Describe the change — applies to the whole image"
-          :value="state.prompt"
-          @input="emit('set', { prompt: ($event.target as HTMLInputElement).value })"
-          @keydown.enter="emit('run')"
-        />
-      </template>
-
-      <template v-else-if="sub === 'expand'">
-        <button
-          v-for="factor in [1.15, 1.25, 1.5]"
-          :key="factor"
-          type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-          :class="chipClass(state.expandFactor === factor)"
-          @click="emit('set', { expandFactor: factor })"
-        >
-          +{{ Math.round((factor - 1) * 100) }}%
-        </button>
-        <input
-          type="text"
-          class="flex-1 min-w-40 px-3 py-1.5 text-sm bg-surface-raised rounded-md text-content placeholder:text-content-tertiary"
-          placeholder="Describe what surrounds it"
-          :value="state.prompt"
-          @input="emit('set', { prompt: ($event.target as HTMLInputElement).value })"
-        />
-      </template>
-
-      <template v-else-if="sub === 'upscale'">
-        <button
-          v-for="factor in [2, 4]"
-          :key="factor"
-          type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-          :class="chipClass(state.upscaleFactor === factor)"
-          @click="emit('set', { upscaleFactor: factor })"
-        >
-          {{ factor }}×
-        </button>
-      </template>
-
-      <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
-        Count
-        <input
-          type="number" min="1" max="8"
-          class="w-12 px-2 py-1 bg-surface-raised rounded-md text-content"
-          :value="state.candidateCount"
-          @input="emit('set', { candidateCount: Number(($event.target as HTMLInputElement).value) })"
-        />
-      </label>
-      <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
-        {{ sub === 'expand' ? 'Expand' : sub === 'upscale' ? 'Upscale' : 'Run' }}
-      </Button>
+      </div>
     </template>
 
     <!-- Crop ------------------------------------------------------------ -->
@@ -386,7 +399,7 @@ function chipClass(active: boolean, pending = false) {
     <template v-else-if="family.id === 'filters'">
       <!-- One row that scrolls, rather than wrapping: the strip is a strip,
            and wrapping it would push the canvas down every time it grew. -->
-      <div class="w-full min-w-0 flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5">
+      <div class="w-full min-w-0 flex items-start gap-1.5 overflow-x-auto custom-scrollbar pb-1.5">
         <template v-for="category in FILTER_CATEGORIES" :key="category.id">
           <span v-if="category.label" class="w-px h-10 bg-edge-subtle mx-1 shrink-0" />
           <Tooltip
@@ -414,6 +427,34 @@ function chipClass(active: boolean, pending = false) {
           </Tooltip>
         </template>
       </div>
+    </template>
+
+    <!--
+      Pick the effect, then move its slider. The step appears when the slider
+      moves, so choosing one costs nothing and there is no empty step left
+      behind by a preview you decided against.
+    -->
+    <template v-else-if="family.id === 'effects'">
+      <select
+        class="px-2 py-1.5 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+        :value="state.effectKey"
+        @change="emit('set', { effectKey: ($event.target as HTMLSelectElement).value })"
+      >
+        <option v-for="effect in EFFECT_CHIPS" :key="effect.key" :value="effect.key">
+          {{ effect.label }}
+        </option>
+      </select>
+      <label class="flex-1 min-w-40 flex items-center gap-2 text-xs text-content-tertiary">
+        <input
+          type="range" class="flex-1"
+          :min="activeEffect?.min ?? 0"
+          :max="activeEffect?.max ?? 100"
+          :step="activeEffect?.step ?? 1"
+          :value="state.effectAmount"
+          @input="emit('set', { effectAmount: Number(($event.target as HTMLInputElement).value) })"
+        />
+        <span class="w-8 text-right tabular-nums">{{ state.effectAmount }}</span>
+      </label>
     </template>
 
     <!-- Levels ---------------------------------------------------------- -->

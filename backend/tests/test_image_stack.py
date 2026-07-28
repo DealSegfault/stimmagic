@@ -297,7 +297,7 @@ class TestPayloads:
 class TestSaveEdit:
     """Save materializes the composite; the stack stays the recipe."""
 
-    async def test_save_advances_the_stack_document_to_the_new_revision(
+    async def test_save_keeps_the_stack_on_the_revision_it_was_built_against(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
         asset_id, media_id, _ = await _asset(db_session, tmp_path, name="save-advance")
@@ -326,8 +326,14 @@ class TestSaveEdit:
 
         async with db_session() as session:
             document = await session.get(WorkingDocument, document_id)
-            # The same document, moved onto the new head — not a second one.
-            assert document.base_revision_id == body["revision_id"]
+            # The same document — not a second one — and still rooted at the
+            # revision its ops were authored against.
+            #
+            # Re-parenting it to its own output would double every edit: the
+            # stack would render on a frame that already contained it, so
+            # hiding or deleting a step would remove nothing.
+            assert document.base_revision_id == base_revision_id
+            assert document.base_revision_id != body["revision_id"]
             assert document.editor_type == stack.EDITOR_TYPE
 
             documents = (await session.execute(

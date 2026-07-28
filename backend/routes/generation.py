@@ -172,6 +172,30 @@ def _prompt_input_image_count(
     )
 
 
+def _prompt_audio_conditioned(
+    parameters: Dict[str, Any],
+    schema_props: Dict[str, Any],
+) -> bool:
+    """True when this job feeds a DRIVING audio track into the tool.
+
+    Schema-driven, like every other media question: any parameter the tool
+    declares with an `audio_picker` control that actually carries a value. An
+    input marked `x-audio-role: reference` doesn't count — a voice sample steers
+    audio the tool still generates, so the prompt should still describe sound
+    (STP: Media Input Formats → x-audio-role). Tools that OUTPUT audio are a
+    different axis (`is_audio`) and are unaffected.
+    """
+    for field, value in parameters.items():
+        prop = schema_props.get(field) or {}
+        if str(prop.get("x-control") or "") != "audio_picker":
+            continue
+        if str(prop.get("x-audio-role") or "driving") != "driving":
+            continue
+        if _count_value(value) > 0:
+            return True
+    return False
+
+
 def _prompt_media_id(parameters: Dict[str, Any], effective_task: str) -> Optional[int]:
     if "video" in (effective_task or ""):
         # i2v enhancement may include the start frame as visual context. Keep
@@ -322,6 +346,7 @@ async def _apply_generation_prompt_pipeline(
         is_video="video" in effective_task,
         is_audio=effective_task in _AUDIO_TASK_TYPES,
         input_image_count=_prompt_input_image_count(parameters, schema_props, effective_task),
+        audio_conditioned=_prompt_audio_conditioned(parameters, schema_props),
         media_id=_prompt_media_id(parameters, effective_task),
         width=_optional_int(parameters, "width"),
         height=_optional_int(parameters, "height"),
@@ -2943,6 +2968,10 @@ class PromptWarmPoolUpdateRequest(BaseModel):
     is_video: bool = False
     is_audio: bool = False
     input_image_count: int = 0
+    # Whether an audio track is attached (audio-conditioned video). Part of the
+    # warmed snapshot: it changes the enhancement, so a pool warmed without it
+    # must not be served to a submit with it.
+    audio_conditioned: bool = False
     prompt_sources_signature: str = ""
     # How many enhanced variants to keep warm. Client authority - it's the one
     # that knows the forever-mode concurrency it's driving toward. 0 clears
@@ -2972,6 +3001,7 @@ async def update_prompt_warm_pool(request: PromptWarmPoolUpdateRequest):
         is_video=request.is_video,
         is_audio=request.is_audio,
         input_image_count=request.input_image_count,
+        audio_conditioned=request.audio_conditioned,
         prompt_sources_signature=request.prompt_sources_signature,
         concurrency=request.concurrency,
         profile_id=get_current_profile(),

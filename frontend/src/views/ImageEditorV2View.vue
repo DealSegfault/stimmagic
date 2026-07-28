@@ -32,7 +32,7 @@ import AdjustInspector from '../imageEditor/components/AdjustInspector.vue'
 import AnnotationInspector from '../imageEditor/components/AnnotationInspector.vue'
 import StackMaskCanvas from '../imageEditor/components/StackMaskCanvas.vue'
 import StackCropCanvas from '../imageEditor/components/StackCropCanvas.vue'
-import TaskTypeToolList from '../components/TaskTypeToolList.vue'
+import ToolPicker from '../imageEditor/components/ToolPicker.vue'
 import { useStackDocument, newOpId } from '../imageEditor/stack/useStackDocument'
 import { useStackCandidates } from '../imageEditor/stack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../imageEditor/stack/useStackCompositor'
@@ -56,7 +56,9 @@ import type { GenerativeOp } from '../imageEditor/stack/types'
 import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
 import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
-import { FILTER_LABELS, FILTER_STRIP } from '../imageEditor/stack/adjustSections'
+import {
+  ADJUST_SECTIONS, FILTER_LABELS, FILTER_STRIP, adjustControl,
+} from '../imageEditor/stack/adjustSections'
 import { applyColorMatrix } from '../imageEditor/ported/colorMatrix'
 import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices'
 import type { AdjustFamily } from '../imageEditor/stack/adjustSections'
@@ -104,6 +106,25 @@ const upscaleFactor = ref(2)
  * same list would be a second thing to keep in step.
  */
 const toolPickerOpen = ref(false)
+/** Where the trigger sits, so the menu opens under it rather than at the edge. */
+const toolPickerLeft = ref(16)
+
+/** The task the active sub-tool needs a tool for. */
+const activeTaskType = computed(() => {
+  if (sub.value === 'upscale') return 'upscale-image'
+  if (sub.value === 'whole') return 'image-to-image'
+  return 'inpaint-image'
+})
+
+function onOpenToolPicker(event: MouseEvent) {
+  const button = event?.currentTarget as HTMLElement | undefined
+  const host = (button?.closest('.flex-1') as HTMLElement) ?? null
+  if (button && host) {
+    toolPickerLeft.value =
+      button.getBoundingClientRect().left - host.getBoundingClientRect().left
+  }
+  toolPickerOpen.value = !toolPickerOpen.value
+}
 
 function chooseTool(tool: any) {
   const id = tool.full_tool_id
@@ -691,6 +712,8 @@ const subbarState = computed(() => ({
   imagePalette: imagePalette.value,
   activeFilter: (selectedFilterOp.value as any)?.params?.filter ?? 'none',
   filterThumbs: filterThumbs.value,
+  effectKey: effectKey.value,
+  effectAmount: effectAmount.value,
 }))
 
 function onSubbarSet(patch: Record<string, any>) {
@@ -720,6 +743,8 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('auto' in patch) runAuto(patch.auto)
   if ('applyFilter' in patch) applyFilter(patch.applyFilter)
+  if ('effectKey' in patch) effectKey.value = patch.effectKey
+  if ('effectAmount' in patch) setEffectAmount(patch.effectAmount)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   // Straighten and the lollipop are the same control: the crop window's tilt.
   if ('rotation' in patch) void applyCropChange({ cropRotation: patch.rotation })
@@ -1069,6 +1094,72 @@ function renderFilterThumbs() {
   }
   filterThumbs.value = out
 }
+
+/** Which effect the sub-toolbar is holding. Chosen, not yet applied. */
+const effectKey = ref('vignette')
+
+/**
+ * Moving the slider is what makes the step.
+ *
+ * Picking an effect costs nothing — you can page through the list looking for
+ * the one you meant without leaving a trail of empty steps. One Effects step
+ * holds whatever effects are on, because they are one pass of the same
+ * pipeline in a fixed order, and it names itself after them: Halftone, then
+ * Halftone · Grain. Dragging back to zero takes the effect off, and the step
+ * goes with the last one.
+ */
+function setEffectAmount(value: number) {
+  const control = adjustControl(effectKey.value)
+  if (!control) return
+  const existing = selectedEffectsOp.value as any
+
+  if (!existing) {
+    if (value === control.default) return
+    const opId = newOpId()
+    stack.addOp({
+      id: opId, class: 'parametric', enabled: true,
+      label: adjustLabel({ [effectKey.value]: value }),
+      exec: { kind: 'adjust' },
+      params: { [effectKey.value]: value },
+    } as any)
+    selectedOpId.value = opId
+    adjustOpId.value = opId
+    void render()
+    return
+  }
+
+  const params = { ...(existing.params || {}), [effectKey.value]: value }
+  const stillOn = EFFECT_CONTROLS.some(c => (params[c.key] ?? c.default) !== c.default)
+  if (!stillOn) {
+    void removeOpWithGeometry(existing.id)
+    return
+  }
+  stack.setParams(existing.id, { [effectKey.value]: value }, `adjust:effect:${effectKey.value}`)
+  stack.setLabel(existing.id, adjustLabel(params))
+  selectedOpId.value = existing.id
+  adjustOpId.value = existing.id
+  void render()
+}
+
+const EFFECT_CONTROLS = ADJUST_SECTIONS
+  .filter(section => section.family === 'effects')
+  .flatMap(section => section.controls)
+
+/** The Effects step this family is editing — the selected one, or the topmost. */
+const selectedEffectsOp = computed(() => {
+  const carries = (op: any) =>
+    EFFECT_CONTROLS.some(c => (op?.params?.[c.key] ?? c.default) !== c.default)
+  const selected = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
+  if (selected && carries(selected)) return selected
+  return [...(stack.doc.value?.edits || [])].reverse().find(carries) ?? null
+})
+
+/** What the bar's slider reads: this effect's value on the step being edited. */
+const effectAmount = computed(() => {
+  const control = adjustControl(effectKey.value)
+  const params = (selectedEffectsOp.value as any)?.params || {}
+  return params[effectKey.value] ?? control?.default ?? 0
+})
 
 function applyFilter(id: string) {
   const current = selectedFilterOp.value
@@ -1441,7 +1532,39 @@ function enterContainerOp(op: any) {
   void enterPaintOp(op.id)
 }
 
-function startNewPaintLayer() {
+/**
+ * Make the layer now, not on the next stroke.
+ *
+ * Clicking New layer and seeing nothing happen is the same as the button being
+ * broken — and it made the first layer and every later one behave differently.
+ * An empty layer composites as a no-op, so an unused one costs nothing but the
+ * row that tells you it is there.
+ */
+async function startNewPaintLayer() {
+  if (!stack.doc.value || !composite.value) return
+  const opId = newOpId()
+  const blank = document.createElement('canvas')
+  blank.width = composite.value.width
+  blank.height = composite.value.height
+  const ref = await stack.uploadPayload(`${opId}-layer.png`, await canvasToBlob(blank))
+  stack.addOp({
+    id: opId,
+    class: 'container',
+    enabled: true,
+    label: 'Paint',
+    exec: { kind: 'paint' },
+    raster_ref: ref,
+    payload_frame: payloadFrame(),
+    blend: { feather_px: 0, opacity: 1 },
+  } as any)
+  paintOpId.value = opId
+  selectedOpId.value = opId
+  paintInitialLayer.value = null
+  paintRef.value?.reset()
+  void render()
+}
+
+function resetPaintSession() {
   paintOpId.value = null
   // Without this the next layer starts holding the previous one's pixels: the
   // canvas reloads `initialLayer` on any source change, so leaving it set
@@ -1734,8 +1857,7 @@ function leaveMode() {
   // Ending a mode session ends its STEP: the next entry starts a new one.
   adjustOpId.value = null
   cropOpId.value = null
-  paintOpId.value = null
-  paintInitialLayer.value = null
+  resetPaintSession()
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -1843,21 +1965,18 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         @sub="selectSub"
         @set="onSubbarSet"
         @run="run"
-        @open-tool-picker="toolPickerOpen = !toolPickerOpen"
+        @open-tool-picker="onOpenToolPicker"
       />
 
-      <!-- The picker hangs under the sub-bar rather than floating, so it
-           cannot open behind the canvas the way an unlayered dropdown would. -->
+      <!-- Under the sub-bar and left-aligned to the button that opened it. -->
       <div v-if="toolPickerOpen" class="relative z-menu shrink-0">
-        <div
-          class="absolute left-4 top-0 w-[300px] max-h-[min(560px,60vh)] overflow-y-auto
-                 rounded-lg border border-edge-subtle bg-surface shadow-xl py-1"
-        >
-          <TaskTypeToolList
+        <div class="absolute top-0" :style="{ left: toolPickerLeft + 'px' }">
+          <ToolPicker
             :tools="tools"
-            media-type="image"
-            gradient-id="stimma-gradient-editor-tools"
+            :task-type="activeTaskType"
+            :selected-id="activeToolId"
             @select="chooseTool"
+            @close="toolPickerOpen = false"
           />
         </div>
       </div>

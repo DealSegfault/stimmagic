@@ -2015,11 +2015,16 @@ async def save_edited_image(
             target_asset = source_asset
 
         if stack_document is not None and not save_as_new:
-            # The stack keeps its own document; Save only moves what it commits
-            # onto. Its `base` in document.json is deliberately NOT rewritten —
-            # the stack stays the recipe from the revision it was built against.
+            # The stack keeps its own document AND its base.
+            #
+            # Save emits a rasterized Revision; it does not re-parent the
+            # recipe. Advancing the base here pointed the stack at its own
+            # output while every op stayed in place, so the next render applied
+            # the whole stack a second time on top of a frame that already had
+            # it — the edits appeared doubled, and hiding or deleting a step no
+            # longer removed anything, because its effect was baked into what
+            # the stack was now sitting on.
             document = stack_document
-            document.base_revision_id = committed_revision.id
         elif stack_document is not None:
             # Save As New forks the working document with the asset.
             document = await create_working_document(
@@ -2084,7 +2089,12 @@ async def save_edited_image(
             source_revision_id=parent_revision.id,
             role="editor_source",
         )
-        document.base_revision_id = committed_revision.id
+        # The op-stack editor keeps its base: its document is a recipe over the
+        # revision it was built against, and re-parenting it to its own output
+        # would double every edit. The legacy flat editor has no stack to
+        # re-apply, so its document does follow the commit.
+        if stack_document is None or save_as_new:
+            document.base_revision_id = committed_revision.id
         db_media_item.has_editor_sidecar = False
 
         provisional_owners = list(await session.scalars(

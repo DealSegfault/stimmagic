@@ -173,6 +173,7 @@ async def _improve_with_verbatim_protection(
     is_video: bool,
     is_audio: bool,
     input_image_count: int,
+    audio_conditioned: bool,
     media_id: Optional[int],
     project_id: Optional[int],
 ) -> str:
@@ -188,6 +189,7 @@ async def _improve_with_verbatim_protection(
             is_video=is_video,
             is_audio=is_audio,
             input_image_count=input_image_count,
+            audio_conditioned=audio_conditioned,
             media_id=media_id,
             project_id=project_id,
         )
@@ -319,6 +321,7 @@ def _validated_prompt_preload(
     is_video: bool,
     is_audio: bool,
     input_image_count: int,
+    audio_conditioned: bool,
     source_signature: str,
 ) -> Optional[str]:
     if not isinstance(prompt_preload, dict):
@@ -338,6 +341,8 @@ def _validated_prompt_preload(
         if bool(prompt_preload.get("isAudio")) != bool(is_audio):
             return None
         if int(prompt_preload.get("inputImageCount") or 0) != int(input_image_count or 0):
+            return None
+        if bool(prompt_preload.get("audioConditioned")) != bool(audio_conditioned):
             return None
     except (TypeError, ValueError):
         return None
@@ -361,6 +366,7 @@ async def run_prompt_pipeline(
     is_video: bool = False,
     is_audio: bool = False,
     input_image_count: int = 0,
+    audio_conditioned: bool = False,
     media_id: Optional[int] = None,
     width: Optional[int] = None,
     height: Optional[int] = None,
@@ -405,6 +411,7 @@ async def run_prompt_pipeline(
             is_video=is_video,
             is_audio=is_audio,
             input_image_count=input_image_count,
+            audio_conditioned=audio_conditioned,
             source_signature=source_signature,
         )
 
@@ -424,6 +431,7 @@ async def run_prompt_pipeline(
             is_video=is_video,
             is_audio=is_audio,
             input_image_count=input_image_count,
+            audio_conditioned=audio_conditioned,
             media_id=media_id,
             project_id=project_id,
         )

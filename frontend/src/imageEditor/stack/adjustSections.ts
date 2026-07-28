@@ -157,10 +157,30 @@ export function touchedSections(params: Record<string, any>): string[] {
  * doorway it was opened through — a step with only a filter reads `Filters`,
  * one with sliders reads `Levels`, one with both names both.
  */
+/**
+ * The row's name: what this step DOES.
+ *
+ * Effects name themselves individually — a step is 'Halftone', or
+ * 'Halftone · Grain' once there are two — because the effect is the thing the
+ * user picked. Levels are a group and read as one, since nobody thinks of
+ * 'raised the contrast' as a separate edit from 'raised the exposure' when
+ * they moved both in one sitting.
+ */
 export function adjustLabel(params: Record<string, any>): string {
-  const sections = touchedSections(params)
-  if (!sections.length) return 'Adjust'
-  return sections.join(' · ')
+  const parts: string[] = []
+  if (params.filter && params.filter !== 'none') {
+    parts.push(FILTER_LABELS.get(params.filter) ?? 'Filter')
+  }
+  for (const section of ADJUST_SECTIONS) {
+    const touched = section.controls.filter(
+      control => params[control.key] !== undefined && params[control.key] !== control.default
+    )
+    const toggled = section.toggle && params[section.toggle.key]
+    if (!touched.length && !toggled) continue
+    if (section.family === 'effects') parts.push(...touched.map(control => control.label))
+    else parts.push(section.label)
+  }
+  return parts.length ? parts.join(' · ') : 'Adjust'
 }
 
 /** Aspect presets for the Crop family, matching the snapshot editor's set. */

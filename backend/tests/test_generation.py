@@ -128,6 +128,59 @@ class TestPromptPipelineRouting:
 
         assert generation_routes._prompt_input_image_count(parameters, schema_props, "text-to-image") == 0
 
+    def test_audio_picker_with_a_track_marks_the_job_audio_conditioned(self):
+        parameters = {
+            "prompt": "she speaks to the camera",
+            "input_images": ["/tmp/portrait.png"],
+            "input_audios": ["/tmp/vo.wav"],
+        }
+        schema_props = {
+            "prompt": {"type": "string"},
+            "input_images": {"type": "array", "x-control": "video_frame_picker"},
+            "input_audios": {"type": "array", "x-control": "audio_picker"},
+        }
+
+        assert generation_routes._prompt_audio_conditioned(parameters, schema_props) is True
+
+    def test_audio_picker_without_a_track_is_not_audio_conditioned(self):
+        parameters = {"prompt": "she speaks", "input_audios": []}
+        schema_props = {
+            "prompt": {"type": "string"},
+            "input_audios": {"type": "array", "x-control": "audio_picker"},
+        }
+
+        assert generation_routes._prompt_audio_conditioned(parameters, schema_props) is False
+
+    def test_reference_role_audio_is_not_audio_conditioned(self):
+        # A voice sample steers audio the tool still generates (STP x-audio-role),
+        # so the prompt should keep describing sound.
+        parameters = {
+            "prompt": "she speaks to the camera",
+            "input_audios": ["/tmp/voice-sample.wav"],
+        }
+        schema_props = {
+            "prompt": {"type": "string"},
+            "input_audios": {
+                "type": "array", "x-control": "audio_picker", "x-audio-role": "reference",
+            },
+        }
+
+        assert generation_routes._prompt_audio_conditioned(parameters, schema_props) is False
+
+    def test_missing_audio_role_defaults_to_driving(self):
+        parameters = {"prompt": "x", "input_audios": ["/tmp/vo.wav"]}
+        schema_props = {"input_audios": {"type": "array", "x-control": "audio_picker"}}
+
+        assert generation_routes._prompt_audio_conditioned(parameters, schema_props) is True
+
+    def test_audio_output_tool_is_not_audio_conditioned(self):
+        # A text-to-audio tool generates sound; it doesn't condition on a track.
+        # That's the is_audio axis, and it must not trip this one.
+        parameters = {"prompt": "rain on a tin roof", "duration": 8}
+        schema_props = {"prompt": {"type": "string"}, "duration": {"type": "integer"}}
+
+        assert generation_routes._prompt_audio_conditioned(parameters, schema_props) is False
+
     def test_i2v_source_media_id_uses_only_start_frame_slot(self):
         assert generation_routes._prompt_media_id(
             {"input_media_ids": [None, 456]},

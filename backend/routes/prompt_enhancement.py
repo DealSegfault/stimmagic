@@ -87,6 +87,36 @@ def _input_images_phrase(n: int) -> str:
     """Human-readable count of input images for the edit system prompt."""
     return "an input image" if n <= 1 else f"{n} input images"
 
+
+# The cinematography prompts carry an {audio_guidance} slot because the right
+# instruction flips entirely on whether the tool generates its own soundtrack.
+_AUDIO_GENERATED_GUIDANCE = (
+    "If the user gives spoken lines or sound effects, carry them through verbatim — modern "
+    "video models render dialogue and audio, so these are content to keep, not motion to mime; "
+    'never reduce a line to "her lips move". Keep them even when the speaker or source is '
+    "offscreen or not visible{frame_clause}: an unseen voice or an off-camera sound is audio the "
+    "model should produce, not a detail to drop because it doesn't move."
+)
+
+_AUDIO_SUPPLIED_GUIDANCE = (
+    "The user supplied the soundtrack: the model reproduces that track exactly and generates no "
+    "sound of its own, so write the picture that belongs to it — mouth movement and jaw "
+    "articulation while a voice is heard, breath between phrases, an impact landing on a hit, "
+    "movement carried on the tempo. Keep any words the user wrote and attribute them to the "
+    "speaker; they tell the model what the mouth is doing. Don't write sound effects, ambience, "
+    "or dialogue as things to produce — nothing you write changes the audio, and invented sound "
+    "design only pulls the picture away from the real track."
+)
+
+
+def _audio_guidance(*, audio_conditioned: bool, image_variant: bool) -> str:
+    """Pick the soundtrack instruction for the cinematography prompts."""
+    if audio_conditioned:
+        return _AUDIO_SUPPLIED_GUIDANCE
+    return _AUDIO_GENERATED_GUIDANCE.format(
+        frame_clause=" in the frame" if image_variant else ""
+    )
+
 # Raster formats we can hand to a VLM. Source frames in other formats (or video)
 # are simply not shown — enhancement falls back to the text-only path.
 _VLM_IMAGE_FORMATS = frozenset({"jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff"})
@@ -102,7 +132,8 @@ _DIALOGUE_QUOTE_RE = re.compile(r'["“][^"“”]+["”]')
 
 
 def _protected_text_guidance(
-    prompt: str, *, keyword_mode: bool = False, cinematography: bool = False
+    prompt: str, *, keyword_mode: bool = False, cinematography: bool = False,
+    audio_conditioned: bool = False,
 ) -> str:
     """Build the 'PRESERVING PROTECTED TEXT' block for the spans actually present.
 
@@ -115,15 +146,24 @@ def _protected_text_guidance(
     ``keyword_mode`` adds the comma-separated-tag nuance the SD1.5/SDXL prompt needs.
     ``cinematography`` adds a dialogue bullet when the prompt quotes spoken lines —
     the video prompt's motion-only framing otherwise drops the words and keeps only
-    the lip movement.
+    the lip movement. ``audio_conditioned`` keeps that bullet but drops the claim
+    that the model voices the line: with a supplied track it doesn't, and the words
+    are there to align the visible performance.
     """
     bullets: List[str] = []
     if cinematography and _DIALOGUE_QUOTE_RE.search(prompt):
-        bullets.append(
-            '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
-            "written and present them as a spoken line — they are content the video model "
-            'voices, never motion to mime (don\'t reduce them to "her lips move").'
-        )
+        if audio_conditioned:
+            bullets.append(
+                '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
+                "written and attribute them to the speaker — they mark what is being said in "
+                "the supplied audio, so the visible performance lines up with it."
+            )
+        else:
+            bullets.append(
+                '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
+                "written and present them as a spoken line — they are content the video model "
+                'voices, never motion to mime (don\'t reduce them to "her lips move").'
+            )
     if _VERBATIM_TOKEN_RE.search(prompt):
         bullets.append(
             "- Placeholder tokens of the form __VERBATIM_A__, __VERBATIM_B__ … "
@@ -251,6 +291,11 @@ class ImprovePromptRequest(BaseModel):
     # the prompt as an instruction over the input image(s) rather than a fresh
     # scene to describe. 0 for text-to-image. Ignored for video/keyword/ideogram.
     input_image_count: int = 0
+    # Whether the tool is generating against a supplied audio track (LTX
+    # image+audio-to-video, lip-sync, avatar). On the cinematography path this
+    # flips the soundtrack instruction: the model reproduces the track rather than
+    # scoring the clip, so invented sound design and dialogue are wrong.
+    audio_conditioned: bool = False
     # For image-to-video: the library id of the source/first frame. When present
     # on the cinematography path, the frame is shown to the model so the prompt
     # animates the real image. Ignored for other styles.
@@ -645,15 +690,26 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         "{input_images_desc}", _input_images_phrase(request.input_image_count)
     )
     system_prompt = system_prompt.replace(
+        "{audio_guidance}",
+        _audio_guidance(
+            audio_conditioned=request.audio_conditioned,
+            image_variant=bool(source_image_b64),
+        ),
+    )
+    system_prompt = system_prompt.replace(
         "{protected_text_guidance}",
         _protected_text_guidance(
             request.prompt,
             keyword_mode=(mode == "keyword"),
             cinematography=(mode == "cinematography"),
+            audio_conditioned=request.audio_conditioned,
         ),
     )
     system_prompt = re.sub(r"\n{3,}", "\n\n", system_prompt)
-    log.info(f"Prompt improve mode={mode} image={'yes' if source_image_b64 else 'no'}")
+    log.info(
+        f"Prompt improve mode={mode} image={'yes' if source_image_b64 else 'no'} "
+        f"audio_conditioned={request.audio_conditioned}"
+    )
 
     # Build the user message
     if source_image_b64:

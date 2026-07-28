@@ -444,7 +444,7 @@ class GenerationQueue:
 
     _PROMPT_WARM_INTENT_FIELDS = (
         'tool_id', 'prompt', 'instructions', 'model', 'is_video', 'is_audio',
-        'input_image_count', 'prompt_sources_signature', 'profile_id',
+        'input_image_count', 'audio_conditioned', 'prompt_sources_signature', 'profile_id',
     )
 
     def _prompt_warm_pool_stale(self, generator_instance_id: str) -> bool:
@@ -464,6 +464,7 @@ class GenerationQueue:
         is_video: bool,
         is_audio: bool,
         input_image_count: int,
+        audio_conditioned: bool,
         prompt_sources_signature: str,
         concurrency: int,
         profile_id: str,
@@ -486,6 +487,7 @@ class GenerationQueue:
             'tool_id': tool_id, 'prompt': prompt, 'instructions': instructions,
             'model': model, 'is_video': is_video, 'is_audio': is_audio,
             'input_image_count': input_image_count,
+            'audio_conditioned': audio_conditioned,
             'prompt_sources_signature': prompt_sources_signature,
             'profile_id': profile_id,
         }
@@ -552,6 +554,7 @@ class GenerationQueue:
                 is_video=intent['is_video'],
                 is_audio=intent['is_audio'],
                 input_image_count=intent['input_image_count'],
+                audio_conditioned=intent['audio_conditioned'],
                 media_id=None,
             )
         except asyncio.CancelledError:
@@ -578,6 +581,7 @@ class GenerationQueue:
             'isVideo': intent['is_video'],
             'isAudio': intent['is_audio'],
             'inputImageCount': intent['input_image_count'],
+            'audioConditioned': intent['audio_conditioned'],
             'improvedPrompt': improved_prompt,
         })
 
