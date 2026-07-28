@@ -1096,8 +1096,15 @@ const cropAspectRatio = computed<number | null>(() => {
 })
 
 /** The selected annotation, whose properties the inspector edits. */
+/**
+ * The annotation whose properties the inspector edits.
+ *
+ * Not gated on being in Annotate: the row IS the annotation, so selecting it
+ * anywhere should show what it is and let you change it. Entering the mode is
+ * what makes it draggable on the canvas, which is a separate thing.
+ */
 const selectedShape = computed<Shape | null>(() => {
-  if (family.value !== 'annotate' || !selectedShapeId.value) return null
+  if (!selectedShapeId.value) return null
   return annotateShapes.value.find(s => s.id === selectedShapeId.value) ?? null
 })
 
@@ -1429,6 +1436,20 @@ async function onStackKeydown(event: KeyboardEvent) {
     if (nextId) focusRow(nextId)
     else selectedOpId.value = null
   }
+}
+
+/**
+ * Selecting a row selects what the row IS.
+ *
+ * For an annotation that means the shape, so the canvas puts handles on it and
+ * the inspector shows its properties — a row that named a thing but selected
+ * nothing was a dead end.
+ */
+function onRowSelect(op: any) {
+  selectedOpId.value = op.id
+  selectedShapeId.value = op.exec?.kind === 'annotate'
+    ? (op.params?.shapes ?? [])[0]?.id ?? null
+    : null
 }
 
 /** Selecting an annotation selects its step, so the stack follows the canvas. */
@@ -1832,7 +1853,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :expanded="expandedCheckpoints.has(row.op.id)"
               :status-line="checkpointStatus(stackState, row.index)"
               :regenerating="resamplingOpId === row.op.id"
-              @select="selectedOpId = row.op.id"
+              @select="onRowSelect(row.op)"
               @toggle-expanded="toggleCheckpoint(row.op.id)"
               @toggle-enabled="setEnabledWithGeometry(row.op.id, $event)"
               @regenerate="resample(row.op.id)"
@@ -1850,7 +1871,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :tool-name="toolNameFor(row.op)"
               :resampling="resamplingOpId === row.op.id"
               :draggable="true"
-              @select="selectedOpId = row.op.id"
+              @select="onRowSelect(row.op)"
               @toggle="setEnabledWithGeometry(row.op.id, $event)"
               @pick="stack.pickCandidate(row.op.id, $event); render()"
               @remove="removeOpWithGeometry(row.op.id)"
