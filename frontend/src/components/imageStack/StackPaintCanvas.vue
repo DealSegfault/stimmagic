@@ -43,11 +43,14 @@ const props = withDefaults(defineProps<{
   range?: 'shadows' | 'midtones' | 'highlights'
   /** Sponge / blur / sharpen strength. */
   flow?: number
+  /** Sponge direction: saturate, or pull colour out. */
+  saturate?: boolean
 }>(), {
   engineId: 'paint',
   exposure: 50,
   range: 'midtones',
   flow: 50,
+  saturate: true,
 })
 
 const emit = defineEmits<{
@@ -59,6 +62,8 @@ const overlay = ref<HTMLCanvasElement | null>(null)
 const layer = useRetouchLayer()
 
 const cursor = ref<{ x: number; y: number } | null>(null)
+/** Where clone samples from, set by alt-click and kept across strokes. */
+const cloneAnchor = ref<Point | null>(null)
 let drawing = false
 
 const brushSettings = computed<BrushSettings>(() => props.brush ?? {
@@ -76,9 +81,18 @@ function pointFrom(event: PointerEvent): Point {
   }
 }
 
-/** Brush size is a display measurement; the layer works in image pixels. */
+/**
+ * Brush size is a display measurement; the layer works in image pixels.
+ *
+ * Rounded, not just scaled: heal allocates an ImageData of exactly this many
+ * pixels and then indexes it as `(y * size + x) * 4`. A fractional size makes
+ * every one of those indices miss, and the engine silently writes nothing.
+ */
 function scaledBrush(): BrushSettings {
-  return { ...brushSettings.value, size: brushSettings.value.size * scale.value }
+  return {
+    ...brushSettings.value,
+    size: Math.max(1, Math.round(brushSettings.value.size * scale.value)),
+  }
 }
 
 function stamp(point: Point) {
@@ -100,7 +114,7 @@ function stamp(point: Point) {
       layer.applyDodgeBurn(source, point, brush, props.exposure, props.range, false)
       break
     case 'sponge':
-      layer.applySaturationBrush(source, point, brush, props.flow, true)
+      layer.applySaturationBrush(source, point, brush, props.flow, props.saturate)
       break
     case 'blur':
       layer.applyBlurBrush(source, point, brush, props.flow)
@@ -131,10 +145,16 @@ function onPointerDown(event: PointerEvent) {
   overlay.value?.setPointerCapture(event.pointerId)
   const point = pointFrom(event)
 
-  // Alt-click sets the clone source, the way it works everywhere else.
+  // Alt-click sets the clone source, the way it works everywhere else. The
+  // OFFSET is only known once painting starts, so the anchor is held here and
+  // resolved against the first destination point of the stroke.
   if (props.engineId === 'clone' && event.altKey) {
-    layer.setCloneSource(point, { x: 0, y: 0 })
+    cloneAnchor.value = point
     return
+  }
+  if (props.engineId === 'clone') {
+    if (!cloneAnchor.value) return
+    layer.setCloneSource(props.source, cloneAnchor.value, point)
   }
 
   drawing = true

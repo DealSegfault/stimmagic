@@ -10,6 +10,9 @@
 import { computed } from 'vue'
 import Button from '../ui/Button.vue'
 import Tooltip from '../ui/Tooltip.vue'
+import ToolbarPopover from './ToolbarPopover.vue'
+import BrushPicker from '../../imageEditor/ported/BrushPicker.vue'
+import ColorPicker from '../../imageEditor/ported/ColorPicker.vue'
 import {
   CROP_ASPECTS,
 } from '../../composables/imageStack/developSections'
@@ -38,6 +41,11 @@ const emit = defineEmits<{
 }>()
 
 const family = computed(() => familyById(props.family))
+
+function rgbaCss(color: { r: number; g: number; b: number; a?: number } | null) {
+  if (!color) return 'transparent'
+  return `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a ?? 1})`
+}
 
 function chipClass(active: boolean, pending = false) {
   if (pending) return 'text-content-tertiary/60 cursor-not-allowed'
@@ -246,7 +254,9 @@ function chipClass(active: boolean, pending = false) {
         :key="engine.id"
         :text="engine.pending
           ? 'Not built yet'
-          : engine.readsPixels
+          : engine.id === 'clone'
+            ? 'Alt-click to set the source, then paint'
+            : engine.readsPixels
             ? 'Reads the pixels below — its layer carries an advisory'
             : engine.label"
       >
@@ -272,32 +282,87 @@ function chipClass(active: boolean, pending = false) {
         </button>
       </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <label class="flex items-center gap-2 text-xs text-content-tertiary">
-        Size
+      <!-- A brush is not a property of the layer it painted, so it hangs off
+           the toolbar rather than appearing in the Edits inspector. -->
+      <ToolbarPopover :label="`${Math.round(state.paintBrush.size)}px`">
+        <template #trigger>
+          <span
+            class="w-4 h-4 rounded-full bg-content"
+            :style="{
+              opacity: state.paintBrush.opacity / 100,
+              filter: `blur(${(100 - state.paintBrush.hardness) / 40}px)`,
+            }"
+          />
+        </template>
+        <BrushPicker
+          :model-value="state.paintBrush"
+          :stroke-color="state.paintColor"
+          @update:model-value="emit('set', { paintBrush: $event })"
+        />
+      </ToolbarPopover>
+      <!-- What the engine does with the stroke, for the engines that take a
+           direction or a strength. -->
+      <template v-if="state.engineId === 'dodge' || state.engineId === 'burn'">
+        <label class="flex items-center gap-2 text-xs text-content-tertiary">
+          Exposure
+          <input
+            type="range" min="1" max="100" class="w-20"
+            :value="state.paintExposure"
+            @input="emit('set', { paintExposure: Number(($event.target as HTMLInputElement).value) })"
+          />
+        </label>
+        <button
+          v-for="range in ['shadows', 'midtones', 'highlights']"
+          :key="range"
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md capitalize"
+          :class="chipClass(state.paintRange === range)"
+          @click="emit('set', { paintRange: range })"
+        >
+          {{ range }}
+        </button>
+      </template>
+      <template v-else-if="state.engineId === 'sponge'">
+        <button
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md"
+          :class="chipClass(state.paintSaturate)"
+          @click="emit('set', { paintSaturate: true })"
+        >
+          Saturate
+        </button>
+        <button
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md"
+          :class="chipClass(!state.paintSaturate)"
+          @click="emit('set', { paintSaturate: false })"
+        >
+          Desaturate
+        </button>
+      </template>
+      <label
+        v-else-if="state.engineId === 'blur' || state.engineId === 'sharpen'"
+        class="flex items-center gap-2 text-xs text-content-tertiary"
+      >
+        Strength
         <input
-          type="range" min="2" max="200" class="w-24"
-          :value="state.brushSize"
-          @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
+          type="range" min="1" max="100" class="w-20"
+          :value="state.paintFlow"
+          @input="emit('set', { paintFlow: Number(($event.target as HTMLInputElement).value) })"
         />
       </label>
-      <label class="flex items-center gap-2 text-xs text-content-tertiary">
-        Opacity
-        <input
-          type="range" min="0" max="1" step="0.05" class="w-20"
-          :value="state.paintOpacity"
-          @input="emit('set', { paintOpacity: Number(($event.target as HTMLInputElement).value) })"
+      <ToolbarPopover label="Color">
+        <template #trigger>
+          <span
+            class="w-4 h-4 rounded-md border border-edge-subtle"
+            :style="{ background: rgbaCss(state.paintColor) }"
+          />
+        </template>
+        <ColorPicker
+          :model-value="state.paintColor"
+          @update:model-value="emit('set', { paintColor: $event })"
         />
-      </label>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <button
-        v-for="swatch in PAINT_SWATCHES"
-        :key="swatch"
-        type="button"
-        class="w-5 h-5 rounded-md border transition-transform"
-        :class="state.paintColor === swatch ? 'border-selection scale-110' : 'border-edge-subtle'"
-        :style="{ background: swatch }"
-        @click="emit('set', { paintColor: swatch })"
-      />
+      </ToolbarPopover>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <button
         type="button"

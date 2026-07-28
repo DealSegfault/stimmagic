@@ -151,15 +151,19 @@ export interface PaintEngine {
 }
 
 export const PAINT_ENGINES: PaintEngine[] = [
-  { id: 'round-soft', label: 'Round soft', hardness: 0.25, flow: 1 },
-  { id: 'round-hard', label: 'Round hard', hardness: 0.95, flow: 1 },
-  { id: 'ink', label: 'Ink', hardness: 0.9, flow: 1 },
-  { id: 'airbrush', label: 'Airbrush', hardness: 0.05, flow: 0.35 },
+  // The tip — soft, hard, ink, airbrush — is chosen in the brush picker that
+  // hangs off the toolbar, so there is one Brush engine rather than one chip
+  // per shape. What is listed here is what the engine DOES, which is the part
+  // the picker cannot express.
+  { id: 'paint', label: 'Brush', hardness: 0.6, flow: 1 },
+  { id: 'fill', label: 'Fill', hardness: 1, flow: 1 },
   { id: 'blur', label: 'Blur', hardness: 0.3, flow: 0.6, readsPixels: true },
+  { id: 'sharpen', label: 'Sharpen', hardness: 0.3, flow: 0.6, readsPixels: true },
   { id: 'dodge', label: 'Dodge', hardness: 0.3, flow: 0.4, readsPixels: true },
   { id: 'burn', label: 'Burn', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'heal', label: 'Heal', hardness: 0.4, flow: 1, readsPixels: true, pending: true },
-  { id: 'clone', label: 'Clone', hardness: 0.4, flow: 1, readsPixels: true, pending: true },
+  { id: 'sponge', label: 'Sponge', hardness: 0.3, flow: 0.4, readsPixels: true },
+  { id: 'heal', label: 'Heal', hardness: 0.4, flow: 1, readsPixels: true },
+  { id: 'clone', label: 'Clone', hardness: 0.4, flow: 1, readsPixels: true },
 ]
 
 export const PAINT_SWATCHES = [

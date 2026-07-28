@@ -49,6 +49,7 @@ import {
 import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
 import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
 import type { GenerativeOp } from '../composables/imageStack/types'
+import type { BrushSettings } from '../imageEditor/ported/geometry'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
 const router = useRouter()
@@ -98,29 +99,19 @@ const selectTolerance = ref(32)
 const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
 const paintOpId = ref<string | null>(null)
 const paintEngineId = ref('paint')
-const paintOpacity = ref(1)
-const paintColor = ref('#c9a276')
-const paintBrushSize = ref(26)
-const paintHardness = ref(60)
-
-/** Brush parameters in the shape the ported layer expects. */
-const paintBrush = computed(() => ({
-  size: paintBrushSize.value,
-  hardness: paintHardness.value,
-  opacity: Math.round(paintOpacity.value * 100),
-  flow: 100,
-  spacing: 10,
-}))
-
-const paintColorRgb = computed(() => {
-  const hex = paintColor.value.replace('#', '')
-  return {
-    r: parseInt(hex.slice(0, 2), 16),
-    g: parseInt(hex.slice(2, 4), 16),
-    b: parseInt(hex.slice(4, 6), 16),
-    a: 1,
-  }
+// The ported picker owns the whole brush, so there is one value here rather
+// than a knob per parameter — size, hardness, opacity, flow and spacing all
+// move together when a preset is chosen.
+const paintBrush = ref<BrushSettings>({
+  size: 26, hardness: 60, opacity: 100, flow: 100, spacing: 10,
 })
+const paintColorRgb = ref({ r: 201, g: 162, b: 118, a: 1 })
+// Engine-specific gesture properties. Like the brush they are consumed at the
+// moment of the stroke and belong to no step, so they live in the toolbar.
+const paintExposure = ref(50)
+const paintRange = ref<'shadows' | 'midtones' | 'highlights'>('midtones')
+const paintFlow = ref(50)
+const paintSaturate = ref(true)
 
 // Annotate
 const annotateOpId = ref<string | null>(null)
@@ -513,8 +504,12 @@ const subbarState = computed(() => ({
   tolerance: selectTolerance.value,
   hasSelection: !!selection.value,
   engineId: paintEngineId.value,
-  paintOpacity: paintOpacity.value,
-  paintColor: paintColor.value,
+  paintBrush: paintBrush.value,
+  paintColor: paintColorRgb.value,
+  paintExposure: paintExposure.value,
+  paintRange: paintRange.value,
+  paintFlow: paintFlow.value,
+  paintSaturate: paintSaturate.value,
   textStyle: textStyle.value,
   shapeKind: shapeKind.value,
   annotateColor: annotateColor.value,
@@ -531,10 +526,12 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('tolerance' in patch) selectTolerance.value = patch.tolerance
   if ('invertSelection' in patch) selectRef.value?.invert()
   if ('engineId' in patch) paintEngineId.value = patch.engineId
-  if ('paintBrushSize' in patch) paintBrushSize.value = patch.paintBrushSize
-  if ('paintHardness' in patch) paintHardness.value = patch.paintHardness
-  if ('paintOpacity' in patch) paintOpacity.value = patch.paintOpacity
-  if ('paintColor' in patch) paintColor.value = patch.paintColor
+  if ('paintBrush' in patch) paintBrush.value = patch.paintBrush
+  if ('paintColor' in patch) paintColorRgb.value = patch.paintColor
+  if ('paintExposure' in patch) paintExposure.value = patch.paintExposure
+  if ('paintRange' in patch) paintRange.value = patch.paintRange
+  if ('paintFlow' in patch) paintFlow.value = patch.paintFlow
+  if ('paintSaturate' in patch) paintSaturate.value = patch.paintSaturate
   if ('textStyle' in patch) textStyle.value = patch.textStyle
   if ('shapeKind' in patch) shapeKind.value = patch.shapeKind
   if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
@@ -1249,6 +1246,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             :engine-id="paintEngineId"
             :brush="paintBrush"
             :color="paintColorRgb"
+            :exposure="paintExposure"
+            :range="paintRange"
+            :flow="paintFlow"
+            :saturate="paintSaturate"
             @stroke="onPaintStroke"
           />
           <StackMaskCanvas

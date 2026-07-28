@@ -36,3 +36,12 @@ export interface BrushSettings {
   jitter?: number
   scatter?: number
 }
+
+/** A named brush the picker offers. `icon` is a label, not a rendered glyph. */
+export interface BrushPreset {
+  id: string
+  name: string
+  icon: string
+  settings: BrushSettings
+  isEraser?: boolean
+}
