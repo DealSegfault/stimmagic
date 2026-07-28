@@ -4,7 +4,7 @@
  *
  * Clicking a family enters a MODE and opens its sub-toolbar. It never edits the
  * stack: the step is created on the first real gesture — a paint stroke, a
- * Develop slider, placed text, an explicit Run. Empty steps cannot exist, and
+ * Levels slider, placed text, an explicit Run. Empty steps cannot exist, and
  * Esc leaves a mode with nothing to undo.
  *
  * Icons are inner-SVG fragments in the same shape `taskTypeIcons` uses, so they
@@ -12,7 +12,10 @@
  * glyph in the app.
  */
 
-export type FamilyId = 'generate' | 'crop' | 'select' | 'paint' | 'develop' | 'annotate'
+export type FamilyId =
+  | 'generate' | 'crop' | 'select' | 'paint'
+  | 'levels' | 'filters' | 'effects'
+  | 'annotate'
 
 export interface SubTool {
   id: string
@@ -44,10 +47,19 @@ export const FAMILY_ICONS: Record<FamilyId, string> = {
   paint:
     '<path d="M9.1 11.9l8.1-8.1a2.85 2.85 0 1 1 4 4l-8.1 8.1"/>'
     + '<path d="M7.1 14.9c-1.7 0-3 1.4-3 3 0 1.3-1.5 2-2 2 1.1 1.1 2.5 2 4 2 2.2 0 4-1.8 4-4a3 3 0 0 0-3-3z"/>',
-  develop:
+  // Sliders for Levels, a stack of frames for Filters, a starburst for Effects
+  // — the three doorways read as three different jobs at a glance.
+  levels:
     '<line x1="4" y1="7" x2="20" y2="7"/><circle cx="14" cy="7" r="2.2"/>'
     + '<line x1="4" y1="12" x2="20" y2="12"/><circle cx="8" cy="12" r="2.2"/>'
     + '<line x1="4" y1="17" x2="20" y2="17"/><circle cx="16" cy="17" r="2.2"/>',
+  filters:
+    '<rect x="3" y="3" width="13" height="13" rx="2"/>'
+    + '<path d="M8 21h11a2 2 0 0 0 2-2V8"/>',
+  effects:
+    '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>'
+    + '<path d="M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8"/>'
+    + '<circle cx="12" cy="12" r="2.5"/>',
   annotate:
     '<path d="M4 7V5h16v2"/><path d="M9 19h6"/><path d="M12 5v14"/>',
 }
@@ -97,18 +109,33 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     defaultSub: null,
     subTools: [],
   },
+  // Levels, Filters and Effects are the snapshot editor's own names. They are
+  // three doorways into one adjustment step, not three steps: the pixel
+  // pipeline has a fixed order and splitting it would invite reordering it
+  // into an order the maths does not have.
   {
-    id: 'develop',
-    label: 'Develop',
-    key: 'd',
-    icon: FAMILY_ICONS.develop,
-    defaultSub: 'light',
-    subTools: [
-      { id: 'light', label: 'Light' },
-      { id: 'colour', label: 'Colour' },
-      { id: 'film', label: 'Film' },
-      { id: 'effects', label: 'Effects' },
-    ],
+    id: 'levels',
+    label: 'Levels',
+    key: 'l',
+    icon: FAMILY_ICONS.levels,
+    defaultSub: null,
+    subTools: [],
+  },
+  {
+    id: 'filters',
+    label: 'Filters',
+    key: 'f',
+    icon: FAMILY_ICONS.filters,
+    defaultSub: null,
+    subTools: [],
+  },
+  {
+    id: 'effects',
+    label: 'Effects',
+    key: 'e',
+    icon: FAMILY_ICONS.effects,
+    defaultSub: null,
+    subTools: [],
   },
   {
     id: 'annotate',

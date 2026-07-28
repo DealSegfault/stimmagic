@@ -26,11 +26,11 @@ export { canonicalOp, stackHashes }
 import {
   applyAnnotations,
   applyCrop,
-  applyDevelop,
+  applyAdjust,
   applyRasterLayer,
   applyThroughRegion,
   cropOutputSize,
-  developIsIdentity,
+  adjustIsIdentity,
 } from './opExecutors'
 
 export interface CompositeStage {
@@ -350,9 +350,9 @@ export class StackCompositor {
         // not a thing, and a region would have no space to be expressed in.
         return applyCrop(input, input.width, input.height, anyOp.params || {})
       }
-      if (kind === 'develop') {
-        if (developIsIdentity(anyOp.params || {})) return input
-        const result = applyDevelop(input, width, height, anyOp.params || {})
+      if (kind === 'adjust') {
+        if (adjustIsIdentity(anyOp.params || {})) return input
+        const result = applyAdjust(input, width, height, anyOp.params || {})
         return this.scopeToRegion(input, result, op, width, height)
       }
       return input

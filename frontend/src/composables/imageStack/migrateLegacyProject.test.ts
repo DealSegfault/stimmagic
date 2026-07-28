@@ -31,10 +31,10 @@ test('an untouched project migrates to an empty stack', () => {
 
 test('a default crop rect is not imported as a Crop step', () => {
   const { ops } = migrateLegacyProject(untouched({ brightness: 20 }))
-  assert.deepEqual(ops.map(o => (o as any).exec.kind), ['develop'])
+  assert.deepEqual(ops.map(o => (o as any).exec.kind), ['adjust'])
 })
 
-test('crop, retouch, develop and annotate land bottom-to-top in render order', () => {
+test('crop, retouch, adjust and annotate land bottom-to-top in render order', () => {
   const { ops, rasters } = migrateLegacyProject(untouched({
     crop: { x: 0.5, y: 0.5, width: 0.8, height: 0.8 },
     retouchLayerData: 'data:image/png;base64,iVBORw0KGgo=',
@@ -43,26 +43,26 @@ test('crop, retouch, develop and annotate land bottom-to-top in render order', (
     annotations: [{ id: 'a', type: 'rect' }],
   }))
 
-  assert.deepEqual(ops.map(o => (o as any).exec.kind), ['crop', 'paint', 'develop', 'annotate'])
+  assert.deepEqual(ops.map(o => (o as any).exec.kind), ['crop', 'paint', 'adjust', 'annotate'])
   assert.equal(rasters.length, 1)
   assert.equal(rasters[0].opId, ops[1].id)
   assert.equal((ops[1] as any).raster_ref, `payloads/${ops[1].id}-layer.png`)
 })
 
-test('every touched adjustment lands in ONE Develop step', () => {
+test('every touched adjustment lands in ONE Adjust step', () => {
   const { ops } = migrateLegacyProject(untouched({
     brightness: 15, saturation: -20, vignette: 40, splitToningEnabled: true,
   }))
-  const develop = ops.filter(o => (o as any).exec.kind === 'develop')
-  assert.equal(develop.length, 1, 'a develop session is one step, not one per slider')
-  assert.deepEqual((develop[0] as any).params, {
+  const adjust = ops.filter(o => (o as any).exec.kind === 'adjust')
+  assert.equal(adjust.length, 1, 'a adjust session is one step, not one per slider')
+  assert.deepEqual((adjust[0] as any).params, {
     brightness: 15, saturation: -20, vignette: 40, splitToningEnabled: true,
   })
 })
 
-test('the Develop label names the sections it touched', () => {
+test('the Adjust label names the sections it touched', () => {
   const { ops } = migrateLegacyProject(untouched({ brightness: 15, vignette: 40 }))
-  assert.equal(ops[0].label, 'Develop — Light · Effects')
+  assert.equal(ops[0].label, 'Adjust — Light · Effects')
 })
 
 test('untouched fields are not carried into params', () => {

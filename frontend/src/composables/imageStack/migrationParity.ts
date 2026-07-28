@@ -13,7 +13,7 @@
  */
 
 import { useImageWriter } from '@stimma/image-editor'
-import { applyAnnotations, applyCrop, applyDevelop } from './opExecutors'
+import { applyAnnotations, applyCrop, applyAdjust } from './opExecutors'
 import { migrateLegacyProject } from './migrateLegacyProject'
 
 export interface ParityReport {
@@ -104,8 +104,8 @@ function replayStack(source: HTMLCanvasElement, ops: any[]): HTMLCanvasElement {
     const kind = op.exec?.kind
     if (kind === 'crop') {
       current = applyCrop(current, current.width, current.height, op.params)
-    } else if (kind === 'develop') {
-      current = applyDevelop(current, current.width, current.height, op.params)
+    } else if (kind === 'adjust') {
+      current = applyAdjust(current, current.width, current.height, op.params)
     } else if (kind === 'annotate') {
       current = applyAnnotations(current, current.width, current.height, op.params.shapes, current)
     }

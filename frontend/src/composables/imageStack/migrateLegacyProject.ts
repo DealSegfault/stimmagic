@@ -17,7 +17,7 @@
 import { newOpId } from './opId.ts'
 import type { ContainerOp, Op, ParametricOp } from './types.ts'
 
-/** Fields the Develop op carries, in the order the old writer applied them. */
+/** Fields the Adjust op carries, in the order the old writer applied them. */
 const DEVELOP_FIELDS = [
   'brightness', 'contrast', 'saturation', 'exposure', 'temperature', 'gamma',
   'filter', 'colorMatrix',
@@ -43,8 +43,8 @@ const DEVELOP_DEFAULTS: Record<string, any> = {
   ditherEnabled: false, ditherPalette: 'none',
 }
 
-/** Sections the row subtitle names, so "Develop" says what it touched. */
-const DEVELOP_SECTIONS: Array<{ label: string; fields: string[] }> = [
+/** Sections the row subtitle names, so "Adjust" says what it touched. */
+const ADJUST_SECTIONS: Array<{ label: string; fields: string[] }> = [
   { label: 'Light', fields: ['brightness', 'contrast', 'exposure', 'gamma'] },
   { label: 'Colour', fields: ['saturation', 'temperature', 'filter', 'colorMatrix'] },
   { label: 'Film', fields: ['splitToningEnabled', 'gradientMapEnabled', 'colorIsolationEnabled'] },
@@ -150,24 +150,24 @@ export function migrateLegacyProject(project: any): MigrationResult {
     dropped.push('The retouch layer could not be read and was not imported.')
   }
 
-  // 3. Every touched adjustment, as ONE Develop step — the user-facing unit is
-  //    a develop session, not a slider.
-  const developParams: Record<string, any> = {}
+  // 3. Every touched adjustment, as ONE Adjust step — the user-facing unit is
+  //    a adjust session, not a slider.
+  const adjustParams: Record<string, any> = {}
   for (const field of DEVELOP_FIELDS) {
     const value = (state as any)[field]
-    if (!isDefault(field, value)) developParams[field] = value
+    if (!isDefault(field, value)) adjustParams[field] = value
   }
-  if (Object.keys(developParams).length > 0) {
-    const sections = DEVELOP_SECTIONS
-      .filter(section => section.fields.some(f => f in developParams))
+  if (Object.keys(adjustParams).length > 0) {
+    const sections = ADJUST_SECTIONS
+      .filter(section => section.fields.some(f => f in adjustParams))
       .map(section => section.label)
     ops.push({
       id: newOpId(),
       class: 'parametric',
       enabled: true,
-      label: sections.length ? `Develop — ${sections.join(' · ')}` : 'Develop',
-      exec: { kind: 'develop' },
-      params: developParams,
+      label: sections.length ? `Adjust — ${sections.join(' · ')}` : 'Adjust',
+      exec: { kind: 'adjust' },
+      params: adjustParams,
     } as ParametricOp)
   }
 

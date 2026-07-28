@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * The selected Develop row's full control surface.
+ * The selected adjustment row's full control surface.
  *
  * Two-zone by design: the row keeps only the eye as an immediate hand
  * affordance, and everything that needs space lives here, under the stack.
@@ -11,10 +11,15 @@
  * document's edit recorder is for.
  */
 import { computed, ref } from 'vue'
-import { DEVELOP_SECTIONS } from '../../composables/imageStack/developSections'
+import {
+  ADJUST_SECTIONS, FILTER_CATEGORIES, sectionsForFamily,
+} from '../../composables/imageStack/adjustSections'
+import type { AdjustFamily } from '../../composables/imageStack/adjustSections'
 
 const props = defineProps<{
   params: Record<string, any>
+  /** The open doorway. With none, the row is selected and everything shows. */
+  family?: AdjustFamily | null
   disabled?: boolean
 }>()
 
@@ -23,7 +28,7 @@ const emit = defineEmits<{
   commit: []
 }>()
 
-const openSection = ref<string>('light')
+const openSection = ref<string>('levels')
 
 function valueOf(key: string, fallback: number) {
   const value = props.params?.[key]
@@ -31,18 +36,53 @@ function valueOf(key: string, fallback: number) {
 }
 
 function setValue(key: string, value: number) {
-  emit('change', { [key]: value }, `develop:${key}`)
+  emit('change', { [key]: value }, `adjust:${key}`)
 }
 
 function setToggle(key: string, value: boolean) {
-  emit('change', { [key]: value }, `develop:${key}`)
+  emit('change', { [key]: value }, `adjust:${key}`)
 }
 
-const sections = computed(() => DEVELOP_SECTIONS)
+// With a family open the inspector shows that family's groups; selecting a row
+// with no family open shows everything the step carries, which is what makes an
+// earlier step fully editable from the stack.
+const sections = computed(() =>
+  props.family ? sectionsForFamily(props.family) : ADJUST_SECTIONS
+)
+const showsFilters = computed(() => !props.family || props.family === 'filters')
+const activeFilter = computed(() => props.params?.filter ?? 'none')
+
+function chooseFilter(id: string) {
+  emit('change', { filter: id === 'none' ? null : id }, 'adjust:filter')
+  emit('commit')
+}
 </script>
 
 <template>
   <div class="divide-y divide-edge-subtle">
+    <!-- Filter presets: a grid, the way the old Filters panel showed them. -->
+    <section v-if="showsFilters" class="px-3 py-2">
+      <div v-for="category in FILTER_CATEGORIES" :key="category.id" class="mb-2 last:mb-0">
+        <div v-if="category.label" class="text-[11px] text-content-tertiary mb-1">
+          {{ category.label }}
+        </div>
+        <div class="flex flex-wrap gap-1">
+          <button
+            v-for="preset in category.filters"
+            :key="preset.id"
+            type="button"
+            class="px-2 py-1 text-[11px] rounded-md transition-colors"
+            :class="activeFilter === preset.id
+              ? 'bg-selection/20 text-content'
+              : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+            :disabled="disabled"
+            @click="chooseFilter(preset.id)"
+          >
+            {{ preset.label }}
+          </button>
+        </div>
+      </div>
+    </section>
     <section v-for="section in sections" :key="section.id">
       <button
         type="button"

@@ -28,8 +28,9 @@ import StackPaintCanvas from '../components/imageStack/StackPaintCanvas.vue'
 import StackSelectCanvas from '../components/imageStack/StackSelectCanvas.vue'
 import StackAnnotateCanvas from '../components/imageStack/StackAnnotateCanvas.vue'
 import CheckpointBand from '../components/imageStack/CheckpointBand.vue'
-import DevelopInspector from '../components/imageStack/DevelopInspector.vue'
+import AdjustInspector from '../components/imageStack/AdjustInspector.vue'
 import StackMaskCanvas from '../components/imageStack/StackMaskCanvas.vue'
+import StackCropCanvas from '../components/imageStack/StackCropCanvas.vue'
 import { useStackDocument, newOpId } from '../composables/imageStack/useStackDocument'
 import { useStackCandidates } from '../composables/imageStack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../composables/imageStack/useStackCompositor'
@@ -42,14 +43,18 @@ import {
 } from '../composables/imageStack/stackState'
 import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
+  transformShapes,
 } from '../composables/imageStack/geometryTransform'
 import {
-  CROP_ASPECTS, cropRectForAspect, developLabel,
-} from '../composables/imageStack/developSections'
+  CROP_ASPECTS, cropRectForAspect, adjustLabel,
+} from '../composables/imageStack/adjustSections'
 import { familyById, TOOL_FAMILIES } from '../composables/imageStack/toolFamilies'
 import type { FamilyId, SelectionMode } from '../composables/imageStack/toolFamilies'
 import type { GenerativeOp } from '../composables/imageStack/types'
 import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
+import type { CropRect } from '../imageEditor/ported/useCropInteraction'
+import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
+import type { AdjustFamily } from '../composables/imageStack/adjustSections'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
@@ -67,7 +72,7 @@ const baseInfo = ref<any>(null)
 
 /** Generate sub-tool modes. Clicking a tool enters a mode; it never edits the
  *  stack. The step is created on the first real gesture — an explicit Run. */
-type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale' | 'develop' | 'crop'
+type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale' | 'adjust' | 'crop'
 const mode = ref<Mode>(null)
 const prompt = ref('')
 const candidateCount = ref(4)
@@ -448,7 +453,8 @@ async function afterGeometryChange(before: any) {
     if (op.mask_ref) refs.push(['mask_ref', op.mask_ref])
     if (op.raster_ref) refs.push(['raster_ref', op.raster_ref])
     if (op.region?.mask_ref) refs.push(['region', op.region.mask_ref])
-    if (!refs.length) continue
+    const shapes = op.exec?.kind === 'annotate' ? op.params?.shapes : null
+    if (!refs.length && !shapes?.length) continue
 
     const previousIndex = before.edits.findIndex((candidate: any) => candidate.id === op.id)
     if (previousIndex < 0) continue
@@ -457,6 +463,18 @@ async function afterGeometryChange(before: any) {
     const newGeometry = geometryBelow(doc, index)
     const matrix = coTransform(oldGeometry.matrix, newGeometry.matrix)
     if (!matrix || isIdentity(matrix)) continue
+
+    // Annotations are vectors, so they are rewritten in place rather than
+    // resampled — a crop and an un-crop restore them exactly.
+    if (shapes?.length) {
+      stack.setParams(op.id, {
+        shapes: transformShapes(
+          shapes, matrix,
+          oldGeometry.width, oldGeometry.height,
+          newGeometry.width, newGeometry.height
+        ),
+      })
+    }
 
     for (const [, ref] of refs) {
       try {
@@ -479,6 +497,29 @@ function masterRef(ref: string): string {
 }
 function derivedName(ref: string): string {
   return ref.split('/').pop()!
+}
+
+/**
+ * Remove or disable a step, co-transforming anything above it.
+ *
+ * Dropping a crop is a geometry change exactly like adding one: every mask,
+ * raster layer and annotation above it was authored in the cropped frame and
+ * has to be carried back into the uncropped one, or it lands somewhere the
+ * user never put it. Toggling a crop's eye is the same change, reversibly.
+ */
+async function removeOpWithGeometry(opId: string) {
+  const before = JSON.parse(JSON.stringify(stack.doc.value))
+  stack.removeOp(opId)
+  if (opId === cropOpId.value) cropOpId.value = null
+  await afterGeometryChange(before)
+  void render()
+}
+
+async function setEnabledWithGeometry(opId: string, enabled: boolean) {
+  const before = JSON.parse(JSON.stringify(stack.doc.value))
+  stack.setEnabled(opId, enabled)
+  await afterGeometryChange(before)
+  void render()
 }
 
 // -- running a generative step ---------------------------------------------
@@ -516,6 +557,15 @@ function selectFamily(id: FamilyId) {
   family.value = id
   sub.value = familyById(id).defaultSub
   if (id === 'generate') mode.value = (sub.value as Mode) ?? null
+  if (id === 'crop') {
+    // Entering Crop resumes the topmost existing crop rather than stacking a
+    // second one on top of it: two crops in a row is never what was meant.
+    const existing = [...(stack.doc.value?.edits || [])]
+      .reverse()
+      .find(op => (op as any).exec?.kind === 'crop')
+    cropOpId.value = existing?.id ?? null
+    void renderCropInput()
+  }
 }
 
 function selectSub(id: string) {
@@ -578,6 +628,7 @@ function onSubbarSet(patch: Record<string, any>) {
       '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
   }
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
+  if ('auto' in patch) runAuto(patch.auto)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   if ('rotation' in patch) void applyCropChange({ rotation: patch.rotation })
   if ('rotateQuarter' in patch) rotateQuarter()
@@ -797,65 +848,85 @@ function growCanvas(source: HTMLCanvasElement, factor: number) {
   return { image, borderMask }
 }
 
-// -- develop ----------------------------------------------------------------
+// -- adjust ----------------------------------------------------------------
 
 /**
- * The Develop step this session is editing. One step per mode session: entering
- * Develop and moving a slider creates it, and every further move edits that
+ * The Adjust step this session is editing. One step per mode session: entering
+ * Adjust and moving a slider creates it, and every further move edits that
  * same step rather than stacking one per slider.
  */
-const developOpId = ref<string | null>(null)
+const adjustOpId = ref<string | null>(null)
 
-const developParams = computed<Record<string, any>>(() => {
-  const op = developOpId.value ? stack.opById(developOpId.value) : null
+const adjustParams = computed<Record<string, any>>(() => {
+  const op = adjustOpId.value ? stack.opById(adjustOpId.value) : null
   return (op as any)?.params || {}
 })
 
-function onDevelopChange(patch: Record<string, any>, coalesceKey: string) {
+function onAdjustChange(patch: Record<string, any>, coalesceKey: string) {
   if (!stack.doc.value) return
-  if (!developOpId.value) {
+  if (!adjustOpId.value) {
     const opId = newOpId()
     stack.addOp({
       id: opId, class: 'parametric', enabled: true,
-      label: developLabel(patch), exec: { kind: 'develop' }, params: patch,
+      label: adjustLabel(patch), exec: { kind: 'adjust' }, params: patch,
     } as any)
-    developOpId.value = opId
+    adjustOpId.value = opId
     selectedOpId.value = opId
   } else {
-    stack.setParams(developOpId.value, patch, coalesceKey)
-    const op = stack.opById(developOpId.value)
-    if (op) stack.setLabel(developOpId.value, developLabel((op as any).params || {}))
+    stack.setParams(adjustOpId.value, patch, coalesceKey)
+    const op = stack.opById(adjustOpId.value)
+    if (op) stack.setLabel(adjustOpId.value, adjustLabel((op as any).params || {}))
   }
   void render()
 }
 
 /**
- * Selecting a Develop row makes the inspector edit THAT row, which is how an
+ * Selecting a Adjust row makes the inspector edit THAT row, which is how an
  * earlier session's step is re-entered rather than a new one being stacked.
  */
-const selectedDevelopOp = computed(() => {
+const selectedAdjustOp = computed(() => {
   const op = selectedOpId.value ? stack.opById(selectedOpId.value) : null
-  return op && op.class === 'parametric' && (op as any).exec?.kind === 'develop' ? op : null
+  return op && op.class === 'parametric' && (op as any).exec?.kind === 'adjust' ? op : null
 })
 
 /**
- * The inspector shows for a selected Develop row, and also whenever the Develop
- * family is open with nothing selected — otherwise the FIRST Develop step could
+ * The inspector shows for a selected Adjust row, and also whenever the Adjust
+ * family is open with nothing selected — otherwise the FIRST Adjust step could
  * never be created, since there would be no row to select to get its controls.
  */
-const showsDevelopInspector = computed(
-  () => !!selectedDevelopOp.value || family.value === 'develop'
+const ADJUST_FAMILIES: FamilyId[] = ['levels', 'filters', 'effects']
+const adjustFamily = computed<AdjustFamily | null>(() =>
+  ADJUST_FAMILIES.includes(family.value as FamilyId) ? (family.value as AdjustFamily) : null
 )
 
-const developInspectorParams = computed<Record<string, any>>(
-  () => (selectedDevelopOp.value as any)?.params || developParams.value
+const showsAdjustInspector = computed(
+  () => !!selectedAdjustOp.value || !!adjustFamily.value
 )
 
-function onDevelopInspectorChange(patch: Record<string, any>, coalesceKey: string) {
+/**
+ * The three Auto buttons from the old Levels panel. They read the histogram of
+ * the image BELOW the step and propose slider values — nothing is baked, so an
+ * auto result is a normal adjustable step.
+ */
+function runAuto(kind: 'levels' | 'contrast' | 'balance') {
+  const source = composite.value
+  const patch = kind === 'levels' ? autoLevels(source)
+    : kind === 'contrast' ? autoContrast(source)
+    : autoBalance(source)
+  if (!patch) return
+  if (selectedAdjustOp.value) adjustOpId.value = selectedAdjustOp.value.id
+  onAdjustChange(patch, `adjust:auto:${kind}`)
+}
+
+const adjustInspectorParams = computed<Record<string, any>>(
+  () => (selectedAdjustOp.value as any)?.params || adjustParams.value
+)
+
+function onAdjustInspectorChange(patch: Record<string, any>, coalesceKey: string) {
   // Selecting a row re-enters THAT step; with nothing selected the session's
   // own step is created on the first move and edited thereafter.
-  if (selectedDevelopOp.value) developOpId.value = selectedDevelopOp.value.id
-  onDevelopChange(patch, coalesceKey)
+  if (selectedAdjustOp.value) adjustOpId.value = selectedAdjustOp.value.id
+  onAdjustChange(patch, coalesceKey)
 }
 
 // -- crop ---------------------------------------------------------------------
@@ -868,9 +939,21 @@ function cropParamsOf() {
   return (op as any)?.params || { rect: { x: 0.5, y: 0.5, width: 1, height: 1 } }
 }
 
-async function applyCropChange(patch: Record<string, any>) {
+/**
+ * @param live  A drag in progress. The crop itself updates every frame, but the
+ *              co-transform — which reloads and rewrites every spatial payload
+ *              above the crop — waits for the gesture to end. Running it per
+ *              frame rewrote a dozen payloads per mouse move and made the drag
+ *              lag far enough behind the pointer to land somewhere else.
+ */
+async function applyCropChange(
+  patch: Record<string, any>,
+  coalesceKey = 'crop',
+  live = false
+) {
   if (!stack.doc.value) return
-  const before = JSON.parse(JSON.stringify(stack.doc.value))
+  const before = liveCropBefore ?? JSON.parse(JSON.stringify(stack.doc.value))
+  if (live && !liveCropBefore) liveCropBefore = before
   if (!cropOpId.value) {
     const opId = newOpId()
     stack.addOp({
@@ -884,11 +967,80 @@ async function applyCropChange(patch: Record<string, any>) {
     cropOpId.value = opId
     selectedOpId.value = opId
   } else {
-    stack.setParams(cropOpId.value, patch, 'crop')
+    stack.setParams(cropOpId.value, patch, coalesceKey)
   }
-  // A geometry change moves every payload above it into a new space.
+  if (live) { void render(); return }
+  // A geometry change moves every payload above it into a new space. `before`
+  // is the document as it stood when the GESTURE started, so a drag rewrites
+  // payloads once, from where they were, rather than in accumulating steps.
+  liveCropBefore = null
   await afterGeometryChange(before)
   void render()
+}
+
+/** The document as it stood when the current crop drag began. */
+let liveCropBefore: any = null
+
+/**
+ * The image the crop step sees. Rendering only the ops BELOW it is what lets
+ * the region outside the crop be dimmed rather than gone — and what makes
+ * widening the crop later reveal real pixels.
+ */
+const cropInput = ref<HTMLCanvasElement | null>(null)
+
+async function renderCropInput() {
+  const doc = stack.doc.value
+  if (!doc || !baseInfo.value) return
+  const index = cropOpId.value
+    ? doc.edits.findIndex(op => op.id === cropOpId.value)
+    : doc.edits.length
+  try {
+    cropInput.value = await compositor.renderUpTo(doc, index < 0 ? doc.edits.length : index)
+  } catch {
+    cropInput.value = composite.value
+  }
+}
+
+/** The crop rectangle the overlay draws, defaulting to the whole frame. */
+const cropRect = computed<CropRect>(() => {
+  const params = cropParamsOf()
+  const rect = params.rect ?? { x: 0.5, y: 0.5, width: 1, height: 1 }
+  return {
+    x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+    aspectRatio: cropAspectRatio.value,
+    rotation: params.rotation ?? 0,
+  }
+})
+
+/**
+ * Locked ratio in PIXEL space, which is what the ported resize maths expects;
+ * it divides through by the image's own ratio to work in normalized coords.
+ */
+const cropAspectRatio = computed<number | null>(() => {
+  const preset = CROP_ASPECTS.find(a => a.id === cropAspect.value)
+  if (!preset || preset.ratio == null) return null
+  const frame = cropInput.value
+  if (preset.ratio === -1) return frame ? frame.width / frame.height : null
+  return preset.ratio
+})
+
+/** A drag is many changes and one undo step. */
+const cropGesture = ref(0)
+const cropGestureKey = computed(() => `crop:${cropOpId.value}:${cropGesture.value}`)
+
+function onCropRectChange(next: CropRect) {
+  void applyCropChange(
+    { rect: { x: next.x, y: next.y, width: next.width, height: next.height },
+      rotation: next.rotation ?? 0 },
+    cropGestureKey.value,
+    true
+  )
+}
+
+/** The drag ended: settle the geometry and start a new undo step. */
+function onCropCommit() {
+  cropGesture.value += 1
+  void applyCropChange({}, cropGestureKey.value)
 }
 
 function chooseAspect(id: string) {
@@ -896,8 +1048,12 @@ function chooseAspect(id: string) {
   const preset = CROP_ASPECTS.find(a => a.id === id)
   const doc = stack.doc.value
   if (!doc) return
+  const frame = cropInput.value ?? doc.canvas
+  const ratio = preset?.ratio === -1
+    ? frame.width / frame.height
+    : preset?.ratio ?? null
   void applyCropChange({
-    rect: cropRectForAspect(preset?.ratio ?? null, doc.canvas.width, doc.canvas.height),
+    rect: cropRectForAspect(ratio, frame.width, frame.height),
   })
 }
 
@@ -1154,7 +1310,7 @@ function leaveMode() {
   maskCanvas.value = null
   maskRef.value?.clear()
   // Ending a mode session ends its STEP: the next entry starts a new one.
-  developOpId.value = null
+  adjustOpId.value = null
   cropOpId.value = null
   paintOpId.value = null
   paintInitialLayer.value = null
@@ -1275,7 +1431,24 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
 
       <!-- Canvas. Centred in whatever matte is left. -->
       <div v-else ref="viewport" class="flex-1 min-h-0 grid place-items-center bg-matte p-6">
-        <div class="relative" :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }">
+        <!-- Crop works on the step's INPUT, not on the composite: the region
+             outside the crop is dimmed rather than absent, so it takes the
+             whole viewport instead of the cropped display box. -->
+        <div
+          v-if="family === 'crop'"
+          class="relative"
+          :style="{ width: viewportSize.width + 'px', height: viewportSize.height + 'px' }"
+        >
+          <StackCropCanvas
+            :source="cropInput"
+            :crop="cropRect"
+            :view-width="viewportSize.width"
+            :view-height="viewportSize.height"
+            @change="onCropRectChange"
+            @commit="onCropCommit"
+          />
+        </div>
+        <div v-else class="relative" :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }">
           <canvas
             ref="displayCanvas"
             class="rounded-media w-full h-full"
@@ -1370,7 +1543,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :regenerating="resamplingOpId === row.op.id"
               @select="selectedOpId = row.op.id"
               @toggle-expanded="toggleCheckpoint(row.op.id)"
-              @toggle-enabled="stack.setEnabled(row.op.id, $event); render()"
+              @toggle-enabled="setEnabledWithGeometry(row.op.id, $event)"
               @regenerate="resample(row.op.id)"
             />
             <EditRow
@@ -1386,9 +1559,9 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :resampling="resamplingOpId === row.op.id"
               :draggable="true"
               @select="selectedOpId = row.op.id"
-              @toggle="stack.setEnabled(row.op.id, $event); render()"
+              @toggle="setEnabledWithGeometry(row.op.id, $event)"
               @pick="stack.pickCandidate(row.op.id, $event); render()"
-              @remove="stack.removeOp(row.op.id); render()"
+              @remove="removeOpWithGeometry(row.op.id)"
               @resample="resample(row.op.id)"
               @verb="runVerb(row.op.id, $event)"
               @intent-hover="intentOpId = $event ? row.op.id : null"
@@ -1406,12 +1579,13 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         <!-- Inspector: the selected row's full control surface, under the
              stack. The row keeps only the eye as an immediate affordance. -->
         <div
-          v-if="showsDevelopInspector"
+          v-if="showsAdjustInspector"
           class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
         >
-          <DevelopInspector
-            :params="developInspectorParams"
-            @change="onDevelopInspectorChange"
+          <AdjustInspector
+            :family="adjustFamily"
+            :params="adjustInspectorParams"
+            @change="onAdjustInspectorChange"
             @commit="stack.flush()"
           />
         </div>

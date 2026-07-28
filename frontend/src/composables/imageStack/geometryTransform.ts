@@ -229,3 +229,67 @@ function hasSpatialPayload(op: Op): boolean {
   const anyOp = op as any
   return !!(anyOp.mask_ref || anyOp.raster_ref || op.region?.mask_ref)
 }
+
+// -- vector payloads ---------------------------------------------------------
+
+/**
+ * Carry annotation shapes through a co-transform.
+ *
+ * Shapes are stored normalized against the frame they were authored in, so a
+ * crop below them does not merely resize their canvas — it changes what 0.5
+ * means. Without this an arrow drawn over someone's face slides off it the
+ * moment the crop is removed, which is the whole reason the raster payloads
+ * are rewritten too. Sizes and stroke widths scale with the geometry; a
+ * straightening crop also turns the shapes with it.
+ */
+export function transformShapes(
+  shapes: any[],
+  matrix: Affine,
+  oldWidth: number,
+  oldHeight: number,
+  newWidth: number,
+  newHeight: number
+): any[] {
+  const scaleX = Math.hypot(matrix[0], matrix[1])
+  const scaleY = Math.hypot(matrix[2], matrix[3])
+  const angle = Math.atan2(matrix[1], matrix[0])
+
+  /** Normalized in the old frame → normalized in the new one. */
+  const point = (x: number, y: number) => {
+    const [px, py] = applyToPoint(matrix, x * oldWidth, y * oldHeight)
+    return { x: px / newWidth, y: py / newHeight }
+  }
+  const spanX = (value: number) => (value * oldWidth * scaleX) / newWidth
+  const spanY = (value: number) => (value * oldHeight * scaleY) / newHeight
+
+  return shapes.map(shape => {
+    const next: any = { ...shape, ...point(shape.x, shape.y) }
+
+    if (typeof shape.rotation === 'number') next.rotation = shape.rotation + angle
+    // strokeWidth is in pixels of the frame, so it follows the scale directly.
+    if (typeof shape.strokeWidth === 'number') {
+      next.strokeWidth = shape.strokeWidth * ((scaleX + scaleY) / 2)
+    }
+
+    if (typeof shape.width === 'number') next.width = spanX(shape.width)
+    if (typeof shape.height === 'number') next.height = spanY(shape.height)
+    // Text keeps a reference size at the base font size; it has to move with
+    // the display size or the glyph scale silently changes.
+    if (typeof shape.baseWidth === 'number') next.baseWidth = spanX(shape.baseWidth)
+    if (typeof shape.baseHeight === 'number') next.baseHeight = spanY(shape.baseHeight)
+    if (typeof shape.rx === 'number') next.rx = spanX(shape.rx)
+    if (typeof shape.ry === 'number') next.ry = spanY(shape.ry)
+
+    if (typeof shape.x1 === 'number') {
+      const a = point(shape.x1, shape.y1)
+      const b = point(shape.x2, shape.y2)
+      next.x1 = a.x; next.y1 = a.y; next.x2 = b.x; next.y2 = b.y
+    }
+    for (const key of ['points', 'rawPoints', 'smoothedPath']) {
+      if (Array.isArray(shape[key])) {
+        next[key] = shape[key].map((p: any) => point(p.x, p.y))
+      }
+    }
+    return next
+  })
+}

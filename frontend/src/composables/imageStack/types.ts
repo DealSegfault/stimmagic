@@ -55,7 +55,7 @@ export interface BaseOp {
 
 export interface ParametricOp extends BaseOp {
   class: 'parametric'
-  exec: { kind: 'crop' } | { kind: 'develop' } | { kind: 'backend-filter'; tool_id: string }
+  exec: { kind: 'crop' } | { kind: 'adjust' } | { kind: 'backend-filter'; tool_id: string }
   params: Record<string, any>
 }
 

@@ -3,7 +3,7 @@
  * The active family's sub-toolbar, directly beneath the tool row.
  *
  * Holds only the HOT controls. Everything with a large surface — the whole
- * Develop control set, per-engine brush settings — lives in the selected row's
+ * Adjust control set, per-engine brush settings — lives in the selected row's
  * inspector, which is what lets a 40-knob tool exist without a second layout
  * system. Nobody gets forty controls in a toolbar; nobody loses them either.
  */
@@ -15,7 +15,7 @@ import BrushPicker from '../../imageEditor/ported/BrushPicker.vue'
 import ColorPicker from '../../imageEditor/ported/ColorPicker.vue'
 import {
   CROP_ASPECTS,
-} from '../../composables/imageStack/developSections'
+} from '../../composables/imageStack/adjustSections'
 import {
   PAINT_ENGINES, SELECTION_MODES, SHAPE_KINDS, TEXT_STYLES,
   familyById,
@@ -41,6 +41,13 @@ const emit = defineEmits<{
 }>()
 
 const family = computed(() => familyById(props.family))
+
+/** The three buttons the old Levels panel led with. */
+const AUTO_ACTIONS = [
+  { id: 'levels', label: 'Auto levels' },
+  { id: 'contrast', label: 'Auto contrast' },
+  { id: 'balance', label: 'Auto balance' },
+]
 
 function rgbaCss(color: { r: number; g: number; b: number; a?: number } | null) {
   if (!color) return 'transparent'
@@ -178,14 +185,25 @@ function chipClass(active: boolean, pending = false) {
         {{ preset.label }}
       </button>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <!-- The lollipop on the crop is the primary straightening control; this
+           mirrors it for fine values and shows the angle in degrees. -->
       <label class="flex items-center gap-2 text-xs text-content-tertiary">
         Straighten
         <input
-          type="range" min="-0.4" max="0.4" step="0.005" class="w-28"
+          type="range" min="-0.7854" max="0.7854" step="0.002" class="w-28"
           :value="state.rotation ?? 0"
           @input="emit('set', { rotation: Number(($event.target as HTMLInputElement).value) })"
         />
+        <span class="tabular-nums w-10">{{ ((state.rotation ?? 0) * 180 / Math.PI).toFixed(1) }}°</span>
       </label>
+      <button
+        v-if="state.rotation"
+        type="button"
+        class="px-2 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+        @click="emit('set', { rotation: 0 })"
+      >
+        Reset
+      </button>
       <button type="button" class="px-2.5 py-1.5 text-xs rounded-md" :class="chipClass(false)" @click="emit('set', { rotateQuarter: true })">
         Rotate 90°
       </button>
@@ -373,10 +391,29 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
-    <!-- Develop --------------------------------------------------------- -->
-    <template v-else-if="family.id === 'develop'">
+    <!-- Levels ---------------------------------------------------------- -->
+    <template v-else-if="family.id === 'levels'">
+      <button
+        v-for="auto in AUTO_ACTIONS"
+        :key="auto.id"
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+        @click="emit('set', { auto: auto.id })"
+      >
+        {{ auto.label }}
+      </button>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
       <span class="text-xs text-content-tertiary">
-        All controls are in the inspector below the stack — every one is free.
+        Sliders are in the inspector below the stack — every one is free.
+      </span>
+    </template>
+
+    <!-- Filters / Effects ----------------------------------------------- -->
+    <template v-else-if="family.id === 'filters' || family.id === 'effects'">
+      <span class="text-xs text-content-tertiary">
+        {{ family.id === 'filters'
+          ? 'Presets are in the inspector below the stack.'
+          : 'All controls are in the inspector below the stack — every one is free.' }}
       </span>
     </template>
 

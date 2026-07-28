@@ -8,9 +8,9 @@
  *
  * What changes is the *shape*: the snapshot editor applied these as fields on
  * one flat state object in a fixed order, and here each is a step in a stack
- * that can be toggled, reordered and scoped. The Develop op deliberately holds
+ * that can be toggled, reordered and scoped. The Adjust op deliberately holds
  * every touched section (Light, Colour, Film, Effects) rather than one op per
- * filter, because the user-facing unit is a develop session, not a slider.
+ * filter, because the user-facing unit is a adjust session, not a slider.
  */
 
 import { featherAlpha } from './useStackCompositor'
@@ -48,7 +48,7 @@ export interface CropParams {
   flipY?: boolean
 }
 
-export interface DevelopParams {
+export interface AdjustParams {
   // Light + colour
   brightness?: number
   contrast?: number
@@ -174,8 +174,8 @@ export function applyCrop(
   return out
 }
 
-/** Whether a Develop op would change any pixel — a no-op still costs a copy. */
-export function developIsIdentity(params: DevelopParams): boolean {
+/** Whether a Adjust op would change any pixel — a no-op still costs a copy. */
+export function adjustIsIdentity(params: AdjustParams): boolean {
   const zeroish = (v: number | undefined) => !v
   return (
     zeroish(params.brightness) && zeroish(params.contrast) && zeroish(params.saturation) &&
@@ -187,7 +187,7 @@ export function developIsIdentity(params: DevelopParams): boolean {
   )
 }
 
-function effectsStateFrom(params: DevelopParams) {
+function effectsStateFrom(params: AdjustParams) {
   return {
     blur: params.blur ?? 0,
     sharpen: params.sharpen ?? 0,
@@ -214,11 +214,11 @@ function effectsStateFrom(params: DevelopParams) {
  * base adjustments → filter preset → explicit matrix → split tone → gradient
  * map → colour isolation → effects.
  */
-export function applyDevelop(
+export function applyAdjust(
   input: CanvasImageSource,
   width: number,
   height: number,
-  params: DevelopParams
+  params: AdjustParams
 ): HTMLCanvasElement {
   const out = makeCanvas(width, height)
   const ctx = out.getContext('2d', { willReadFrequently: true })!
