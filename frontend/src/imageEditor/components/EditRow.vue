@@ -46,6 +46,8 @@ const props = defineProps<{
   /** Its spatial payload no longer intersects the frame. */
   outOfFrame?: boolean
   verbs?: RowVerb[]
+  /** Display name of the tool that produced this step's pixels. */
+  toolName?: string
   resampling?: boolean
   draggable?: boolean
 }>()
@@ -69,20 +71,15 @@ const emit = defineEmits<{
 const menuOpen = ref(false)
 const anyOp = computed(() => props.op as any)
 
-const iconSvg = computed(() => {
-  const taskType = anyOp.value.exec?.task_type
-    || (props.op.class === 'parametric' ? 'filter' : 'image-to-image')
-  return sanitizeSvg(
-    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
-      stroke-linecap="round" stroke-linejoin="round">${getTaskTypeIconSvg(taskType)}</svg>`
-  )
-})
 
-/** The sampling tool, so a row never hides what produced its pixels. */
+/**
+ * The sampling tool, so a row never hides what produced its pixels — by its
+ * display name. A slug is an internal identifier and putting one in the UI
+ * asks the user to read our routing table.
+ */
 const subtitle = computed(() => {
   if (props.op.class === 'patch' || props.op.class === 'whole') {
-    const toolId = anyOp.value.exec?.tool_id || ''
-    return toolId.split(':').slice(1).join(':') || toolId
+    return props.toolName || ''
   }
   return ''
 })
@@ -134,8 +131,6 @@ const previewTint = computed(() => {
         <EyeSlashIcon v-else class="w-4 h-4 text-content-tertiary" />
       </IconButton>
     </Tooltip>
-
-    <div class="w-4 h-4 mt-1.5 shrink-0 text-content-secondary" v-html="iconSvg" />
 
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-1.5">

@@ -122,7 +122,6 @@ const paintSaturate = ref(true)
 
 // Annotate
 const annotateRef = ref<InstanceType<typeof StackAnnotateCanvas> | null>(null)
-const annotateOpId = ref<string | null>(null)
 const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
 const shapeKind = ref<'rectangle' | 'ellipse' | 'line'>('rectangle')
 const annotateColor = ref('#ffffff')
@@ -154,11 +153,38 @@ const annotateColorRgb = computed(() => {
 })
 
 /** The active Annotate step's shapes, or nothing until one exists. */
-const annotateShapes = computed<Shape[]>(() => {
-  if (!annotateOpId.value) return []
-  const op = stack.opById(annotateOpId.value) as any
-  return op?.params?.shapes ?? []
-})
+/**
+ * One annotation, one step.
+ *
+ * An arrow and a text box are two things a user made and will want to reach
+ * separately — to hide one, reorder it, or delete it without touching the
+ * other. Accumulating them into a single 'Annotate' row made the stack lie
+ * about how many edits there were and left no way to address any of them.
+ * The rows are named for what they are: Rectangle, Text, Arrow.
+ */
+const annotateOps = computed(() =>
+  (stack.doc.value?.edits || []).filter(op => (op as any).exec?.kind === 'annotate')
+)
+
+/** Every annotation, in stack order — what the canvas draws and hit-tests. */
+const annotateShapes = computed<Shape[]>(() =>
+  annotateOps.value.flatMap(op => ((op as any).params?.shapes ?? []) as Shape[])
+)
+
+function opIdForShape(shapeId: string): string | null {
+  const op = annotateOps.value.find(
+    o => ((o as any).params?.shapes ?? []).some((s: Shape) => s.id === shapeId)
+  )
+  return op?.id ?? null
+}
+
+/** Rows read as what the user drew, not as the family they drew it in. */
+function shapeLabel(shape: Shape): string {
+  const type = shape.type === 'curved-arrow' ? 'arrow'
+    : shape.type === 'path' ? 'drawing'
+    : shape.type
+  return type.charAt(0).toUpperCase() + type.slice(1)
+}
 
 // -- compositing -----------------------------------------------------------
 
@@ -692,6 +718,14 @@ const subbarHint = computed(() => {
   return null
 })
 
+/** A step names the tool that made it the way the catalog does, not by slug. */
+function toolNameFor(op: any): string {
+  const id = op?.exec?.tool_id
+  if (!id) return ''
+  const tool = tools.value.find(t => t.full_tool_id === id)
+  return tool?.name || tool?.display_name || ''
+}
+
 /** The catalog tool that will run the active Generate sub-tool. */
 const activeToolId = computed(() => {
   if (sub.value === 'upscale') return upscaleToolId.value
@@ -1209,9 +1243,10 @@ function enterContainerOp(op: any) {
   }
   if (op.class !== 'container') return
   if (op.exec?.kind === 'annotate') {
+    // Re-entering an annotation means selecting it, since it is the step.
     family.value = 'annotate'
-    sub.value = 'arrow'
-    annotateOpId.value = op.id
+    sub.value = 'select'
+    selectedShapeId.value = (op.params?.shapes ?? [])[0]?.id ?? null
     return
   }
   void enterPaintOp(op.id)
@@ -1255,30 +1290,55 @@ async function enterPaintOp(opId: string) {
  * which the gesture's own commit then closes. One gesture, one undo.
  */
 const annotateGesture = ref(0)
-const annotateGestureKey = computed(
-  () => `annotate:${annotateOpId.value}:${annotateGesture.value}`
-)
+const annotateGestureKey = computed(() => `annotate:${annotateGesture.value}`)
 
+/**
+ * Reconcile the canvas's shape list against one step per shape.
+ *
+ * The canvas owns the list and reports the whole of it; this turns that into
+ * creations, updates and removals. New shapes become steps at the top, changed
+ * ones update in place under the gesture's coalesce key, and a shape that has
+ * gone takes its step with it.
+ */
 function onAnnotationsChange(shapes: Shape[]) {
   if (!stack.doc.value) return
-  // The step is created by the first real gesture, not by entering the mode.
-  if (!annotateOpId.value) {
-    if (!shapes.length) return
-    const opId = newOpId()
-    stack.addOp({
-      id: opId,
-      class: 'container',
-      enabled: true,
-      label: 'Annotate',
-      exec: { kind: 'annotate' },
-      params: { shapes },
-    } as any)
-    annotateOpId.value = opId
-    selectedOpId.value = opId
-  } else {
-    stack.setParams(annotateOpId.value, { shapes }, annotateGestureKey.value)
+
+  const seen = new Set<string>()
+  for (const shape of shapes) {
+    seen.add(shape.id)
+    const opId = opIdForShape(shape.id)
+    if (opId) {
+      const existing = ((stack.opById(opId) as any)?.params?.shapes ?? [])[0]
+      if (JSON.stringify(existing) === JSON.stringify(shape)) continue
+      stack.setParams(opId, { shapes: [shape] }, `${annotateGestureKey.value}:${shape.id}`)
+      stack.setLabel(opId, shapeLabel(shape))
+    } else {
+      const newId = newOpId()
+      stack.addOp({
+        id: newId,
+        class: 'container',
+        enabled: true,
+        label: shapeLabel(shape),
+        exec: { kind: 'annotate' },
+        params: { shapes: [shape] },
+      } as any)
+      selectedOpId.value = newId
+    }
+  }
+
+  for (const op of annotateOps.value) {
+    const held = ((op as any).params?.shapes ?? []) as Shape[]
+    if (held.every(s => seen.has(s.id))) continue
+    stack.removeOp(op.id)
   }
   void render()
+}
+
+/** Selecting an annotation selects its step, so the stack follows the canvas. */
+function onShapeSelected(shapeId: string | null) {
+  selectedShapeId.value = shapeId
+  const opId = shapeId ? opIdForShape(shapeId) : null
+  if (opId) selectedOpId.value = opId
 }
 
 /** The gesture ended: the next one starts its own undo step. */
@@ -1420,7 +1480,6 @@ function leaveMode() {
   cropOpId.value = null
   paintOpId.value = null
   paintInitialLayer.value = null
-  annotateOpId.value = null
 }
 
 let resizeObserver: ResizeObserver | null = null
@@ -1607,7 +1666,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             :text-style="textStyle"
             @change="onAnnotationsChange"
             @commit="onAnnotationCommit"
-            @select="selectedShapeId = $event"
+            @select="onShapeSelected"
           />
           <StackMaskCanvas
             v-else-if="mode === 'inpaint' || regionTargetOpId"
@@ -1626,7 +1685,16 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
     </div>
 
       <!-- Edits: outside everything a mode can touch. -->
-      <aside class="w-80 shrink-0 border-l border-edge-subtle flex flex-col min-h-0">
+      <!-- Drag to widen the stack. The panels in here carry real controls, and
+           how much room they deserve is the user's call, not a constant. -->
+      <div
+        class="w-1 shrink-0 cursor-col-resize bg-edge-subtle/40 hover:bg-accent/40 transition-colors"
+        @pointerdown="startSidebarResize"
+      />
+      <aside
+        class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
+        :style="{ width: sidebarWidth + 'px' }"
+      >
         <div class="px-3 h-11 flex items-center border-b border-edge-subtle">
           <h2 class="text-xs font-medium text-content-secondary">Edits</h2>
           <div class="flex-1" />
@@ -1637,7 +1705,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <!-- The base is a chip, not a row: it is what the stack applies to,
                not a step in it. -->
           <div class="px-2 py-2 text-xs text-content-tertiary">
-            Source · v{{ baseInfo?.revision_id ?? '—' }}
+            Original image
           </div>
 
           <!-- Top of the stack reads first, the way the image is built up. -->
@@ -1666,6 +1734,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :preview-staleness="previewStalenessOf(row.op.id)"
               :out-of-frame="outOfFrame[row.op.id]"
               :verbs="verbsFor(row.op.id)"
+              :tool-name="toolNameFor(row.op)"
               :resampling="resamplingOpId === row.op.id"
               :draggable="true"
               @select="selectedOpId = row.op.id"
@@ -1688,26 +1757,34 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
 
         <!-- Inspector: the selected row's full control surface, under the
              stack. The row keeps only the eye as an immediate affordance. -->
-        <div
-          v-if="selectedShape"
-          class="border-t border-edge-subtle max-h-72 overflow-y-auto custom-scrollbar shrink-0"
-        >
-          <AnnotationInspector
-            :shape="selectedShape"
-            :palette="imagePalette"
-            @change="onShapeChange"
-            @remove="annotateRef?.deleteSelected()"
-          />
+        <!-- Properties is half the sidebar: these panels carry a dozen
+             controls each, and a 288px window turned every one of them into a
+             scrolling peephole. -->
+        <div v-if="selectedShape" class="shrink-0 border-t border-edge-subtle flex flex-col max-h-[50%]">
+          <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
+            <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
+          </div>
+          <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
+            <AnnotationInspector
+              :shape="selectedShape"
+              :palette="imagePalette"
+              @change="onShapeChange"
+              @remove="annotateRef?.deleteSelected()"
+            />
+          </div>
         </div>
 
         <!-- Properties names the panel, so it is a level above the groups
              inside it: fixed, outside the scroll region, styled like the
              Edits header rather than like a section within. -->
-        <div v-else-if="showsAdjustInspector" class="shrink-0 border-t border-edge-subtle">
-          <div class="px-3 h-11 flex items-center border-b border-edge-subtle">
+        <div
+          v-else-if="showsAdjustInspector"
+          class="shrink-0 border-t border-edge-subtle flex flex-col max-h-[50%]"
+        >
+          <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
             <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
           </div>
-          <div class="max-h-72 overflow-y-auto custom-scrollbar">
+          <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <AdjustInspector
             :family="adjustFamily"
             :source="composite"
