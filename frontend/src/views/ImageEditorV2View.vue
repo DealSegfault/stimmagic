@@ -1114,6 +1114,48 @@ function onShapeChange(patch: Record<string, any>) {
  * Colours sampled off the composite, so the pickers can offer the image's own
  * palette rather than only a fixed row of swatches.
  */
+/**
+ * The two splits in the right-hand column, both dragged and both remembered.
+ *
+ * How much room the stack deserves against the canvas, and Properties against
+ * the stack, depends on what the user is doing — a Levels panel wants height,
+ * a long stack wants the opposite. Neither is a constant worth guessing.
+ */
+const sidebarWidth = ref(Number(localStorage.getItem('stimma_editor_sidebar')) || 320)
+const propertiesHeight = ref(Number(localStorage.getItem('stimma_editor_properties')) || 320)
+
+/** Drag along one axis, clamped, persisted on release. */
+function startResize(
+  event: PointerEvent,
+  target: { value: number },
+  key: string,
+  axis: 'x' | 'y',
+  min: number,
+  max: number
+) {
+  event.preventDefault()
+  const start = axis === 'x' ? event.clientX : event.clientY
+  const startValue = target.value
+  const onMove = (move: PointerEvent) => {
+    const now = axis === 'x' ? move.clientX : move.clientY
+    // Both handles sit on the leading edge of what they size, so the panel
+    // grows as the pointer moves toward the origin.
+    target.value = Math.max(min, Math.min(max, startValue + (start - now)))
+  }
+  const onUp = () => {
+    localStorage.setItem(key, String(target.value))
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
+const startSidebarResize = (event: PointerEvent) =>
+  startResize(event, sidebarWidth, 'stimma_editor_sidebar', 'x', 260, 640)
+const startPropertiesResize = (event: PointerEvent) =>
+  startResize(event, propertiesHeight, 'stimma_editor_properties', 'y', 140, 760)
+
 const imagePalette = ref<Array<{ r: number; g: number; b: number; a?: number }>>([])
 
 function samplePalette() {
@@ -1760,7 +1802,16 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         <!-- Properties is half the sidebar: these panels carry a dozen
              controls each, and a 288px window turned every one of them into a
              scrolling peephole. -->
-        <div v-if="selectedShape" class="shrink-0 border-t border-edge-subtle flex flex-col max-h-[50%]">
+        <div
+          v-if="selectedShape || showsAdjustInspector"
+          class="h-1 shrink-0 cursor-row-resize bg-edge-subtle/40 hover:bg-accent/40 transition-colors"
+          @pointerdown="startPropertiesResize"
+        />
+        <div
+          v-if="selectedShape"
+          class="shrink-0 border-t border-edge-subtle flex flex-col"
+          :style="{ height: propertiesHeight + 'px' }"
+        >
           <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
             <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
           </div>
@@ -1779,7 +1830,8 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
              Edits header rather than like a section within. -->
         <div
           v-else-if="showsAdjustInspector"
-          class="shrink-0 border-t border-edge-subtle flex flex-col max-h-[50%]"
+          class="shrink-0 border-t border-edge-subtle flex flex-col"
+          :style="{ height: propertiesHeight + 'px' }"
         >
           <div class="px-3 h-11 flex items-center border-b border-edge-subtle shrink-0">
             <h2 class="text-xs font-medium text-content-secondary">Properties</h2>
