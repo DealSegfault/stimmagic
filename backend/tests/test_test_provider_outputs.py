@@ -41,7 +41,7 @@ async def test_all_media_task_types_covered(provider):
     covered = {t.task_type for t in tools}
     expected = {
         "text-to-image", "image-to-image", "filter", "inpaint-image",
-        "outpaint-image", "remove-background", "upscale-image",
+        "erase-image", "outpaint-image", "remove-background", "upscale-image",
         "upscale-video", "image-to-video", "text-to-video", "video-to-video", "video-stitch",
         "video-extend", "text-to-audio", "text-to-music", "text-to-speech",
     }
