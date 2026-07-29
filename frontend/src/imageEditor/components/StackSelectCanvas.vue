@@ -1,46 +1,62 @@
 <script setup lang="ts">
 /**
- * Select maintains ONE active selection, drawn as marching ants.
+ * The selection overlay: marching ants whenever a selection exists, and the
+ * gesture surface while a selection tool is armed.
  *
- * The selection model itself is the snapshot editor's, copied into
- * `imageEditor/ported/` — rect, ellipse, lasso, magnetic lasso, magic wand,
- * combine modes, feather, invert, and the marching-ants path generation were
- * all already solved and debugged there. This component is only the gesture
- * surface and the bridge to the op stack.
+ * Mounted for the whole life of the display box, not per mode — the selection
+ * is workspace state that cuts across every family, so its rendering cannot
+ * belong to any one of them. The model itself (`useSelection`) is owned by the
+ * HOST and passed in: this component draws and gestures, nothing more, so the
+ * selection survives anything that unmounts the overlay (the crop viewport
+ * replaces the display box entirely).
  *
- * A selection is not a step. It is a value the next gesture consumes: entering
- * Generate → Inpaint pre-fills the mask from it, and an adjustment scopes to it
- * with "Limit to". Always by copy, never live-linked, so an op ends up
- * referencing only its own payload.
+ * When no tool is armed the overlay is pointer-transparent: the open family's
+ * canvas underneath keeps the pointer, and the ants simply march above it.
+ * Arming a tool takes the pointer without touching the family's session.
+ *
+ * A selection is not a step. It is a value the next gesture consumes: an
+ * inpaint mask, a paint clip, an adjustment's region. Always by copy, never
+ * live-linked, so an op ends up referencing only its own payload.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useSelection } from '../ported/useSelection'
+import type { useSelection } from '../ported/useSelection'
 import { useMagneticLasso } from '../ported/useMagneticLasso'
 import type { Point, SelectionMode } from '../ported/geometry'
+import type { SelectToolId } from '../stack/toolFamilies'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
   displayWidth: number
   displayHeight: number
-  tool?: 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand'
+  /** The host-owned selection model; this component never creates its own. */
+  model: ReturnType<typeof useSelection>
+  /** The armed tool, or null when the overlay is display-only. */
+  armed?: SelectToolId | null
   combine?: SelectionMode
   featherPx?: number
-  /** Magic wand colour tolerance, 0-255. */
+  /** Magic wand color tolerance, 0-255. */
   tolerance?: number
+  /** Selection brush diameter in display pixels, like the paint brush. */
+  brushSize?: number
 }>(), {
-  tool: 'rect',
+  armed: null,
   combine: 'new',
   featherPx: 0,
   tolerance: 32,
+  brushSize: 80,
 })
 
 const emit = defineEmits<{ change: [HTMLCanvasElement | null] }>()
 
 const overlay = ref<HTMLCanvasElement | null>(null)
-const selection = useSelection()
+const selection = props.model
 const magnetic = useMagneticLasso()
 
 let drawing = false
+let lastBrushPoint: Point | null = null
+/** This gesture's brush path, for live feedback until the ants take over. */
+let brushGesture: Point[] = []
+const cursor = ref<{ x: number; y: number } | null>(null)
 let antsTimer: ReturnType<typeof setInterval> | null = null
 
 const scale = computed(() =>
@@ -55,8 +71,13 @@ function pointFrom(event: PointerEvent): Point {
   }
 }
 
-function publish() {
-  if (props.featherPx > 0) selection.feather(props.featherPx)
+/**
+ * Feather is skipped for brush gestures: the brush tip carries its own soft
+ * edge, and a brush stroke publishes per gesture — re-feathering the whole
+ * mask on each one would accumulate blur.
+ */
+function publish(applyFeather = true) {
+  if (applyFeather && props.featherPx > 0) selection.feather(props.featherPx)
   selection.updateMarchingAnts()
   draw()
   emit('change', selection.hasSelection() ? selection.getSelectionMask() : null)
@@ -65,19 +86,28 @@ function publish() {
 // -- gestures ---------------------------------------------------------------
 
 function onPointerDown(event: PointerEvent) {
-  if (!props.source) return
+  if (!props.source || !props.armed) return
   const point = pointFrom(event)
   drawing = true
   overlay.value?.setPointerCapture(event.pointerId)
 
-  if (props.tool === 'wand') {
+  if (props.armed === 'wand') {
     const ctx = props.source.getContext('2d', { willReadFrequently: true })
     if (ctx) selection.magicWandSelect(ctx, point, props.tolerance, props.combine)
     drawing = false
     publish()
     return
   }
-  if (props.tool === 'magnetic') {
+  if (props.armed === 'brush') {
+    // `New` replaces per GESTURE, so the first stroke starts over and further
+    // strokes of the same drag extend it — matching how every brush works.
+    if (props.combine === 'new') selection.clearSelection()
+    lastBrushPoint = null
+    brushGesture = []
+    brushTo(point)
+    return
+  }
+  if (props.armed === 'magnetic') {
     // The live-wire traces edges from a gradient map of the image, so it has to
     // be initialised against whatever the step is being drawn over.
     if (!magnetic.isReady()) magnetic.initialize(props.source)
@@ -88,40 +118,59 @@ function onPointerDown(event: PointerEvent) {
     startAnts()
     return
   }
-  if (props.tool === 'rect') selection.startRectSelection(point)
-  else if (props.tool === 'ellipse') selection.startEllipseSelection(point)
+  if (props.armed === 'rect') selection.startRectSelection(point)
+  else if (props.armed === 'ellipse') selection.startEllipseSelection(point)
   else selection.startLassoSelection(point)
   startAnts()
 }
 
 function onPointerMove(event: PointerEvent) {
-  if (!drawing || !props.source) return
+  const rect = overlay.value?.getBoundingClientRect()
+  if (rect && props.armed === 'brush') {
+    cursor.value = { x: event.clientX - rect.left, y: event.clientY - rect.top }
+  }
+  if (!drawing || !props.source || !props.armed) return
   const point = pointFrom(event)
-  if (props.tool === 'magnetic') magnetic.updatePreview(point)
-  else if (props.tool === 'rect') selection.updateRectSelection(point, props.combine, event.shiftKey)
-  else if (props.tool === 'ellipse') selection.updateEllipseSelection(point, props.combine, event.shiftKey)
+  if (props.armed === 'brush') brushTo(point)
+  else if (props.armed === 'magnetic') magnetic.updatePreview(point)
+  else if (props.armed === 'rect') selection.updateRectSelection(point, props.combine, event.shiftKey)
+  else if (props.armed === 'ellipse') selection.updateEllipseSelection(point, props.combine, event.shiftKey)
   else selection.continueLassoSelection(point)
-  draw()
+  if (props.armed !== 'brush') draw()
 }
 
 function onPointerUp(event: PointerEvent) {
-  if (!drawing) return
+  if (!drawing || !props.armed) return
   const point = pointFrom(event)
   overlay.value?.releasePointerCapture(event.pointerId)
 
   // A magnetic lasso closes on its own anchors, not on pointer-up.
-  if (props.tool === 'magnetic') { draw(); return }
+  if (props.armed === 'magnetic') { draw(); return }
   drawing = false
-  if (props.tool === 'rect') selection.finishRectSelection(point, props.combine, event.shiftKey)
-  else if (props.tool === 'ellipse') selection.finishEllipseSelection(point, props.combine, event.shiftKey)
+  if (props.armed === 'brush') {
+    lastBrushPoint = null
+    brushGesture = []
+    publish(false)
+    return
+  }
+  if (props.armed === 'rect') selection.finishRectSelection(point, props.combine, event.shiftKey)
+  else if (props.armed === 'ellipse') selection.finishEllipseSelection(point, props.combine, event.shiftKey)
   else selection.finishLassoSelection(props.combine)
   stopAnts()
   publish()
 }
 
+function brushTo(point: Point) {
+  const radius = (props.brushSize * scale.value) / 2
+  selection.brushStroke(lastBrushPoint, point, radius, props.combine)
+  lastBrushPoint = point
+  brushGesture.push(point)
+  draw()
+}
+
 /** Double-click, or clicking the first anchor, closes a magnetic lasso. */
 function onDoubleClick() {
-  if (props.tool === 'magnetic') closeMagnetic()
+  if (props.armed === 'magnetic') closeMagnetic()
 }
 
 function closeMagnetic() {
@@ -141,10 +190,29 @@ function draw() {
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+  // Live feedback for a brush gesture: a translucent stroke along the path,
+  // until the ants take over at pointer-up. Neutral, not tinted — tracing the
+  // real mask every frame is too slow, and a color wash overstates it.
+  if (drawing && props.armed === 'brush' && brushGesture.length) {
+    ctx.save()
+    ctx.strokeStyle = props.combine === 'subtract'
+      ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'
+    ctx.lineWidth = props.brushSize * scale.value
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    ctx.beginPath()
+    ctx.moveTo(brushGesture[0].x, brushGesture[0].y)
+    // A tap has one point; the lineTo-self plus round caps makes it a dot.
+    if (brushGesture.length === 1) ctx.lineTo(brushGesture[0].x, brushGesture[0].y)
+    for (const point of brushGesture.slice(1)) ctx.lineTo(point.x, point.y)
+    ctx.stroke()
+    ctx.restore()
+  }
+
   ctx.save()
   ctx.lineWidth = Math.max(1, scale.value)
 
-  // The committed selection: the ported model's own marching-ants paths.
+  // The committed selection: the model's own marching-ants paths.
   for (const path of selection.marchingAntsPaths.value) {
     if (path.length < 2) continue
     ctx.beginPath()
@@ -163,7 +231,7 @@ function draw() {
   // The gesture in progress.
   ctx.setLineDash([4 * scale.value, 3 * scale.value])
   ctx.strokeStyle = '#fff'
-  if (props.tool === 'magnetic') {
+  if (props.armed === 'magnetic') {
     const preview = magnetic.getAllPoints()
     if (preview.length > 1) {
       ctx.beginPath()
@@ -175,12 +243,12 @@ function draw() {
     const points = selection.drawingPoints.value
     const start = selection.drawingStartPoint.value
     const current = selection.drawingCurrentPoint.value
-    if ((props.tool === 'rect') && start && current) {
+    if ((props.armed === 'rect') && start && current) {
       ctx.strokeRect(
         Math.min(start.x, current.x), Math.min(start.y, current.y),
         Math.abs(current.x - start.x), Math.abs(current.y - start.y)
       )
-    } else if (props.tool === 'ellipse' && start && current) {
+    } else if (props.armed === 'ellipse' && start && current) {
       ctx.beginPath()
       ctx.ellipse(
         (start.x + current.x) / 2, (start.y + current.y) / 2,
@@ -215,10 +283,10 @@ function clear() {
   publish()
 }
 
-/** Invert and feather are selection-wide verbs the sub-bar offers. */
+/** Invert and feather are selection-wide verbs the options bar offers. */
 function invert() {
   selection.invert()
-  publish()
+  publish(false)
 }
 
 function resize() {
@@ -235,29 +303,51 @@ function resize() {
 defineExpose({
   clear,
   invert,
+  redraw: draw,
   selectionCanvas: () => (selection.hasSelection() ? selection.getSelectionMask() : null),
 })
 
 watch(() => props.source, resize)
+watch(() => props.armed, armed => {
+  if (!armed) {
+    magnetic.cancel()
+    drawing = false
+    cursor.value = null
+  }
+  draw()
+})
 // Marching ants animate whenever there IS a selection, not only while drawing.
 watch(() => selection.marchingAntsPaths.value.length, length => {
   if (length) startAnts()
   else stopAnts()
-})
+}, { immediate: true })
 onMounted(resize)
 onBeforeUnmount(stopAnts)
 </script>
 
 <template>
-  <div class="absolute inset-0">
+  <div class="absolute inset-0" :class="armed ? '' : 'pointer-events-none'">
     <canvas
       ref="overlay"
-      class="w-full h-full cursor-crosshair touch-none"
+      class="w-full h-full touch-none"
+      :class="armed ? 'cursor-crosshair' : ''"
       :style="{ width: displayWidth + 'px', height: displayHeight + 'px' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
+      @pointerleave="cursor = null"
       @dblclick="onDoubleClick"
+    />
+    <!-- Brush outline: the only reliable size feedback while painting. -->
+    <div
+      v-if="cursor && armed === 'brush'"
+      class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
+      :style="{
+        left: cursor.x - brushSize / 2 + 'px',
+        top: cursor.y - brushSize / 2 + 'px',
+        width: brushSize + 'px',
+        height: brushSize + 'px',
+      }"
     />
   </div>
 </template>

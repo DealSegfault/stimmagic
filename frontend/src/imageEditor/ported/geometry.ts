@@ -29,7 +29,7 @@ export interface RgbaColor {
   a?: number
 }
 
-/** Either a CSS colour string or channel values 0-255. */
+/** Either a CSS color string or channel values 0-255. */
 export type Color = string | RgbaColor
 
 export function colorToCss(color: Color): string {

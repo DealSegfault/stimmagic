@@ -3,11 +3,8 @@ import test from 'node:test'
 
 import {
   blastRadius,
-  canMoveWithinSegment,
-  checkpointStatus,
   deriveStackState,
-  foldedCount,
-  segmentBounds,
+  moveTargetForGap,
 } from './stackState.ts'
 import { stackHashes } from './stackHashes.ts'
 import type { StackDocument } from './types.ts'
@@ -32,14 +29,6 @@ function patch(id: string, sampled: string | null, enabled = true) {
   }
 }
 
-function whole(id: string, sampled: string | null, enabled = true) {
-  return {
-    ...patch(id, sampled, enabled),
-    class: 'whole',
-    exec: { kind: 'tool', tool_id: 't', task_type: 'image-to-image' },
-  }
-}
-
 function adjust(id: string, params: any = { brightness: 5 }, enabled = true) {
   return { id, class: 'parametric', enabled, label: id, exec: { kind: 'adjust' }, params }
 }
@@ -54,22 +43,22 @@ test('an op sampled against its current input is clean', () => {
   assert.equal(deriveStackState(d).ops[0].staleness, 'clean')
 })
 
-test('a patch whose input moved is advisory, never hard', () => {
+test('a patch whose input moved is advisory', () => {
   const d = doc([adjust('d'), patch('a', 'base')])
-  // The patch was sampled against the bare base, but now sits above a adjust.
+  // The patch was sampled against the bare base, but now sits above an adjust.
   const state = deriveStackState(d)
   assert.equal(state.ops[1].staleness, 'advisory')
 })
 
-test('a checkpoint whose input moved is hard-stale', () => {
-  const d = doc([adjust('d'), whole('w', 'base')])
-  assert.equal(deriveStackState(d).ops[1].staleness, 'hard')
-})
-
-test('everything above a hard-stale checkpoint is hard-stale too', () => {
-  const d = doc([adjust('d'), whole('w', 'base'), adjust('e'), patch('p', 'anything')])
+test('advisory is the only severity there is', () => {
+  // Everything that can be stale is stale here, and none of it escalates:
+  // nothing in the stack can stop being derivable from its input.
+  const d = doc([adjust('d'), patch('a', 'base'), adjust('e'), patch('p', 'anything')])
   const state = deriveStackState(d)
-  assert.deepEqual(state.ops.map(o => o.staleness), ['clean', 'hard', 'hard', 'hard'])
+  assert.deepEqual(
+    state.ops.map(o => o.staleness),
+    ['clean', 'advisory', 'clean', 'advisory']
+  )
 })
 
 test('a disabled op is never stale — it contributes nothing to compare', () => {
@@ -83,10 +72,8 @@ test('a staged op with no pick has nothing to be stale against', () => {
 })
 
 test('a parametric op is never stale — it is deterministic in its params', () => {
-  const d = doc([whole('w', 'base'), adjust('d')])
-  const state = deriveStackState(d)
-  // The adjust above a clean checkpoint stays clean.
-  assert.equal(state.ops[1].staleness, 'clean')
+  const d = doc([patch('a', 'base'), adjust('d')])
+  assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
 })
 
 test('a container that reads pixels carries an advisory hash like a patch', () => {
@@ -101,70 +88,81 @@ test('a container that reads pixels carries an advisory hash like a patch', () =
 test('a pure paint layer has no sampled hash and never goes advisory', () => {
   const d = doc([
     adjust('d'),
-    { id: 'p', class: 'container', enabled: true, label: 'Paint', exec: { kind: 'paint' },
+    { id: 'p', class: 'container', enabled: true, label: 'Retouch', exec: { kind: 'paint' },
       raster_ref: 'payloads/p.png' },
   ])
   assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
 })
 
-test('an op sampled against the hash it actually has stays clean under a checkpoint', () => {
+test('an op sampled against the hash it actually has stays clean', () => {
   const base = doc([adjust('d'), patch('a', 'placeholder')])
   const correct = inputHashAt(base, 1)
   const d = doc([adjust('d'), patch('a', correct)])
   assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
 })
 
-test('segments are bounded by checkpoints', () => {
-  const d = doc([adjust('a'), adjust('b'), whole('w', null), adjust('c')])
-  assert.deepEqual(segmentBounds(d, 0), { start: 0, end: 2 })
-  assert.deepEqual(segmentBounds(d, 1), { start: 0, end: 2 })
-  assert.deepEqual(segmentBounds(d, 3), { start: 3, end: 4 })
-})
-
-test('a row may reorder within its segment but not across a checkpoint', () => {
-  const d = doc([adjust('a'), adjust('b'), whole('w', null), adjust('c')])
-  assert.equal(canMoveWithinSegment(d, 'a', 1), true)
-  assert.equal(canMoveWithinSegment(d, 'a', 3), false, 'cannot cross the checkpoint')
-  assert.equal(canMoveWithinSegment(d, 'c', 0), false)
-})
-
-test('a checkpoint itself never moves', () => {
-  const d = doc([adjust('a'), whole('w', null)])
-  assert.equal(canMoveWithinSegment(d, 'w', 0), false)
-})
-
-test('blast radius separates what would go advisory from what would go hard', () => {
-  const d = doc([adjust('a'), patch('p', 'base'), whole('w', 'base'), patch('q', 'base')])
+test('blast radius is every generative row above the gesture', () => {
+  const d = doc([adjust('a'), patch('p', 'base'), adjust('b'), patch('q', 'base')])
   const radius = blastRadius(d, 'a')
-  assert.deepEqual([...radius.advisory], ['p'])
-  assert.deepEqual([...radius.hard].sort(), ['q', 'w'])
+  assert.deepEqual([...radius.advisory].sort(), ['p', 'q'])
 })
 
 test('the top row disturbs nothing', () => {
   const d = doc([adjust('a'), patch('p', 'base')])
-  const radius = blastRadius(d, 'p')
-  assert.equal(radius.advisory.size + radius.hard.size, 0)
+  assert.equal(blastRadius(d, 'p').advisory.size, 0)
 })
 
-test('a stale checkpoint states the count as a fact', () => {
-  const d = doc([adjust('d'), whole('w', 'base')])
-  const state = deriveStackState(d)
-  assert.equal(checkpointStatus(state, 1), 'Showing previous result — 1 edit stale')
+// -- drop gaps --------------------------------------------------------------
+//
+// A gap `g` is the boundary before edits[g]. The list draws top-of-stack
+// first, so the gap ABOVE visible row i is g = i + 1.
+
+test('dropping into a gap above the row lands it there', () => {
+  // [a, b, c] draws as c, b, a. Dragging a to the gap above b (g = 2) puts it
+  // between b and c.
+  const d = doc([adjust('a'), adjust('b'), adjust('c')])
+  const to = moveTargetForGap(d, 'a', 2)
+  assert.equal(to, 1)
+  const [op] = d.edits.splice(0, 1)
+  d.edits.splice(to as number, 0, op)
+  assert.deepEqual(d.edits.map(o => o.id), ['b', 'a', 'c'])
 })
 
-test('a clean checkpoint has no status line', () => {
-  const d = doc([whole('w', 'base')])
-  assert.equal(checkpointStatus(deriveStackState(d), 0), null)
+test('dropping into a gap below the row lands it there', () => {
+  // Dragging c (index 2) to the bottom of the list (g = 0).
+  const d = doc([adjust('a'), adjust('b'), adjust('c')])
+  const to = moveTargetForGap(d, 'c', 0)
+  assert.equal(to, 0)
+  const [op] = d.edits.splice(2, 1)
+  d.edits.splice(to as number, 0, op)
+  assert.deepEqual(d.edits.map(o => o.id), ['c', 'a', 'b'])
 })
 
-test('a checkpoint reports how many steps it folds', () => {
-  const d = doc([adjust('a'), adjust('b'), whole('w', null)])
-  assert.equal(foldedCount(d, 2), 2)
+test('dropping to the top of the stack lands on top', () => {
+  const d = doc([adjust('a'), adjust('b'), adjust('c')])
+  const to = moveTargetForGap(d, 'a', 3)
+  assert.equal(to, 2)
+  const [op] = d.edits.splice(0, 1)
+  d.edits.splice(to as number, 0, op)
+  assert.deepEqual(d.edits.map(o => o.id), ['b', 'c', 'a'])
 })
 
-test('rows are attributed to the checkpoint that folds them', () => {
-  const d = doc([adjust('a'), whole('w', null), adjust('b')])
-  const state = deriveStackState(d)
-  assert.equal(state.ops[0].checkpointIndex, 1)
-  assert.equal(state.ops[2].checkpointIndex, null, 'nothing above folds the top row')
+test('the two gaps touching a row are no-ops, not moves', () => {
+  const d = doc([adjust('a'), adjust('b'), adjust('c')])
+  assert.equal(moveTargetForGap(d, 'b', 1), null)
+  assert.equal(moveTargetForGap(d, 'b', 2), null)
+})
+
+test('every other gap is legal — no row pins order any more', () => {
+  // The generative row used to be a fence its neighbours could not cross.
+  const d = doc([adjust('a'), patch('p', 'base'), adjust('b')])
+  assert.equal(moveTargetForGap(d, 'b', 0), 0, 'b may pass under the patch')
+  assert.equal(moveTargetForGap(d, 'a', 3), 2, 'a may pass over it')
+  assert.equal(moveTargetForGap(d, 'p', 0), 0, 'the patch itself moves too')
+})
+
+test('a gap outside the list is not a landing place', () => {
+  const d = doc([adjust('a'), adjust('b')])
+  assert.equal(moveTargetForGap(d, 'a', -1), null)
+  assert.equal(moveTargetForGap(d, 'a', 5), null)
 })

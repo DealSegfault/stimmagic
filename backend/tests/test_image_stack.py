@@ -247,6 +247,29 @@ class TestPayloads:
         fetched = await client.get(f"/api/image-stack/{document_id}/payloads/01J0-mask.png")
         assert fetched.status_code == 200
         assert fetched.content == data
+        assert fetched.headers["cache-control"] == "no-cache"
+
+    async def test_overwritten_payload_refetches_latest_bytes(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        """Paint layers keep their ref while each completed stroke rewrites it."""
+        document_id, _ = await _open(client, db_session, tmp_path, "payload-overwrite")
+        url = f"/api/image-stack/{document_id}/payloads/paint-layer.png"
+        first = _png_bytes(color=(255, 0, 0))
+        latest = _png_bytes(color=(0, 0, 255))
+
+        for data in (first, latest):
+            upload = await client.post(
+                f"/api/image-stack/{document_id}/payloads",
+                files={"file": ("paint-layer.png", data, "image/png")},
+                data={"name": "paint-layer.png"},
+            )
+            assert upload.status_code == 200
+
+        fetched = await client.get(url)
+        assert fetched.status_code == 200
+        assert fetched.content == latest
+        assert fetched.headers["cache-control"] == "no-cache"
 
     @pytest.mark.parametrize("label,name", [
         ("traversal", "../escape.png"),

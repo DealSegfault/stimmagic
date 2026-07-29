@@ -1,7 +1,7 @@
 /**
  * One-way conversion of a snapshot-editor project into an op stack.
  *
- * The snapshot editor's document is one flat state object: every crop, colour,
+ * The snapshot editor's document is one flat state object: every crop, color,
  * effect, annotation and retouch field on a single struct, applied in a fixed
  * order at render time. That order is what makes the conversion possible —
  * each stage of the old render becomes one step, bottom to top, so the stack
@@ -15,6 +15,7 @@
  */
 
 import { newOpId } from './opId.ts'
+import { migrateShapePaints } from './migrateShapePaints.ts'
 import type { ContainerOp, Op, ParametricOp } from './types.ts'
 
 /** Fields the Adjust op carries, in the order the old writer applied them. */
@@ -46,7 +47,7 @@ const DEVELOP_DEFAULTS: Record<string, any> = {
 /** Sections the row subtitle names, so "Adjust" says what it touched. */
 const ADJUST_SECTIONS: Array<{ label: string; fields: string[] }> = [
   { label: 'Light', fields: ['brightness', 'contrast', 'exposure', 'gamma'] },
-  { label: 'Colour', fields: ['saturation', 'temperature', 'filter', 'colorMatrix'] },
+  { label: 'Color', fields: ['saturation', 'temperature', 'filter', 'colorMatrix'] },
   { label: 'Film', fields: ['splitToningEnabled', 'gradientMapEnabled', 'colorIsolationEnabled'] },
   {
     label: 'Effects',
@@ -91,7 +92,7 @@ export interface MigrationResult {
  * Convert a `SerializedProject` into ops, bottom to top.
  *
  * Order matches the old render: geometry first, then the retouch raster (which
- * the old writer drew under the colour work), then the adjustment family, then
+ * the old writer drew under the color work), then the adjustment family, then
  * annotations on top.
  */
 export function migrateLegacyProject(project: any): MigrationResult {
@@ -143,7 +144,7 @@ export function migrateLegacyProject(project: any): MigrationResult {
       id: opId,
       class: 'container',
       enabled: true,
-      label: 'Paint',
+      label: 'Retouch',
       exec: { kind: 'paint' },
       raster_ref: `payloads/${opId}-layer.png`,
       blend: { feather_px: 0, opacity: 1 },
@@ -178,12 +179,12 @@ export function migrateLegacyProject(project: any): MigrationResult {
   // 4. Annotations, decorations, redactions and stickers all render through the
   //    same shape pipeline, so they become one vector Annotate step in the same
   //    draw order the old writer used.
-  const shapes = [
+  const shapes = migrateShapePaints([
     ...(state.annotations || []),
     ...(state.decorations || []),
     ...(state.redactions || []),
     ...(state.stickers || []),
-  ]
+  ])
   if (shapes.length) {
     ops.push({
       id: newOpId(),

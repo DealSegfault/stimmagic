@@ -7,31 +7,38 @@
  * button, never a slider. Rows carry no price badges — the shape of the control
  * says it.
  *
+ * Layout law for the Edits list (EditRow and BaseRow both obey it, which is
+ * what makes the column read):
+ *   - The square preview is the row's anchor: one size, one position, in every
+ *     row, so the list reads as a single column of images down the panel.
+ *   - The title's first line centers on the square. Subtitles and chips flow
+ *     BELOW that line, growing the row downward — so a row with one line and a
+ *     row with four still align at the top, against their squares.
+ *   - Controls live to the right of the text, in one cluster: eye, then
+ *     remove. Both are permanent — whether a step is on, and the way to take
+ *     it off, are not things to go hunting for under the cursor. Only
+ *     Resample, which costs money, waits for hover.
+ *
  * Rows hold identity, eye, candidates and advisory state only. The full control
  * surface for a selected row lives in the inspector below the stack, because a
- * 40-knob tool cannot live in a 42px row.
+ * 40-knob tool cannot live in a 42px row. There is no row overflow menu: a
+ * menu of mostly-disabled verbs is not a control surface, it is a place things
+ * go to be undiscoverable.
  *
- * Ordering is never required of the user: new steps auto-place on top, and the
- * common intents are row-menu verbs that perform the move mechanically. Drag
- * stays as the direct-manipulation path for people who want it.
+ * Reordering is drag, and only drag.
  */
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import {
-  EyeIcon, EyeSlashIcon, TrashIcon, EllipsisHorizontalIcon,
-  ArrowPathIcon, Bars2Icon,
+  EyeIcon, EyeSlashIcon, TrashIcon, ArrowPathIcon,
 } from '@heroicons/vue/24/outline'
+import DragGrip from '../../components/ui/DragGrip.vue'
 import IconButton from '../../components/ui/IconButton.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import { getTaskTypeIconSvg } from '../../utils/taskTypeIcons'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
+import { ROW_SQUARE, ROW_COLUMN, ROW_COLUMN_INLINE } from './rowLayout'
 import type { Op } from '../stack/types'
 import type { Staleness } from '../stack/stackState'
-
-export interface RowVerb {
-  id: string
-  label: string
-  disabled?: boolean
-}
 
 const props = defineProps<{
   op: Op
@@ -45,11 +52,14 @@ const props = defineProps<{
   previewStaleness?: Staleness | null
   /** Its spatial payload no longer intersects the frame. */
   outOfFrame?: boolean
-  verbs?: RowVerb[]
   /** Display name of the tool that produced this step's pixels. */
   toolName?: string
   resampling?: boolean
   draggable?: boolean
+  /** This row is the one being dragged — it reads as lifted out of the list. */
+  dragging?: boolean
+  /** The image as of this step — the row's square. Absent until first render. */
+  preview?: string
 }>()
 
 const emit = defineEmits<{
@@ -60,15 +70,12 @@ const emit = defineEmits<{
   pick: [string]
   remove: []
   resample: []
-  verb: [string]
   /** Hovering a gesture affordance — drives the blast-radius tint. */
   intentHover: [boolean]
   dragStart: [DragEvent]
-  dragOver: [DragEvent]
-  drop: [DragEvent]
+  dragEnd: []
 }>()
 
-const menuOpen = ref(false)
 const anyOp = computed(() => props.op as any)
 
 
@@ -77,27 +84,22 @@ const anyOp = computed(() => props.op as any)
  * display name. A slug is an internal identifier and putting one in the UI
  * asks the user to read our routing table.
  */
-const subtitle = computed(() => {
-  if (props.op.class === 'patch' || props.op.class === 'whole') {
-    return props.toolName || ''
-  }
-  return ''
-})
+const subtitle = computed(() => (props.op.class === 'patch' ? props.toolName || '' : ''))
 
 const candidates = computed(() => props.candidateThumbs || [])
 const picked = computed(() => anyOp.value.picked || null)
 const staged = computed(() => candidates.value.length > 0 && !picked.value)
-const isGenerative = computed(() => props.op.class === 'patch' || props.op.class === 'whole')
+const isGenerative = computed(() => props.op.class === 'patch')
 
 const advisory = computed(() => props.staleness === 'advisory')
-const previewTint = computed(() => {
-  if (props.previewStaleness === 'hard') return 'ring-1 ring-amber-500/40 bg-amber-500/[0.07]'
-  if (props.previewStaleness === 'advisory') return 'ring-1 ring-amber-500/20'
-  return ''
-})
+const previewTint = computed(() =>
+  props.previewStaleness === 'advisory' ? 'ring-1 ring-amber-500/20' : ''
+)
 </script>
 
 <template>
+  <!-- `dragging` lifts the row: the one you are carrying reads as no longer
+       in place, so the drop line is read against the list the move leaves. -->
   <div
     :data-op-id="op.id"
     tabindex="0"
@@ -106,36 +108,36 @@ const previewTint = computed(() => {
     :class="[
       selected ? 'bg-selection/15' : 'hover:bg-overlay-subtle',
       previewTint,
+      dragging && 'opacity-40',
     ]"
     :draggable="draggable"
     @click="emit('select')"
     @dblclick="emit('reenter')"
     @dragstart="emit('dragStart', $event)"
-    @dragover.prevent="emit('dragOver', $event)"
-    @drop.prevent="emit('drop', $event)"
+    @dragend="emit('dragEnd')"
   >
     <!-- Drag grip. Hovering it previews what the move would disturb. -->
     <span
       v-if="draggable"
-      class="mt-1.5 shrink-0 text-content-tertiary opacity-0 group-hover:opacity-100 cursor-grab"
+      :class="[
+        ROW_COLUMN_INLINE,
+        'shrink-0 text-content-tertiary opacity-0 group-hover:opacity-100 cursor-grab active:cursor-grabbing',
+      ]"
       @mouseenter="emit('intentHover', true)"
       @mouseleave="emit('intentHover', false)"
     >
-      <Bars2Icon class="w-3.5 h-3.5" />
+      <DragGrip class="w-2.5 h-4" />
     </span>
 
-    <Tooltip :text="op.enabled ? 'Hide this edit' : 'Show this edit'">
-      <IconButton
-        @click.stop="emit('toggle', !op.enabled)"
-        @mouseenter="emit('intentHover', true)"
-        @mouseleave="emit('intentHover', false)"
-      >
-        <EyeIcon v-if="op.enabled" class="w-4 h-4" />
-        <EyeSlashIcon v-else class="w-4 h-4 text-content-tertiary" />
-      </IconButton>
-    </Tooltip>
+    <!-- The image as of this step. A hidden step shows what the stack looks
+         like without it, dimmed — the eye is no longer beside the label, so
+         the square carries the disabled state. -->
+    <div :class="[ROW_SQUARE, !op.enabled && 'opacity-40']">
+      <img v-if="preview" :src="preview" class="w-full h-full object-cover" alt="" />
+      <div v-else class="w-full h-full bg-surface-raised animate-pulse" />
+    </div>
 
-    <div class="min-w-0 flex-1">
+    <div :class="['min-w-0 flex-1', ROW_COLUMN]">
       <div class="flex items-center gap-1.5">
         <span class="text-sm truncate" :class="op.enabled ? 'text-content' : 'text-content-tertiary'">
           {{ op.label }}
@@ -148,12 +150,6 @@ const previewTint = computed(() => {
       <!-- The sampling tool gets its own line: sharing the label's baseline
            squeezes both to ellipses in a 320px panel. -->
       <p v-if="subtitle" class="text-xs text-content-tertiary truncate">{{ subtitle }}</p>
-
-      <div v-if="op.region" class="mt-1">
-        <span class="inline-flex items-center px-1.5 py-0.5 text-[11px] rounded-md bg-overlay-subtle text-content-tertiary">
-          Limited to a region
-        </span>
-      </div>
 
       <p v-if="outOfFrame" class="mt-1 text-xs text-content-tertiary">Out of frame</p>
 
@@ -182,7 +178,10 @@ const previewTint = computed(() => {
       <p v-if="staged" class="mt-1 text-xs text-content-tertiary">Pick one to apply it.</p>
     </div>
 
-    <!-- The only control on the row that costs anything is a button. -->
+    <!-- Control cluster: one group, centered on the square like the title, so
+         the controls sit on the title's line and not above it. The only
+         control that costs anything is a button. -->
+    <div :class="[ROW_COLUMN_INLINE, 'shrink-0']">
     <Tooltip v-if="isGenerative" text="Resample with the current input">
       <IconButton
         class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
@@ -193,39 +192,27 @@ const previewTint = computed(() => {
       </IconButton>
     </Tooltip>
 
-    <div v-if="verbs?.length" class="relative">
+    <!-- The eye stays visible at rest, unlike its neighbours: whether a step
+         is on is state you read, not an action you go looking for. -->
+    <Tooltip :text="op.enabled ? 'Hide this edit' : 'Show this edit'">
       <IconButton
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-        @click.stop="menuOpen = !menuOpen"
+        @click.stop="emit('toggle', !op.enabled)"
+        @mouseenter="emit('intentHover', true)"
+        @mouseleave="emit('intentHover', false)"
       >
-        <EllipsisHorizontalIcon class="w-4 h-4" />
+        <EyeIcon v-if="op.enabled" class="w-4 h-4" />
+        <EyeSlashIcon v-else class="w-4 h-4 text-content-tertiary" />
       </IconButton>
-      <div
-        v-if="menuOpen"
-        class="absolute right-0 top-8 z-menu min-w-44 py-1 rounded-lg bg-surface-overlay border border-edge-subtle shadow-lg"
-        @mouseleave="menuOpen = false"
-      >
-        <button
-          v-for="verb in verbs"
-          :key="verb.id"
-          type="button"
-          class="w-full px-3 py-1.5 text-left text-xs text-content-secondary hover:text-content hover:bg-overlay-subtle disabled:opacity-40 disabled:hover:bg-transparent"
-          :disabled="verb.disabled"
-          @click.stop="menuOpen = false; emit('verb', verb.id)"
-        >
-          {{ verb.label }}
-        </button>
-      </div>
-    </div>
+    </Tooltip>
 
     <Tooltip text="Remove this edit">
       <IconButton
         variant="danger"
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
         @click.stop="emit('remove')"
       >
         <TrashIcon class="w-4 h-4" />
       </IconButton>
     </Tooltip>
+    </div>
   </div>
 </template>

@@ -2,7 +2,7 @@
  * Copied from packages/image-editor/src/utils/effects.ts.
  *
  * Vignette, clarity, blur, sharpen, grain, glow, fringing, halftone, VHS and
- * glitch — the Effects family's pixel work, copied with the colour pipeline it
+ * glitch — the Effects family's pixel work, copied with the color pipeline it
  * runs after.
  *
  * ONE deliberate change from the original: grain, VHS and glitch drew from
@@ -36,6 +36,90 @@ function random(): number {
  */
 
 import { createCanvas, getContext } from './canvasTransform';
+
+/**
+ * Pure-pixel Gaussian blur.
+ *
+ * Replaces `ctx.filter = 'blur(Npx)'`, which the app's macOS WKWebView renders
+ * as a no-op for canvas sources — so Blur, Sharpen and Clarity (the Levels
+ * "Detail" edits, the only effects that lean on canvas blur) had no visible
+ * effect while every pure-pixel adjustment worked. This runs the same math on
+ * the ImageData directly, so it behaves identically on every engine.
+ *
+ * Approximates a Gaussian of standard deviation `sigma` with three successive
+ * box blurs (Kutskir's fast Gaussian), matching CSS `blur()` closely enough for
+ * these controls. Edges are clamped.
+ */
+function boxSizesForGauss(sigma: number, passes: number): number[] {
+  const wIdeal = Math.sqrt((12 * sigma * sigma) / passes + 1);
+  let wl = Math.floor(wIdeal);
+  if (wl % 2 === 0) wl--;
+  const wu = wl + 2;
+  const mIdeal =
+    (12 * sigma * sigma - passes * wl * wl - 4 * passes * wl - 3 * passes) /
+    (-4 * wl - 4);
+  const m = Math.round(mIdeal);
+  const sizes: number[] = [];
+  for (let i = 0; i < passes; i++) sizes.push(i < m ? wl : wu);
+  return sizes;
+}
+
+function boxBlurH(src: Float32Array, dst: Float32Array, w: number, h: number, r: number): void {
+  if (r <= 0) { dst.set(src); return; }
+  const norm = 1 / (r + r + 1);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[row + Math.min(w - 1, Math.max(0, k))];
+    for (let x = 0; x < w; x++) {
+      dst[row + x] = acc * norm;
+      acc += src[row + Math.min(w - 1, x + r + 1)] - src[row + Math.max(0, x - r)];
+    }
+  }
+}
+
+function boxBlurV(src: Float32Array, dst: Float32Array, w: number, h: number, r: number): void {
+  if (r <= 0) { dst.set(src); return; }
+  const norm = 1 / (r + r + 1);
+  for (let x = 0; x < w; x++) {
+    let acc = 0;
+    for (let k = -r; k <= r; k++) acc += src[Math.min(h - 1, Math.max(0, k)) * w + x];
+    for (let y = 0; y < h; y++) {
+      dst[y * w + x] = acc * norm;
+      acc += src[Math.min(h - 1, y + r + 1) * w + x] - src[Math.max(0, y - r) * w + x];
+    }
+  }
+}
+
+function gaussianBlurRGBA(data: Uint8ClampedArray, w: number, h: number, sigma: number): void {
+  if (sigma <= 0 || w === 0 || h === 0) return;
+  const boxes = boxSizesForGauss(sigma, 3);
+  const n = w * h;
+  const channel = new Float32Array(n);
+  const scratch = new Float32Array(n);
+  for (let c = 0; c < 4; c++) {
+    for (let i = 0; i < n; i++) channel[i] = data[i * 4 + c];
+    for (let b = 0; b < boxes.length; b++) {
+      const r = (boxes[b] - 1) / 2;
+      boxBlurH(channel, scratch, w, h, r);
+      boxBlurV(scratch, channel, w, h, r);
+    }
+    for (let i = 0; i < n; i++) data[i * 4 + c] = channel[i];
+  }
+}
+
+/** A blurred copy of `source` on a fresh canvas — the ctx.filter-free blur. */
+function blurredCanvas(source: HTMLCanvasElement, radiusPx: number): HTMLCanvasElement {
+  const width = source.width;
+  const height = source.height;
+  const out = createCanvas(width, height);
+  const octx = getContext(out);
+  const sctx = getContext(source);
+  const imageData = sctx.getImageData(0, 0, width, height);
+  gaussianBlurRGBA(imageData.data, width, height, radiusPx);
+  octx.putImageData(imageData, 0, 0);
+  return out;
+}
 
 export interface EffectsState {
   blur: number;
@@ -71,7 +155,7 @@ export function hasEffects(state: Partial<EffectsState>): boolean {
     (state.chromaticAberration ?? 0) > 0 ||
     (state.motionBlur ?? 0) > 0 ||
     (state.vignette ?? 0) > 0 ||
-    (state.clarity ?? 0) > 0 ||
+    (state.clarity ?? 0) !== 0 ||
     (state.halftone ?? 0) > 0 ||
     (state.vhs ?? 0) > 0 ||
     (state.glitch ?? 0) > 0 ||
@@ -161,15 +245,7 @@ export function applyEffects(
  * Apply Gaussian blur using canvas filter
  */
 export function applyBlur(canvas: HTMLCanvasElement, amount: number): HTMLCanvasElement {
-  const width = canvas.width;
-  const height = canvas.height;
-  const result = createCanvas(width, height);
-  const ctx = getContext(result);
-
-  ctx.filter = `blur(${amount}px)`;
-  ctx.drawImage(canvas, 0, 0);
-
-  return result;
+  return blurredCanvas(canvas, amount);
 }
 
 /**
@@ -184,11 +260,9 @@ export function applySharpen(canvas: HTMLCanvasElement, amount: number): HTMLCan
   // Draw original
   ctx.drawImage(canvas, 0, 0);
 
-  // Create blurred version
-  const blurred = createCanvas(width, height);
+  // Create blurred version (pure-pixel blur; see blurredCanvas)
+  const blurred = blurredCanvas(canvas, 1);
   const blurCtx = getContext(blurred);
-  blurCtx.filter = 'blur(1px)';
-  blurCtx.drawImage(canvas, 0, 0);
 
   // Get image data
   const originalData = ctx.getImageData(0, 0, width, height);
@@ -248,13 +322,19 @@ export function applyGlow(canvas: HTMLCanvasElement, amount: number): HTMLCanvas
   // Draw original
   ctx.drawImage(canvas, 0, 0);
 
-  // Create bright pass + blur for glow
-  const glowCanvas = createCanvas(width, height);
+  // Bright pass + blur for glow (pure-pixel blur, then brightness(1.5)).
+  const glowCanvas = blurredCanvas(canvas, amount * 2);
   const glowCtx = getContext(glowCanvas);
-
-  // Extract and blur bright areas
-  glowCtx.filter = `blur(${amount * 2}px) brightness(1.5)`;
-  glowCtx.drawImage(canvas, 0, 0);
+  {
+    const bright = glowCtx.getImageData(0, 0, width, height);
+    const bd = bright.data;
+    for (let i = 0; i < bd.length; i += 4) {
+      bd[i] = Math.min(255, bd[i] * 1.5);
+      bd[i + 1] = Math.min(255, bd[i + 1] * 1.5);
+      bd[i + 2] = Math.min(255, bd[i + 2] * 1.5);
+    }
+    glowCtx.putImageData(bright, 0, 0);
+  }
 
   // Blend glow on top with screen/additive-like effect
   ctx.globalCompositeOperation = 'screen';
@@ -409,11 +489,9 @@ export function applyClarity(canvas: HTMLCanvasElement, amount: number): HTMLCan
   // Draw original
   ctx.drawImage(canvas, 0, 0);
 
-  // Create heavily blurred version (low frequency)
-  const blurred = createCanvas(width, height);
+  // Create heavily blurred version (low frequency; pure-pixel blur)
+  const blurred = blurredCanvas(canvas, 20);
   const blurCtx = getContext(blurred);
-  blurCtx.filter = 'blur(20px)';
-  blurCtx.drawImage(canvas, 0, 0);
 
   // Get image data
   const originalData = ctx.getImageData(0, 0, width, height);
@@ -573,10 +651,7 @@ export function applyVHS(canvas: HTMLCanvasElement, amount: number): HTMLCanvasE
 
   // Add slight blur for tape degradation effect
   if (intensity > 0.3) {
-    const blurred = createCanvas(width, height);
-    const blurCtx = getContext(blurred);
-    blurCtx.filter = `blur(${intensity * 0.5}px)`;
-    blurCtx.drawImage(result, 0, 0);
+    const blurred = blurredCanvas(result, intensity * 0.5);
     ctx.globalAlpha = intensity * 0.3;
     ctx.drawImage(blurred, 0, 0);
     ctx.globalAlpha = 1;

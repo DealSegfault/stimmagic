@@ -25,7 +25,11 @@ export interface UseTextEditingOptions {
   canvasSize: Ref<Size>;
   getAnnotations: () => Shape[];
   updateShape: (shapeId: string, updates: Partial<Shape>) => void;
-  onStopEditing?: () => void;
+  /**
+   * Reports the text-session boundary. Live text has already been applied to
+   * the local shape; callers use this to publish one durable edit.
+   */
+  onStopEditing?: (changed: boolean, committed: boolean) => void;
 }
 
 export function useTextEditing(options: UseTextEditingOptions) {
@@ -102,6 +106,8 @@ export function useTextEditing(options: UseTextEditingOptions) {
     if (!editState.value) return;
 
     const shapeId = editState.value.shapeId;
+    const shapeBeforeStop = getEditingShape();
+    const changed = shapeBeforeStop ? shapeBeforeStop.text !== originalText : false;
     stopBlinking();
 
     if (!commit) {
@@ -115,7 +121,7 @@ export function useTextEditing(options: UseTextEditingOptions) {
     editState.value = null;
     autoFitShapeIds.delete(shapeId);
     autoFitInitialScaleByShapeId.delete(shapeId);
-    onStopEditing?.();
+    onStopEditing?.(changed, commit);
   }
 
   /**

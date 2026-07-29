@@ -14,7 +14,6 @@ import type { Size, Point } from './geometry';
 import type { BrushSettings } from './geometry';
 import {
   createBrushMask,
-  getStrokePoints,
   adjustLuminosity,
   adjustSaturation,
   sampleRegion,
@@ -22,6 +21,7 @@ import {
   interpolateFromSamples,
   applyPatch,
 } from './pixelOps';
+import { advanceStroke } from './strokeSpacing';
 import { applyLocalBlur, applyLocalSharpen } from './imageFilters';
 
 /**
@@ -56,6 +56,23 @@ export function useRetouchLayer() {
 
   // Stroke tracking for spacing
   let lastStrokePoint: Point | null = null;
+
+  /**
+   * Return spatially spaced dabs and keep the unconsumed distance.
+   *
+   * `lastStrokePoint` is deliberately the last DAB, not the last pointer event.
+   * Sub-spacing events therefore accumulate until they cover one interval
+   * instead of each becoming another dose of dodge/burn/sponge.
+   */
+  function brushStrokePoints(point: Point, size: number, spacing: number): Point[] {
+    const advanced = advanceStroke(
+      lastStrokePoint,
+      point,
+      size * (spacing / 100)
+    );
+    lastStrokePoint = advanced.lastDab;
+    return advanced.points;
+  }
 
   /**
    * Set the selection mask canvas for constraining operations
@@ -247,18 +264,7 @@ export function useRetouchLayer() {
     const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
 
-    // Get points along stroke if we have a previous point
-    const points: Point[] = lastStrokePoint
-      ? getStrokePoints(
-          lastStrokePoint.x,
-          lastStrokePoint.y,
-          destPoint.x,
-          destPoint.y,
-          size * (spacing / 100)
-        )
-      : [destPoint];
-
-    if (points.length === 0) points.push(destPoint);
+    const points = brushStrokePoints(destPoint, size, spacing);
 
     // Get source canvas context
     const sourceCtx = sourceCanvas.getContext('2d');
@@ -324,8 +330,6 @@ export function useRetouchLayer() {
 
       retouchCtx.value!.putImageData(destData, destX, destY);
     }
-
-    lastStrokePoint = { ...destPoint };
   }
 
   /**
@@ -335,88 +339,98 @@ export function useRetouchLayer() {
   function applySpotHeal(
     sourceCanvas: HTMLCanvasElement,
     point: Point,
-    brushSize: number
+    brushSettings: BrushSettings
   ): void {
     if (!retouchCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
+    const { size: brushSize, hardness, opacity, flow, spacing } = brushSettings;
+    const points = brushStrokePoints(point, brushSize, spacing);
+    if (points.length === 0) return;
+
     const radius = brushSize / 2;
     const halfSize = brushSize / 2;
-    const destX = Math.floor(point.x - halfSize);
-    const destY = Math.floor(point.y - halfSize);
-
-    // Sample surrounding pixels from a wider area for better color matching
-    const samples = sampleSurroundingPixels(
-      sourceCtx,
-      point.x,
-      point.y,
-      radius * 1.2,  // Start sampling just outside the brush
-      radius * 3,    // Sample from a wider surrounding area
-      24             // More samples for smoother results
-    );
-
-    // Get the original pixels to preserve texture/luminosity variation
-    const originalData = sourceCtx.getImageData(destX, destY, brushSize, brushSize);
-    const originalPixels = originalData.data;
-
-    // Create the healed region
-    const destData = retouchCtx.value.getImageData(destX, destY, brushSize, brushSize);
-    const destPixels = destData.data;
-
-    // Create very soft brush mask for healing (Photoshop uses very soft edges)
-    const brushMask = getBrushMask(brushSize, 15);
+    const effectiveOpacity = (opacity / 100) * (flow / 100);
+    const brushMask = getBrushMask(brushSize, hardness);
     const maskData = brushMask.data;
 
-    // Calculate average luminosity of samples for texture preservation
-    let sampleLumSum = 0;
-    for (const sample of samples) {
-      sampleLumSum += (sample.r * 0.299 + sample.g * 0.587 + sample.b * 0.114);
-    }
-    const avgSampleLum = sampleLumSum / samples.length;
+    for (const dab of points) {
+      const destX = Math.floor(dab.x - halfSize);
+      const destY = Math.floor(dab.y - halfSize);
 
-    for (let py = 0; py < brushSize; py++) {
-      for (let px = 0; px < brushSize; px++) {
-        const idx = (py * brushSize + px) * 4;
-        const maskAlpha = maskData[idx + 3] / 255;
-        if (maskAlpha === 0) continue;
+      // Sample surrounding pixels from a wider area for better color matching
+      const samples = sampleSurroundingPixels(
+        sourceCtx,
+        dab.x,
+        dab.y,
+        radius * 1.2,  // Start sampling just outside the brush
+        radius * 3,    // Sample from a wider surrounding area
+        24             // More samples for smoother results
+      );
 
-        const targetX = destX + px;
-        const targetY = destY + py;
+      // Get the original pixels to preserve texture/luminosity variation
+      const originalData = sourceCtx.getImageData(destX, destY, brushSize, brushSize);
+      const originalPixels = originalData.data;
 
-        // Interpolate base color from surrounding samples
-        const interpolated = interpolateFromSamples(targetX, targetY, samples);
+      // Create the healed region
+      const destData = retouchCtx.value.getImageData(destX, destY, brushSize, brushSize);
+      const destPixels = destData.data;
+      const selectionMask = getSelectionMaskRegion(destX, destY, brushSize, brushSize);
 
-        // Get original pixel luminosity for texture preservation
-        const origLum = originalPixels[idx] * 0.299 + originalPixels[idx + 1] * 0.587 + originalPixels[idx + 2] * 0.114;
+      // Calculate average luminosity of samples for texture preservation
+      let sampleLumSum = 0;
+      for (const sample of samples) {
+        sampleLumSum += (sample.r * 0.299 + sample.g * 0.587 + sample.b * 0.114);
+      }
+      const avgSampleLum = sampleLumSum / samples.length;
 
-        // Preserve some of the original texture variation
-        // This prevents the "flat blob" look by maintaining local luminosity differences
-        const lumDiff = origLum - avgSampleLum;
-        const texturePreserve = 0.3; // How much original texture to preserve (0-1)
-        const lumAdjust = lumDiff * texturePreserve;
+      for (let py = 0; py < brushSize; py++) {
+        for (let px = 0; px < brushSize; px++) {
+          const idx = (py * brushSize + px) * 4;
+          const pixelIdx = idx / 4;
+          const selectionAlpha = selectionMask ? selectionMask[pixelIdx] / 255 : 1;
+          const maskAlpha =
+            (maskData[idx + 3] / 255) * effectiveOpacity * selectionAlpha;
+          if (maskAlpha === 0) continue;
 
-        // Apply luminosity adjustment to interpolated color
-        let finalR = Math.max(0, Math.min(255, interpolated.r + lumAdjust));
-        let finalG = Math.max(0, Math.min(255, interpolated.g + lumAdjust));
-        let finalB = Math.max(0, Math.min(255, interpolated.b + lumAdjust));
+          const targetX = destX + px;
+          const targetY = destY + py;
 
-        // Blend with existing using the soft mask
-        const srcA = maskAlpha;
-        const dstA = destPixels[idx + 3] / 255;
-        const outA = srcA + dstA * (1 - srcA);
+          // Interpolate base color from surrounding samples
+          const interpolated = interpolateFromSamples(targetX, targetY, samples);
 
-        if (outA > 0) {
-          destPixels[idx] = (finalR * srcA + destPixels[idx] * dstA * (1 - srcA)) / outA;
-          destPixels[idx + 1] = (finalG * srcA + destPixels[idx + 1] * dstA * (1 - srcA)) / outA;
-          destPixels[idx + 2] = (finalB * srcA + destPixels[idx + 2] * dstA * (1 - srcA)) / outA;
-          destPixels[idx + 3] = outA * 255;
+          // Get original pixel luminosity for texture preservation
+          const origLum = originalPixels[idx] * 0.299 + originalPixels[idx + 1] * 0.587 + originalPixels[idx + 2] * 0.114;
+
+          // Preserve some of the original texture variation
+          // This prevents the "flat blob" look by maintaining local luminosity differences
+          const lumDiff = origLum - avgSampleLum;
+          const texturePreserve = 0.3; // How much original texture to preserve (0-1)
+          const lumAdjust = lumDiff * texturePreserve;
+
+          // Apply luminosity adjustment to interpolated color
+          const finalR = Math.max(0, Math.min(255, interpolated.r + lumAdjust));
+          const finalG = Math.max(0, Math.min(255, interpolated.g + lumAdjust));
+          const finalB = Math.max(0, Math.min(255, interpolated.b + lumAdjust));
+
+          // Blend with existing using the soft mask
+          const srcA = maskAlpha;
+          const dstA = destPixels[idx + 3] / 255;
+          const outA = srcA + dstA * (1 - srcA);
+
+          if (outA > 0) {
+            destPixels[idx] = (finalR * srcA + destPixels[idx] * dstA * (1 - srcA)) / outA;
+            destPixels[idx + 1] = (finalG * srcA + destPixels[idx + 1] * dstA * (1 - srcA)) / outA;
+            destPixels[idx + 2] = (finalB * srcA + destPixels[idx + 2] * dstA * (1 - srcA)) / outA;
+            destPixels[idx + 3] = outA * 255;
+          }
         }
       }
-    }
 
-    retouchCtx.value.putImageData(destData, destX, destY);
+      retouchCtx.value.putImageData(destData, destX, destY);
+    }
   }
 
   /**
@@ -438,18 +452,7 @@ export function useRetouchLayer() {
     const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
 
-    // Get points along stroke
-    const points: Point[] = lastStrokePoint
-      ? getStrokePoints(
-          lastStrokePoint.x,
-          lastStrokePoint.y,
-          point.x,
-          point.y,
-          size * (spacing / 100)
-        )
-      : [point];
-
-    if (points.length === 0) points.push(point);
+    const points = brushStrokePoints(point, size, spacing);
 
     const halfSize = size / 2;
     const amount = (exposure / 100) * (isDodge ? 1 : -1);
@@ -510,8 +513,6 @@ export function useRetouchLayer() {
 
       retouchCtx.value!.putImageData(destData, destX, destY);
     }
-
-    lastStrokePoint = { ...point };
   }
 
   /**
@@ -521,7 +522,7 @@ export function useRetouchLayer() {
     sourceCanvas: HTMLCanvasElement,
     point: Point,
     brushSettings: BrushSettings,
-    flow: number, // 0-100
+    strength: number, // 0-100
     isSaturate: boolean
   ): void {
     if (!retouchCtx.value) return;
@@ -529,25 +530,14 @@ export function useRetouchLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size, hardness, opacity, spacing } = brushSettings;
+    const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
 
-    // Get points along stroke
-    const points: Point[] = lastStrokePoint
-      ? getStrokePoints(
-          lastStrokePoint.x,
-          lastStrokePoint.y,
-          point.x,
-          point.y,
-          size * (spacing / 100)
-        )
-      : [point];
-
-    if (points.length === 0) points.push(point);
+    const points = brushStrokePoints(point, size, spacing);
 
     const halfSize = size / 2;
-    const amount = (flow / 100) * (isSaturate ? 1 : -1);
-    const effectiveOpacity = opacity / 100;
+    const amount = (strength / 100) * (isSaturate ? 1 : -1);
+    const effectiveOpacity = (opacity / 100) * (flow / 100);
 
     for (const p of points) {
       const destX = Math.floor(p.x - halfSize);
@@ -604,8 +594,6 @@ export function useRetouchLayer() {
 
       retouchCtx.value!.putImageData(destData, destX, destY);
     }
-
-    lastStrokePoint = { ...point };
   }
 
   /**
@@ -641,23 +629,13 @@ export function useRetouchLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size, hardness, spacing } = brushSettings;
+    const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
 
-    // Get points along stroke
-    const points: Point[] = lastStrokePoint
-      ? getStrokePoints(
-          lastStrokePoint.x,
-          lastStrokePoint.y,
-          point.x,
-          point.y,
-          size * (spacing / 100)
-        )
-      : [point];
+    const points = brushStrokePoints(point, size, spacing);
 
-    if (points.length === 0) points.push(point);
-
-    const blurRadius = isBlur ? Math.max(1, Math.ceil(strength / 20)) : 1;
+    const brushBlend = (opacity / 100) * (flow / 100);
+    const blurRadius = isBlur ? Math.max(1, Math.ceil(strength / 25)) : 1;
     const padding = blurRadius + 2; // Extra padding for filter kernel
     const regionSize = Math.ceil(size) + padding * 2;
     const halfSize = size / 2;
@@ -689,9 +667,25 @@ export function useRetouchLayer() {
       const localY = p.y - regionY;
 
       if (isBlur) {
-        applyLocalBlur(localCtx, localX, localY, size, brushMask, blurRadius);
+        applyLocalBlur(
+          localCtx,
+          localX,
+          localY,
+          size,
+          brushMask,
+          blurRadius,
+          brushBlend * (strength / 100)
+        );
       } else {
-        applyLocalSharpen(localCtx, localX, localY, size, brushMask, strength);
+        applyLocalSharpen(
+          localCtx,
+          localX,
+          localY,
+          size,
+          brushMask,
+          strength,
+          brushBlend
+        );
       }
 
       // Copy the processed region back to retouch layer, respecting selection
@@ -732,8 +726,6 @@ export function useRetouchLayer() {
         retouchCtx.value!.putImageData(processedData, destX, destY);
       }
     }
-
-    lastStrokePoint = { ...point };
   }
 
   /**
@@ -773,18 +765,7 @@ export function useRetouchLayer() {
     const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
 
-    // Get points along stroke
-    const points: Point[] = lastStrokePoint
-      ? getStrokePoints(
-          lastStrokePoint.x,
-          lastStrokePoint.y,
-          point.x,
-          point.y,
-          size * (spacing / 100)
-        )
-      : [point];
-
-    if (points.length === 0) points.push(point);
+    const points = brushStrokePoints(point, size, spacing);
 
     const halfSize = size / 2;
     const effectiveOpacity = (opacity / 100) * (flow / 100);
@@ -827,8 +808,6 @@ export function useRetouchLayer() {
 
       retouchCtx.value!.putImageData(destData, destX, destY);
     }
-
-    lastStrokePoint = { ...point };
   }
 
   /**

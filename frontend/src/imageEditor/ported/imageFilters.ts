@@ -115,7 +115,8 @@ export function applyLocalBlur(
   centerY: number,
   brushSize: number,
   brushMask: ImageData,
-  blurRadius: number
+  blurRadius: number,
+  strength: number = 1,
 ): void {
   const halfSize = brushSize / 2;
   const x = Math.max(0, Math.floor(centerX - halfSize));
@@ -135,7 +136,7 @@ export function applyLocalBlur(
   const blurredData = blurred.data;
 
   for (let i = 0; i < maskData.length; i += 4) {
-    const maskAlpha = maskData[i + 3] / 255;
+    const maskAlpha = (maskData[i + 3] / 255) * strength;
     if (maskAlpha > 0) {
       resultData[i] = originalData[i] * (1 - maskAlpha) + blurredData[i] * maskAlpha;
       resultData[i + 1] = originalData[i + 1] * (1 - maskAlpha) + blurredData[i + 1] * maskAlpha;
@@ -155,7 +156,8 @@ export function applyLocalSharpen(
   centerY: number,
   brushSize: number,
   brushMask: ImageData,
-  amount: number
+  amount: number,
+  strength: number = 1,
 ): void {
   const halfSize = brushSize / 2;
   const x = Math.max(0, Math.floor(centerX - halfSize));
@@ -175,7 +177,7 @@ export function applyLocalSharpen(
   const sharpenedData = sharpened.data;
 
   for (let i = 0; i < maskData.length; i += 4) {
-    const maskAlpha = maskData[i + 3] / 255;
+    const maskAlpha = (maskData[i + 3] / 255) * strength;
     if (maskAlpha > 0) {
       resultData[i] = originalData[i] * (1 - maskAlpha) + sharpenedData[i] * maskAlpha;
       resultData[i + 1] = originalData[i + 1] * (1 - maskAlpha) + sharpenedData[i + 1] * maskAlpha;

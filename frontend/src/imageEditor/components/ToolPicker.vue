@@ -11,12 +11,18 @@ import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import ToolIcon from '../../components/tools/ToolIcon.vue'
 import ToolProviderLabel from '../../components/tools/ToolProviderLabel.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tools: any[]
   /** Only tools that can run this task are listed. */
   taskType: string
   selectedId?: string | null
-}>()
+  /**
+   * Width. A fixed 320px is right under a toolbar with the whole window to
+   * spill into; in the right-hand sidebar it hangs off the edge of the screen,
+   * so that host asks for the column's width instead.
+   */
+  widthClass?: string
+}>(), { widthClass: 'w-[320px]' })
 
 const emit = defineEmits<{ select: [any]; close: [] }>()
 
@@ -40,8 +46,11 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPoin
 <template>
   <div
     ref="root"
-    class="w-[320px] max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar
-           rounded-lg border border-edge-subtle bg-surface-overlay shadow-xl py-1"
+    :class="[
+      widthClass,
+      'max-h-[min(420px,50vh)] overflow-y-auto custom-scrollbar',
+      'rounded-lg border border-edge-subtle bg-surface-overlay shadow-xl py-1',
+    ]"
   >
     <p v-if="!eligible.length" class="px-3.5 py-3 text-xs text-content-tertiary">
       No installed tool can do this yet.

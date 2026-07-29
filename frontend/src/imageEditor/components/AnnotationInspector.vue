@@ -2,24 +2,27 @@
 /**
  * The selected annotation's properties.
  *
- * An annotation IS mutable later — its colour, its weight, its glow, its text
+ * An annotation IS mutable later — its color, its weight, its glow, its text
  * — so by the placement rule everything here belongs in the inspector rather
  * than the toolbar. The toolbar only carries what is consumed at the moment of
- * the gesture: which tool, and the colour the next one starts with.
+ * the gesture: which tool, and the color the next one starts with.
  *
- * Colours use the ported picker, so the annotation surface offers the same
+ * Colors use the ported picker, so the annotation surface offers the same
  * spectrum, palette and eyedropper as everywhere else.
  */
 import { computed } from 'vue'
-import ColorPicker from '../ported/ColorPicker.vue'
+import PaintPicker from './PaintPicker.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
 import ToolIcon from './ToolIcon.vue'
 import type { Shape } from '../ported/shapeTypes'
 import type { RgbaColor } from '../ported/geometry'
+import { TEXT_STYLES, textStyleOfShape, textStylePatch } from '../stack/textStyles'
+import type { TextStyleId } from '../stack/textStyles'
+import { paintCss } from '../stack/paints'
 
 const props = defineProps<{
   shape: Shape | null
-  /** Colours sampled from the image, offered alongside the fixed swatches. */
+  /** Colors sampled from the image, offered alongside the fixed swatches. */
   palette?: RgbaColor[]
 }>()
 
@@ -39,10 +42,9 @@ const FONTS = [
   { id: 'Impact, "Haettenschweiler", sans-serif', label: 'Poster' },
 ]
 
-function rgbaCss(color: any) {
-  if (!color) return 'transparent'
-  if (typeof color === 'string') return color
-  return `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a ?? 1})`
+/** A well previews whatever paint it holds, gradient included. */
+function wellCss(paint: any) {
+  return paintCss(paint)
 }
 
 /** Text scale, derived from the box against its measured natural size. */
@@ -73,11 +75,11 @@ const isLine = computed(() =>
 const isRect = computed(() => props.shape?.type === 'rectangle')
 
 /**
- * How the stroke is laid down, as opposed to what colour it is.
+ * How the stroke is laid down, as opposed to what color it is.
  *
  * A pen stroke has a character — how hard its edge is, how much paint each
  * stamp lays, how far apart the stamps fall, and how much they wander. The old
- * editor exposed all of it and a Path without it is just a coloured line.
+ * editor exposed all of it and a Path without it is just a colored line.
  */
 const PATH_STYLE = [
   { key: 'hardness', label: 'Hardness', min: 0, max: 100, step: 1, fallback: 100 },
@@ -104,20 +106,46 @@ function numberOr(key: string, fallback: number): number {
   return typeof value === 'number' ? value : fallback
 }
 
-/** Neon is a universal shape style; text spells it as a text effect. */
-const glowOn = computed(() =>
-  isText.value ? any.value?.textEffect === 'neon' : any.value?.style?.effect === 'neon'
-)
+/**
+ * Effects, in the vocabulary each kind of shape actually has.
+ *
+ * Text has presets, not a checkbox: "Pill" is a background box with no effect
+ * and "Outline" is an effect with no box, so a boolean could name neither and
+ * unchecking it stranded the text in a style the toolbar could not have made.
+ * Everything else has the universal one. Gradient is absent from both lists on
+ * purpose — it is a color, picked in the wells above.
+ */
+const SHAPE_EFFECTS: { id: 'none' | 'neon'; label: string }[] = [
+  { id: 'none', label: 'None' },
+  { id: 'neon', label: 'Neon' },
+]
 
-function setGlow(on: boolean) {
-  if (isText.value) {
-    emit('change', { textEffect: on ? 'neon' : 'none', glowIntensity: any.value?.glowIntensity ?? 60 })
-  } else {
-    emit('change', {
-      style: { ...(any.value?.style || {}), effect: on ? 'neon' : 'none', glowIntensity: any.value?.style?.glowIntensity ?? 60 },
-    })
-  }
+const textStyle = computed<TextStyleId>(() => textStyleOfShape(any.value))
+
+function setTextStyle(style: TextStyleId) {
+  emit('change', textStylePatch(style, { glowIntensity: any.value?.glowIntensity }))
 }
+
+const shapeEffect = computed<'none' | 'neon'>(() => any.value?.style?.effect ?? 'none')
+
+function setShapeEffect(effect: 'none' | 'neon') {
+  if (effect === 'none') {
+    emit('change', { style: undefined })
+    return
+  }
+  emit('change', {
+    style: {
+      ...(any.value?.style || {}),
+      effect,
+      glowIntensity: any.value?.style?.glowIntensity ?? 60,
+    },
+  })
+}
+
+/** Whether a glow slider is live, in either vocabulary. */
+const glowOn = computed(() =>
+  isText.value ? textStyle.value === 'neon' : shapeEffect.value === 'neon'
+)
 
 function setGlowIntensity(value: number) {
   if (isText.value) emit('change', { glowIntensity: value })
@@ -221,14 +249,14 @@ const glowIntensity = computed(() =>
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Text' : 'Stroke' }}</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
-            <span class="colour-well">
-              <span :style="{ background: rgbaCss(isText ? any.textColor : any.strokeColor) }" />
+            <span class="color-well">
+              <span :style="{ background: wellCss(isText ? any.textColor : any.strokeColor) }" />
             </span>
           </template>
-          <ColorPicker
+          <PaintPicker
             :model-value="isText ? any.textColor : any.strokeColor"
             :image-palette="palette"
-            embedded
+            :allow-gradient="!isPath"
             @update:model-value="emit('change', isText ? { textColor: $event } : { strokeColor: $event })"
           />
         </ToolbarPopover>
@@ -244,7 +272,7 @@ const glowIntensity = computed(() =>
       </label>
     </section>
 
-    <!-- Stroke style: how the line is laid down, not what colour it is. -->
+    <!-- Stroke style: how the line is laid down, not what color it is. -->
     <section v-if="isPath" class="px-3 py-2 space-y-2">
       <label
         v-for="control in PATH_STYLE"
@@ -303,26 +331,57 @@ const glowIntensity = computed(() =>
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Background' : 'Fill' }}</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
-            <span class="colour-well">
-              <span :style="{ background: rgbaCss(any.backgroundColor) }" />
+            <span class="color-well">
+              <span :style="{ background: wellCss(any.backgroundColor) }" />
             </span>
           </template>
-          <ColorPicker
+          <PaintPicker
             :model-value="any.backgroundColor ?? null"
             :image-palette="palette"
+            :allow-gradient="!isPath"
             allow-null
-            embedded
-            @update:model-value="emit('change', { backgroundColor: $event })"
+            @update:model-value="emit('change', { backgroundColor: $event ?? undefined })"
           />
         </ToolbarPopover>
       </div>
     </section>
 
     <section class="px-3 py-2 space-y-2">
-      <label class="flex items-center gap-2 text-xs text-content-tertiary">
-        <input type="checkbox" :checked="glowOn" @change="setGlow(($event.target as HTMLInputElement).checked)" />
-        Neon
-      </label>
+      <!-- Style, in the same words the toolbar used to arm the tool. -->
+      <div class="space-y-1.5">
+        <span class="block text-[11px] text-content-tertiary">{{ isText ? 'Style' : 'Effect' }}</span>
+        <div class="flex flex-wrap gap-1">
+          <template v-if="isText">
+            <button
+              v-for="style in TEXT_STYLES"
+              :key="style.id"
+              type="button"
+              class="px-2 py-1 text-[11px] rounded-md transition-colors"
+              :class="textStyle === style.id
+                ? 'bg-selection/15 text-content'
+                : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+              @click="setTextStyle(style.id)"
+            >
+              {{ style.label }}
+            </button>
+          </template>
+          <template v-else>
+            <button
+              v-for="fx in SHAPE_EFFECTS"
+              :key="fx.id"
+              type="button"
+              class="px-2 py-1 text-[11px] rounded-md transition-colors"
+              :class="shapeEffect === fx.id
+                ? 'bg-selection/15 text-content'
+                : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+              @click="setShapeEffect(fx.id)"
+            >
+              {{ fx.label }}
+            </button>
+          </template>
+        </div>
+      </div>
+
       <label v-if="glowOn" class="flex items-center gap-2 text-xs text-content-tertiary">
         Glow
         <input
@@ -346,11 +405,11 @@ const glowIntensity = computed(() =>
 
 <style scoped>
 /*
- * A colour well, not a dot. Wide enough to read the colour at a glance and
+ * A color well, not a dot. Wide enough to read the color at a glance and
  * backed by a checkerboard so "no fill" is visibly no fill rather than
  * whatever the panel behind it happens to be.
  */
-.colour-well {
+.color-well {
   width: 34px;
   height: 20px;
   border-radius: 4px;
@@ -366,7 +425,7 @@ const glowIntensity = computed(() =>
   background-position: 0 0, 0 4px, 4px -4px, -4px 0;
 }
 
-.colour-well > span {
+.color-well > span {
   display: block;
   width: 100%;
   height: 100%;

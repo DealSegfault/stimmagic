@@ -35,7 +35,6 @@ export function canonicalOp(op: Op): string {
     op.class,
     anyOp.exec,
     anyOp.params ?? null,
-    op.region ? [op.region.mask_ref, op.region.feather_px, op.region.invert] : null,
     anyOp.mask_ref ?? null,
     anyOp.raster_ref ?? null,
     // Bumped when a payload is rewritten under the same ref, so a stroke added

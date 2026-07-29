@@ -1035,7 +1035,6 @@ import { useTabNavigation } from '../composables/useTabNavigation'
 import Spinner from '../components/ui/Spinner.vue'
 import Button from '../components/ui/Button.vue'
 import EmptyState from '../components/EmptyState.vue'
-import { useGlobalKeyboardShortcuts } from '../composables/useGlobalKeyboardShortcuts'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useAssetApi } from '../composables/useAssetApi'
 import { useExpirationClock } from '../composables/useExpirationClock'
@@ -2831,15 +2830,6 @@ function inputItemFromSource(source: any) {
     height: source.height,
   }
 }
-
-// Global keyboard shortcuts
-useGlobalKeyboardShortcuts({
-  onEscapePressed: () => {
-    if (slideshowState.active) {
-      exitSlideshow()
-    }
-  }
-})
 
 // Watch for browser back button
 watch(slideshowActive, (newValue) => {

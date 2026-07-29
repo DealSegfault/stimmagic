@@ -14,8 +14,9 @@
  */
 import { ref, computed } from 'vue';
 import type { Point, Size, ViewTransform, Color } from './geometry';
-import type { Shape, PathShape, LineShape, CurvedArrowShape, RectangleShape, EllipseShape, TextShape, RedactShape, TriangleShape, StarShape, PolygonShape, AnnotateTool, ResizeHandle, BrushSettings, TextEffect, GradientDirection, ShadowDirection, ShapeEffect, ShapeStyle } from './shapeTypes';
+import type { Shape, PathShape, LineShape, CurvedArrowShape, RectangleShape, EllipseShape, TextShape, RedactShape, TriangleShape, StarShape, PolygonShape, AnnotateTool, ResizeHandle, BrushSettings, TextEffect, ShadowDirection, ShapeEffect, ShapeStyle, Paint } from './shapeTypes';
 import { screenToCanvas, canvasToImage } from './canvasTransform';
+import { paintColor } from './shapeEffects';
 import {
   generateShapeId,
   getShapeBounds,
@@ -72,8 +73,8 @@ export interface AnnotationState {
   activeTool: AnnotateTool | null;
   annotations: Shape[];
   selectedShapeId: string | null;
-  annotateStrokeColor: Color;
-  annotateFillColor: Color | null;
+  annotateStrokeColor: Paint;
+  annotateFillColor: Paint | null;
   annotateStrokeWidth: number;
   annotateBrushSettings?: BrushSettings;
   annotateIsEraser?: boolean;
@@ -88,13 +89,11 @@ export interface AnnotationState {
   annotateTextBackgroundPadding?: number;
   annotateTextBackgroundCornerRadius?: number;
   // Text-specific colors
-  annotateTextColor?: Color;
-  annotateTextBgColor?: Color | null;
+  annotateTextColor?: Paint;
+  annotateTextBgColor?: Paint | null;
   // Text effect settings
   annotateTextEffect?: TextEffect;
   annotateTextGlowIntensity?: number;
-  annotateTextGradientColors?: string[];
-  annotateTextGradientDirection?: GradientDirection;
   annotateTextShadowDirection?: ShadowDirection;
   annotateTextShadowLength?: number;
   annotateTextShadowColor?: Color | null;
@@ -107,8 +106,7 @@ export interface AnnotationState {
   // Universal shape style settings
   annotateShapeEffect?: ShapeEffect;
   annotateGlowIntensity?: number;
-  annotateGradientColors?: Color[];
-  annotateGradientDirection?: GradientDirection;
+  annotateOpacity?: number;
 }
 
 type InteractionMode =
@@ -123,7 +121,17 @@ type InteractionMode =
   | { type: 'drawing-triangle'; shape: TriangleShape; startPoint: Point }
   | { type: 'drawing-star'; shape: StarShape; startPoint: Point }
   | { type: 'drawing-polygon'; shape: PolygonShape; startPoint: Point }
-  | { type: 'moving-shape'; shapeId: string; startPoint: Point; originalShape: Shape }
+  | {
+      type: 'moving-shape';
+      /** The shape the cursor is actually dragging — the copy while Option is held. */
+      shapeId: string;
+      startPoint: Point;
+      originalShape: Shape;
+      /** The shape the gesture grabbed, parked at `originalShape` while a copy drags. */
+      sourceId: string;
+      /** The copy Option made mid-drag; unpublished until mouse-up. */
+      duplicateId: string | null;
+    }
   | { type: 'resizing-shape'; shapeId: string; handle: ResizeHandle; startPoint: Point; originalShape: Shape }
   | { type: 'rotating-shape'; shapeId: string; startAngle: number; originalRotation: number; centerPoint: Point }
   | { type: 'erasing' }
@@ -138,11 +146,32 @@ export function useAnnotation(
   imageSize: { value: Size | null },
   canvasSize: { value: Size },
   getState: () => AnnotationState,
-  updateState: (partial: Partial<AnnotationState>) => void,
+  updateState: (partial: Partial<AnnotationState>, options?: { quiet?: boolean }) => void,
   pushHistory: (action: string) => void
 ) {
   const interactionMode = ref<InteractionMode>({ type: 'idle' });
   const cursorStyle = ref<string>('default');
+  /** Text shapes not yet published to the host document. */
+  const newTextShapeIds = new Set<string>();
+
+  /**
+   * A move stays inside this composable until the mouse comes up.
+   *
+   * Option can turn a move into a copy and back for as long as the button is
+   * down, so nothing about a move is settled until it ends — and the host mints
+   * one stack step per shape, so publishing mid-drag would mint and destroy a
+   * step on every press of the key. The overlay paints from its own list, so
+   * the drag is fully live on screen throughout; it is only the document that
+   * waits. (Drawing, resizing and rotating still publish as they go: none of
+   * them can change WHICH shape they are editing halfway through.)
+   */
+  function movesAreQuiet(): boolean {
+    return interactionMode.value.type === 'moving-shape';
+  }
+
+  /** The last place the pointer was, so a keystroke can act without one. */
+  let lastImagePoint: Point | null = null;
+  let lastShiftKey = false;
 
   // Refs for text editing composable
   const canvasRefComputed = computed(() => canvasRef.value);
@@ -158,7 +187,7 @@ export function useAnnotation(
     const annotations = state.annotations.map(s =>
       s.id === shapeId ? { ...s, ...updates } as Shape : s
     );
-    updateState({ annotations });
+    updateState({ annotations }, { quiet: movesAreQuiet() });
   }
 
   // Canvas-based text editing composable
@@ -169,7 +198,7 @@ export function useAnnotation(
     canvasSize: canvasSizeComputed,
     getAnnotations: () => getState().annotations,
     updateShape,
-    onStopEditing: () => {
+    onStopEditing: (changed, committed) => {
       // Check if the text shape being edited has only whitespace content
       // If so, delete it instead of keeping an empty text box
       const mode = interactionMode.value;
@@ -186,6 +215,10 @@ export function useAnnotation(
             });
           }
         }
+        if (committed && changed) {
+          pushHistory(newTextShapeIds.has(mode.shapeId) ? 'Draw text' : 'Edit text');
+        }
+        newTextShapeIds.delete(mode.shapeId);
       }
       interactionMode.value = { type: 'idle' };
     },
@@ -225,8 +258,6 @@ export function useAnnotation(
     return {
       effect,
       glowIntensity: state.annotateGlowIntensity ?? 50,
-      gradientColors: state.annotateGradientColors,
-      gradientDirection: state.annotateGradientDirection ?? 'horizontal',
     };
   }
 
@@ -239,6 +270,7 @@ export function useAnnotation(
 
     const { annotateStrokeColor, annotateFillColor, annotateStrokeWidth } = state;
     const shapeStyle = getCurrentShapeStyle();
+    const initialOpacity = state.annotateOpacity ?? 1;
 
     // Deselect any selected shape
     updateState({ selectedShapeId: null });
@@ -255,7 +287,9 @@ export function useAnnotation(
           rotation: 0,
           opacity: brushSettings ? brushSettings.opacity / 100 : 1,
           points: [imagePoint],
-          strokeColor: isEraser ? { r: 0, g: 0, b: 0, a: 1 } : annotateStrokeColor,
+          strokeColor: isEraser
+            ? { r: 0, g: 0, b: 0, a: 1 }
+            : paintColor(annotateStrokeColor),
           strokeWidth: brushSettings?.size ?? annotateStrokeWidth,
           hardness: brushSettings?.hardness ?? 100,
           flow: brushSettings?.flow ?? 100,
@@ -279,7 +313,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           x1: imagePoint.x,
           y1: imagePoint.y,
           x2: imagePoint.x,
@@ -302,7 +336,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           rawPoints: [imagePoint],
           smoothedPath: [imagePoint],
           strokeColor: annotateStrokeColor,
@@ -323,7 +357,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           width: 0,
           height: 0,
           strokeColor: annotateStrokeColor,
@@ -344,7 +378,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           rx: 0,
           ry: 0,
           strokeColor: annotateStrokeColor,
@@ -407,7 +441,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           text: placeholderText,
           width: baseWidth,
           height: baseHeight,
@@ -425,8 +459,6 @@ export function useAnnotation(
           // Text effect settings
           textEffect: state.annotateTextEffect ?? 'none',
           glowIntensity: state.annotateTextGlowIntensity ?? 50,
-          gradientColors: state.annotateTextGradientColors ?? ['#ff6b6b', '#feca57', '#ff9ff3'],
-          gradientDirection: state.annotateTextGradientDirection ?? 'horizontal',
           shadowDirection: state.annotateTextShadowDirection ?? 'bottom-right',
           shadowLength: state.annotateTextShadowLength ?? 25,
           shadowColor: state.annotateTextShadowColor ?? undefined,
@@ -436,6 +468,7 @@ export function useAnnotation(
 
         const annotations = [...state.annotations, shape];
         updateState({ annotations, selectedShapeId: shape.id });
+        newTextShapeIds.add(shape.id);
 
         // Immediately enter canvas editing mode (no selectAll since text is empty)
         startTextEditing(shape.id, 0, false, true);
@@ -468,7 +501,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           width: 0,
           height: 0,
           strokeColor: annotateStrokeColor,
@@ -489,7 +522,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           outerRadius: 0,
           innerRadius: 0,
           points: 5, // Classic 5-pointed star
@@ -512,7 +545,7 @@ export function useAnnotation(
           x: imagePoint.x,
           y: imagePoint.y,
           rotation: 0,
-          opacity: 1,
+          opacity: initialOpacity,
           radius: 0,
           sides,
           strokeColor: annotateStrokeColor,
@@ -889,7 +922,9 @@ export function useAnnotation(
         }
         break;
       case 'moving-shape':
-        pushHistory('Move shape');
+        // The whole move has been local to this composable; the commit is
+        // where the document finally hears about it, as one step.
+        pushHistory(mode.duplicateId ? 'Duplicate shape' : 'Move shape');
         break;
       case 'resizing-shape':
         pushHistory('Resize shape');
@@ -1024,6 +1059,63 @@ export function useAnnotation(
   }
 
   /**
+   * A detached copy of a shape.
+   *
+   * A JSON round trip, not structuredClone: the snapshot editor kept its shapes
+   * in a shallowRef, but here they live inside the op stack's deep ref, so
+   * every shape reaching this code is a reactive Proxy — and structuredClone
+   * throws DataCloneError on one, which killed the gesture mid-drag. Shapes are
+   * pure JSON by contract (the stack already stringifies them to diff params).
+   */
+  function cloneShape(shape: Shape): Shape {
+    return JSON.parse(JSON.stringify(shape)) as Shape;
+  }
+
+  /**
+   * Option during a drag: turn the move into a copy, or take the copy back.
+   *
+   * Pressing Option mid-drag parks the original at the pose it started in and
+   * hands the drag to a copy; releasing it deletes the copy and hands the drag
+   * back. The shape under the cursor never jumps either way, so the gesture
+   * reads as one continuous drag no matter how often the key goes up and down.
+   *
+   * None of this reaches the document, because no move does — see
+   * movesAreQuiet. That is what makes the toggle free: the copy and the parked
+   * original are the overlay's business until mouse-up, which publishes
+   * whichever shape survived, once. Undo then holds exactly one step for the
+   * gesture, whether it ended as a move or as a copy.
+   */
+  function setDuplicateDrag(active: boolean) {
+    const mode = interactionMode.value;
+    if (mode.type !== 'moving-shape') return;
+    if (active === (mode.duplicateId !== null)) return;
+
+    const state = getState();
+
+    if (active) {
+      // The original goes back to the pose it was grabbed at: the drag is the
+      // copy's now.
+      const parked = state.annotations.map(s =>
+        s.id === mode.sourceId ? mode.originalShape : s
+      );
+      const copy = cloneShape(mode.originalShape);
+      copy.id = generateShapeId();
+      interactionMode.value = { ...mode, shapeId: copy.id, duplicateId: copy.id };
+      // Appended, so the copy sits above what it was copied from.
+      updateState({ annotations: [...parked, copy], selectedShapeId: copy.id }, { quiet: true });
+    } else {
+      const withoutCopy = state.annotations.filter(s => s.id !== mode.duplicateId);
+      interactionMode.value = { ...mode, shapeId: mode.sourceId, duplicateId: null };
+      updateState({ annotations: withoutCopy, selectedShapeId: mode.sourceId }, { quiet: true });
+    }
+
+    // Option is a keystroke, so there may be no pointer event coming to put the
+    // newly-dragged shape under the cursor. Re-run the move from where the
+    // pointer already is.
+    if (lastImagePoint) continueInteraction(lastImagePoint, lastShiftKey);
+  }
+
+  /**
    * Handle mouse move on canvas
    */
   function handleMouseMove(event: MouseEvent) {
@@ -1031,6 +1123,14 @@ export function useAnnotation(
     const screenPoint = { x: event.clientX, y: event.clientY };
     const imagePoint = toImagePoint(screenPoint);
     if (!imagePoint) return;
+
+    lastImagePoint = imagePoint;
+    lastShiftKey = event.shiftKey;
+
+    // Option can also be found held on a move — the key may have gone down
+    // while another window had focus, so the keyboard is not the only source
+    // of truth for it.
+    if (mode.type === 'moving-shape') setDuplicateDrag(event.altKey);
 
     // Update cursor based on hover state
     if (mode.type === 'idle') {
@@ -1072,35 +1172,30 @@ export function useAnnotation(
       if (distance > DRAG_THRESHOLD) {
         // Exceeded threshold - start drawing or moving
         if (mode.shapeUnderCursor && !mode.shapeUnderCursor.disableMove) {
-          let shapeToMove = mode.shapeUnderCursor;
+          const source = mode.shapeUnderCursor;
 
-          // Option-drag: duplicate the shape first, then move the duplicate
-          if (event.altKey) {
-            const newId = generateShapeId();
-            const duplicatedShape = structuredClone(mode.shapeUnderCursor) as Shape;
-            duplicatedShape.id = newId;
-
-            // Add the duplicate to annotations
-            const state = getState();
-            const annotations = [...state.annotations, duplicatedShape];
-            updateState({ annotations });
-
-            shapeToMove = duplicatedShape;
-          }
-
-          // Start moving the shape (original or duplicate) and switch to its tool
-          const tool = shapeToTool(shapeToMove);
-          const updates: Partial<AnnotationState> = { selectedShapeId: shapeToMove.id };
+          // Start moving the shape and switch to its tool
+          const tool = shapeToTool(source);
+          const updates: Partial<AnnotationState> = { selectedShapeId: source.id };
           if (tool) {
             updates.activeTool = tool;
           }
           updateState(updates);
           interactionMode.value = {
             type: 'moving-shape',
-            shapeId: shapeToMove.id,
+            shapeId: source.id,
             startPoint: mode.startPoint,
-            originalShape: { ...shapeToMove },
+            // Deep, not a spread: this snapshot is both what every move is
+            // measured from and what an Option copy is cut from, and a shallow
+            // copy would share the live shape's point arrays.
+            originalShape: cloneShape(source),
+            sourceId: source.id,
+            duplicateId: null,
           };
+          // Option already held when the drag began is the same gesture as
+          // Option pressed during it — one code path, so releasing it works
+          // either way.
+          if (event.altKey) setDuplicateDrag(true);
         } else {
           // Start drawing with current tool
           startDrawing(mode.startPoint);
@@ -1151,9 +1246,26 @@ export function useAnnotation(
    * Wrapper for keyboard events that checks if we're editing text
    */
   function handleKeyDownWrapper(event: KeyboardEvent) {
+    // Option answers immediately, mid-drag, without waiting for the pointer to
+    // move: that instant response is the whole point of the gesture.
+    if (event.key === 'Alt') setDuplicateDrag(true);
     if (handleKeyDown(event)) {
       event.preventDefault();
     }
+  }
+
+  function handleKeyUpWrapper(event: KeyboardEvent) {
+    if (event.key === 'Alt') setDuplicateDrag(false);
+  }
+
+  /**
+   * Losing focus mid-drag ends the copy, not the drag: the browser stops
+   * reporting the modifier, so holding Option is no longer something we can
+   * know. Better to keep dragging the original than to keep a copy the user
+   * can no longer dismiss.
+   */
+  function handleWindowBlur() {
+    setDuplicateDrag(false);
   }
 
   /**
@@ -1168,6 +1280,10 @@ export function useAnnotation(
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
     window.addEventListener('keydown', handleKeyDownWrapper);
+    window.addEventListener('keyup', handleKeyUpWrapper);
+    // A drag that ends with the window losing focus never sees the Option
+    // keyup, which would strand the gesture holding a copy it cannot let go of.
+    window.addEventListener('blur', handleWindowBlur);
   }
 
   /**
@@ -1188,6 +1304,8 @@ export function useAnnotation(
     window.removeEventListener('mousemove', handleMouseMove);
     window.removeEventListener('mouseup', handleMouseUp);
     window.removeEventListener('keydown', handleKeyDownWrapper);
+    window.removeEventListener('keyup', handleKeyUpWrapper);
+    window.removeEventListener('blur', handleWindowBlur);
   }
 
   /**

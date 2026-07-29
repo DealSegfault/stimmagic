@@ -4012,8 +4012,10 @@ function handleKeydown(event) {
         exitSetView()
         return
       }
-      // Close slideshow directly - don't rely on parent having ESC handler
+      // The slideshow owns this Escape transition. Consume the event so a
+      // parent surface cannot also interpret the same keypress as "go back".
       event.preventDefault()
+      event.stopImmediatePropagation()
       close()
       break
   }

@@ -9,7 +9,7 @@
  * Used by all shape types (rectangles, ellipses, stars, polygons, lines, arrows, paths, text)
  */
 import type { Color } from './geometry';
-import type { GradientDirection, ShapeStyle } from './shapeTypes';
+import type { GradientDirection, GradientPaint, Paint, ShapeStyle } from './shapeTypes';
 import { colorToCss } from './geometry';
 
 /**
@@ -248,21 +248,13 @@ export function getEffectiveStyle(
   style?: ShapeStyle,
   legacyGlow?: number
 ): {
-  effect: 'none' | 'neon' | 'gradient';
+  effect: 'none' | 'neon';
   glowIntensity: number;
   glowColor: Color | undefined;
-  gradientColors: Color[];
-  gradientDirection: GradientDirection;
 } {
   // Check for legacy glow on PathShape
   if (legacyGlow !== undefined && legacyGlow > 0 && (!style || style.effect === undefined)) {
-    return {
-      effect: 'neon',
-      glowIntensity: legacyGlow,
-      glowColor: undefined,
-      gradientColors: [],
-      gradientDirection: 'horizontal',
-    };
+    return { effect: 'neon', glowIntensity: legacyGlow, glowColor: undefined };
   }
 
   // Use new style system
@@ -270,7 +262,63 @@ export function getEffectiveStyle(
     effect: style?.effect ?? 'none',
     glowIntensity: style?.glowIntensity ?? 50,
     glowColor: style?.glowColor,
-    gradientColors: style?.gradientColors ?? [],
-    gradientDirection: style?.gradientDirection ?? 'horizontal',
   };
+}
+
+// -- paints -------------------------------------------------------------------
+//
+// A color slot holds either a flat color or a gradient, and everything that
+// paints one goes through here. The canvas takes a CanvasGradient wherever it
+// takes a color string, so at the point of use the two are the same kind of
+// thing — which is the whole reason a gradient stopped being an effect.
+
+export function isGradientPaint(paint: Paint | null | undefined): paint is GradientPaint {
+  return !!paint && typeof paint === 'object' && (paint as GradientPaint).type === 'gradient';
+}
+
+/** A gradient with fewer than two stops cannot be drawn; treat it as its first. */
+function gradientStops(paint: GradientPaint): Color[] {
+  return paint.colors?.length ? paint.colors : [{ r: 255, g: 255, b: 255, a: 1 }];
+}
+
+/**
+ * The slot's paint as something assignable to fillStyle or strokeStyle.
+ *
+ * `bounds` positions the gradient: it is the shape's own box, so a gradient
+ * runs across the shape rather than across the canvas.
+ */
+export function paintStyle(
+  ctx: CanvasRenderingContext2D,
+  paint: Paint,
+  bounds: Rect
+): string | CanvasGradient {
+  if (!isGradientPaint(paint)) return colorToCss(paint);
+  const stops = gradientStops(paint);
+  if (stops.length < 2) return colorToCss(stops[0]);
+  return createGradient(ctx, bounds, stops, paint.direction ?? 'horizontal');
+}
+
+/**
+ * A single color standing in for the paint at a point.
+ *
+ * Arrowheads and neon glow layers need a color, not a gradient: the head is
+ * filled as one solid piece, and a glow is light of one hue. Sampling the
+ * gradient where that piece sits keeps both consistent with the line they
+ * belong to.
+ */
+export function paintColorAt(
+  paint: Paint | undefined,
+  position: { x: number; y: number },
+  bounds: Rect
+): Color {
+  if (!paint) return { r: 255, g: 255, b: 255, a: 1 };
+  if (!isGradientPaint(paint)) return paint;
+  const stops = gradientStops(paint);
+  return getGradientColorAt(position, bounds, stops, paint.direction ?? 'horizontal');
+}
+
+/** The paint's representative color, for glow and other whole-shape uses. */
+export function paintColor(paint: Paint | undefined, bounds?: Rect): Color {
+  const box = bounds ?? { x: 0, y: 0, width: 1, height: 1 };
+  return paintColorAt(paint, { x: box.x + box.width / 2, y: box.y + box.height / 2 }, box);
 }

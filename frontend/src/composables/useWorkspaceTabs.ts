@@ -282,8 +282,11 @@ function pruneNeverActivatedDuplicates() {
 }
 
 function initEditorIdCounter() {
-  // Migrate old-format editor tabs (entityId was mediaId, no editorMediaId)
+  // Migrate old-format editor tabs (entityId was mediaId, no editorMediaId).
+  // Asset-keyed (v2) editor tabs are never instance-keyed, so they are exempt
+  // from both the migration and the counter.
   for (const tab of tabs.value) {
+    if (isV2EditorTab(tab)) continue
     if (tab.type === 'editor' && !tab.editorMediaId) {
       // Old format: entityId is the mediaId. Migrate to new format.
       const oldMediaId = tab.entityId
@@ -295,6 +298,7 @@ function initEditorIdCounter() {
   }
   // Set counter past any existing editor IDs
   for (const tab of tabs.value) {
+    if (isV2EditorTab(tab)) continue
     if (tab.type === 'editor') {
       const num = parseInt(tab.entityId, 10)
       if (!isNaN(num) && num >= editorIdCounter) {
@@ -415,6 +419,59 @@ export function makeTabId(type: WorkspaceTabType, entityId: string, projectId?: 
     return `${type}:${entityId}${proj}${inst}`
   }
   return `${type}:${entityId}`
+}
+
+/**
+ * Editor tabs come in two flavours, keyed differently on purpose (see
+ * imageEditor/stack/openImageEditor.ts): the snapshot editor keys by an editor
+ * INSTANCE counter, while the op-stack editor keys by ASSET, because a stack
+ * belongs to its asset and reopening it must resume the same document.
+ *
+ * Both are `editor` tabs so they share one sidebar treatment, so the
+ * asset-keyed ones carry a prefixed entityId — otherwise instance 3 and asset 3
+ * would both be `editor:3`.
+ */
+const V2_EDITOR_ENTITY_PREFIX = 'asset:'
+
+export function v2EditorEntityId(assetId: string | number): string {
+  return `${V2_EDITOR_ENTITY_PREFIX}${assetId}`
+}
+
+export function isV2EditorTab(tab: WorkspaceTab): boolean {
+  return tab.type === 'editor' && tab.entityId.startsWith(V2_EDITOR_ENTITY_PREFIX)
+}
+
+/** The asset a v2 editor tab edits, or null if it isn't one. */
+export function v2EditorAssetId(tab: WorkspaceTab): string | null {
+  return isV2EditorTab(tab) ? tab.entityId.slice(V2_EDITOR_ENTITY_PREFIX.length) : null
+}
+
+/**
+ * Router location for an editor tab — the one place the two editors' route
+ * shapes are resolved, so every "go to this tab" site (sidebar, App, tab
+ * context menu) stays in agreement.
+ */
+export function editorTabRoute(tab: WorkspaceTab) {
+  const assetId = v2EditorAssetId(tab)
+  if (assetId !== null) return { name: 'edit-image-v2' as const, params: { assetId } }
+  if (tab.editorMediaId) {
+    return { name: 'edit-image' as const, params: { editorId: tab.entityId, mediaId: tab.editorMediaId } }
+  }
+  return { name: 'edit-image-empty' as const, params: { editorId: tab.entityId } }
+}
+
+/**
+ * Tab id for an editor route, or null when `route` isn't one. Mirrors
+ * editorTabRoute in the other direction (active-tab checks).
+ */
+export function editorRouteTabId(route: { name?: unknown; params: Record<string, any> }): string | null {
+  if (route.name === 'edit-image-v2' && route.params.assetId) {
+    return makeTabId('editor', v2EditorEntityId(String(route.params.assetId)))
+  }
+  if (route.name === 'edit-image' || route.name === 'edit-image-empty') {
+    return makeTabId('editor', String(route.params.editorId))
+  }
+  return null
 }
 
 /**
@@ -607,6 +664,42 @@ export function useWorkspaceTabs() {
       displayOrder: nextDisplayOrder++,
       displayName: 'Edit Image',
       editorMediaId: mediaId
+    }
+    tabs.value = [...tabs.value, tab]
+    return tab
+  }
+
+  /**
+   * Add (or refresh) the op-stack editor tab for an asset. One tab per asset:
+   * reopening the same asset resumes the same document, so it focuses the
+   * existing tab rather than starting a second one.
+   */
+  function addEditorV2Tab(assetId: string, opts?: { mediaId?: string; name?: string }): WorkspaceTab {
+    const entityId = v2EditorEntityId(assetId)
+    const id = makeTabId('editor', entityId)
+    const existing = tabs.value.find(t => t.id === id)
+    if (existing) {
+      let changed = false
+      if (opts?.mediaId && existing.editorMediaId !== opts.mediaId) {
+        existing.editorMediaId = opts.mediaId
+        changed = true
+      }
+      if (opts?.name && existing.displayName !== opts.name) {
+        existing.displayName = opts.name
+        changed = true
+      }
+      if (changed) tabs.value = [...tabs.value]
+      return existing
+    }
+
+    const tab: WorkspaceTab = {
+      id,
+      type: 'editor',
+      entityId,
+      pinned: false,
+      displayOrder: nextDisplayOrder++,
+      displayName: opts?.name || 'Edit Image',
+      editorMediaId: opts?.mediaId
     }
     tabs.value = [...tabs.value, tab]
     return tab
@@ -932,6 +1025,7 @@ export function useWorkspaceTabs() {
     allTabs,
     addTab,
     addEditorTab,
+    addEditorV2Tab,
     updateEditorMedia,
     updateLineageFocus,
     nextEditorId,

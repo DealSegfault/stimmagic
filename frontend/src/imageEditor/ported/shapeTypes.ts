@@ -56,7 +56,7 @@ export interface BaseShape {
   rotation: number; // radians
   opacity: number; // 0-1
 
-  // Universal style (neon, gradient effects)
+  // Universal style (the neon glow)
   style?: ShapeStyle;
 
   // Interaction locks
@@ -72,8 +72,8 @@ export interface RectangleShape extends BaseShape {
   width: number;
   height: number;
   cornerRadius?: number;
-  backgroundColor?: Color;
-  strokeColor?: Color;
+  backgroundColor?: Paint;
+  strokeColor?: Paint;
   strokeWidth?: number;
 }
 
@@ -81,8 +81,8 @@ export interface EllipseShape extends BaseShape {
   type: 'ellipse';
   rx: number; // x radius
   ry: number; // y radius
-  backgroundColor?: Color;
-  strokeColor?: Color;
+  backgroundColor?: Paint;
+  strokeColor?: Paint;
   strokeWidth?: number;
 }
 
@@ -92,7 +92,7 @@ export interface LineShape extends BaseShape {
   y1: number;
   x2: number;
   y2: number;
-  strokeColor: Color;
+  strokeColor: Paint;
   strokeWidth: number;
   lineStart?: LineEndStyle;
   lineEnd?: LineEndStyle;
@@ -102,7 +102,7 @@ export interface CurvedArrowShape extends BaseShape {
   type: 'curved-arrow';
   rawPoints: Point[];      // Mouse path points (normalized 0-1)
   smoothedPath: Point[];   // Bezier control points for rendering
-  strokeColor: Color;
+  strokeColor: Paint;
   strokeWidth: number;
   lineEnd: LineEndStyle;
 }
@@ -143,17 +143,22 @@ export const TEXT_BASE_FONT_SIZE = 100;
 /**
  * Text effect types for social media-style text styling
  */
-export type TextEffect = 'none' | 'outline' | 'neon' | 'gradient' | 'shadow' | 'glitch' | 'knockout';
+export type TextEffect = 'none' | 'outline' | 'neon' | 'shadow' | 'glitch' | 'knockout';
 
 /**
- * Gradient direction for text gradient effect
+ * Gradient direction
  */
 export type GradientDirection = 'horizontal' | 'vertical' | 'diagonal';
 
 /**
  * Universal shape effect types (apply to all annotation types)
+ *
+ * Gradient is NOT here: a gradient is a color, not an effect. It lives in the
+ * color slot it paints, which is what lets a shape have a gradient stroke and
+ * a solid fill — and what keeps the effect list to things that are actually
+ * effects. Neon is one: it adds light the color did not have.
  */
-export type ShapeEffect = 'none' | 'neon' | 'gradient';
+export type ShapeEffect = 'none' | 'neon';
 
 /**
  * Universal style settings for shapes, arrows, text, and pen strokes
@@ -164,11 +169,28 @@ export interface ShapeStyle {
   // Neon settings
   glowIntensity?: number;  // 0-100
   glowColor?: Color;       // defaults to stroke/text color
-
-  // Gradient settings
-  gradientColors?: Color[];           // 2-3 colors
-  gradientDirection?: GradientDirection;
 }
+
+/**
+ * A gradient in a color slot.
+ *
+ * `type` is what tells it apart from a solid: a Color is a bare {r,g,b,a},
+ * so the discriminant only has to exist on this side.
+ */
+export interface GradientPaint {
+  type: 'gradient';
+  colors: Color[];                // 2-3 stops, evenly distributed
+  direction: GradientDirection;
+}
+
+/**
+ * What can fill a color slot — a flat color or a gradient.
+ *
+ * Every stroke, fill, text and background slot on a vector shape takes one.
+ * Pen strokes are the exception: they are stamped pixels, not a path the
+ * canvas can hand a CanvasGradient, so PathShape keeps a solid Color.
+ */
+export type Paint = Color | GradientPaint;
 
 /**
  * Shadow direction for long shadow effect
@@ -222,25 +244,22 @@ export interface TextShape extends BaseShape {
   textAlign: 'left' | 'center' | 'right';
 
   // Colors
-  textColor: Color;
-  backgroundColor?: Color;         // Optional background box
-  strokeColor?: Color;             // Optional text outline
+  textColor: Paint;
+  backgroundColor?: Paint;         // Optional background box
+  strokeColor?: Paint;             // Optional text outline
   strokeWidth?: number;
 
   // Background styling (only applies when backgroundColor is set)
   backgroundPadding?: number;           // 0..1, scales with text height
   backgroundCornerRadius?: number;      // 0..1, 1 = fully rounded
 
-  // Text effects (social media style)
-  textEffect?: TextEffect;              // 'none' | 'outline' | 'neon' | 'gradient'
+  // Text effects (social media style). A gradient is not among them — it is a
+  // textColor, the same as any other color.
+  textEffect?: TextEffect;
 
   // Neon effect settings
   glowIntensity?: number;               // 0-100, glow strength
   glowColor?: Color;                    // Glow color (defaults to textColor)
-
-  // Gradient effect settings
-  gradientColors?: string[];            // Array of CSS color strings
-  gradientDirection?: GradientDirection; // 'horizontal' | 'vertical' | 'diagonal'
 
   // Long shadow effect settings
   shadowDirection?: ShadowDirection;    // Direction of the shadow
@@ -265,8 +284,8 @@ export interface TriangleShape extends BaseShape {
   type: 'triangle';
   width: number;
   height: number;
-  backgroundColor?: Color;
-  strokeColor?: Color;
+  backgroundColor?: Paint;
+  strokeColor?: Paint;
   strokeWidth?: number;
 }
 
@@ -276,8 +295,8 @@ export interface StarShape extends BaseShape {
   innerRadius: number;             // Inner radius (normalized 0-1)
   points: number;                  // Number of points (5 = classic 5-pointed star)
   aspectRatio?: number;            // Width/height aspect ratio (1.0 = regular, default)
-  backgroundColor?: Color;
-  strokeColor?: Color;
+  backgroundColor?: Paint;
+  strokeColor?: Paint;
   strokeWidth?: number;
 }
 
@@ -286,8 +305,8 @@ export interface PolygonShape extends BaseShape {
   radius: number;                  // Radius (normalized 0-1)
   sides: number;                   // Number of sides (3 = triangle, 6 = hexagon, etc.)
   aspectRatio?: number;            // Width/height aspect ratio (1.0 = regular, default)
-  backgroundColor?: Color;
-  strokeColor?: Color;
+  backgroundColor?: Paint;
+  strokeColor?: Paint;
   strokeWidth?: number;
 }
 

@@ -8,64 +8,89 @@
  * Save materializes the composite as a new Revision — until then, nothing
  * outside this screen sees the stack (the rasterized-head invariant).
  *
- * Phase 1 scope: the Generate family (Inpaint, Whole image), staged candidates,
- * patch compositing, Save, and a read-only Edits list with eye toggles. Rows do
- * not reorder yet, which is why no staleness machinery is needed: with an
- * append-only stack nothing below an op can change.
+ * Every step in the stack is a live parameter: reorderable, toggleable,
+ * re-editable, with nothing pinning its position. There are no checkpoints and
+ * no whole-image steps — a step that replaced the composite would occlude the
+ * stack below it, which makes it a new base rather than a step, and new bases
+ * belong to the version chain. The one operation that legitimately produces one
+ * is the output stage's upscale, which runs at save.
  */
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import axios from 'axios'
-import { ArrowUturnLeftIcon, ArrowUturnRightIcon } from '@heroicons/vue/24/outline'
+import { ArrowUturnLeftIcon, ArrowUturnRightIcon, ChevronUpIcon } from '@heroicons/vue/24/outline'
 import Button from '../components/ui/Button.vue'
 import IconButton from '../components/ui/IconButton.vue'
 import Tooltip from '../components/ui/Tooltip.vue'
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import Spinner from '../components/ui/Spinner.vue'
+import ImageCompareSlider from '../components/ImageCompareSlider.vue'
+import BaseRow from '../imageEditor/components/BaseRow.vue'
+import { DROP_LINE } from '../imageEditor/components/rowLayout'
 import EditRow from '../imageEditor/components/EditRow.vue'
 import EditorToolbar from '../imageEditor/components/EditorToolbar.vue'
 import EditorSubbar from '../imageEditor/components/EditorSubbar.vue'
 import StackPaintCanvas from '../imageEditor/components/StackPaintCanvas.vue'
 import StackSelectCanvas from '../imageEditor/components/StackSelectCanvas.vue'
 import StackAnnotateCanvas from '../imageEditor/components/StackAnnotateCanvas.vue'
-import CheckpointBand from '../imageEditor/components/CheckpointBand.vue'
+import OutputPanel from '../imageEditor/components/OutputPanel.vue'
 import AdjustInspector from '../imageEditor/components/AdjustInspector.vue'
 import AnnotationInspector from '../imageEditor/components/AnnotationInspector.vue'
-import StackMaskCanvas from '../imageEditor/components/StackMaskCanvas.vue'
+import AnnotationIsland from '../imageEditor/components/AnnotationIsland.vue'
+import SelectIsland from '../imageEditor/components/SelectIsland.vue'
 import StackCropCanvas from '../imageEditor/components/StackCropCanvas.vue'
 import ToolPicker from '../imageEditor/components/ToolPicker.vue'
 import { useStackDocument, newOpId } from '../imageEditor/stack/useStackDocument'
 import { useStackCandidates } from '../imageEditor/stack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../imageEditor/stack/useStackCompositor'
+import { applyAnnotations } from '../imageEditor/stack/opExecutors'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
 import { apiErrorMessage } from '../imageEditor/stack/errors'
-import { migrateLegacyProject } from '../imageEditor/stack/migrateLegacyProject'
+import { setEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import {
-  blastRadius, canMoveWithinSegment, checkpointStatus, deriveStackState, foldedCount,
-} from '../imageEditor/stack/stackState'
+  readToolPrefs, writeToolPrefs, rememberSubTool, rememberedSubTool, rememberedIfValid,
+} from '../imageEditor/stack/toolPrefs'
+import {
+  paintEngineSettings,
+} from '../imageEditor/stack/paintEngineSettings'
+import type {
+  PaintEngineSettings, PaintRange,
+} from '../imageEditor/stack/paintEngineSettings'
+import { migrateLegacyProject } from '../imageEditor/stack/migrateLegacyProject'
+import { flattenWholeOps, hasWholeOps } from '../imageEditor/stack/flattenWholeOps'
+import { blastRadius, deriveStackState, moveTargetForGap } from '../imageEditor/stack/stackState'
+import {
+  finalResolutionFor, outputDimensions, outputLabel, outputOf, resampleLanczos,
+} from '../imageEditor/stack/outputStage'
 import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
-  transformShapes,
+  transformShapes, multiply, invert as invertMatrix,
 } from '../imageEditor/stack/geometryTransform'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
 } from '../imageEditor/stack/adjustSections'
-import { familyById, TOOL_FAMILIES } from '../imageEditor/stack/toolFamilies'
-import type { FamilyId, SelectionMode } from '../imageEditor/stack/toolFamilies'
+import {
+  familyById, TOOL_FAMILIES, SELECT_TOOLS, PAINT_ENGINES,
+} from '../imageEditor/stack/toolFamilies'
+import type { FamilyId, SelectionMode, SelectToolId } from '../imageEditor/stack/toolFamilies'
+import { useSelection } from '../imageEditor/ported/useSelection'
 import type { GenerativeOp } from '../imageEditor/stack/types'
-import type { AnnotateTool, Shape } from '../imageEditor/ported/shapeTypes'
+import { generateShapeId } from '../imageEditor/ported/shapes'
+import type { AnnotateTool, Paint, Shape } from '../imageEditor/ported/shapeTypes'
+import { textStyleOfShape, textStylePatch } from '../imageEditor/stack/textStyles'
+import type { TextStyleId } from '../imageEditor/stack/textStyles'
 import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
 import {
-  ADJUST_SECTIONS, FILTER_LABELS, FILTER_STRIP, adjustControl,
+  FILTER_STRIP, AUTO_EDITS, levelEditById, stripEntryById, effectLookOf,
 } from '../imageEditor/stack/adjustSections'
+import type { StripEntry } from '../imageEditor/stack/adjustSections'
 import { applyColorMatrix } from '../imageEditor/ported/colorMatrix'
 import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices'
-import type { AdjustFamily } from '../imageEditor/stack/adjustSections'
+import { applyEffects } from '../imageEditor/ported/effects'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
-const router = useRouter()
 
 const stack = useStackDocument()
 const { listAllTools } = useProvidersApi()
@@ -79,24 +104,16 @@ const baseInfo = ref<any>(null)
 
 /** Generate sub-tool modes. Clicking a tool enters a mode; it never edits the
  *  stack. The step is created on the first real gesture — an explicit Run. */
-type Mode = null | 'inpaint' | 'whole' | 'expand' | 'upscale' | 'adjust' | 'crop'
+type Mode = null | 'inpaint' | 'expand' | 'adjust' | 'crop'
 const mode = ref<Mode>(null)
 const prompt = ref('')
 const candidateCount = ref(4)
-const brushSize = ref(80)
-const brushMode = ref<'paint' | 'erase'>('paint')
-
 const selectedOpId = ref<string | null>(null)
-const maskCanvas = ref<HTMLCanvasElement | null>(null)
-const maskRef = ref<InstanceType<typeof StackMaskCanvas> | null>(null)
 
 const tools = ref<any[]>([])
 const inpaintToolId = ref<string | null>(null)
-const wholeToolId = ref<string | null>(null)
-const upscaleToolId = ref<string | null>(null)
 /** Expand grows the canvas and auto-masks the new border. */
 const expandFactor = ref(1.25)
-const upscaleFactor = ref(2)
 /**
  * Catalog tool picker for the active Generate sub-tool.
  *
@@ -109,12 +126,8 @@ const toolPickerOpen = ref(false)
 /** Where the trigger sits, so the menu opens under it rather than at the edge. */
 const toolPickerLeft = ref(16)
 
-/** The task the active sub-tool needs a tool for. */
-const activeTaskType = computed(() => {
-  if (sub.value === 'upscale') return 'upscale-image'
-  if (sub.value === 'whole') return 'image-to-image'
-  return 'inpaint-image'
-})
+/** The task the active sub-tool needs a tool for. Both sub-tools inpaint. */
+const activeTaskType = computed(() => 'inpaint-image')
 
 function onOpenToolPicker(event: MouseEvent) {
   const button = event?.currentTarget as HTMLElement | undefined
@@ -127,44 +140,132 @@ function onOpenToolPicker(event: MouseEvent) {
 }
 
 function chooseTool(tool: any) {
-  const id = tool.full_tool_id
-  if (sub.value === 'upscale') upscaleToolId.value = id
-  else if (sub.value === 'whole') wholeToolId.value = id
-  else inpaintToolId.value = id
+  inpaintToolId.value = tool.full_tool_id
   toolPickerOpen.value = false
+  writeToolPrefs({ inpaintToolId: tool.full_tool_id })
 }
 
-// Select
+// -- selection --------------------------------------------------------------
+//
+// Selection is WORKSPACE state, not a mode. The model lives here — not in the
+// overlay component — so it survives everything that unmounts the overlay
+// (crop replaces the display box entirely). The rail on the left arms a tool;
+// arming suspends the open family's pointer without ending its session.
+const selModel = useSelection()
 const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
+/** The published mask: what consumers scope to. Kept in step with selModel. */
 const selection = ref<HTMLCanvasElement | null>(null)
+const armedSelectTool = ref<SelectToolId | null>(null)
+const lastSelectTool = ref<SelectToolId>(
+  (rememberedIfValid(
+    readToolPrefs().selectTool,
+    id => SELECT_TOOLS.some(tool => tool.id === id),
+  ) as SelectToolId | undefined) ?? 'rect',
+)
 const selectCombine = ref<SelectionMode>('new')
 const selectFeather = ref(0)
-/** Magic wand colour tolerance, 0-255. */
+/** Magic wand color tolerance, 0-255. */
 const selectTolerance = ref(32)
+const selectBrushSize = ref(80)
+/**
+ * The selection as created, plus the geometry frame it was authored in.
+ * When the geometry below the head changes (crop added/removed/edited), the
+ * live selection is re-derived from THIS master through `M_new ∘ M_authored⁻¹`
+ * — the same dumb-reference rule every op payload follows — so a crop and an
+ * un-crop restore it exactly instead of compounding resampling loss.
+ */
+let selectionMaster: HTMLCanvasElement | null = null
+/** Crop geometry + frame-adjust affine of the composite the master was drawn over. */
+let selectionMasterFrame: { matrix: number[]; frameAdjust: number[] } | null = null
+/** What the live selection currently reflects, so sync is a no-op at rest. */
+let selectionAppliedKey: string | null = null
 
 // Paint
 const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
 const paintOpId = ref<string | null>(null)
-const paintEngineId = ref('paint')
-// The ported picker owns the whole brush, so there is one value here rather
-// than a knob per parameter — size, hardness, opacity, flow and spacing all
-// move together when a preset is chosen.
-const paintBrush = ref<BrushSettings>({
-  size: 26, hardness: 60, opacity: 100, flow: 100, spacing: 10,
+const initialToolPrefs = readToolPrefs()
+const paintEngineId = ref(
+  rememberedIfValid(
+    initialToolPrefs.paintEngineId,
+    id => PAINT_ENGINES.some(engine => engine.id === id && !engine.pending),
+  ) ?? 'paint',
+)
+const paintSettingsByEngine = ref<Record<string, PaintEngineSettings>>(
+  Object.fromEntries(PAINT_ENGINES.map(engine => [
+    engine.id,
+    paintEngineSettings(engine.id, initialToolPrefs.paintEngines?.[engine.id]),
+  ])),
+)
+
+const activePaintSettings = computed(() =>
+  paintSettingsByEngine.value[paintEngineId.value]
+  ?? paintEngineSettings(paintEngineId.value),
+)
+
+let paintPrefsTimer: ReturnType<typeof setTimeout> | null = null
+
+function persistPaintSettings() {
+  if (paintPrefsTimer) clearTimeout(paintPrefsTimer)
+  paintPrefsTimer = null
+  writeToolPrefs({ paintEngines: paintSettingsByEngine.value })
+}
+
+function updateActivePaintSettings(patch: Partial<PaintEngineSettings>) {
+  const engineId = paintEngineId.value
+  paintSettingsByEngine.value = {
+    ...paintSettingsByEngine.value,
+    [engineId]: paintEngineSettings(engineId, {
+      ...activePaintSettings.value,
+      ...patch,
+    }),
+  }
+  if (paintPrefsTimer) clearTimeout(paintPrefsTimer)
+  paintPrefsTimer = setTimeout(persistPaintSettings, 150)
+}
+
+// Writable aliases keep the subbar and gesture surface simple while the actual
+// values live in an independent, persisted record for every engine.
+const paintBrush = computed<BrushSettings>({
+  get: () => activePaintSettings.value.brush,
+  set: value => updateActivePaintSettings({ brush: value }),
 })
-const paintColorRgb = ref({ r: 201, g: 162, b: 118, a: 1 })
-// Engine-specific gesture properties. Like the brush they are consumed at the
-// moment of the stroke and belong to no step, so they live in the toolbar.
-const paintExposure = ref(50)
-const paintRange = ref<'shadows' | 'midtones' | 'highlights'>('midtones')
-const paintFlow = ref(50)
-const paintSaturate = ref(true)
+const paintColorRgb = computed({
+  get: () => activePaintSettings.value.color,
+  set: value => updateActivePaintSettings({ color: value }),
+})
+const paintExposure = computed({
+  get: () => activePaintSettings.value.exposure,
+  set: value => updateActivePaintSettings({ exposure: value }),
+})
+const paintRange = computed<PaintRange>({
+  get: () => activePaintSettings.value.range,
+  set: value => updateActivePaintSettings({ range: value }),
+})
+const paintStrength = computed({
+  get: () => activePaintSettings.value.strength,
+  set: value => updateActivePaintSettings({ strength: value }),
+})
+const paintSaturate = computed({
+  get: () => activePaintSettings.value.saturate,
+  set: value => updateActivePaintSettings({ saturate: value }),
+})
 
 // Annotate
 const annotateRef = ref<InstanceType<typeof StackAnnotateCanvas> | null>(null)
-const textStyle = ref<'pill' | 'plain' | 'outline' | 'neon'>('pill')
-const annotateColor = ref('#ffffff')
+const textStyle = ref<TextStyleId>('pill')
+/**
+ * The paint the next annotation starts with — a flat color or a gradient,
+ * since a gradient is a color here and not a mode the shape is put into.
+ */
+const annotatePaint = ref<Paint>({ r: 255, g: 255, b: 255, a: 1 })
 const selectedShapeId = ref<string | null>(null)
+// The rest of the latent shape's initial conditions, sticky across shapes:
+// stroke weight, fill, the universal effect and opacity all live in the
+// sub-toolbar so a neon circle is one gesture, not draw-then-fix-three-knobs.
+const annotateStrokeWidth = ref(8)
+const annotateFillColor = ref<Paint | null>(null)
+const annotateShapeEffect = ref<'none' | 'neon'>('none')
+const annotateOpacity = ref(1)
 
 /**
  * The sub-bar names a family of tools; the ported gesture code wants the
@@ -172,9 +273,12 @@ const selectedShapeId = ref<string | null>(null)
  * one-to-one.
  */
 const annotateTool = computed<AnnotateTool>(() => {
+  // Outside the Annotate family the canvas only ever object-selects (the idle
+  // state / island pointer); inside it, `sub = null` is select — where every
+  // drawing tool lands after its one-shot creation.
+  if (family.value !== 'annotate' || !sub.value) return 'select'
   if (sub.value === 'redact') return 'redact'
   if (sub.value === 'text') return 'text'
-  if (sub.value === 'select') return 'select'
   if (sub.value === 'draw') return 'sharpie'
   if (sub.value === 'arrow') return 'arrow'
   if (sub.value === 'rectangle' || sub.value === 'ellipse' || sub.value === 'line') {
@@ -183,15 +287,26 @@ const annotateTool = computed<AnnotateTool>(() => {
   return 'arrow'
 })
 
-const annotateColorRgb = computed(() => {
-  const hex = annotateColor.value.replace('#', '')
-  return {
-    r: parseInt(hex.slice(0, 2), 16),
-    g: parseInt(hex.slice(2, 4), 16),
-    b: parseInt(hex.slice(4, 6), 16),
-    a: 1,
-  }
-})
+/**
+ * Object select is the workspace's IDLE state: with no family open and no
+ * selection tool armed, the things you can click ARE the annotations, so
+ * clicking one should just select it — no Annotate → Select → thing dance.
+ * The island's pointer lights up to say so.
+ */
+const objectSelectActive = computed(() =>
+  family.value === null && !armedSelectTool.value
+)
+
+/** The vector overlay currently owns annotation pixels and interactions. */
+const annotationOverlayActive = computed(() =>
+  family.value === 'annotate' || objectSelectActive.value
+)
+
+/** The island's pointer: leave whatever mode is open. Idle IS object select. */
+function activatePointer() {
+  disarmSelect()
+  leaveMode()
+}
 
 /** The active Annotate step's shapes, or nothing until one exists. */
 /**
@@ -207,9 +322,19 @@ const annotateOps = computed(() =>
   (stack.doc.value?.edits || []).filter(op => (op as any).exec?.kind === 'annotate')
 )
 
-/** Every annotation, in stack order — what the canvas draws and hit-tests. */
+/**
+ * The annotate ops the overlay is responsible for: the ENABLED ones.
+ *
+ * A hidden annotation is hidden everywhere. The overlay drawing it anyway left
+ * a hidden shape on screen at full strength while the composite correctly
+ * dropped it — so hiding a shape appeared to only weaken it (one of the two
+ * copies went away) instead of removing it.
+ */
+const visibleAnnotateOps = computed(() => annotateOps.value.filter(op => op.enabled))
+
+/** Every VISIBLE annotation, in stack order — what the canvas draws and hit-tests. */
 const annotateShapes = computed<Shape[]>(() =>
-  annotateOps.value.flatMap(op => ((op as any).params?.shapes ?? []) as Shape[])
+  visibleAnnotateOps.value.flatMap(op => ((op as any).params?.shapes ?? []) as Shape[])
 )
 
 function opIdForShape(shapeId: string): string | null {
@@ -235,7 +360,19 @@ const rendering = ref(false)
 const viewportSize = ref({ width: 0, height: 0 })
 const viewport = ref<HTMLElement | null>(null)
 
-const payloadCache = new Map<string, HTMLImageElement>()
+/** The image as of each step, keyed by op id — the Edits list's row previews. */
+const stepPreviews = ref<Record<string, string>>({})
+
+// Canvas snapshots can live here too. Paint rewrites a stable raster filename,
+// and the immutable in-memory snapshot is a stronger source for the revision
+// that just landed than asking WebKit to re-read an overwritten PNG.
+const payloadCache = new Map<string, CanvasImageSource>()
+
+function invalidatePayload(ref: string) {
+  for (const key of payloadCache.keys()) {
+    if (key.startsWith(`${ref}@`)) payloadCache.delete(key)
+  }
+}
 
 function loadImage(url: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -248,30 +385,86 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 }
 
 const compositor = new StackCompositor({
-  loadPayload: async (ref: string) => {
-    const cached = payloadCache.get(ref)
+  loadPayload: async (ref: string, revision = 0) => {
+    const key = `${ref}@${revision}`
+    const cached = payloadCache.get(key)
     if (cached) return cached
-    const img = await loadImage(stack.payloadUrl(ref))
-    payloadCache.set(ref, img)
+    const img = await loadImage(stack.payloadUrl(ref, revision))
+    payloadCache.set(key, img)
     return img
   },
-  loadBase: async () => loadImage(getMediaFileUrl(Number(baseInfo.value.media_id))),
+  // A flattened document supplies its own base pixels; everything else reads
+  // the revision's media.
+  loadBase: async () => {
+    const ref = stack.doc.value?.base.payload_ref
+    if (ref) return loadImage(stack.payloadUrl(ref))
+    return loadImage(getMediaFileUrl(Number(baseInfo.value.media_id)))
+  },
+  onStepPreview: (opId, preview) => {
+    // Only a render of the WHOLE document describes the steps truthfully; a
+    // stage render with the annotate overlay's shapes held out would file
+    // previews that are missing them.
+    if (!emitPreviews) return
+    stepPreviews.value = { ...stepPreviews.value, [opId]: preview }
+  },
 })
+
+/** Set only while rendering the full document — see onStepPreview. */
+let emitPreviews = true
+
+/**
+ * What the STAGE composites: the document, minus whatever a live overlay is
+ * already drawing.
+ *
+ * While the annotation overlay is mounted, its canvas draws the enabled
+ * annotations itself so they can be dragged, selected and restyled. This
+ * includes the workspace's idle object-select state. Compositing them as
+ * well drew every annotation twice — invisible for an opaque stroke, but a
+ * neon glow compounds, so what you saw while editing was stronger than what
+ * Save would write. The tool owns the layer it is editing; the stack renders
+ * everything else. Save always flattens the real document (see save()).
+ */
+const displayDoc = computed(() => {
+  const doc = stack.doc.value
+  if (!doc || !annotationOverlayActive.value) return doc
+  const drawnByOverlay = new Set(visibleAnnotateOps.value.map(op => op.id))
+  if (!drawnByOverlay.size) return doc
+  return { ...doc, edits: doc.edits.filter(op => !drawnByOverlay.has(op.id)) }
+})
+
+/** Drop previews for steps that no longer exist, so removals don't accumulate. */
+function prunePreviews() {
+  const live = new Set((stack.doc.value?.edits || []).map(op => op.id))
+  const kept: Record<string, string> = {}
+  for (const [opId, preview] of Object.entries(stepPreviews.value)) {
+    if (live.has(opId)) kept[opId] = preview
+  }
+  stepPreviews.value = kept
+}
 
 async function render() {
   // The ops watcher fires the moment open() populates the document, which is
   // before the base is assigned — without this the first render asks for the
   // base revision's media id and finds nothing.
   if (!stack.doc.value || !baseInfo.value) return
+  const doc = displayDoc.value!
+  const whole = doc === stack.doc.value
   rendering.value = true
   try {
-    composite.value = await compositor.render(stack.doc.value)
+    emitPreviews = whole
+    composite.value = await compositor.render(doc)
+    if (whole) prunePreviews()
+    // The selection lives at the head, so whatever this render did to the
+    // geometry under it (crop edits, toggles, an expand's new frame) is
+    // carried into it here — the one funnel every such change passes through.
+    syncSelectionGeometry()
     paint()
     samplePalette()
-    if (family.value === 'filters') renderFilterThumbs()
+    if (family.value === 'filters') void renderFilterThumbs()
   } catch (err: any) {
     error.value = err?.message || 'Could not render the composite.'
   } finally {
+    emitPreviews = true
     rendering.value = false
   }
 }
@@ -306,10 +499,7 @@ function paint() {
   target.height = source.height
   const ctx = target.getContext('2d')!
   ctx.clearRect(0, 0, target.width, target.height)
-  // Comparing draws the base into the composite's frame, so geometry ops do
-  // not make the two jump around while the key is held.
-  const shown = comparing.value && baseImage.value ? baseImage.value : source
-  ctx.drawImage(shown, 0, 0, target.width, target.height)
+  ctx.drawImage(source, 0, 0, target.width, target.height)
 }
 
 // -- candidates ------------------------------------------------------------
@@ -322,8 +512,18 @@ const candidates = useStackCandidates({
   onFirstCandidate: (opId, candidate) => {
     // A staged op with no pick contributes nothing, so the first arrival
     // auto-applies. Switching to another candidate afterwards is free.
+    //
+    // A RESAMPLED op always has a pick — that is what makes it a resample — so
+    // the arrival replaces it. Without this the run completes, the candidate is
+    // attached, and the canvas never changes: a paid click with no effect.
     const op = stack.opById(opId) as GenerativeOp | undefined
-    if (op && !op.picked) stack.pickCandidate(opId, candidate.id)
+    const resampled = resampledOpIds.value.has(opId)
+    if (op && (!op.picked || resampled)) stack.pickCandidate(opId, candidate.id)
+    if (resampled) {
+      const next = new Set(resampledOpIds.value)
+      next.delete(opId)
+      resampledOpIds.value = next
+    }
     void render()
   },
 })
@@ -351,12 +551,8 @@ const candidateThumbs = computed(() => {
 
 // -- derived stack state ----------------------------------------------------
 
-/** Staleness, segments and folding are DERIVED, never stored. */
+/** Staleness is DERIVED, never stored. */
 const stackState = computed(() => deriveStackState(stack.doc.value))
-
-function stalenessOf(opId: string) {
-  return stackState.value.ops.find(o => o.op.id === opId)?.staleness ?? 'clean'
-}
 
 /** Which rows the currently hovered gesture would disturb. */
 const intentOpId = ref<string | null>(null)
@@ -365,37 +561,14 @@ const preview = computed(() =>
 )
 function previewStalenessOf(opId: string) {
   if (!preview.value) return null
-  if (preview.value.hard.has(opId)) return 'hard' as const
-  if (preview.value.advisory.has(opId)) return 'advisory' as const
-  return null
-}
-
-/** Checkpoint bands fold their inputs; a stale one always shows them. */
-const expandedCheckpoints = ref<Set<string>>(new Set())
-function toggleCheckpoint(opId: string) {
-  const next = new Set(expandedCheckpoints.value)
-  next.has(opId) ? next.delete(opId) : next.add(opId)
-  expandedCheckpoints.value = next
+  return preview.value.advisory.has(opId) ? ('advisory' as const) : null
 }
 
 /**
- * Rows the list actually shows, top-first. A clean checkpoint hides the steps
- * it folds, which is what keeps the resting state short.
+ * Rows the list shows, top-first. Every step is visible: nothing folds anything
+ * any more, because nothing consumes anything.
  */
-const visibleRows = computed(() => {
-  const state = stackState.value
-  const hidden = new Set<string>()
-  for (const index of state.checkpoints) {
-    const checkpoint = state.ops[index]
-    if (!checkpoint) continue
-    const stale = checkpoint.staleness === 'hard'
-    if (stale || expandedCheckpoints.value.has(checkpoint.op.id)) continue
-    for (const row of state.ops) {
-      if (row.checkpointIndex === index) hidden.add(row.op.id)
-    }
-  }
-  return [...state.ops].reverse().filter(row => !hidden.has(row.op.id))
-})
+const visibleRows = computed(() => [...stackState.value.ops].reverse())
 
 /** A payload whose geometry has moved it entirely off the frame. */
 const outOfFrame = computed(() => {
@@ -414,96 +587,88 @@ const outOfFrame = computed(() => {
   return result
 })
 
-// -- row verbs --------------------------------------------------------------
-
-/**
- * The common ordering intents, as verbs that perform the move mechanically.
- * Expressing intent is the user's job; where the row ends up is ours.
- */
-function verbsFor(opId: string) {
-  const doc = stack.doc.value
-  if (!doc) return []
-  const index = doc.edits.findIndex(op => op.id === opId)
-  const op = doc.edits[index]
-  const lowestPatch = doc.edits.findIndex(o => o.class === 'patch')
-  const isParametric = op?.class === 'parametric' || op?.class === 'container'
-
-  return [
-    {
-      id: 'under-patches',
-      label: 'Apply under the patches',
-      disabled: lowestPatch < 0 || index < lowestPatch || !canMoveWithinSegment(doc, opId, lowestPatch),
-    },
-    {
-      id: 'on-top',
-      label: 'Apply on top',
-      disabled: index === doc.edits.length - 1 || !canMoveWithinSegment(doc, opId, doc.edits.length),
-    },
-    { id: 'limit-to-region', label: op?.region ? 'Clear the region' : 'Limit to a region…' },
-    { id: 'duplicate', label: 'Duplicate', disabled: !isParametric },
-  ]
-}
-
-async function runVerb(opId: string, verb: string) {
-  const doc = stack.doc.value
-  if (!doc) return
-  const before = JSON.parse(JSON.stringify(doc))
-
-  if (verb === 'under-patches') {
-    const target = doc.edits.findIndex(o => o.class === 'patch')
-    if (target >= 0) stack.moveOp(opId, target)
-  } else if (verb === 'on-top') {
-    stack.moveOp(opId, doc.edits.length - 1)
-  } else if (verb === 'limit-to-region') {
-    const op = stack.opById(opId)
-    if (op?.region) {
-      stack.setRegion(opId, null)
-    } else {
-      // A region is a mask like any other, so scoping an adjustment reuses the
-      // same brush the inpaint flow uses.
-      regionTargetOpId.value = opId
-      mode.value = 'inpaint'
-      return
-    }
-  } else if (verb === 'duplicate') {
-    const op = stack.opById(opId)
-    if (op) {
-      const copy = JSON.parse(JSON.stringify(op))
-      copy.id = newOpId()
-      copy.label = `${op.label} copy`
-      stack.addOp(copy, doc.edits.findIndex(o => o.id === opId) + 1)
-    }
-  }
-
-  await afterGeometryChange(before)
-  void render()
-}
-
-/** The op a brushed region will be attached to, when scoping rather than inpainting. */
-const regionTargetOpId = ref<string | null>(null)
-
 // -- reorder ----------------------------------------------------------------
 
+/**
+ * Reorder is drag, and a drag must never be a guess.
+ *
+ * The whole gesture is expressed in GAPS, not rows: a gap `g` is the boundary
+ * below edits[g] — the place the row would land. Hovering the top half of a
+ * row targets the gap above it, the bottom half the gap below it, so every
+ * pixel of the list belongs to exactly one landing place and the indicator
+ * says which. Dropping ON a row (the old behaviour) could not express "above
+ * or below", which is what made the drop feel like a coin flip.
+ *
+ * The list is drawn top-of-stack-first, so the gap ABOVE visible row i is
+ * doc index i + 1.
+ */
 const dragOpId = ref<string | null>(null)
+/** Gap the drop would land in, or null when there is no legal target. */
+const dropGap = ref<number | null>(null)
+
+/** The lowest visible row, whose bottom edge is the list's last gap. */
+const lastVisibleIndex = computed(() =>
+  visibleRows.value.length ? visibleRows.value[visibleRows.value.length - 1].index : null
+)
 
 function onDragStart(opId: string, event: DragEvent) {
   dragOpId.value = opId
   intentOpId.value = opId
   event.dataTransfer?.setData('text/plain', opId)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
 }
 
-async function onDrop(targetOpId: string) {
+function onListDragOver(event: DragEvent) {
   const doc = stack.doc.value
   const source = dragOpId.value
-  dragOpId.value = null
-  intentOpId.value = null
-  if (!doc || !source || source === targetOpId) return
+  if (!doc || !source) return
 
-  const target = doc.edits.findIndex(op => op.id === targetOpId)
-  if (target < 0 || !canMoveWithinSegment(doc, source, target)) return
+  const row = (event.target as HTMLElement | null)?.closest?.('[data-op-id]') as HTMLElement | null
+  const targetOpId = row?.dataset.opId
+  const index = targetOpId ? doc.edits.findIndex(op => op.id === targetOpId) : -1
+  if (!row || index < 0) {
+    // Over the list's padding: no landing place, so no line. A line left
+    // behind from the last row would be a lie.
+    dropGap.value = null
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+    return
+  }
+
+  const box = row.getBoundingClientRect()
+  const gap = event.clientY < box.top + box.height / 2 ? index + 1 : index
+
+  const legal = moveTargetForGap(doc, source, gap) !== null
+  dropGap.value = legal ? gap : null
+  // Say so on the cursor too: a line that simply isn't there reads as "not
+  // hovering anything", not as "this move is blocked".
+  if (event.dataTransfer) event.dataTransfer.dropEffect = legal ? 'move' : 'none'
+}
+
+/** Leaving the list entirely clears the line; moving between rows does not. */
+function onListDragLeave(event: DragEvent) {
+  const to = event.relatedTarget as Node | null
+  const list = event.currentTarget as HTMLElement
+  if (!to || !list.contains(to)) dropGap.value = null
+}
+
+function onDragEnd() {
+  dragOpId.value = null
+  dropGap.value = null
+  intentOpId.value = null
+}
+
+async function onDrop() {
+  const doc = stack.doc.value
+  const source = dragOpId.value
+  const gap = dropGap.value
+  onDragEnd()
+  if (!doc || !source || gap === null) return
+
+  const toIndex = moveTargetForGap(doc, source, gap)
+  if (toIndex === null) return
 
   const before = JSON.parse(JSON.stringify(doc))
-  stack.moveOp(source, target)
+  stack.moveOp(source, toIndex)
   await afterGeometryChange(before)
   void render()
 }
@@ -532,7 +697,6 @@ async function afterGeometryChange(before: any) {
     const refs: Array<[string, string]> = []
     if (op.mask_ref) refs.push(['mask_ref', op.mask_ref])
     if (op.raster_ref) refs.push(['raster_ref', op.raster_ref])
-    if (op.region?.mask_ref) refs.push(['region', op.region.mask_ref])
     const shapes = op.exec?.kind === 'annotate' ? op.params?.shapes : null
     if (!refs.length && !shapes?.length) continue
 
@@ -626,13 +790,10 @@ async function setEnabledWithGeometry(opId: string, enabled: boolean) {
 
 const canRun = computed(() => {
   if (!composite.value || busy.value) return false
-  if (regionTargetOpId.value) return !!effectiveMask.value
-  if (mode.value === 'inpaint') return !!effectiveMask.value && !!inpaintToolId.value
-  if (mode.value === 'whole') return !!prompt.value.trim() && !!wholeToolId.value
-  // Expand auto-masks the border it adds, and Upscale takes no prompt, so
-  // neither has anything to wait for beyond a tool.
+  if (mode.value === 'inpaint') return !!selection.value && !!inpaintToolId.value
+  // Expand auto-masks the border it adds, so it has nothing to wait for
+  // beyond a tool.
   if (mode.value === 'expand') return !!inpaintToolId.value
-  if (mode.value === 'upscale') return !!upscaleToolId.value
   return false
 })
 
@@ -650,23 +811,46 @@ const family = ref<FamilyId | null>(null)
 const sub = ref<string | null>(null)
 
 function selectFamily(id: FamilyId) {
+  // Changing modes takes the pointer back from the selection; the selection
+  // itself survives — it is workspace state, and the chips in each family's
+  // sub-bar say when it is scoping them.
+  disarmSelect()
   // Clicking the active family leaves it — entering and leaving are the same
   // gesture, and leaving with nothing drawn leaves nothing to undo.
   if (family.value === id) { leaveMode(); return }
   leaveMode()
   family.value = id
-  sub.value = familyById(id).defaultSub
+  writeToolPrefs({ family: id })
+  // Entering a family lands on the tool it was last left holding — the pick is
+  // this person's way of working, not a property of the image. It only stands
+  // while it still names one of the family's tools; the family's own default
+  // covers a renamed or removed one.
+  const spec = familyById(id)
+  sub.value =
+    rememberedIfValid(
+      rememberedSubTool(id),
+      subId => spec.subTools.some(tool => tool.id === subId && !tool.pending),
+    ) ?? spec.defaultSub
+  // Entering Annotate with a shape already selected means "work with that" —
+  // land in select mode with its handles up, not with the arrow tool armed
+  // (which hides the handles and turns the next click into a drawing).
+  if (id === 'annotate' && selectedShapeId.value) sub.value = null
   if (id === 'generate') mode.value = (sub.value as Mode) ?? null
-  // Entering an adjustment family starts a fresh session. Without this the
-  // panel kept editing whatever was selected before — so Effects showed the
-  // last filter's Amount, and Auto contrast wrote its levels into that filter's
-  // step instead of making one.
-  if (ADJUST_FAMILIES.includes(id)) {
-    adjustOpId.value = null
+  // Inpaint needs a region before it can do anything, and the brush is the
+  // natural way to make one — arm it rather than presenting a dead canvas.
+  // Paint entered with the Patch engine still up wants a selection the same way.
+  if (mode.value === 'inpaint' && !selection.value) armSelectTool('brush', true)
+  if (id === 'paint' && paintEngineId.value === 'patch' && !selection.value) {
+    armSelectTool('lasso', true)
+  }
+  // Entering an adjustment family starts fresh. Without this the panel kept
+  // editing whatever was selected before, and a subbar click would judge the
+  // wrong step for try-then-replace.
+  if (id === 'levels' || id === 'filters') {
     selectedOpId.value = null
     selectedShapeId.value = null
   }
-  if (id === 'filters') renderFilterThumbs()
+  if (id === 'filters') void renderFilterThumbs()
   if (id === 'crop') {
     // Each visit to Crop is its own step. Cropping twice is a real thing to
     // want — frame roughly, work, then tighten — and it stays non-destructive
@@ -679,79 +863,133 @@ function selectFamily(id: FamilyId) {
 }
 
 function selectSub(id: string) {
+  // Switching sub-tools is reaching for the canvas: the selection tool lets go.
+  disarmSelect()
   sub.value = id
-  if (family.value === 'generate') mode.value = id as Mode
+  if (family.value) rememberSubTool(family.value, id)
+  if (family.value === 'generate') {
+    mode.value = id as Mode
+    if (id === 'inpaint' && !selection.value) armSelectTool('brush', true)
+  }
 }
 
 /** Sub-toolbar state, flattened so the sub-bar stays a dumb renderer. */
 const subbarState = computed(() => ({
   prompt: prompt.value,
-  brushSize: brushSize.value,
   candidateCount: candidateCount.value,
   expandFactor: expandFactor.value,
-  upscaleFactor: upscaleFactor.value,
   cropAspect: cropAspect.value,
   rotation: cropParamsOf().cropRotation ?? 0,
   flipX: !!cropParamsOf().flipX,
   flipY: !!cropParamsOf().flipY,
-  combine: selectCombine.value,
-  featherPx: selectFeather.value,
-  tolerance: selectTolerance.value,
   hasSelection: !!selection.value,
   engineId: paintEngineId.value,
   paintBrush: paintBrush.value,
   paintColor: paintColorRgb.value,
   paintExposure: paintExposure.value,
   paintRange: paintRange.value,
-  paintFlow: paintFlow.value,
+  paintStrength: paintStrength.value,
   paintSaturate: paintSaturate.value,
   textStyle: textStyle.value,
-  annotateColor: annotateColor.value,
-  annotateColorRgb: annotateColorRgb.value,
+  annotatePaint: annotatePaint.value,
+  annotateStrokeWidth: annotateStrokeWidth.value,
+  annotateFillColor: annotateFillColor.value,
+  annotateShapeEffect: annotateShapeEffect.value,
+  annotateOpacity: annotateOpacity.value,
   selectedShapeId: selectedShapeId.value,
+  // With a shape selected, the sub-bar shows THAT shape's control set — the
+  // selection's status overrides the latent tool's initial conditions.
+  selectedShapeKind: selectedShape.value?.type ?? null,
   imagePalette: imagePalette.value,
-  activeFilter: (selectedFilterOp.value as any)?.params?.filter ?? 'none',
+  appliedStripIds: appliedStripIds.value,
   filterThumbs: filterThumbs.value,
-  effectKey: effectKey.value,
-  effectAmount: effectAmount.value,
 }))
 
+/**
+ * Sub-bar keys that do NOT reach for the canvas: typing a prompt or setting a
+ * factor keeps an armed selection tool armed (inpaint arms the brush and then
+ * asks for a sentence). Everything else — engines, brushes, colors, annotate
+ * styles, adjust actions — is the user picking family work up again, and the
+ * selection tool must let go.
+ */
+const SUBBAR_KEEPS_SELECT = new Set([
+  'prompt', 'candidateCount', 'expandFactor', 'clearSelection',
+])
+
 function onSubbarSet(patch: Record<string, any>) {
+  if (Object.keys(patch).some(key => !SUBBAR_KEEPS_SELECT.has(key))) disarmSelect()
   if ('prompt' in patch) prompt.value = patch.prompt
-  if ('brushSize' in patch) brushSize.value = patch.brushSize
   if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
   if ('expandFactor' in patch) expandFactor.value = patch.expandFactor
-  if ('upscaleFactor' in patch) upscaleFactor.value = patch.upscaleFactor
-  if ('combine' in patch) selectCombine.value = patch.combine
-  if ('featherPx' in patch) selectFeather.value = patch.featherPx
-  if ('tolerance' in patch) selectTolerance.value = patch.tolerance
-  if ('invertSelection' in patch) selectRef.value?.invert()
-  if ('engineId' in patch) paintEngineId.value = patch.engineId
+  if ('engineId' in patch) {
+    paintEngineId.value = patch.engineId
+    writeToolPrefs({ paintEngineId: patch.engineId })
+    // Patch works FROM a selection: picking it with nothing selected arms the
+    // lasso, the same way Inpaint arms the brush.
+    if (patch.engineId === 'patch' && !selection.value) armSelectTool('lasso', true)
+  }
   if ('paintBrush' in patch) paintBrush.value = patch.paintBrush
   if ('paintColor' in patch) paintColorRgb.value = patch.paintColor
   if ('paintExposure' in patch) paintExposure.value = patch.paintExposure
   if ('paintRange' in patch) paintRange.value = patch.paintRange
-  if ('paintFlow' in patch) paintFlow.value = patch.paintFlow
+  if ('paintStrength' in patch) paintStrength.value = patch.paintStrength
   if ('paintSaturate' in patch) paintSaturate.value = patch.paintSaturate
-  if ('textStyle' in patch) textStyle.value = patch.textStyle
-  if ('annotateColor' in patch) annotateColor.value = patch.annotateColor
-  if ('annotateColorRgb' in patch) {
-    const { r, g, b } = patch.annotateColorRgb
-    annotateColor.value =
-      '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')
+  if ('textStyle' in patch) {
+    textStyle.value = patch.textStyle
+    // Same act before or after: the strip arms the next text and, with one
+    // selected, restyles it — the inspector's preset row writes the same patch.
+    if (selectedShape.value?.type === 'text') {
+      onShapeChange(textStylePatch(patch.textStyle, {
+        glowIntensity: (selectedShape.value as any).glowIntensity,
+      }))
+    }
+  }
+  if ('annotatePaint' in patch) {
+    annotatePaint.value = patch.annotatePaint
+    if (selectedShape.value) {
+      onShapeChange(selectedShape.value.type === 'text'
+        ? { textColor: patch.annotatePaint }
+        : { strokeColor: patch.annotatePaint })
+    }
+  }
+  // The annotate strip is the latent shape's initial conditions, and — with a
+  // shape selected — a compact remote for that shape: both views bind to the
+  // same values, so setting neon before or after drawing is the same act.
+  if ('annotateStrokeWidth' in patch) {
+    annotateStrokeWidth.value = patch.annotateStrokeWidth
+    if (selectedShape.value) onShapeChange({ strokeWidth: patch.annotateStrokeWidth })
+  }
+  if ('annotateFillColor' in patch) {
+    annotateFillColor.value = patch.annotateFillColor
+    if (selectedShape.value && 'backgroundColor' in (selectedShape.value as any)) {
+      onShapeChange({ backgroundColor: patch.annotateFillColor ?? undefined })
+    }
+  }
+  if ('annotateShapeEffect' in patch) {
+    annotateShapeEffect.value = patch.annotateShapeEffect
+    if (selectedShape.value && selectedShape.value.type !== 'text') {
+      onShapeChange({
+        style: patch.annotateShapeEffect === 'none'
+          ? undefined
+          : { effect: patch.annotateShapeEffect, glowIntensity: 70 },
+      })
+    }
+  }
+  if ('annotateOpacity' in patch) {
+    annotateOpacity.value = patch.annotateOpacity
+    if (selectedShape.value) onShapeChange({ opacity: patch.annotateOpacity })
   }
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('auto' in patch) runAuto(patch.auto)
-  if ('applyFilter' in patch) applyFilter(patch.applyFilter)
-  if ('effectKey' in patch) effectKey.value = patch.effectKey
-  if ('effectAmount' in patch) setEffectAmount(patch.effectAmount)
+  if ('applyFilter' in patch) applyStripEntry(patch.applyFilter)
+  if ('addLevel' in patch) void addLevelEdit(patch.addLevel)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   // Straighten and the lollipop are the same control: the crop window's tilt.
   if ('rotation' in patch) void applyCropChange({ cropRotation: patch.rotation })
   if ('rotateQuarter' in patch) rotateQuarter()
   if ('flipX' in patch) void applyCropChange({ flipX: patch.flipX })
   if ('flipY' in patch) void applyCropChange({ flipY: patch.flipY })
-  if ('clearSelection' in patch) { selectRef.value?.clear(); selection.value = null }
+  if ('clearSelection' in patch) clearSelection()
   if ('newLayer' in patch) startNewPaintLayer()
 }
 
@@ -760,17 +998,13 @@ function onSubbarSet(patch: Record<string, any>) {
  * Only where the toolbar cannot speak for itself.
  *
  * A hint that narrates what the controls already show is noise — the tools are
- * the explanation. What survives is the one case where the app is WAITING for
- * something the user cannot see: a region brush, and the Generate sub-tools
- * whose cost and effect are not visible until they run.
+ * the explanation. What survives is the Generate sub-tools, whose cost and
+ * effect are not visible until they run.
  */
 const subbarHint = computed(() => {
-  if (regionTargetOpId.value) return 'Brush the area to limit that edit to'
   if (family.value === 'generate') {
-    if (sub.value === 'inpaint') return 'Paint the area, then Run · Esc leaves'
-    if (sub.value === 'whole') return 'Creates a checkpoint · everything below feeds it'
+    if (sub.value === 'inpaint') return 'Select the area, then Run · Esc leaves'
     if (sub.value === 'expand') return 'Grows the canvas · the new border is auto-masked'
-    if (sub.value === 'upscale') return 'Creates a checkpoint · output continues at the new size'
   }
   return null
 })
@@ -784,11 +1018,7 @@ function toolNameFor(op: any): string {
 }
 
 /** The catalog tool that will run the active Generate sub-tool. */
-const activeToolId = computed(() => {
-  if (sub.value === 'upscale') return upscaleToolId.value
-  if (sub.value === 'whole') return wholeToolId.value
-  return inpaintToolId.value
-})
+const activeToolId = computed(() => inpaintToolId.value)
 const activeToolLabel = computed(() => {
   const tool = tools.value.find(t => t.full_tool_id === activeToolId.value)
   return tool ? tool.name : null
@@ -797,31 +1027,11 @@ const activeToolLabel = computed(() => {
 async function run() {
   if (!canRun.value || !stack.doc.value || !composite.value) return
 
-  // A brushed region scopes an existing step rather than creating one.
-  if (regionTargetOpId.value && effectiveMask.value) {
-    const targetId = regionTargetOpId.value
-    const ref = await stack.uploadPayload(
-      `${targetId}-region.png`, await canvasToBlob(effectiveMask.value)
-    )
-    const targetIndex = stack.doc.value?.edits.findIndex(o => o.id === targetId) ?? 0
-    stack.setParams(targetId, {})
-    ;(stack.opById(targetId) as any).payload_frame = payloadFrame(targetIndex)
-    stack.setRegion(targetId, { mask_ref: ref, feather_px: selectFeather.value, invert: false })
-    regionTargetOpId.value = null
-    mode.value = null
-    maskCanvas.value = null
-    maskRef.value?.clear()
-    void render()
-    return
-  }
-
   busy.value = true
   error.value = null
   try {
-    const isPatch = mode.value === 'inpaint' || mode.value === 'expand'
-    const toolId = mode.value === 'upscale'
-      ? upscaleToolId.value!
-      : isPatch ? inpaintToolId.value! : wholeToolId.value!
+    // Every generative step is a patch, so there is one tool to find.
+    const toolId = inpaintToolId.value!
     const tool = tools.value.find(t => t.full_tool_id === toolId)
     if (!tool) throw new Error('That tool is no longer in the catalog.')
 
@@ -831,37 +1041,39 @@ async function run() {
 
     const opId = newOpId()
 
+    // What a tool is given is the real head composite, not the stage: the
+    // stage can be holding a layer out while an overlay draws it (see
+    // displayDoc), and a model must never be handed pixels the document does
+    // not have.
+    const headComposite = await compositor.render(stack.doc.value)
+
     // Expand grows the frame and auto-masks the border it added — the same
     // extend-pad invariant the prep flow uses — then fills it like any patch.
-    let submitInput = composite.value
-    let submitMask = isPatch ? (maskCanvas.value || selectionAsMask()) : null
+    let submitInput = headComposite
+    let submitMask = selectionAsMask()
     if (mode.value === 'expand') {
-      const grown = growCanvas(composite.value, expandFactor.value)
+      const grown = growCanvas(headComposite, expandFactor.value)
       submitInput = grown.image
       submitMask = grown.borderMask
     }
+    if (!submitMask) throw new Error('There is nothing selected to work on.')
 
-    let maskPayloadRef: string | undefined
-    if (isPatch && submitMask) {
-      maskPayloadRef = await stack.uploadPayload(
-        `${opId}-mask.png`, await canvasToBlob(submitMask)
-      )
-    }
+    const maskPayloadRef = await stack.uploadPayload(
+      `${opId}-mask.png`, await canvasToBlob(submitMask)
+    )
 
-    const label =
-      mode.value === 'upscale' ? 'Upscale'
-      : mode.value === 'expand' ? 'Expand'
-      : isPatch ? `Inpaint${prompt.value.trim() ? ` — ${prompt.value.trim()}` : ''}`
-      : `Edit — ${prompt.value.trim()}`
+    const label = mode.value === 'expand'
+      ? 'Expand'
+      : `Inpaint${prompt.value.trim() ? ` — ${prompt.value.trim()}` : ''}`
 
     const op: GenerativeOp = {
       id: opId,
-      class: isPatch ? 'patch' : 'whole',
+      class: 'patch',
       enabled: true,
       label,
       exec: { kind: 'tool', tool_id: toolId, task_type: tool.task_type },
       params: { prompt: prompt.value },
-      ...(maskPayloadRef ? { mask_ref: maskPayloadRef } : {}),
+      mask_ref: maskPayloadRef,
       // The mask, and the candidates generated for it, are anchored to the
       // frame they were made in.
       payload_frame: payloadFrame(),
@@ -882,10 +1094,11 @@ async function run() {
       sampledInputHash: head,
     })
 
-    // Leaving the mode clears the brush: the step now owns that mask.
+    // An inpaint consumes its selection: the step now owns that mask, and
+    // ants marching over a submitted patch would claim otherwise. Expand masks
+    // the border it added instead, so whatever is selected stays.
+    if (mode.value === 'inpaint') clearSelection()
     mode.value = null
-    maskCanvas.value = null
-    maskRef.value?.clear()
     prompt.value = ''
   } catch (err: any) {
     error.value = apiErrorMessage(err, 'Could not start the edit.')
@@ -897,12 +1110,20 @@ async function run() {
 /**
  * Re-run a generative step against its CURRENT input.
  *
- * Patch rows resample, checkpoints regenerate — the same mechanism, named for
- * what each costs the user's mental model. Old candidates are kept and marked
- * as sampled from a previous state: switching back to one is free and restores
- * the prior look, which is what makes a regeneration safe to try.
+ * Old candidates are kept: switching back to one is free and restores the prior
+ * look, which is what makes a resample safe to try.
+ *
+ * Two things this must NOT do, both of which it once did. It must not report
+ * itself finished when the job is merely submitted — the work is the job, and a
+ * spinner that stops at submission says "done, and nothing happened". And its
+ * result must not be discarded because the step already has a pick: a resample
+ * by definition targets a picked step, so the arriving candidate has to replace
+ * that pick or the run cost money and changed nothing.
  */
-const resamplingOpId = ref<string | null>(null)
+const resampledOpIds = ref<Set<string>>(new Set())
+
+/** Steps with a live job, whichever way it was started. */
+const runningOpIds = computed(() => new Set(Object.keys(pendingByOp.value)))
 
 async function resample(opId: string) {
   const doc = stack.doc.value
@@ -916,21 +1137,26 @@ async function resample(opId: string) {
     error.value = 'That tool is no longer in the catalog.'
     return
   }
+  const maskRef = (op as any).mask_ref
+  if (!maskRef) {
+    error.value = 'That step has no mask to resample through.'
+    return
+  }
 
-  resamplingOpId.value = opId
   error.value = null
   try {
     // The op's input composite, not the head: a step re-samples against what it
     // actually sits on.
     const inputCanvas = await compositor.renderUpTo(doc, index)
-    let mask: HTMLCanvasElement | null = null
-    if (op.class === 'patch' && (op as any).mask_ref) {
-      const image = await loadImage(stack.payloadUrl((op as any).mask_ref))
-      mask = document.createElement('canvas')
-      mask.width = inputCanvas.width
-      mask.height = inputCanvas.height
-      mask.getContext('2d')!.drawImage(image, 0, 0, mask.width, mask.height)
-    }
+    const image = await loadImage(stack.payloadUrl(maskRef))
+    const mask = document.createElement('canvas')
+    mask.width = inputCanvas.width
+    mask.height = inputCanvas.height
+    mask.getContext('2d')!.drawImage(image, 0, 0, mask.width, mask.height)
+
+    // Marked BEFORE the submit: the first candidate back auto-applies, which is
+    // the only way the click has a visible result.
+    resampledOpIds.value = new Set(resampledOpIds.value).add(opId)
     await candidates.submit({
       opId,
       tool,
@@ -941,9 +1167,10 @@ async function resample(opId: string) {
       sampledInputHash: inputHash,
     })
   } catch (err: any) {
+    const next = new Set(resampledOpIds.value)
+    next.delete(opId)
+    resampledOpIds.value = next
     error.value = apiErrorMessage(err, 'Could not resample.')
-  } finally {
-    resamplingOpId.value = null
   }
 }
 
@@ -978,33 +1205,51 @@ function growCanvas(source: HTMLCanvasElement, factor: number) {
 // -- adjust ----------------------------------------------------------------
 
 /**
- * The Adjust step this session is editing. One step per mode session: entering
- * Adjust and moving a slider creates it, and every further move edits that
- * same step rather than stacking one per slider.
+ * Fine-grained adjust steps, one rule for both doorways: every entry in the
+ * Levels and Filters sub-toolbars is an ADD. Clicking it creates its own
+ * focused step — a Tone, a Tint, a Portra 400, a VHS — and the step's
+ * controls live in its Properties. There is no session step and no latent
+ * state: the click IS the creating gesture.
+ *
+ * Try-then-replace: a step that is still exactly as the click created it is
+ * replaced when another entry is clicked, so paging through looks does not
+ * leave a trail. Touch any of its properties and it sticks.
  */
-const adjustOpId = ref<string | null>(null)
+const pristineSnapshots = new Map<string, string>()
 
-const adjustParams = computed<Record<string, any>>(() => {
-  const op = adjustOpId.value ? stack.opById(adjustOpId.value) : null
-  return (op as any)?.params || {}
-})
+function snapshotPristine(opId: string) {
+  const op = stack.opById(opId) as any
+  pristineSnapshots.set(opId, JSON.stringify(op?.params ?? {}))
+}
 
-function onAdjustChange(patch: Record<string, any>, coalesceKey: string) {
-  if (!stack.doc.value) return
-  if (!adjustOpId.value) {
-    const opId = newOpId()
-    stack.addOp({
-      id: opId, class: 'parametric', enabled: true,
-      label: adjustLabel(patch), exec: { kind: 'adjust' }, params: patch,
-    } as any)
-    adjustOpId.value = opId
-    selectedOpId.value = opId
-  } else {
-    stack.setParams(adjustOpId.value, patch, coalesceKey)
-    const op = stack.opById(adjustOpId.value)
-    if (op) stack.setLabel(adjustOpId.value, adjustLabel((op as any).params || {}))
-  }
+async function replaceIfPristine() {
+  const id = selectedOpId.value
+  if (!id) return
+  const snap = pristineSnapshots.get(id)
+  if (snap === undefined) return
+  const op = stack.opById(id) as any
+  pristineSnapshots.delete(id)
+  if (!op || JSON.stringify(op.params ?? {}) !== snap) return
+  await removeOpWithGeometry(id)
+}
+
+function addAdjustOp(label: string, params: Record<string, any>) {
+  const opId = newOpId()
+  stack.addOp({
+    id: opId, class: 'parametric', enabled: true,
+    label, exec: { kind: 'adjust' }, params,
+  } as any)
+  selectedOpId.value = opId
+  snapshotPristine(opId)
   void render()
+}
+
+/** Tone, Detail or Tint, from the Levels bar. */
+async function addLevelEdit(id: string) {
+  const edit = levelEditById(id)
+  if (!edit) return
+  await replaceIfPristine()
+  addAdjustOp(edit.label, { section: edit.id, ...(edit.seed ?? {}) })
 }
 
 /**
@@ -1017,30 +1262,18 @@ const selectedAdjustOp = computed(() => {
 })
 
 /**
- * The inspector shows for a selected Adjust row, and also whenever the Adjust
- * family is open with nothing selected — otherwise the FIRST Adjust step could
- * never be created, since there would be no row to select to get its controls.
- */
-const ADJUST_FAMILIES: FamilyId[] = ['levels', 'filters', 'effects']
-const adjustFamily = computed<AdjustFamily | null>(() =>
-  ADJUST_FAMILIES.includes(family.value as FamilyId) ? (family.value as AdjustFamily) : null
-)
-
-/**
- * What the properties panel is showing.
- *
- * The SELECTED STEP decides, and only when nothing is selected does the open
- * family get to. Before this the annotation panel simply won on a v-if, so
- * selecting a rectangle and then opening Effects left the rectangle's
- * properties on screen and made Effects look like it had none — and with the
- * Levels sliders living in this panel, an unreachable panel meant an
- * unreachable family.
+ * What the properties panel is showing: the selected step decides, and with
+ * nothing selected there is nothing to show — the sub-toolbars are the door
+ * to a first step now, not the inspector.
  */
 const inspectorKind = computed<'annotation' | 'adjust' | null>(() => {
+  // Properties belongs to a selected STEP, so it follows the Edits panel. The
+  // Output panel carries its own controls and would otherwise be sharing the
+  // sidebar with a second, unrelated control surface.
+  if (sidebarTab.value !== 'edits') return null
   const op = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
   if (op?.exec?.kind === 'annotate') return 'annotation'
   if (op?.exec?.kind === 'adjust') return 'adjust'
-  if (adjustFamily.value) return 'adjust'
   return null
 })
 
@@ -1062,10 +1295,27 @@ const showsAdjustInspector = computed(() => inspectorKind.value === 'adjust')
  * distinguishable by looking.
  */
 const filterThumbs = ref<Record<string, string>>({})
-const FILTER_THUMB = 40
+const FILTER_THUMB = 128
 
-function renderFilterThumbs() {
-  const source = composite.value
+async function renderFilterThumbs() {
+  // The strip previews what a click DOES. With a still-pristine step selected
+  // a click replaces it, so the tiles render off the composite WITHOUT that
+  // step — otherwise every preview shows a stack that will never happen.
+  // Cheap: the composite below the top op is already in the compositor cache.
+  let source = composite.value
+  const selected = selectedOpId.value
+  if (selected && pristineSnapshots.has(selected) && stack.doc.value) {
+    const op = stack.opById(selected) as any
+    if (
+      op?.exec?.kind === 'adjust' &&
+      JSON.stringify(op.params ?? {}) === pristineSnapshots.get(selected)
+    ) {
+      source = await compositor.render({
+        ...stack.doc.value,
+        edits: stack.doc.value.edits.filter(edit => edit.id !== selected),
+      })
+    }
+  }
   if (!source?.width) return
 
   const base = document.createElement('canvas')
@@ -1087,113 +1337,72 @@ function renderFilterThumbs() {
   const tileCtx = tile.getContext('2d')!
   const out: Record<string, string> = {}
   for (const preset of FILTER_STRIP) {
-    const matrix = (FILTER_MATRICES as any)[preset.id]
     const copy = new ImageData(new Uint8ClampedArray(pixels.data), FILTER_THUMB, FILTER_THUMB)
-    tileCtx.putImageData(matrix ? applyColorMatrix(copy, matrix) : copy, 0, 0)
+    if (preset.effect) {
+      // A pixel look previews through the real effects pipeline, at the value
+      // a click would add — the tile shows what the button DOES.
+      tileCtx.putImageData(copy, 0, 0)
+      const looked = applyEffects(tile, { [preset.effect.key]: preset.effect.add })
+      if (looked !== tile) tileCtx.drawImage(looked, 0, 0, FILTER_THUMB, FILTER_THUMB)
+    } else {
+      const matrix = (FILTER_MATRICES as any)[preset.id]
+      tileCtx.putImageData(matrix ? applyColorMatrix(copy, matrix) : copy, 0, 0)
+    }
     out[preset.id] = tile.toDataURL()
   }
   filterThumbs.value = out
 }
 
-/** Which effect the sub-toolbar is holding. Chosen, not yet applied. */
-const effectKey = ref('vignette')
+/**
+ * The step a strip entry created, if one is on. Single-purpose steps only —
+ * a migrated blob that happens to carry the same param must never be matched,
+ * or clicking VHS in the strip would delete a whole legacy adjustment.
+ */
+function stripOpFor(entry: StripEntry): any | null {
+  return (stack.doc.value?.edits || []).find(op => {
+    const anyOp = op as any
+    if (anyOp.exec?.kind !== 'adjust') return false
+    const params = anyOp.params || {}
+    const keys = Object.keys(params)
+    if (entry.effect) {
+      return keys.length === 1 && keys[0] === entry.effect.key
+    }
+    return params.filter === entry.id
+      && keys.every(key => key === 'filter' || key === 'filterAmount')
+  }) ?? null
+}
+
+/** What the strip highlights: entries whose step is on. */
+const appliedStripIds = computed(() =>
+  FILTER_STRIP.filter(entry => stripOpFor(entry)?.enabled).map(entry => entry.id)
+)
 
 /**
- * Moving the slider is what makes the step.
- *
- * Picking an effect costs nothing — you can page through the list looking for
- * the one you meant without leaving a trail of empty steps. One Effects step
- * holds whatever effects are on, because they are one pass of the same
- * pipeline in a fixed order, and it names itself after them: Halftone, then
- * Halftone · Grain. Dragging back to zero takes the effect off, and the step
- * goes with the last one.
+ * Picking from the strip IS applying it. A color-matrix preset makes a step
+ * whose property is Amount; a pixel look (VHS, Glow…) makes a step carrying
+ * that one effect param. Clicking the applied entry takes it off again, which
+ * is the only sensible meaning for pressing a pressed button.
  */
-function setEffectAmount(value: number) {
-  const control = adjustControl(effectKey.value)
-  if (!control) return
-  const existing = selectedEffectsOp.value as any
-
-  if (!existing) {
-    if (value === control.default) return
-    const opId = newOpId()
-    stack.addOp({
-      id: opId, class: 'parametric', enabled: true,
-      label: adjustLabel({ [effectKey.value]: value }),
-      exec: { kind: 'adjust' },
-      params: { [effectKey.value]: value },
-    } as any)
-    selectedOpId.value = opId
-    adjustOpId.value = opId
-    void render()
-    return
-  }
-
-  const params = { ...(existing.params || {}), [effectKey.value]: value }
-  const stillOn = EFFECT_CONTROLS.some(c => (params[c.key] ?? c.default) !== c.default)
-  if (!stillOn) {
+function applyStripEntry(id: string) {
+  const entry = stripEntryById(id)
+  if (!entry) return
+  const existing = stripOpFor(entry)
+  if (existing) {
+    pristineSnapshots.delete(existing.id)
     void removeOpWithGeometry(existing.id)
     return
   }
-  stack.setParams(existing.id, { [effectKey.value]: value }, `adjust:effect:${effectKey.value}`)
-  stack.setLabel(existing.id, adjustLabel(params))
-  selectedOpId.value = existing.id
-  adjustOpId.value = existing.id
-  void render()
+  void (async () => {
+    await replaceIfPristine()
+    if (entry.effect) addAdjustOp(entry.label, { [entry.effect.key]: entry.effect.add })
+    else addAdjustOp(entry.label, { filter: entry.id, filterAmount: 100 })
+  })()
 }
-
-const EFFECT_CONTROLS = ADJUST_SECTIONS
-  .filter(section => section.family === 'effects')
-  .flatMap(section => section.controls)
-
-/** The Effects step this family is editing — the selected one, or the topmost. */
-const selectedEffectsOp = computed(() => {
-  const carries = (op: any) =>
-    EFFECT_CONTROLS.some(c => (op?.params?.[c.key] ?? c.default) !== c.default)
-  const selected = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
-  if (selected && carries(selected)) return selected
-  return [...(stack.doc.value?.edits || [])].reverse().find(carries) ?? null
-})
-
-/** What the bar's slider reads: this effect's value on the step being edited. */
-const effectAmount = computed(() => {
-  const control = adjustControl(effectKey.value)
-  const params = (selectedEffectsOp.value as any)?.params || {}
-  return params[effectKey.value] ?? control?.default ?? 0
-})
-
-function applyFilter(id: string) {
-  const current = selectedFilterOp.value
-  if (current && (current as any).params?.filter === id) {
-    void removeOpWithGeometry(current.id)
-    return
-  }
-  if (id === 'none') {
-    if (current) void removeOpWithGeometry(current.id)
-    return
-  }
-  const opId = newOpId()
-  stack.addOp({
-    id: opId, class: 'parametric', enabled: true,
-    label: FILTER_LABELS.get(id) ?? 'Filter',
-    exec: { kind: 'adjust' },
-    params: { filter: id, filterAmount: 100 },
-  } as any)
-  selectedOpId.value = opId
-  adjustOpId.value = opId
-  void render()
-}
-
-/** The filter step this family is looking at — the topmost one. */
-const selectedFilterOp = computed(() => {
-  const selected = selectedOpId.value ? (stack.opById(selectedOpId.value) as any) : null
-  if (selected?.params?.filter) return selected
-  return [...(stack.doc.value?.edits || [])].reverse().find(op => (op as any).params?.filter) ?? null
-})
 
 /**
- * The three Auto buttons from the old Levels panel. They read the histogram of
- * the image BELOW the step and propose slider values — nothing is baked, so an
- * auto result is a normal adjustable step.
+ * The Autos: each reads the histogram of the composite and lands as a normal
+ * Tone step seeded with the values it chose — inspectable, adjustable and
+ * deletable like anything else.
  */
 function runAuto(kind: 'levels' | 'contrast' | 'balance') {
   const source = composite.value
@@ -1201,22 +1410,45 @@ function runAuto(kind: 'levels' | 'contrast' | 'balance') {
     : kind === 'contrast' ? autoContrast(source)
     : autoBalance(source)
   // An auto that computes no change makes no step. The histogram is already
-  // where it wants it, and a row that says 'Adjust' and does nothing is worse
-  // than no row at all.
+  // where it wants it, and a row that does nothing is worse than no row.
   if (!patch || Object.values(patch).every(value => value === 0)) return
-  if (selectedAdjustOp.value) adjustOpId.value = selectedAdjustOp.value.id
-  onAdjustChange(patch, `adjust:auto:${kind}`)
+  const label = AUTO_EDITS.find(auto => auto.id === kind)?.label ?? 'Auto'
+  void (async () => {
+    await replaceIfPristine()
+    addAdjustOp(label, { section: 'tone', ...patch })
+  })()
 }
 
 const adjustInspectorParams = computed<Record<string, any>>(
-  () => (selectedAdjustOp.value as any)?.params || adjustParams.value
+  () => (selectedAdjustOp.value as any)?.params || {}
 )
 
 function onAdjustInspectorChange(patch: Record<string, any>, coalesceKey: string) {
-  // Selecting a row re-enters THAT step; with nothing selected the session's
-  // own step is created on the first move and edited thereafter.
-  if (selectedAdjustOp.value) adjustOpId.value = selectedAdjustOp.value.id
-  onAdjustChange(patch, coalesceKey)
+  const op = selectedAdjustOp.value as any
+  if (!op) return
+  // Touching a step's properties is the substantive change that makes it
+  // stick: the next strip or Levels click stacks rather than replaces.
+  pristineSnapshots.delete(op.id)
+  stack.setParams(op.id, patch, coalesceKey)
+  // Migrated blob steps rename by content; fine-grained steps keep the name
+  // they were born with.
+  const updated = (stack.opById(op.id) as any)?.params || {}
+  if (isLegacyAdjustBlob(updated)) stack.setLabel(op.id, adjustLabel(updated))
+  void render()
+}
+
+/**
+ * A step from before the fine-grained split: no section marker, not a strip
+ * step. Its inspector shows the full legacy surface, and its label tracks its
+ * content because nothing else names it.
+ */
+function isLegacyAdjustBlob(params: Record<string, any>): boolean {
+  if (!params || params.section) return false
+  const keys = Object.keys(params)
+  if (keys.length && keys.every(key => key === 'filter' || key === 'filterAmount')) return false
+  const look = effectLookOf(params)
+  if (look && keys.length === 1) return false
+  return true
 }
 
 // -- crop ---------------------------------------------------------------------
@@ -1337,8 +1569,158 @@ function onShapeChange(patch: Record<string, any>) {
   annotateGesture.value += 1
 }
 
+// -- the selected annotation AS an object ------------------------------------
+
 /**
- * Colours sampled off the composite, so the pickers can offer the image's own
+ * The floating strip carries the verbs that are about the annotation as an
+ * object — where it sits in the pile, another one of it, no more of it — while
+ * the inspector carries its properties. Both are needed: a strip that also
+ * held settings would be a second inspector, and an inspector alone puts the
+ * object's own verbs across the screen from the object.
+ *
+ * It hides while a text session owns the caret, along with the handles: during
+ * editing the shape is a text field, and chrome sitting over it is in the way.
+ * It hides during a gesture too — a move publishes nothing until the mouse
+ * comes up, so a strip positioned from the document would sit where the shape
+ * was grabbed and then jump to catch up.
+ */
+const annotationIslandVisible = computed(() =>
+  !!selectedShape.value &&
+  annotationOverlayActive.value &&
+  !annotateRef.value?.editingText &&
+  !annotateRef.value?.gestureActive
+)
+
+/** The frame the shapes are normalized against. */
+const frameSize = computed(() => {
+  const source = composite.value
+  if (source) return { width: source.width, height: source.height }
+  const canvas = stack.doc.value?.canvas
+  return canvas ? { width: canvas.width, height: canvas.height } : null
+})
+
+/**
+ * An annotation's z-order IS its position in the stack — the ops composite
+ * bottom-up, so front and back mean "past my neighbours", not a field on the
+ * shape.
+ *
+ * Only annotations count as neighbours, and they are looked for across the
+ * whole list: no row pins order any more, so there is no segment to stay in.
+ */
+function annotationPeers(): { opId: string; from: number; first: number; last: number } | null {
+  const doc = stack.doc.value
+  const shapeId = selectedShapeId.value
+  const opId = shapeId ? opIdForShape(shapeId) : null
+  if (!doc || !opId) return null
+
+  const from = doc.edits.findIndex(op => op.id === opId)
+  if (from < 0) return null
+
+  const peers: number[] = []
+  for (let i = 0; i < doc.edits.length; i++) {
+    if (i !== from && (doc.edits[i] as any).exec?.kind === 'annotate') peers.push(i)
+  }
+  if (!peers.length) return null
+  return { opId, from, first: peers[0], last: peers[peers.length - 1] }
+}
+
+const canBringAnnotationToFront = computed(() => {
+  const peers = annotationPeers()
+  return !!peers && peers.last > peers.from
+})
+
+const canSendAnnotationToBack = computed(() => {
+  const peers = annotationPeers()
+  return !!peers && peers.first < peers.from
+})
+
+/**
+ * Restack the annotation past its neighbours. Routed through the same
+ * post-move path as a dragged row — the move cannot change geometry, but the
+ * stack is the stack, and one path that co-transforms and re-renders is better
+ * than a second that assumes it never has to.
+ */
+async function moveAnnotation(direction: 'front' | 'back') {
+  const doc = stack.doc.value
+  const peers = annotationPeers()
+  if (!doc || !peers) return
+
+  const target = direction === 'front' ? peers.last : peers.first
+  if (direction === 'front' ? target <= peers.from : target >= peers.from) return
+
+  const before = JSON.parse(JSON.stringify(doc))
+  stack.moveOp(peers.opId, target)
+  await afterGeometryChange(before)
+  void render()
+}
+
+/**
+ * A copy of the selected annotation, offset so it reads as its own object.
+ *
+ * The offset goes through the geometry transformer rather than nudging x and
+ * y: a brush path and a curved arrow keep their geometry in point arrays, and
+ * moving a shape's anchor while its points stay put tears it in half.
+ */
+function duplicateAnnotation() {
+  const shape = selectedShape.value
+  const frame = frameSize.value
+  if (!shape || !frame) return
+
+  const [clone] = transformShapes(
+    // Shapes are pure JSON; a round trip both detaches the reactive proxy and
+    // deep-copies the colors and style nested inside.
+    [JSON.parse(JSON.stringify(shape))],
+    [1, 0, 0, 1, 0.02 * frame.width, 0.02 * frame.height],
+    frame.width, frame.height, frame.width, frame.height
+  ) as Shape[]
+  clone.id = generateShapeId()
+
+  // One annotation, one step: handing the whole list back makes the copy a
+  // step of its own at the top of the stack, exactly like drawing it would.
+  onAnnotationsChange([...annotateShapes.value, clone])
+  annotateGesture.value += 1
+  selectedShapeId.value = clone.id
+}
+
+/** Put the caret in the selected text shape without hunting for a double-click. */
+function editSelectedText() {
+  const id = selectedShapeId.value
+  if (id) annotateRef.value?.editText(id)
+}
+
+/**
+ * Delete through the op, not the canvas: one shape is one step, so removing
+ * the step IS the deletion — the same path the Delete key takes.
+ */
+function deleteSelectedAnnotation() {
+  const id = selectedShapeId.value
+  const opId = id ? opIdForShape(id) : null
+  selectedShapeId.value = null
+  if (opId) void removeOpWithGeometry(opId)
+}
+
+/**
+ * Selecting a shape overrides the toolbar with THAT shape's status. The same
+ * controls are a remote for the selection while one exists and initial
+ * conditions when none does — showing next-shape defaults over a selected
+ * shape made the toolbar lie about the thing with handles on it.
+ */
+watch(selectedShape, shape => {
+  if (!shape) return
+  const any = shape as any
+  const stroke = any.strokeColor ?? any.textColor
+  // Paint and all: the next shape inherits the selected one's gradient the
+  // same way it inherits its color, because they are the same slot.
+  if (stroke) annotatePaint.value = stroke
+  if (typeof any.strokeWidth === 'number') annotateStrokeWidth.value = any.strokeWidth
+  if ('backgroundColor' in any) annotateFillColor.value = any.backgroundColor ?? null
+  annotateShapeEffect.value = any.style?.effect ?? 'none'
+  if (shape.type === 'text') textStyle.value = textStyleOfShape(any)
+  if (typeof any.opacity === 'number') annotateOpacity.value = any.opacity
+})
+
+/**
+ * Colors sampled off the composite, so the pickers can offer the image's own
  * palette rather than only a fixed row of swatches.
  */
 /**
@@ -1407,7 +1789,7 @@ function samplePalette() {
   ctx.drawImage(source, 0, 0, 48, 48)
   const data = ctx.getImageData(0, 0, 48, 48).data
   // Coarse quantisation, most-common first: enough to surface the picture's
-  // actual colours without pretending to be a clustering algorithm.
+  // actual colors without pretending to be a clustering algorithm.
   const buckets = new Map<string, { r: number; g: number; b: number; n: number }>()
   for (let i = 0; i < data.length; i += 4) {
     if (data[i + 3] < 128) continue
@@ -1470,19 +1852,26 @@ function flip(axis: 'flipX' | 'flipY') {
  * "New layer" simply forgets the current one and the next stroke creates the
  * next Paint row.
  */
-async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
+let paintStrokeCommitQueue: Promise<void> = Promise.resolve()
+
+async function commitPaintStroke(
+  layer: HTMLCanvasElement,
+  readsPixels: boolean,
+  revision: number,
+  opId: string,
+) {
   if (!stack.doc.value) return
-  const opId = paintOpId.value || newOpId()
   const blob = await canvasToBlob(layer)
   const ref = await stack.uploadPayload(`${opId}-layer.png`, blob)
+  let payloadRevision = 0
 
-  if (!paintOpId.value) {
+  if (!stack.opById(opId)) {
     const { head } = stackHashes(stack.doc.value)
     stack.addOp({
       id: opId,
       class: 'container',
       enabled: true,
-      label: readsPixels ? 'Retouch' : 'Paint',
+      label: 'Retouch',
       exec: { kind: readsPixels ? 'retouch' : 'paint' },
       raster_ref: ref,
       payload_frame: payloadFrame(),
@@ -1491,19 +1880,45 @@ async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
       // an advisory hash exactly like a generative patch.
       ...(readsPixels ? { sampled_input_hash: head } : {}),
     } as any)
-    paintOpId.value = opId
-    selectedOpId.value = opId
+    if (paintOpId.value === opId) selectedOpId.value = opId
   } else {
     // The payload changed under the same ref; nudge the cache so the composite
     // picks it up.
-    payloadCache.delete(ref)
+    invalidatePayload(ref)
     stack.touchOp(opId)
+    payloadRevision = (stack.opById(opId) as any)?._revision ?? 0
   }
+  // The preview may only hand off after the compositor has rendered THIS
+  // snapshot. Keeping it under the same ref@revision key loadAnchored requests
+  // removes the stable-filename/browser-cache race entirely.
+  payloadCache.set(`${ref}@${payloadRevision}`, layer)
   // The composite owns the stroke from here; the overlay handing off rather
   // than keeping a copy is what stops the halo and the paint that outlived
   // its own step being switched off.
   await render()
-  paintRef.value?.clearDisplay()
+  if (paintOpId.value === opId) paintRef.value?.clearDisplay(revision)
+}
+
+/**
+ * Pointer-up must stay cheap and synchronous: take the already-snapshotted
+ * layer and queue its persistence. Serializing commits prevents two encodes
+ * and uploads to the same raster_ref from finishing in reverse order.
+ */
+function onPaintStroke(
+  layer: HTMLCanvasElement,
+  readsPixels: boolean,
+  revision: number,
+) {
+  // Reserve the step synchronously so another stroke emitted before the first
+  // upload completes still targets this same layer.
+  const opId = paintOpId.value || newOpId()
+  paintOpId.value = opId
+  paintStrokeCommitQueue = paintStrokeCommitQueue
+    .then(() => commitPaintStroke(layer, readsPixels, revision, opId))
+    .catch(err => {
+      console.error('[imageStack] paint stroke commit failed', err)
+      error.value = apiErrorMessage(err, 'Could not apply the paint stroke.')
+    })
 }
 
 /**
@@ -1513,6 +1928,8 @@ async function onPaintStroke(layer: HTMLCanvasElement, readsPixels: boolean) {
  * crop a deliberate act rather than the only thing you can do.
  */
 function enterContainerOp(op: any) {
+  // Re-entering a step is canvas work: the selection tool lets the pointer go.
+  disarmSelect()
   if (op.exec?.kind === 'crop') {
     family.value = 'crop'
     sub.value = null
@@ -1525,7 +1942,7 @@ function enterContainerOp(op: any) {
   if (op.exec?.kind === 'annotate') {
     // Re-entering an annotation means selecting it, since it is the step.
     family.value = 'annotate'
-    sub.value = 'select'
+    sub.value = null
     selectedShapeId.value = (op.params?.shapes ?? [])[0]?.id ?? null
     return
   }
@@ -1551,7 +1968,7 @@ async function startNewPaintLayer() {
     id: opId,
     class: 'container',
     enabled: true,
-    label: 'Paint',
+    label: 'Retouch',
     exec: { kind: 'paint' },
     raster_ref: ref,
     payload_frame: payloadFrame(),
@@ -1581,7 +1998,7 @@ async function enterPaintOp(opId: string) {
   if (!op?.raster_ref) return
   family.value = 'paint'
   paintOpId.value = opId
-  const image = await loadImage(stack.payloadUrl(op.raster_ref))
+  const image = await loadImage(stack.payloadUrl(op.raster_ref, op._revision ?? 0))
   const canvas = document.createElement('canvas')
   canvas.width = image.naturalWidth
   canvas.height = image.naturalHeight
@@ -1596,10 +2013,10 @@ async function enterPaintOp(opId: string) {
  * params, so the step stays vector and re-entering it is lossless.
  */
 /**
- * Dragging a shape reports a new shape list on every mouse move. Every one of
- * those is written — nothing is held back, so a text edit that never announces
- * itself cannot be lost — but they all coalesce into a single journal entry,
- * which the gesture's own commit then closes. One gesture, one undo.
+ * Dragging and on-canvas text entry stay local to the vector overlay. It
+ * reports the finished shape list here once at mouseup / text-session end, so
+ * the persistent stack, journal and autosave see one edit. One gesture, one
+ * undo.
  */
 const annotateGesture = ref(0)
 const annotateGestureKey = computed(() => `annotate:${annotateGesture.value}`)
@@ -1638,12 +2055,21 @@ function onAnnotationsChange(shapes: Shape[]) {
     }
   }
 
-  for (const op of annotateOps.value) {
+  // Only the ops the canvas was given can be reconciled against what it
+  // returned. A hidden op was never handed over, so its absence from the list
+  // says nothing about the user's intent — sweeping those would delete every
+  // hidden annotation on the next gesture.
+  for (const op of visibleAnnotateOps.value) {
     const held = ((op as any).params?.shapes ?? []) as Shape[]
     if (held.every(s => seen.has(s.id))) continue
     stack.removeOp(op.id)
   }
-  void render()
+  // The live vector overlay already owns these pixels. Rebuilding the stage
+  // here would only replay the stack, resample the palette and repaint the
+  // source beneath an overlay that has not changed. When no overlay is active
+  // (for example, an inspector edit while another family is open), the
+  // composite does need the updated annotation.
+  if (!annotationOverlayActive.value) void render()
 }
 
 /**
@@ -1702,7 +2128,19 @@ function onRowSelect(op: any) {
   selectedShapeId.value = op.exec?.kind === 'annotate'
     ? (op.params?.shapes ?? [])[0]?.id ?? null
     : null
+  // Selecting a shape puts handles on the canvas; an armed selection tool
+  // would sit on top of them with the pointer.
+  if (selectedShapeId.value) disarmSelect()
 }
+
+/**
+ * The canvas follows the host's shape selection too — a row click or a family
+ * switch must put handles up, and the canvas keeps its own selection state for
+ * gesture-time reasons, so it is pushed rather than passed.
+ */
+watch([selectedShapeId, annotateRef], ([id]) => {
+  annotateRef.value?.setSelected(id)
+})
 
 /** Selecting an annotation selects its step, so the stack follows the canvas. */
 function onShapeSelected(shapeId: string | null) {
@@ -1722,56 +2160,371 @@ function onShapeSelected(shapeId: string | null) {
  */
 function onAnnotationCommit(action: string) {
   annotateGesture.value += 1
-  if (family.value === 'annotate' && action.startsWith('Draw')) sub.value = 'select'
+  if (family.value === 'annotate' && action.startsWith('Draw')) sub.value = null
 }
 
 // -- selection handoff ------------------------------------------------------------
 
 /**
+ * Arm a selection tool: the overlay takes the pointer, the open family is
+ * SUSPENDED — its session, step and controls all survive underneath. Clicking
+ * the armed tool again hands the pointer back.
+ */
+function armSelectTool(id: SelectToolId, force = false) {
+  // Crop replaces the display box with its own viewport, so there is nothing
+  // to select over; arming from inside it leaves it first.
+  if (family.value === 'crop') leaveMode()
+  if (!force && armedSelectTool.value === id) {
+    disarmSelect()
+    return
+  }
+  armedSelectTool.value = id
+  lastSelectTool.value = id
+  writeToolPrefs({ selectTool: id })
+}
+
+/**
+ * Hand the pointer back to whatever family is open. Reaching for any control
+ * that implies a canvas gesture — a paint engine, an annotate sub-tool, a
+ * family — calls this: a selection tool that stays armed past the user's
+ * attention is a broken pointer.
+ */
+function disarmSelect() {
+  armedSelectTool.value = null
+}
+
+/** Island-only settings: tuning the armed tool must never disarm it. */
+function onSelectionSet(patch: Record<string, any>) {
+  if ('combine' in patch) selectCombine.value = patch.combine
+  if ('featherPx' in patch) selectFeather.value = patch.featherPx
+  if ('tolerance' in patch) selectTolerance.value = patch.tolerance
+  if ('selectBrushSize' in patch) selectBrushSize.value = patch.selectBrushSize
+}
+
+function clearSelection() {
+  // Through the overlay when it exists (it also cancels an in-flight gesture);
+  // straight at the model when crop has the display box (overlay unmounted) —
+  // otherwise the ants would come back the moment crop closes.
+  if (selectRef.value) selectRef.value.clear()
+  else selModel.clearSelection()
+  selection.value = null
+  selectionMaster = null
+  selectionMasterFrame = null
+  selectionAppliedKey = null
+}
+
+function invertSelection() {
+  selectRef.value?.invert()
+}
+
+/**
+ * The affine from the crop geometry's frame to the actual composite frame —
+ * the part `geometryBelow` cannot see, because Expand grows the frame with
+ * pixels rather than with geometry: it pads around unmoved content, so the
+ * mapping is a centred translate. A frame change that is not that has no honest
+ * mapping, and returns null.
+ *
+ * There used to be a uniform-scale case here for an upscale checkpoint. The
+ * output stage runs at save, on the flattened composite, so no step ever
+ * rescales the frame under a live selection any more.
+ */
+function frameAdjust(
+  geomW: number, geomH: number, frameW: number, frameH: number
+): number[] | null {
+  if (geomW === frameW && geomH === frameH) return [1, 0, 0, 1, 0, 0]
+  if (frameW >= geomW && frameH >= geomH) {
+    return [1, 0, 0, 1, Math.round((frameW - geomW) / 2), Math.round((frameH - geomH) / 2)]
+  }
+  return null
+}
+
+/** Every gesture end republishes: the mask consumers copy, and the master the
+ *  geometry sync re-derives from. */
+function onSelectionChange(mask: HTMLCanvasElement | null) {
+  selection.value = mask
+  // The patch flow is select-then-DRAG: the moment the selection lands, the
+  // pointer hands back to the paint canvas so the very next gesture drags it.
+  if (
+    mask && armedSelectTool.value
+    && family.value === 'paint' && paintEngineId.value === 'patch'
+  ) {
+    armedSelectTool.value = null
+  }
+  if (!mask) {
+    selectionMaster = null
+    selectionMasterFrame = null
+    selectionAppliedKey = null
+    return
+  }
+  selectionMaster = selModel.toSnapshot()
+  const head = payloadFrame()
+  const adjust = head && composite.value
+    ? frameAdjust(head.width, head.height, composite.value.width, composite.value.height)
+    : null
+  selectionMasterFrame = head && adjust ? { matrix: head.matrix as any, frameAdjust: adjust } : null
+  selectionAppliedKey = null
+  if (composite.value) {
+    selectionAppliedKey = appliedKeyFor(head, composite.value.width, composite.value.height)
+  }
+}
+
+function appliedKeyFor(
+  head: { matrix: any } | undefined | null, width: number, height: number
+): string {
+  return JSON.stringify({ m: head?.matrix ?? null, width, height })
+}
+
+/**
  * A live selection pre-fills the next mask. Consumed by COPY at the moment it
  * is used, never live-linked — the op ends up referencing only its own payload.
+ * Flattened onto black: white-where-selected on opaque black is the shape every
+ * mask consumer expects (the model’s own canvas is white on transparent).
  */
 function selectionAsMask(): HTMLCanvasElement | null {
   if (!selection.value) return null
   const copy = document.createElement('canvas')
   copy.width = selection.value.width
   copy.height = selection.value.height
-  copy.getContext('2d')!.drawImage(selection.value, 0, 0)
+  const ctx = copy.getContext('2d')!
+  ctx.fillStyle = '#000'
+  ctx.fillRect(0, 0, copy.width, copy.height)
+  ctx.drawImage(selection.value, 0, 0)
   return copy
 }
 
-/** The mask a Generate run will use: the brush if painted, else the selection. */
-const effectiveMask = computed(() => maskCanvas.value || selection.value)
+/**
+ * Keep the selection registered to the pixels it was drawn over.
+ *
+ * The selection lives at the head of the stack, so any change to the geometry
+ * below the head moves the image under it: crop edits, toggles, reorders, and
+ * Expand, which pads the frame around the pixels already there.
+ * Re-derives from the as-created master each time — never from the previous
+ * derivative — and runs after every render, which is the one funnel all of
+ * those changes already pass through.
+ */
+function syncSelectionGeometry() {
+  if (!selectionMaster || !selectionMasterFrame || !stack.doc.value || !composite.value) return
+
+  const head = payloadFrame()
+  if (!head) return
+  const frameW = composite.value.width
+  const frameH = composite.value.height
+
+  const key = appliedKeyFor(head, frameW, frameH)
+  if (key === selectionAppliedKey) return
+
+  // Master composite space → master geom space → current geom space → current
+  // composite space: `A1 ∘ (G_new ∘ G_old⁻¹) ∘ A0⁻¹`, all as-created, never
+  // from the previous derivative.
+  const cropDelta = coTransform(selectionMasterFrame.matrix as any, head.matrix)
+  const adjustNow = frameAdjust(head.width, head.height, frameW, frameH)
+  const adjustAuthored = invertMatrix(selectionMasterFrame.frameAdjust as any)
+  if (!cropDelta || !adjustNow || !adjustAuthored) {
+    // A frame change with no honest mapping: a wrong selection is worse than
+    // none, so it clears — visibly, since the ants vanish with it.
+    clearSelection()
+    return
+  }
+  const matrix = multiply(adjustNow as any, multiply(cropDelta, adjustAuthored))
+
+  const rewritten = rewritePayload(selectionMaster, matrix, frameW, frameH)
+  selModel.initSelection({ width: frameW, height: frameH })
+  selModel.loadFromSnapshot(rewritten)
+  selection.value = selModel.hasSelection() ? selModel.getSelectionMask() : null
+  if (!selection.value) { clearSelection(); return }
+  selectionAppliedKey = key
+  selectRef.value?.redraw()
+}
 
 // -- compare -------------------------------------------------------------------
 
 /**
- * Hold to see the base. Nearly free with an op stack — toggling the whole stack
- * off is what the cache already does — and the snapshot editor never had it.
+ * Compare against the base. Toggling into compare swaps the canvas for a
+ * before/after wipe (ImageCompareSlider) — the original on the left, the edited
+ * composite on the right. Both are encoded at the composite's frame so the
+ * divider reveals the same pixel location on either side even after geometry
+ * ops (a crop) change the frame.
  */
 const comparing = ref(false)
 const baseImage = ref<HTMLImageElement | null>(null)
+const compareOriginalUrl = ref<string | null>(null)
+const compareEditedUrl = ref<string | null>(null)
 
-async function setComparing(value: boolean) {
-  comparing.value = value
-  if (value && !baseImage.value && baseInfo.value) {
+async function toggleCompare() {
+  if (comparing.value) {
+    comparing.value = false
+    return
+  }
+  const src = composite.value
+  if (!src) return
+  if (!baseImage.value && baseInfo.value) {
     baseImage.value = await loadImage(getMediaFileUrl(Number(baseInfo.value.media_id)))
   }
-  paint()
+  compareEditedUrl.value = src.toDataURL()
+  if (baseImage.value) {
+    // Draw the base into the composite's frame, so a cropped edit lines up with
+    // its original instead of the two images sitting at different sizes.
+    const frame = document.createElement('canvas')
+    frame.width = src.width
+    frame.height = src.height
+    frame.getContext('2d')!.drawImage(baseImage.value, 0, 0, frame.width, frame.height)
+    compareOriginalUrl.value = frame.toDataURL()
+  } else {
+    compareOriginalUrl.value = compareEditedUrl.value
+  }
+  comparing.value = true
 }
+
+// -- output stage ----------------------------------------------------------
+
+/**
+ * The upscaler used when the document has not named one. Kept out of the
+ * document until the stage is actually turned on: writing a default into
+ * document.json on open would mark a freshly-opened image as edited.
+ */
+const defaultUpscaleToolId = ref<string | null>(null)
+const outputPickerOpen = ref(false)
+
+/** Which sidebar panel is showing. The Edits list is the stack and only the
+ *  stack; the output stage is a place beside it, not an entry in it. */
+const sidebarTab = ref<'edits' | 'output'>('edits')
+
+const outputStage = computed(() => {
+  const stored = outputOf(stack.doc.value?.output)
+  return { ...stored, tool_id: stored.tool_id ?? defaultUpscaleToolId.value }
+})
+
+/** What a save starts from — the composite's real size, not the base's. */
+const outputInput = computed(() => ({
+  width: composite.value?.width ?? stack.doc.value?.canvas.width ?? 0,
+  height: composite.value?.height ?? stack.doc.value?.canvas.height ?? 0,
+}))
+
+function updateOutput(patch: Partial<OutputStage>) {
+  // The tool is written down the moment the stage starts mattering, so the
+  // saved document says what it will actually run rather than depending on
+  // whatever the catalog happens to offer first next time.
+  const withTool =
+    patch.enabled && !stack.doc.value?.output?.tool_id && defaultUpscaleToolId.value
+      ? { ...patch, tool_id: defaultUpscaleToolId.value }
+      : patch
+  stack.setOutput(withTool)
+}
+
+/** Merge into the tool's params; the panel never owns the whole blob. */
+function setOutputParams(patch: Record<string, any>) {
+  stack.setOutput({ params: { ...outputStage.value.params, ...patch } })
+}
+
+// -- version chain and the commit bar ---------------------------------------
+
+/**
+ * Which version this document sits on, and how many exist.
+ *
+ * Status, not a control. Moving the editor onto a different version means
+ * moving a live recipe onto pixels it was not written against, and there is one
+ * working document per asset — that is a design question, not a menu item, so
+ * the bar reports the version rather than offering to change it.
+ */
+const versionInfo = ref<{ number: number | null; total: number }>({ number: null, total: 0 })
+
+async function loadVersionInfo() {
+  const assetId = stack.doc.value?.base.asset_id
+  if (!assetId) return
+  try {
+    const { data } = await axios.get(`/api/assets/${assetId}/revisions`)
+    const items = data.items || []
+    const baseId = savedRevisionId.value ?? stack.doc.value?.base.revision_id
+    versionInfo.value = {
+      number: items.find((r: any) => r.id === baseId)?.revision_number ?? null,
+      total: items.length,
+    }
+  } catch {
+    // A version count is a nicety; failing to read it must not colour the bar.
+    versionInfo.value = { number: null, total: 0 }
+  }
+}
+
+/**
+ * The journal cursor as of the last commit — what Revert walks back to.
+ *
+ * Set at open and after every in-place save. Undo already knows how to move the
+ * document backwards, so reverting is walking that cursor rather than a second
+ * mechanism that could disagree with it.
+ */
+const savedCursor = ref(0)
+const confirmingRevert = ref(false)
+
+const canRevert = computed(() => stack.cursor.value > savedCursor.value)
+
+const revertCount = computed(() => stack.cursor.value - savedCursor.value)
+
+async function revertToSaved() {
+  confirmingRevert.value = false
+  while (stack.cursor.value > savedCursor.value && stack.canUndo.value) stack.undo()
+  // Back at the committed state by definition — the flag follows the cursor.
+  stack.dirtySinceSave.value = false
+  await afterGeometryChange(stack.doc.value)
+  void render()
+}
+
+/** Transient confirmation, so a commit is not a button that just stops spinning. */
+const savedNote = ref<string | null>(null)
+let savedNoteTimer: ReturnType<typeof setTimeout> | null = null
+
+function noteSaved(message: string) {
+  savedNote.value = message
+  if (savedNoteTimer) clearTimeout(savedNoteTimer)
+  savedNoteTimer = setTimeout(() => { savedNote.value = null }, 2600)
+}
+
+/** The split button's menu: Save is the button, the rare fork is behind it. */
+const saveMenuOpen = ref(false)
+const saveMenuRef = ref<HTMLElement | null>(null)
+
+function onSaveMenuClickOutside(ev: MouseEvent) {
+  if (saveMenuRef.value && !saveMenuRef.value.contains(ev.target as Node)) {
+    saveMenuOpen.value = false
+  }
+}
+
+// Soft-dismiss on any click outside the split control. Deferred so the click
+// that opened the menu does not immediately close it.
+watch(saveMenuOpen, (open) => {
+  if (open) {
+    setTimeout(() => document.addEventListener('mousedown', onSaveMenuClickOutside), 0)
+  } else {
+    document.removeEventListener('mousedown', onSaveMenuClickOutside)
+  }
+})
+
+onBeforeUnmount(() => document.removeEventListener('mousedown', onSaveMenuClickOutside))
 
 // -- save ------------------------------------------------------------------
 
 const saving = ref(false)
 const savedRevisionId = ref<number | null>(null)
 
+/**
+ * What the save is doing right now, as the label of the button that is doing
+ * it — a save with the output stage on runs a model and takes as long as one
+ * takes, and a button that only spins reads as stuck. A separate status line
+ * put the answer somewhere other than the thing the user is watching.
+ */
+const savingNote = ref<string | null>(null)
+
 async function save(asNew = false) {
   if (!composite.value || !stack.doc.value) return
   saving.value = true
   error.value = null
+  savingNote.value = null
   try {
     await stack.flush()
-    const blob = await canvasToBlob(composite.value)
+    // Always flatten the REAL document, never the stage. Saving from inside
+    // the annotate family would otherwise write the composite the overlay is
+    // drawing over — the one without its annotations.
+    const flattened = await applyOutputStage(await compositor.render(stack.doc.value))
+    const blob = await canvasToBlob(flattened)
     const form = new FormData()
     form.append('file', blob, 'edited.png')
     form.append('source_media_id', String(stack.doc.value.base.media_id))
@@ -1785,15 +2538,97 @@ async function save(asNew = false) {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     savedRevisionId.value = data.revision_id
-    stack.dirtySinceSave.value = false
     if (asNew) {
-      router.push({ name: 'edit-image-v2', params: { assetId: String(data.asset_id) } })
+      // A fork commits to a DIFFERENT asset, so this document is still unsaved
+      // against its own head — the backend does not advance its base either.
+      // And it does not take the editor with it: you asked for a copy, not to
+      // stop working on what you had open.
+      noteSaved('Saved as a new asset')
+    } else {
+      stack.dirtySinceSave.value = false
+      savedCursor.value = stack.cursor.value
+      noteSaved('Saved')
     }
+    void loadVersionInfo()
   } catch (err: any) {
     error.value = apiErrorMessage(err, 'Could not save.')
   } finally {
     saving.value = false
+    savingNote.value = null
   }
+}
+
+/**
+ * The output stage: scale the flattened composite, then re-render the vector
+ * steps on top at the final resolution.
+ *
+ * Vectors AFTER the scale is the whole reason this lives at save rather than in
+ * the stack — text an upscaler enlarged is text at 2× the pixels and none of
+ * the sharpness, while text rendered into the scaled frame is simply text at
+ * the final size. Raster steps ride the scale, which is what you want from them.
+ *
+ * Throws rather than degrading: a save that quietly skipped the upscale would
+ * write the wrong file into the version chain, and the row said 2×.
+ */
+async function applyOutputStage(flattened: HTMLCanvasElement): Promise<HTMLCanvasElement> {
+  const doc = stack.doc.value!
+  const output = outputStage.value
+  if (!output.enabled) return flattened
+
+  // The vector steps come off before the scale and go back on after it, so the
+  // upscaler never sees them and never has to reproduce them.
+  const vectorOps = doc.edits.filter(
+    op => op.enabled && op.class === 'container' && (op as any).exec?.kind === 'annotate'
+  )
+  const withoutVectors = vectorOps.length
+    ? await compositor.render({
+        ...doc,
+        edits: doc.edits.filter(op => !vectorOps.some(v => v.id === op.id)),
+      })
+    : flattened
+
+  const target = outputDimensions(output, withoutVectors.width, withoutVectors.height)
+
+  let scaled: HTMLCanvasElement
+  const tool = tools.value.find(t => t.full_tool_id === output.tool_id)
+  if (output.method === 'resample' || !tool) {
+    if (output.method === 'photo' && !tool) {
+      throw new Error('The upscale tool is no longer in the catalog.')
+    }
+    savingNote.value = 'Resizing…'
+    scaled = resampleLanczos(withoutVectors, target.width, target.height)
+  } else {
+    savingNote.value = 'Upscaling…'
+    // The tool's OWN parameters, by schema property name, straight through the
+    // shared payload builder — the same path ToolView takes. Nothing here
+    // knows what this particular upscaler calls its factor.
+    const result = await candidates.runToolOnce({
+      tool,
+      inputCanvas: withoutVectors,
+      params: output.params,
+      finalResolution: finalResolutionFor(
+        output, withoutVectors.width, withoutVectors.height
+      ),
+    })
+    // Providers snap to their own grids, so the returned size is the size —
+    // the vectors are drawn into whatever actually came back rather than into
+    // what was asked for.
+    scaled = document.createElement('canvas')
+    scaled.width = result.naturalWidth
+    scaled.height = result.naturalHeight
+    scaled.getContext('2d')!.drawImage(result, 0, 0)
+  }
+
+  if (!vectorOps.length) return scaled
+
+  savingNote.value = 'Rendering…'
+  const shapes: any[] = []
+  const sx = scaled.width / withoutVectors.width
+  const sy = scaled.height / withoutVectors.height
+  for (const op of vectorOps) {
+    shapes.push(...transformShapes((op as any).params?.shapes || [], [sx, 0, 0, sy, 0, 0]))
+  }
+  return applyAnnotations(scaled, scaled.width, scaled.height, shapes, scaled)
 }
 
 // -- legacy migration ------------------------------------------------------
@@ -1817,6 +2652,39 @@ async function importLegacyProject(project: any) {
     : `Imported ${ops.length} ${ops.length === 1 ? 'edit' : 'edits'} from the previous editor.`
 }
 
+/**
+ * Resolve a document that still contains whole-image steps.
+ *
+ * Runs before the first render, because those steps have no executor any more —
+ * rendering first would show the image without them and then replace it.
+ */
+async function flattenIfNeeded() {
+  const doc = stack.doc.value
+  if (!hasWholeOps(doc)) return
+
+  const result = await flattenWholeOps(doc!, {
+    loadPayload: (ref: string, revision = 0) =>
+      loadImage(stack.payloadUrl(ref, revision)),
+    loadBase: () => loadImage(getMediaFileUrl(Number(baseInfo.value.media_id))),
+    uploadPayload: stack.uploadPayload,
+    canvasToBlob,
+  })
+  if (!result) return
+
+  stack.replaceDocument(result.document, {
+    action: 'flatten_whole_ops',
+    forward: { flattened: result.flattenedCount },
+    inverse: { document: doc },
+  })
+  await stack.flush()
+  compositor.clear()
+
+  const count = result.flattenedCount
+  migrationNote.value =
+    `Combined ${count} ${count === 1 ? 'step' : 'steps'} into the image. `
+    + 'Whole-image edits are now saved as a version instead of a step.'
+}
+
 // -- lifecycle -------------------------------------------------------------
 
 function onKeydown(event: KeyboardEvent) {
@@ -1832,30 +2700,58 @@ function onKeydown(event: KeyboardEvent) {
     else stack.undo()
     void render()
   }
-  if (event.key === 'Escape' && (mode.value || regionTargetOpId.value)) {
-    // Esc leaves a mode with nothing to undo — empty steps cannot exist.
-    leaveMode()
+  if (event.key === 'Escape') {
+    // Precedence order, nearest state first: an armed selection tool disarms
+    // (the suspended family gets the pointer back); an open mode leaves (with
+    // nothing to undo — empty steps cannot exist); at rest, Esc deselects.
+    if (armedSelectTool.value) {
+      armedSelectTool.value = null
+    } else if (family.value || mode.value) {
+      leaveMode()
+    } else if (selectedShapeId.value) {
+      selectedShapeId.value = null
+      selectedOpId.value = null
+    } else if (selection.value) {
+      clearSelection()
+    }
   }
-  // Hold to compare against the base.
-  if (event.key === '\\' && !event.repeat) void setComparing(true)
-  const shortcut = TOOL_FAMILIES.find(f => f.key === event.key.toLowerCase())
-  if (shortcut && !event.metaKey && !event.ctrlKey) selectFamily(shortcut.id)
+  // A selected annotation answers the Delete key wherever focus is (inputs
+  // and canvas text editing already returned above); the sidebar's own
+  // handler covers rows, so this only fires for canvas-selected shapes.
+  if (
+    (event.key === 'Delete' || event.key === 'Backspace') &&
+    selectedShapeId.value && !sidebarEl.value?.contains(event.target as Node)
+  ) {
+    event.preventDefault()
+    // Through the op, not the canvas: one shape is one step, so deleting the
+    // step is the deletion — the canvas follows its shapes prop.
+    const opId = opIdForShape(selectedShapeId.value)
+    selectedShapeId.value = null
+    if (opId) void removeOpWithGeometry(opId)
+    return
+  }
+  // Toggle the before/after comparison against the base.
+  if (event.key === '\\' && !event.repeat) void toggleCompare()
+  if (!event.metaKey && !event.ctrlKey) {
+    // 's' arms the last-used selection tool; the families keep their keys.
+    if (event.key.toLowerCase() === 's') armSelectTool(lastSelectTool.value)
+    const shortcut = TOOL_FAMILIES.find(f => f.key === event.key.toLowerCase())
+    if (shortcut) selectFamily(shortcut.id)
+  }
 }
 
-function onKeyup(event: KeyboardEvent) {
-  if (event.key === '\\') void setComparing(false)
-}
-
-/** Leaving a mode ends its session: the next entry starts a new step. */
+/**
+ * Leaving a mode ends its session: the next entry starts a new step.
+ * The selection is NOT a session — it survives, visibly, ants marching.
+ */
 function leaveMode() {
+  // Leaving is a pick too: Esc'ing out means the next visit should open on the
+  // canvas, not back inside the family that was deliberately closed.
+  if (family.value) writeToolPrefs({ family: null })
   family.value = null
   sub.value = null
   mode.value = null
-  regionTargetOpId.value = null
-  maskCanvas.value = null
-  maskRef.value?.clear()
   // Ending a mode session ends its STEP: the next entry starts a new one.
-  adjustOpId.value = null
   cropOpId.value = null
   resetPaintSession()
 }
@@ -1874,22 +2770,66 @@ onMounted(async () => {
       await importLegacyProject(opened.legacyProject)
     }
 
+    // Before the first render: whole-image steps have no executor any more, so
+    // rendering first would show the image without them.
+    await flattenIfNeeded()
+
     const all = await listAllTools()
     tools.value = all
-    inpaintToolId.value = all.find(t => (t.task_types || []).includes('inpaint-image'))?.full_tool_id ?? null
-    wholeToolId.value = all.find(t => (t.task_types || []).includes('image-to-image'))?.full_tool_id ?? null
-    upscaleToolId.value = all.find(t => (t.task_types || []).includes('upscale-image'))?.full_tool_id ?? null
+    // Last session's pick wins, but only if that tool is still installed and
+    // can still inpaint — otherwise the picker would show a tool that isn't
+    // in its own list, and Run would fail on a tool that no longer exists.
+    const eligibleInpaint = all.filter(t => (t.task_types || []).includes('inpaint-image'))
+    const rememberedTool = rememberedIfValid(
+      readToolPrefs().inpaintToolId,
+      id => eligibleInpaint.some(t => t.full_tool_id === id),
+    )
+    inpaintToolId.value = rememberedTool ?? eligibleInpaint[0]?.full_tool_id ?? null
+    defaultUpscaleToolId.value =
+      all.find(t => (t.task_types || []).includes('upscale-image'))?.full_tool_id ?? null
+
+    // Everything already in the journal is committed history as far as this
+    // session is concerned; Revert walks back to here, not to an empty stack.
+    savedCursor.value = stack.cursor.value
+    void loadVersionInfo()
 
     await render()
+
+    // Re-open the family the last session was left in, through the ordinary
+    // entry path so it lands with exactly the state a click produces — the
+    // remembered sub-tool, the remembered engine, and the auto-arms those
+    // imply. It runs after the first render because entering Crop and Filters
+    // renders from the composite. Entering a family creates nothing: the step
+    // is still the first real gesture, so a restored mode is free to leave.
+    const rememberedFamily = rememberedIfValid(
+      readToolPrefs().family ?? undefined,
+      id => TOOL_FAMILIES.some(spec => spec.id === id),
+    )
+    if (rememberedFamily) selectFamily(rememberedFamily as FamilyId)
   } catch (err: any) {
     error.value = apiErrorMessage(err, 'Could not open this image.')
   } finally {
     loading.value = false
   }
 
-  window.addEventListener('keydown', onKeydown)
-  window.addEventListener('keyup', onKeyup)
 })
+
+// The screen is KeepAlive'd per asset, so it stays mounted after you navigate
+// away: window-level keys must follow activation, not mount, or the editor's
+// shortcuts would keep firing on whatever screen you moved to.
+onActivated(() => {
+  window.addEventListener('keydown', onKeydown)
+})
+
+onDeactivated(() => {
+  window.removeEventListener('keydown', onKeydown)
+  // Leaving is not saving — but the document (the recipe) is persisted so the
+  // stack is intact when you come back, and after an eviction or a reload.
+  void stack.flush().catch(() => {})
+})
+
+// The sidebar entry's unsaved-edits indicator.
+watch(() => stack.dirtySinceSave.value, dirty => setEditorDirty(props.assetId, dirty), { immediate: true })
 
 // The viewport only exists once loading finishes, so the observer attaches when
 // the element appears rather than at mount — otherwise the canvas is sized
@@ -1905,14 +2845,22 @@ watch(viewport, element => {
 }, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  if (savedNoteTimer) clearTimeout(savedNoteTimer)
+  if (paintPrefsTimer) persistPaintSettings()
   window.removeEventListener('keydown', onKeydown)
-  window.removeEventListener('keyup', onKeyup)
+  setEditorDirty(props.assetId, false)
   resizeObserver?.disconnect()
   candidates.stop()
   void stack.flush().catch(() => {})
 })
 
 watch(() => stack.ops.value.length, () => { void render() })
+// Mounting or unmounting the annotation overlay hands its pixels between the
+// overlay and the composite, so the stage is rebuilt in both directions.
+// Keyed on the boolean, not on displayDoc: the filtered document is a fresh
+// object on every evaluation, and watching it would re-render on every shape
+// edit for a composite that cannot have changed.
+watch(annotationOverlayActive, () => { void render() })
 // The composite is usually ready BEFORE the canvas exists (rendering happens
 // while `loading` still hides it), so repaint on either changing rather than
 // only on the composite.
@@ -1950,34 +2898,39 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         <EditorToolbar :active="family" class="ml-2" @select="selectFamily" />
       </div>
 
-      <!-- Toolbar 2: the active family's controls. Present only when a family
-           is open; the canvas below simply gets more or less matte. -->
-      <EditorSubbar
-        v-if="family"
-        :family="family"
-        :sub="sub"
-        :state="subbarState"
-        :tool-label="activeToolLabel"
-        :busy="busy"
-        :can-run="canRun"
-        :hint="subbarHint"
-        class="shrink-0"
-        @sub="selectSub"
-        @set="onSubbarSet"
-        @run="run"
-        @open-tool-picker="onOpenToolPicker"
-      />
+      <!-- The canvas region. relative so the sub-toolbar can FLOAT over the
+           top of the matte: the viewport keeps its full height whether or not
+           a family is open, so the image holds steady and opening a mode
+           consumes matte instead of reflowing the picture. -->
+      <div class="relative flex-1 min-h-0 flex flex-col">
+      <!-- Toolbar 2: the active family's controls, overlaid on the matte. -->
+      <div class="absolute top-0 left-0 right-0 z-20">
+        <EditorSubbar
+          v-if="family"
+          :family="family"
+          :sub="sub"
+          :state="subbarState"
+          :tool-label="activeToolLabel"
+          :busy="busy"
+          :can-run="canRun"
+          :hint="subbarHint"
+          @sub="selectSub"
+          @set="onSubbarSet"
+          @run="run"
+          @open-tool-picker="onOpenToolPicker"
+        />
 
-      <!-- Under the sub-bar and left-aligned to the button that opened it. -->
-      <div v-if="toolPickerOpen" class="relative z-menu shrink-0">
-        <div class="absolute top-0" :style="{ left: toolPickerLeft + 'px' }">
-          <ToolPicker
-            :tools="tools"
-            :task-type="activeTaskType"
-            :selected-id="activeToolId"
-            @select="chooseTool"
-            @close="toolPickerOpen = false"
-          />
+        <!-- Under the sub-bar and left-aligned to the button that opened it. -->
+        <div v-if="toolPickerOpen" class="relative z-menu">
+          <div class="absolute top-0" :style="{ left: toolPickerLeft + 'px' }">
+            <ToolPicker
+              :tools="tools"
+              :task-type="activeTaskType"
+              :selected-id="activeToolId"
+              @select="chooseTool"
+              @close="toolPickerOpen = false"
+            />
+          </div>
         </div>
       </div>
 
@@ -1985,8 +2938,11 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         <Spinner size="md" />
       </div>
 
-      <!-- Canvas. Centred in whatever matte is left. -->
-      <div v-else ref="viewport" class="flex-1 min-h-0 grid place-items-center bg-matte p-6">
+      <!-- Canvas. Centred in whatever matte is left. The selection island
+           floats over the matte at the bottom: selection is workspace state
+           (WHERE) and the top bar is the families (WHAT), and floating chrome
+           can never push either one around. -->
+      <div v-else ref="viewport" class="relative flex-1 min-h-0 grid place-items-center bg-matte p-6">
         <!-- Crop works on the step's INPUT, not on the composite: the region
              outside the crop is dimmed rather than absent, so it takes the
              whole viewport instead of the cropped display box. -->
@@ -2014,22 +2970,8 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             class="rounded-media w-full h-full"
             :style="{ width: displayBox.width + 'px', height: displayBox.height + 'px' }"
           />
-          <!-- Select draws over the composite; its output becomes the next
-               mask or region rather than a step of its own. -->
-          <StackSelectCanvas
-            v-if="family === 'select'"
-            ref="selectRef"
-            :source="composite"
-            :display-width="displayBox.width"
-            :display-height="displayBox.height"
-            :tool="(sub as any)"
-            :combine="selectCombine"
-            :feather-px="selectFeather"
-            :tolerance="selectTolerance"
-            @change="selection = $event"
-          />
           <StackPaintCanvas
-            v-else-if="family === 'paint'"
+            v-if="family === 'paint'"
             ref="paintRef"
             :source="composite"
             :initial-layer="paintInitialLayer"
@@ -2041,38 +2983,99 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
             :color="paintColorRgb"
             :exposure="paintExposure"
             :range="paintRange"
-            :flow="paintFlow"
+            :strength="paintStrength"
             :saturate="paintSaturate"
             @stroke="onPaintStroke"
+            @patch-applied="clearSelection"
           />
+          <!-- Also mounted in the IDLE state (no family, nothing armed), in
+               object-select mode: annotations are the grabbable things, and
+               clicking one should just select it. -->
           <StackAnnotateCanvas
-            v-else-if="family === 'annotate'"
+            v-else-if="family === 'annotate' || objectSelectActive"
             ref="annotateRef"
             :source="composite"
             :shapes="annotateShapes"
             :display-width="displayBox.width"
             :display-height="displayBox.height"
             :tool="annotateTool"
-            :stroke-color="annotateColorRgb"
+            :stroke-color="annotatePaint"
+            :fill-color="annotateFillColor"
+            :stroke-width="annotateStrokeWidth"
+            :shape-effect="annotateShapeEffect"
+            :opacity="annotateOpacity"
             :text-style="textStyle"
             @change="onAnnotationsChange"
             @commit="onAnnotationCommit"
             @select="onShapeSelected"
           />
-          <StackMaskCanvas
-            v-else-if="mode === 'inpaint' || regionTargetOpId"
-            ref="maskRef"
+          <!-- The selection overlay: always mounted, ants above whatever mode
+               is open, pointer-transparent until a rail tool is armed. The
+               model itself lives in the host, so nothing here owns the state. -->
+          <StackSelectCanvas
+            ref="selectRef"
             :source="composite"
+            :model="selModel"
+            :armed="armedSelectTool"
             :display-width="displayBox.width"
             :display-height="displayBox.height"
-            :mode="brushMode"
-            :brush-size="brushSize"
-            @change="maskCanvas = $event"
+            :combine="selectCombine"
+            :feather-px="selectFeather"
+            :tolerance="selectTolerance"
+            :brush-size="selectBrushSize"
+            @change="onSelectionChange"
+          />
+          <!-- The selected annotation's own verbs, over the shape they act
+               on. Inside the display box so it shares the shapes' coordinate
+               space, and last so it sits above every overlay. Always mounted:
+               it owns its own fade, and a v-if here would unmount it before
+               the leave could play. -->
+          <AnnotationIsland
+            :visible="annotationIslandVisible"
+            :shape="selectedShape"
+            :image-size="frameSize"
+            :display-width="displayBox.width"
+            :display-height="displayBox.height"
+            :can-bring-to-front="canBringAnnotationToFront"
+            :can-send-to-back="canSendAnnotationToBack"
+            class="z-chrome"
+            @edit-text="editSelectedText"
+            @reset-rotation="onShapeChange({ rotation: 0 })"
+            @bring-to-front="moveAnnotation('front')"
+            @send-to-back="moveAnnotation('back')"
+            @duplicate="duplicateAnnotation"
+            @remove="deleteSelectedAnnotation"
+          />
+          <!-- Before/after wipe against the base. Covers the canvas and its
+               overlays while active; Esc or the footer toggle leaves. -->
+          <ImageCompareSlider
+            v-if="comparing && compareOriginalUrl && compareEditedUrl"
+            :left-src="compareOriginalUrl"
+            :right-src="compareEditedUrl"
+            left-label="Original"
+            right-label="Edited"
+            class="z-overlay"
+            @close="comparing = false"
           />
         </div>
+
+        <SelectIsland
+          :armed="armedSelectTool"
+          :pointer-active="objectSelectActive"
+          :has-selection="!!selection"
+          :combine="selectCombine"
+          :feather-px="selectFeather"
+          :tolerance="selectTolerance"
+          :brush-size="selectBrushSize"
+          class="absolute bottom-4 left-1/2 -translate-x-1/2 z-chrome"
+          @arm="armSelectTool"
+          @pointer="activatePointer"
+          @set="onSelectionSet"
+          @invert="invertSelection"
+          @clear="clearSelection"
+        />
       </div>
-
-
+      </div>
     </div>
 
       <!-- Edits: outside everything a mode can touch. -->
@@ -2088,42 +3091,66 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >
+        <!-- Two panels, not two lists. Edits is the stack and only the stack;
+             Output is the terminal stage, which is a tool with a picker and a
+             schema and therefore needs a place rather than a row. -->
         <div
-          class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
+          class="px-3 h-11 flex items-center gap-1 shrink-0 bg-surface-raised/60
                  border-b border-edge-strong"
         >
-          <h2 class="text-xs font-medium uppercase tracking-wide text-content-secondary">
-            Edits
-          </h2>
+          <button
+            v-for="tab in [
+              { id: 'edits', label: 'Edits' },
+              { id: 'output', label: 'Output' },
+            ]"
+            :key="tab.id"
+            type="button"
+            class="px-2 py-1 text-xs font-medium uppercase tracking-wide rounded-md
+                   transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+            :class="sidebarTab === tab.id
+              ? 'text-content bg-selection/15'
+              : 'text-content-tertiary hover:text-content-secondary'"
+            @click="sidebarTab = tab.id as 'edits' | 'output'"
+          >
+            {{ tab.label }}
+            <span
+              v-if="tab.id === 'output' && outputLabel(outputStage)"
+              class="ml-1 text-accent normal-case tracking-normal tabular-nums"
+            >{{ outputLabel(outputStage) }}</span>
+          </button>
           <div class="flex-1" />
           <Spinner v-if="rendering" size="sm" />
         </div>
 
-        <div class="flex-1 overflow-y-auto custom-scrollbar p-1.5">
-          <!-- The base is a chip, not a row: it is what the stack applies to,
-               not a step in it. -->
-          <div class="px-2 py-2 text-xs text-content-tertiary">
-            Original image
-          </div>
+        <OutputPanel
+          v-if="sidebarTab === 'output' && stack.doc.value"
+          :output="outputStage"
+          :tools="tools"
+          :input-width="outputInput.width"
+          :input-height="outputInput.height"
+          :picker-open="outputPickerOpen"
+          @update="updateOutput"
+          @set-params="setOutputParams"
+          @toggle-picker="outputPickerOpen = !outputPickerOpen"
+          @close-picker="outputPickerOpen = false"
+        />
 
+        <!-- One dragover on the list, resolved with closest(): per-row
+             handlers miss the gaps (the list's padding) and leave a stale line
+             behind, and dragenter is unreliable in WKWebView. -->
+        <div
+          v-else
+          class="flex-1 overflow-y-auto custom-scrollbar p-1.5"
+          @dragover.prevent="onListDragOver"
+          @drop.prevent="onDrop"
+          @dragleave="onListDragLeave"
+        >
           <!-- Top of the stack reads first, the way the image is built up. -->
           <template v-for="row in visibleRows" :key="row.op.id">
-            <CheckpointBand
-              v-if="row.op.class === 'whole'"
-              :op="row.op"
-              :selected="selectedOpId === row.op.id"
-              :staleness="row.staleness"
-              :folded-count="foldedCount(stack.doc.value, row.index)"
-              :expanded="expandedCheckpoints.has(row.op.id)"
-              :status-line="checkpointStatus(stackState, row.index)"
-              :regenerating="resamplingOpId === row.op.id"
-              @select="onRowSelect(row.op)"
-              @toggle-expanded="toggleCheckpoint(row.op.id)"
-              @toggle-enabled="setEnabledWithGeometry(row.op.id, $event)"
-              @regenerate="resample(row.op.id)"
-            />
+            <!-- Where the dragged row would land. The gap above a row is the
+                 doc index one higher, because the list is drawn top-first. -->
+            <div v-if="dropGap === row.index + 1" :class="DROP_LINE" />
             <EditRow
-              v-else
               :op="row.op"
               :selected="selectedOpId === row.op.id"
               :staleness="row.staleness"
@@ -2131,26 +3158,39 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
               :pending-count="pendingByOp[row.op.id]"
               :preview-staleness="previewStalenessOf(row.op.id)"
               :out-of-frame="outOfFrame[row.op.id]"
-              :verbs="verbsFor(row.op.id)"
               :tool-name="toolNameFor(row.op)"
-              :resampling="resamplingOpId === row.op.id"
+              :resampling="runningOpIds.has(row.op.id)"
               :draggable="true"
+              :dragging="dragOpId === row.op.id"
+              :preview="stepPreviews[row.op.id]"
               @select="onRowSelect(row.op)"
               @toggle="setEnabledWithGeometry(row.op.id, $event)"
               @pick="stack.pickCandidate(row.op.id, $event); render()"
               @remove="removeOpWithGeometry(row.op.id)"
               @resample="resample(row.op.id)"
-              @verb="runVerb(row.op.id, $event)"
               @intent-hover="intentOpId = $event ? row.op.id : null"
               @drag-start="onDragStart(row.op.id, $event)"
-              @drop="onDrop(row.op.id)"
+              @drag-end="onDragEnd"
               @reenter="enterContainerOp(row.op)"
+            />
+            <div
+              v-if="dropGap !== null && dropGap === row.index && row.index === lastVisibleIndex"
+              :class="DROP_LINE"
             />
           </template>
 
           <p v-if="!stack.ops.value.length" class="px-2 py-3 text-xs text-content-tertiary">
             No edits yet.
           </p>
+
+          <!-- The image every edit above applies to. Last, because the stack
+               composites bottom to top. -->
+          <BaseRow
+            v-if="baseInfo"
+            :media-id="Number(baseInfo.media_id)"
+            :width="baseInfo.width"
+            :height="baseInfo.height"
+          />
         </div>
 
         <!-- Inspector: the selected row's full control surface, under the
@@ -2159,7 +3199,7 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
              controls each, and a 288px window turned every one of them into a
              scrolling peephole. -->
         <div
-          v-if="selectedShape || showsAdjustInspector"
+          v-if="inspectorKind !== null"
           class="h-1 shrink-0 cursor-row-resize bg-edge-subtle/40 hover:bg-accent/40 transition-colors"
           @pointerdown="startPropertiesResize"
         />
@@ -2204,8 +3244,6 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           </div>
           <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
           <AdjustInspector
-            :family="adjustFamily"
-            :source="composite"
             :params="adjustInspectorParams"
             @change="onAdjustInspectorChange"
             @commit="stack.flush()"
@@ -2225,8 +3263,10 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
       </aside>
     </div>
 
-      <!-- Document verbs live at the bottom: they act on the document, not on
-         whatever tool happens to be open. -->
+      <!-- The commit bar. Left is session history, middle is what this document
+           IS (which version, whether it has uncommitted work), right is what
+           you can do to it. One meaning per control: the chip reports, Revert
+           discards, Save commits. -->
     <footer class="flex items-center gap-2 px-3 h-11 shrink-0 border-t border-edge-subtle">
       <Tooltip text="Undo">
         <IconButton :disabled="!stack.canUndo.value" @click="stack.undo(); render()">
@@ -2238,21 +3278,116 @@ watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'p
           <ArrowUturnRightIcon class="w-4 h-4" />
         </IconButton>
       </Tooltip>
-      <div class="flex-1" />
-      <Button
-        variant="secondary" size="sm"
-        @pointerdown="setComparing(true)"
-        @pointerup="setComparing(false)"
-        @pointerleave="setComparing(false)"
+
+      <!-- Status, in the order you would ask it: which version am I on, and is
+           there anything of mine that is not in it yet. -->
+      <p v-if="versionInfo.number" class="ml-2 text-xs text-content-tertiary tabular-nums">
+        Version {{ versionInfo.number }}
+        <span v-if="versionInfo.total > 1" class="text-content-muted">of {{ versionInfo.total }}</span>
+      </p>
+      <p v-if="stack.dirtySinceSave.value" class="text-xs text-amber-400/90">
+        Unsaved edits
+      </p>
+      <Transition
+        enter-active-class="transition-opacity duration-150"
+        leave-active-class="transition-opacity duration-500"
+        enter-from-class="opacity-0"
+        leave-to-class="opacity-0"
       >
-        Hold to compare
-      </Button>
-      <Button variant="secondary" size="sm" :disabled="saving" @click="save(true)">
-        Save as new
-      </Button>
-      <Button size="sm" :loading="saving" :disabled="!composite" @click="save(false)">
-        Save version
-      </Button>
+        <p v-if="savedNote" class="text-xs text-accent">{{ savedNote }}</p>
+      </Transition>
+
+      <div class="flex-1" />
+
+      <!-- A mode toggle, not an action: lit with the selected-state indigo so
+           its on-state reads like the app's other toggles. -->
+      <button
+        type="button"
+        :disabled="!composite"
+        :aria-pressed="comparing"
+        class="inline-flex items-center justify-center rounded-md px-2.5 py-1.5 text-xs font-medium
+               transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2
+               ring-accent/60 ring-offset-1 ring-offset-surface disabled:opacity-50 disabled:cursor-not-allowed"
+        :class="comparing
+          ? 'bg-selection/15 text-selection'
+          : 'bg-surface-raised hover:bg-surface-hover text-content'"
+        @click="toggleCompare()"
+      >
+        Compare
+      </button>
+
+      <!-- Revert is about THIS session's uncommitted work, which is why it is
+           disabled the moment there is none. Restoring an older version of the
+           asset is a different verb and does not live here. -->
+      <Tooltip :text="canRevert ? 'Discard edits made since the last save' : 'Nothing to revert'">
+        <Button
+          variant="secondary" size="sm"
+          :disabled="!canRevert || saving"
+          @click="confirmingRevert = true"
+        >
+          Revert
+        </Button>
+      </Tooltip>
+
+      <!-- Split: saving to this asset is the act; forking to a new one is rare
+           enough that giving it equal weight made the pair read as a choice
+           every time. -->
+      <div ref="saveMenuRef" class="relative flex items-stretch">
+        <Button
+          size="sm"
+          class="rounded-r-none"
+          :loading="saving"
+          :disabled="saving || !composite"
+          @click="save(false)"
+        >
+          <i v-if="savingNote">{{ savingNote }}</i>
+          <template v-else>Save</template>
+        </Button>
+        <button
+          type="button"
+          class="px-1.5 rounded-r-md bg-accent hover:bg-accent/90 text-white
+                 border-l border-white/20 transition-colors disabled:opacity-50
+                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :disabled="saving || !composite"
+          aria-label="More save options"
+          @click="saveMenuOpen = !saveMenuOpen"
+        >
+          <ChevronUpIcon class="w-3.5 h-3.5" />
+        </button>
+
+        <!-- Opens upward: the bar is the last row of the window. -->
+        <div
+          v-if="saveMenuOpen"
+          class="absolute bottom-full right-0 mb-1 w-56 py-1 z-menu
+                 rounded-lg border border-edge-subtle bg-surface-overlay shadow-xl"
+        >
+          <button
+            type="button"
+            class="w-full flex items-center gap-3 px-3 py-2 text-left text-[13px] text-content hover:bg-overlay-light transition-colors"
+            @click="saveMenuOpen = false; save(false)"
+          >
+            <span class="flex-1">Save a new version</span>
+            <span class="text-[11px] text-content-tertiary">Default</span>
+          </button>
+          <button
+            type="button"
+            class="w-full px-3 py-2 text-left text-[13px] text-content hover:bg-overlay-light transition-colors"
+            @click="saveMenuOpen = false; save(true)"
+          >
+            Save as new asset
+          </button>
+        </div>
+      </div>
     </footer>
+
+    <ConfirmDialog
+      :show="confirmingRevert"
+      title="Revert to the last saved version?"
+      :message="`${revertCount} ${revertCount === 1 ? 'edit' : 'edits'} made since the last save will be undone. The saved version is not affected.`"
+      confirm-label="Revert"
+      danger
+      @confirm="revertToSaved"
+      @cancel="confirmingRevert = false"
+    />
   </div>
 </template>

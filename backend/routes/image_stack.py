@@ -262,7 +262,11 @@ async def get_stack_payload(
         raise HTTPException(status_code=400, detail=str(exc))
     if not path.exists():
         raise HTTPException(status_code=404, detail="Payload not found")
-    return FileResponse(path)
+    # Paint layers are intentionally rewritten under a stable raster_ref as
+    # strokes land. Force clients to revalidate that URL; otherwise WebKit can
+    # keep returning the first PNG and the compositor appears to lose every
+    # later stroke until a browser refresh.
+    return FileResponse(path, headers={"Cache-Control": "no-cache"})
 
 
 @router.delete("/{document_id}/cache")

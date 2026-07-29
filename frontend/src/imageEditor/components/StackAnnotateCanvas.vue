@@ -7,8 +7,8 @@
  * lossless.
  *
  * The gestures and the renderer are the snapshot editor's, copied into
- * `imageEditor/ported/`: the arrow that smooths as you drag it, neon and
- * gradient styling, canvas-native text editing with a real caret, hit testing,
+ * `imageEditor/ported/`: the arrow that smooths as you drag it, neon glow and
+ * gradient paints, canvas-native text editing with a real caret, hit testing,
  * resize handles and rotation. That composable reaches the outside world only
  * through getState / updateState / pushHistory, which is exactly the seam the
  * op stack needs — the state it asks for is the op's payload, and pushHistory
@@ -20,8 +20,10 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useAnnotation } from '../ported/useAnnotation'
 import type { AnnotationState } from '../ported/useAnnotation'
 import { renderShapes, drawSelectionHandles, getShapeBounds, getShapeCenter } from '../ported/shapes'
-import type { Shape, AnnotateTool } from '../ported/shapeTypes'
+import type { Shape, AnnotateTool, Paint } from '../ported/shapeTypes'
 import type { Color, ViewTransform } from '../ported/geometry'
+import { textStyleAnnotationState } from '../stack/textStyles'
+import type { TextStyleId } from '../stack/textStyles'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
@@ -30,10 +32,15 @@ const props = withDefaults(defineProps<{
   displayWidth: number
   displayHeight: number
   tool?: AnnotateTool
-  strokeColor?: Color
-  fillColor?: Color | null
+  /** Stroke and fill are paints: a flat color or a gradient. */
+  strokeColor?: Paint
+  fillColor?: Paint | null
   strokeWidth?: number
-  textStyle?: 'pill' | 'plain' | 'outline' | 'neon'
+  textStyle?: TextStyleId
+  /** Universal shape effect for NEW shapes — the toolbar's None/Neon. */
+  shapeEffect?: 'none' | 'neon'
+  /** Initial opacity for NEW shapes, 0-1. */
+  opacity?: number
 }>(), {
   tool: 'arrow',
   strokeColor: () => ({ r: 255, g: 255, b: 255, a: 1 }),
@@ -43,6 +50,8 @@ const props = withDefaults(defineProps<{
   // here draws a sub-pixel line that looks like nothing rendered at all.
   strokeWidth: 8,
   textStyle: 'pill',
+  shapeEffect: 'none',
+  opacity: 1,
 })
 
 const emit = defineEmits<{
@@ -78,31 +87,27 @@ watch(() => props.shapes, incoming => {
 }, { immediate: true })
 
 /**
- * Text presets, which the old editor expressed as raw style fields. Kept as
- * the four the sub-bar offers rather than exposing every knob in the toolbar —
- * the per-shape knobs belong in the inspector, where they stay mutable.
+ * Publish the finished local edit to the document.
+ *
+ * Pointer moves and text keystrokes deliberately stay inside this adapter:
+ * the overlay already owns and paints the live shape list, while publishing
+ * every intermediate value makes the persistent stack, journal, autosave and
+ * compositor all do work that cannot improve the live preview. Mouseup (or
+ * ending a text session) is the transaction boundary.
  */
-const textPreset = computed(() => {
-  const colour = props.strokeColor
-  switch (props.textStyle) {
-    case 'plain':
-      return { annotateTextColor: colour, annotateTextBgColor: null, annotateTextFontWeight: 'normal' as const }
-    case 'outline':
-      return { annotateTextColor: colour, annotateTextBgColor: null, annotateTextEffect: 'outline' as const }
-    case 'neon':
-      return {
-        annotateTextColor: colour, annotateTextBgColor: null,
-        annotateTextEffect: 'neon' as const, annotateTextGlowIntensity: 70,
-      }
-    default:
-      return {
-        annotateTextColor: colour,
-        annotateTextBgColor: { r: 0, g: 0, b: 0, a: 0.65 },
-        annotateTextBackgroundPadding: 0.35,
-        annotateTextBackgroundCornerRadius: 1,
-      }
-  }
-})
+function commitChanges(action: string) {
+  emit('change', shapes.value)
+  emit('commit', action)
+}
+
+/**
+ * Text presets, which the old editor expressed as raw style fields. The
+ * mapping lives in textStyles.ts because the inspector needs the same one —
+ * a preset spans four properties, so two hand-written copies drift.
+ */
+const textPreset = computed(() =>
+  textStyleAnnotationState(props.textStyle, props.strokeColor)
+)
 
 function getState(): AnnotationState {
   return {
@@ -112,6 +117,9 @@ function getState(): AnnotationState {
     annotateStrokeColor: props.strokeColor,
     annotateFillColor: props.fillColor,
     annotateStrokeWidth: props.strokeWidth,
+    annotateOpacity: props.opacity,
+    annotateShapeEffect: props.shapeEffect,
+    annotateGlowIntensity: 70,
     annotateTextFontFamily: 'Inter, system-ui, sans-serif',
     annotateTextAlign: 'center',
     annotateRedactBlockSize: 16,
@@ -119,14 +127,23 @@ function getState(): AnnotationState {
   }
 }
 
-function updateState(partial: Partial<AnnotationState>) {
+/**
+ * `quiet` keeps a change local to the overlay.
+ *
+ * The overlay paints from this list, so a quiet change is fully live on screen
+ * — it is only the DOCUMENT that has not been told. Option-drag needs that: one
+ * shape is one step in the stack, so publishing the copy while the key is still
+ * down would mint and destroy a step on every press. Selection is never quiet;
+ * only the shapes are.
+ */
+function updateState(partial: Partial<AnnotationState>, options?: { quiet?: boolean }) {
   if ('selectedShapeId' in partial) {
     selectedShapeId.value = partial.selectedShapeId ?? null
     emit('select', selectedShapeId.value)
   }
   if (partial.annotations) {
     shapes.value = partial.annotations
-    emit('change', partial.annotations)
+    if (!options?.quiet) emit('change', partial.annotations)
   }
   // activeTool and the style fields are props here: the toolbar owns them, and
   // the composable only ever reads them back through getState.
@@ -159,8 +176,34 @@ const annotation = useAnnotation(
   canvasSize,
   getState,
   updateState,
-  (action: string) => emit('commit', action)
+  commitChanges
 )
+
+/**
+ * Whether the canvas currently owns a caret.
+ *
+ * `isEditingTextOnCanvas` is a plain function, so the host and the painter both
+ * need something they can watch rather than call — a text session has to hide
+ * the handles and the floating strip, and both of those are reactive reads.
+ */
+const editingText = computed(() =>
+  annotation.textEditState.value !== null ||
+  annotation.interactionMode.value.type === 'editing-text-canvas'
+)
+
+/**
+ * A gesture is under way: drawing, moving, resizing, rotating.
+ *
+ * `pending` is excluded — that is a mouse button held on a shape, which is how
+ * an ordinary click starts, and chrome that blinks on every click is worse than
+ * chrome that stays. Floating chrome hides for the duration: a move publishes
+ * nothing until it ends, so anything positioned from the document would sit at
+ * the pose the shape was grabbed at and then jump.
+ */
+const gestureActive = computed(() => {
+  const type = annotation.interactionMode.value.type
+  return type !== 'idle' && type !== 'pending'
+})
 
 // -- painting ---------------------------------------------------------------
 
@@ -169,14 +212,19 @@ function draw() {
   const size = imageSize.value
   if (!canvas || !size) return
   const ctx = canvas.getContext('2d')!
-  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  // The shape renderer speaks in source-image pixels. Transform that space
+  // into a display-sized backing store instead of rasterizing a multi-megapixel
+  // overlay and asking CSS to shrink it after every pointer move.
+  ctx.setTransform(canvas.width / size.width, 0, 0, canvas.height / size.height, 0, 0)
+  ctx.clearRect(0, 0, size.width, size.height)
 
   // The source is passed through because redaction samples the pixels it
   // covers rather than painting a flat block over them.
   renderShapes(ctx, shapes.value, size, props.source ?? undefined, annotation.textEditState.value)
 
   const selected = shapes.value.find(s => s.id === selectedShapeId.value)
-  if (selected && !annotation.isEditingTextOnCanvas.value) {
+  if (selected && !editingText.value) {
     drawSelectionHandles(
       ctx,
       getShapeBounds(selected, size),
@@ -194,20 +242,36 @@ function resize() {
   const canvas = overlay.value
   const size = imageSize.value
   if (!canvas || !size) return
-  canvas.width = size.width
-  canvas.height = size.height
+
+  // Enough pixels for a crisp interactive overlay, capped so a high-DPI
+  // monitor cannot turn a fitted preview back into a source-sized hot path.
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
+  const width = Math.max(1, Math.round(props.displayWidth * pixelRatio))
+  const height = Math.max(1, Math.round(props.displayHeight * pixelRatio))
+  if (canvas.width !== width) canvas.width = width
+  if (canvas.height !== height) canvas.height = height
   draw()
 }
 
 defineExpose({
   /** Typing goes to the canvas, so the view must hold its shortcuts. */
   isEditingText: () => annotation.isEditingTextOnCanvas(),
+  /** The same fact, watchable: chrome over the canvas hides during a session. */
+  editingText,
+  gestureActive,
+  /**
+   * Put the caret in a text shape without a double-click. Text editing lives
+   * in the composable's interaction model, so it cannot be driven from the
+   * document side — only asked for here.
+   */
+  editText(id: string) {
+    annotation.startTextEditing(id)
+  },
   /** Delete is a document verb, so the bottom bar can reach it. */
   deleteSelected() {
     if (!selectedShapeId.value) return
     shapes.value = shapes.value.filter(s => s.id !== selectedShapeId.value)
-    emit('change', shapes.value)
-    emit('commit', 'Delete annotation')
+    commitChanges('Delete annotation')
     selectedShapeId.value = null
     emit('select', null)
   },
@@ -215,12 +279,26 @@ defineExpose({
     selectedShapeId.value = null
     emit('select', null)
   },
+  /** External selection push (a row click); no emit, or it would echo. */
+  setSelected(id: string | null) {
+    if (selectedShapeId.value !== id) selectedShapeId.value = id
+  },
 })
 
-watch(() => props.source, resize)
+watch(() => [props.source, props.displayWidth, props.displayHeight] as const, resize)
+
+let drawFrame: number | null = null
+function scheduleDraw() {
+  if (drawFrame !== null) return
+  drawFrame = requestAnimationFrame(() => {
+    drawFrame = null
+    draw()
+  })
+}
+
 watch(
   () => [shapes.value, selectedShapeId.value, annotation.textEditState.value] as const,
-  () => nextTick(draw),
+  () => nextTick(scheduleDraw),
   { deep: true }
 )
 // The composable listens on the canvas element, which only exists after mount.
@@ -228,7 +306,10 @@ onMounted(() => {
   resize()
   annotation.setupListeners()
 })
-onBeforeUnmount(() => annotation.cleanupListeners())
+onBeforeUnmount(() => {
+  annotation.cleanupListeners()
+  if (drawFrame !== null) cancelAnimationFrame(drawFrame)
+})
 </script>
 
 <template>

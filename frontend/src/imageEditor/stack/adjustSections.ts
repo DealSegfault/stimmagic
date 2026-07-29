@@ -1,20 +1,21 @@
 /**
- * The control surface for the parametric adjustment families: Levels, Filters
- * and Effects — the snapshot editor's own names, kept.
+ * The control surface for the parametric adjustment families: Levels and
+ * Filters.
  *
- * They share one op kind because the pixel pipeline is one pipeline and its
- * order is fixed (base adjustments, then filter, then split tone, then
- * effects); splitting it into three ops would let the user reorder it into an
- * order the maths does not have. What the three families give is three
- * doorways into it, and the row is labelled by whichever groups were touched.
+ * One rule everywhere: the sub-toolbar offers what you can ADD, clicking it
+ * creates a focused step, and the step's controls live in its Properties.
+ * Levels offers small single-purpose edits — Tone, Detail, Tint, the Autos —
+ * each its own step with its own controls. Filters offers the preset strip,
+ * which also carries the discrete pixel looks (VHS, Glow, Vignette…) that
+ * used to hide behind an Effects dropdown: they are picked-by-eye things with
+ * one strength, which is exactly what the strip is for.
  *
- * The sub-toolbar shows one primary control per group; the rest live in the
- * selected row's inspector. Nobody gets forty knobs in a 42px row, and nobody
- * loses them either.
+ * All of these still execute as ONE op kind (`adjust`) through the same fixed
+ * pixel pipeline; a step simply carries only the params its doorway set.
  */
 
 /** Which family a group belongs to — the doorway that shows it. */
-export type AdjustFamily = 'levels' | 'filters' | 'effects'
+export type AdjustFamily = 'levels' | 'filters'
 
 export interface AdjustControl {
   key: string
@@ -28,7 +29,6 @@ export interface AdjustControl {
 }
 
 export interface AdjustSection {
-  family: AdjustFamily
   id: string
   label: string
   controls: AdjustControl[]
@@ -36,10 +36,15 @@ export interface AdjustSection {
   toggle?: { key: string; label: string }
 }
 
+/**
+ * Legacy sections, kept for MIGRATED steps only: a document from the snapshot
+ * editor carries one blob op with any mix of these params, and selecting that
+ * row still needs a full surface. New steps are fine-grained (LEVEL_EDITS and
+ * the strip) and never show this.
+ */
 /** Ranges mirror the snapshot editor's, so a migrated value lands where it was. */
 export const ADJUST_SECTIONS: AdjustSection[] = [
   {
-    family: 'levels',
     id: 'levels',
     label: 'Levels',
     controls: [
@@ -52,7 +57,6 @@ export const ADJUST_SECTIONS: AdjustSection[] = [
     ],
   },
   {
-    family: 'levels',
     id: 'split-tone',
     label: 'Split tone',
     toggle: { key: 'splitToningEnabled', label: 'Split tone' },
@@ -65,7 +69,6 @@ export const ADJUST_SECTIONS: AdjustSection[] = [
     ],
   },
   {
-    family: 'effects',
     id: 'effects',
     label: 'Effects',
     controls: [
@@ -91,16 +94,87 @@ export function adjustControl(key: string): AdjustControl | undefined {
   return CONTROLS_BY_KEY.get(key)
 }
 
-export function sectionsForFamily(family: AdjustFamily): AdjustSection[] {
-  return ADJUST_SECTIONS.filter(section => section.family === family)
+/**
+ * The Levels family's addable edits. Each is its own step with its own small
+ * control set — a user thinks "I did a tone adjustment", not "I opened section
+ * two of the levels blob", and the row should read the same way.
+ */
+export interface LevelEdit {
+  id: 'tone' | 'detail' | 'tint'
+  label: string
+  controls: AdjustControl[]
+  /** Params set at creation, beyond the marker — what makes the edit DO its thing. */
+  seed?: Record<string, any>
+}
+
+export const LEVEL_EDITS: LevelEdit[] = [
+  {
+    id: 'tone',
+    label: 'Tone',
+    controls: [
+      { key: 'exposure', label: 'Exposure', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'contrast', label: 'Contrast', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'temperature', label: 'Temperature', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'gamma', label: 'Gamma', min: 0.1, max: 3, step: 0.05, default: 1 },
+    ],
+  },
+  {
+    id: 'detail',
+    label: 'Detail',
+    controls: [
+      { key: 'clarity', label: 'Clarity', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
+      { key: 'sharpen', label: 'Sharpen', min: 0, max: 100, step: 1, default: 0 },
+    ],
+  },
+  {
+    id: 'tint',
+    label: 'Tint',
+    seed: { splitToningEnabled: true },
+    controls: [
+      { key: 'splitToningShadowHue', label: 'Shadow hue', min: 0, max: 360, step: 1, default: 30 },
+      { key: 'splitToningShadowSat', label: 'Shadow strength', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'splitToningHighlightHue', label: 'Highlight hue', min: 0, max: 360, step: 1, default: 200 },
+      { key: 'splitToningHighlightSat', label: 'Highlight strength', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'splitToningBalance', label: 'Balance', min: -100, max: 100, step: 1, default: 0 },
+    ],
+  },
+]
+
+export function levelEditById(id: string): LevelEdit | undefined {
+  return LEVEL_EDITS.find(edit => edit.id === id)
 }
 
 /**
- * The snapshot editor's filter presets, by category, so the grid reads the way
- * its Filters panel did.
+ * The Autos, as addable edits: each computes slider values from the histogram
+ * and lands as a normal Tone step seeded with them — inspectable, adjustable
+ * and deletable like anything else, not a fire-and-forget action.
  */
-export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: Array<{ id: string; label: string }> }> = [
-  { id: 'none', label: '', filters: [{ id: 'none', label: 'None' }] },
+export const AUTO_EDITS = [
+  { id: 'levels', label: 'Auto levels' },
+  { id: 'contrast', label: 'Auto contrast' },
+  { id: 'balance', label: 'Auto balance' },
+] as const
+
+/**
+ * The strip: the snapshot editor's filter presets by category, plus the
+ * discrete pixel looks that used to be the Effects dropdown. An entry with
+ * `effect` is not a color matrix — clicking it makes a step carrying that one
+ * effect param, whose Amount is the param itself.
+ *
+ * No `None` entry: the strip is not a picker, it ADDS. Removing an edit is the
+ * Edits list's job (or clicking the applied entry again).
+ */
+export interface StripEntry {
+  id: string
+  label: string
+  /** Present on pixel-look entries: the AdjustParams key and the value a click adds. */
+  effect?: { key: string; add: number }
+}
+
+export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: StripEntry[] }> = [
   {
     id: 'color',
     label: 'Color',
@@ -129,6 +203,25 @@ export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: Arra
       { id: 'polaroid-600', label: 'Polaroid' },
     ],
   },
+  {
+    id: 'analog',
+    label: 'Analog',
+    filters: [
+      { id: 'vhs', label: 'VHS', effect: { key: 'vhs', add: 60 } },
+      { id: 'glitch', label: 'Glitch', effect: { key: 'glitch', add: 50 } },
+      { id: 'halftone', label: 'Halftone', effect: { key: 'halftone', add: 50 } },
+      { id: 'fringing', label: 'Fringing', effect: { key: 'chromaticAberration', add: 50 } },
+    ],
+  },
+  {
+    id: 'light',
+    label: 'Light',
+    filters: [
+      { id: 'glow', label: 'Glow', effect: { key: 'glow', add: 50 } },
+      { id: 'vignette', label: 'Vignette', effect: { key: 'vignette', add: 50 } },
+      { id: 'grain', label: 'Grain', effect: { key: 'noise', add: 40 } },
+    ],
+  },
 ]
 
 /** Flat, in the order the strip shows them. */
@@ -137,6 +230,20 @@ export const FILTER_STRIP = FILTER_CATEGORIES.flatMap(category => category.filte
 export const FILTER_LABELS = new Map(
   FILTER_CATEGORIES.flatMap(category => category.filters.map(f => [f.id, f.label]))
 )
+
+export function stripEntryById(id: string): StripEntry | undefined {
+  return FILTER_STRIP.find(entry => entry.id === id)
+}
+
+/**
+ * The pixel-look this step carries, if it is a single-effect step from the
+ * strip — what gives its inspector an Amount slider instead of a blob surface.
+ */
+export function effectLookOf(params: Record<string, any>): StripEntry | undefined {
+  return FILTER_STRIP.find(
+    entry => entry.effect && params[entry.effect.key] !== undefined
+  )
+}
 
 /** Groups this op has actually touched — what the row subtitle names. */
 export function touchedSections(params: Record<string, any>): string[] {
@@ -177,7 +284,7 @@ export function adjustLabel(params: Record<string, any>): string {
     )
     const toggled = section.toggle && params[section.toggle.key]
     if (!touched.length && !toggled) continue
-    if (section.family === 'effects') parts.push(...touched.map(control => control.label))
+    if (section.id === 'effects') parts.push(...touched.map(control => control.label))
     else parts.push(section.label)
   }
   return parts.length ? parts.join(' · ') : 'Adjust'

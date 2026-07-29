@@ -2,7 +2,7 @@
  * Executors for the op kinds that carry over from the snapshot editor.
  *
  * The pixel math is the snapshot editor's, copied into `imageEditor/ported/`
- * rather than reimplemented — a second implementation of the colour and effect
+ * rather than reimplemented — a second implementation of the color and effect
  * maths would drift, and the migrated documents have to look identical or the
  * migration is a lie. Copied rather than imported because the snapshot editor
  * is frozen and this editor has to outlive its package.
@@ -10,11 +10,10 @@
  * What changes is the *shape*: the snapshot editor applied these as fields on
  * one flat state object in a fixed order, and here each is a step in a stack
  * that can be toggled, reordered and scoped. The Adjust op deliberately holds
- * every touched section (Light, Colour, Film, Effects) rather than one op per
+ * every touched section (Light, Color, Film, Effects) rather than one op per
  * filter, because the user-facing unit is a adjust session, not a slider.
  */
 
-import { featherAlpha } from './useStackCompositor'
 import {
   applyColorIsolation,
   applyColorMatrix,
@@ -54,7 +53,7 @@ export interface CropParams {
 }
 
 export interface AdjustParams {
-  // Light + colour
+  // Light + color
   brightness?: number
   contrast?: number
   saturation?: number
@@ -232,7 +231,7 @@ function effectsStateFrom(params: AdjustParams) {
 /**
  * The whole parametric adjustment family, in the snapshot editor's order:
  * base adjustments → filter preset → explicit matrix → split tone → gradient
- * map → colour isolation → effects.
+ * map → color isolation → effects.
  */
 export function applyAdjust(
   input: CanvasImageSource,
@@ -274,7 +273,7 @@ export function applyAdjust(
       brightness: 0, contrast: 0, saturation: 0, exposure: 0, temperature: 0, gamma: 1,
     })
     // A preset at less than full strength is the preset blended back toward
-    // identity — which is what an amount slider means for a colour matrix, and
+    // identity — which is what an amount slider means for a color matrix, and
     // is why a filter step has something to adjust rather than being a switch.
     const amount = params.filterAmount ?? 100
     const preset = (FILTER_MATRICES as any)[params.filter] as number[]
@@ -379,60 +378,4 @@ export function applyAnnotations(
     renderShapes(ctx, shapes as any, { width, height }, sourceForRedaction as any)
   }
   return out
-}
-
-/**
- * Restrict an op's effect to a region.
- *
- * The region is a mask like any other; limiting an adjustment is compositing
- * its result back over the input through that mask. Copy-at-creation, never a
- * live link — the op references only its own payloads.
- */
-export function applyThroughRegion(
-  input: CanvasImageSource,
-  result: CanvasImageSource,
-  regionMask: CanvasImageSource,
-  width: number,
-  height: number,
-  options: { featherPx?: number; invert?: boolean } = {}
-): HTMLCanvasElement {
-  const { featherPx = 0, invert = false } = options
-
-  const maskCanvas = makeCanvas(width, height)
-  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true })!
-  maskCtx.drawImage(regionMask, 0, 0, width, height)
-  const maskData = maskCtx.getImageData(0, 0, width, height)
-
-  const layer = makeCanvas(width, height)
-  const layerCtx = layer.getContext('2d', { willReadFrequently: true })!
-  layerCtx.drawImage(result, 0, 0, width, height)
-  const layerData = layerCtx.getImageData(0, 0, width, height)
-
-  for (let i = 0; i < layerData.data.length; i += 4) {
-    const coverage = invert ? 255 - maskData.data[i] : maskData.data[i]
-    layerData.data[i + 3] = Math.round(layerData.data[i + 3] * (coverage / 255))
-  }
-  layerCtx.putImageData(layerData, 0, 0)
-
-  const out = makeCanvas(width, height)
-  const ctx = out.getContext('2d')!
-  ctx.drawImage(input, 0, 0, width, height)
-  ctx.drawImage(featherPx > 0 ? featherEdges(layer, featherPx) : layer, 0, 0)
-  return out
-}
-
-/** Soften a layer's alpha edge. Own pixel math, not canvas `filter:`. */
-function featherEdges(layer: HTMLCanvasElement, radius: number): HTMLCanvasElement {
-  const { width, height } = layer
-  const ctx = layer.getContext('2d', { willReadFrequently: true })!
-  const data = ctx.getImageData(0, 0, width, height)
-  const alpha = new Uint8ClampedArray(width * height)
-  for (let i = 0, p = 0; i < data.data.length; i += 4, p++) alpha[p] = data.data[i + 3]
-
-  // The compositor's separable box blur, so a feather looks the same wherever
-  // it appears.
-  const blurred = featherAlpha(alpha, width, height, radius)
-  for (let i = 0, p = 0; i < data.data.length; i += 4, p++) data.data[i + 3] = blurred[p]
-  ctx.putImageData(data, 0, 0)
-  return layer
 }

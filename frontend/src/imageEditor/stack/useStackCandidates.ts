@@ -1,11 +1,16 @@
 /**
- * Staged candidates: submitting generative steps and turning their outputs
- * into patches the compositor can use.
+ * Every model-backed run the editor makes: staged candidates for the steps in
+ * the stack, and the one-shot run the output stage makes at save time.
  *
  * Candidates are job outputs, not versions and not library tiles. They run with
  * `output_disposition: 'context'` rooted at the editor's working document, so
  * they are durable and reachable without ever becoming Assets. Picking one
  * commits nothing to the version chain — it only updates document.json.
+ *
+ * Every candidate is a PATCH. There is no whole-image class any more: a run
+ * whose result replaces the composite outright is a new base, and the only
+ * operation allowed to make one is the output stage, which produces a saved
+ * version rather than a row (`runToolOnce`).
  *
  * Invocations are built exactly the way ToolView builds them, through the same
  * schema-driven payload builder, so prompt pipeline, entitlements, reservations,
@@ -77,13 +82,28 @@ export interface SubmitRequest {
   tool: PayloadBuilderConfig['tool']
   /** The op's input composite, already rendered. */
   inputCanvas: HTMLCanvasElement
-  /** White-on-black mask; absent for whole-image ops. */
-  maskCanvas?: HTMLCanvasElement | null
+  /** White-on-black mask. Required: every candidate is a patch. */
+  maskCanvas: HTMLCanvasElement
   prompt: string
   count: number
   params?: Record<string, any>
   /** Content hash of the input composite, stamped onto every candidate. */
   sampledInputHash: string
+}
+
+/** A single run whose whole output is the result — the output stage's upscale. */
+export interface OneShotRequest {
+  tool: PayloadBuilderConfig['tool']
+  inputCanvas: HTMLCanvasElement
+  /** The tool's parameters, by schema property name. */
+  params?: Record<string, any>
+  /**
+   * Short edge to ask for, computed the way ToolView computes it. The payload
+   * builder treats `scale_factor` as UI state and always sends `resolution`,
+   * so an upscale run that omitted this would fall back to a default the user
+   * never chose.
+   */
+  finalResolution?: number
 }
 
 export function useStackCandidates(deps: {
@@ -102,9 +122,14 @@ export function useStackCandidates(deps: {
   /** Jobs this editor instance owns, and what to do with their outputs. */
   const jobIntents = new Map<number, {
     opId: string
-    isPatch: boolean
-    maskCanvas: HTMLCanvasElement | null
+    maskCanvas: HTMLCanvasElement
     sampledInputHash: string
+  }>()
+
+  /** One-shot runs (the output stage), keyed by job id. */
+  const oneShotIntents = new Map<number, {
+    resolve: (image: HTMLImageElement) => void
+    reject: (error: Error) => void
   }>()
 
   let unsubscribe: Array<() => void> = []
@@ -139,24 +164,34 @@ export function useStackCandidates(deps: {
     return copy
   }
 
-  async function submit(request: SubmitRequest): Promise<number[]> {
-    lastError.value = null
+  /**
+   * The wire body for one run, built through ToolView's own payload builder.
+   * Shared by the candidate path and the output stage's one-shot so there is
+   * exactly one place that knows how an invocation is shaped.
+   */
+  async function buildBody(options: {
+    tool: PayloadBuilderConfig['tool']
+    inputCanvas: HTMLCanvasElement
+    prompt: string
+    params?: Record<string, any>
+    maskCanvas?: HTMLCanvasElement | null
+    lockResolution: boolean
+    finalResolution?: number
+  }) {
     const documentId = deps.documentId()
     if (!documentId) throw new Error('No stack document')
 
-    const maskSnapshot = request.maskCanvas ? snapshot(request.maskCanvas) : null
+    // The input composite is what the model sees. It is synthetic, so it has no
+    // library media id of its own — lineage back to the base asset travels
+    // through the save path instead.
+    const inputPath = await uploadCanvasAsInput(options.inputCanvas)
 
-    // The op's input composite is what the model sees. It is synthetic, so it
-    // has no library media id of its own — lineage back to the base asset
-    // travels through the save path instead.
-    const inputPath = await uploadCanvasAsInput(request.inputCanvas)
-
-    const maskDataUrl = request.maskCanvas
-      ? maskDataUrlFor(request.maskCanvas, maskFormatFor(request.tool))
+    const maskDataUrl = options.maskCanvas
+      ? maskDataUrlFor(options.maskCanvas, maskFormatFor(options.tool))
       : null
 
     const config: PayloadBuilderConfig = {
-      tool: request.tool,
+      tool: options.tool,
       generatorInstanceId: generatorInstanceId(),
       // Candidates live as long as their step, so they never auto-delete.
       // (The builder's type says number; the wire field is the duration
@@ -165,25 +200,29 @@ export function useStackCandidates(deps: {
     }
     const state: PayloadBuilderState = {
       globalPrefs: {
-        prompt: request.prompt,
+        prompt: options.prompt,
         negative_prompt: '',
         folder_path: '',
         inputImages: [{ path: inputPath }],
         inputVideos: [],
         inputAudios: [],
       },
-      // Resolution is locked to the input: a patch only composites when the
-      // output lands on the same pixel grid it was sampled from.
       modelParams: {
-        width: request.inputCanvas.width,
-        height: request.inputCanvas.height,
-        ...(request.params || {}),
+        // A patch only composites when the output lands on the same pixel grid
+        // it was sampled from, so its resolution is locked to the input. An
+        // upscaler told to return the input's dimensions would return the
+        // input, so the output stage does not lock.
+        ...(options.lockResolution
+          ? { width: options.inputCanvas.width, height: options.inputCanvas.height }
+          : {}),
+        ...(options.params || {}),
       },
       videoImages: { startImage: null, endImage: null },
       maskDataUrl,
       enabledLoras: [],
-      inputImageWidth: request.inputCanvas.width,
-      inputImageHeight: request.inputCanvas.height,
+      inputImageWidth: options.inputCanvas.width,
+      inputImageHeight: options.inputCanvas.height,
+      finalResolution: options.finalResolution,
     }
 
     const uploads: Record<string, any> = {}
@@ -193,34 +232,80 @@ export function useStackCandidates(deps: {
     const captured = buildCapturedState(config, state, uploads)
     const base = buildBasePayload(config, state)
 
+    return {
+      ...base,
+      parameters: captured.parameters,
+      prompt_options: captured.promptOptions,
+      output_disposition: 'context',
+      output_context_kind: 'working_document',
+      output_context_id: String(documentId),
+    }
+  }
+
+  async function submit(request: SubmitRequest): Promise<number[]> {
+    lastError.value = null
+    const maskSnapshot = snapshot(request.maskCanvas)
+
+    const body = await buildBody({
+      tool: request.tool,
+      inputCanvas: request.inputCanvas,
+      prompt: request.prompt,
+      params: request.params,
+      maskCanvas: request.maskCanvas,
+      lockResolution: true,
+    })
+
     const jobIds: number[] = []
     for (let i = 0; i < request.count; i++) {
-      const body = {
-        ...base,
+      const { data } = await axios.post(`${API_BASE}/generate/submit`, {
+        ...body,
         parameters: {
-          ...captured.parameters,
+          ...body.parameters,
           // Distinct seeds, or every candidate is the same image.
           ...(request.params?.seed === undefined
             ? { seed: Math.floor(Math.random() * 2 ** 31) }
             : {}),
         },
-        prompt_options: captured.promptOptions,
-        output_disposition: 'context',
-        output_context_kind: 'working_document',
-        output_context_id: String(documentId),
-      }
-      const { data } = await axios.post(`${API_BASE}/generate/submit`, body)
+      })
       const jobId = Number(data.job_id)
       jobIds.push(jobId)
       jobIntents.set(jobId, {
         opId: request.opId,
-        isPatch: !!maskSnapshot,
         maskCanvas: maskSnapshot,
         sampledInputHash: request.sampledInputHash,
       })
       pending.value = [...pending.value, { opId: request.opId, jobId, status: 'queued' }]
     }
     return jobIds
+  }
+
+  /**
+   * Run one tool over one canvas and resolve with its output pixels.
+   *
+   * The output stage's path: no op, no candidate, no pick — the result is not a
+   * step in the document, it is the image being saved. Rejects rather than
+   * degrading, because a save that silently skipped the upscale would write the
+   * wrong file to the version chain.
+   */
+  function runToolOnce(request: OneShotRequest): Promise<HTMLImageElement> {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+      buildBody({
+        tool: request.tool,
+        inputCanvas: request.inputCanvas,
+        prompt: '',
+        params: request.params,
+        maskCanvas: null,
+        // An upscaler told to return the input's dimensions would return the
+        // input; its size comes from its own resolution parameter.
+        lockResolution: false,
+        finalResolution: request.finalResolution,
+      })
+        .then(body => axios.post(`${API_BASE}/generate/submit`, body))
+        .then(({ data }) => {
+          oneShotIntents.set(Number(data.job_id), { resolve, reject })
+        })
+        .catch(reject)
+    })
   }
 
   // -- completion ----------------------------------------------------------
@@ -245,63 +330,39 @@ export function useStackCandidates(deps: {
     const output = await loadImage(deps.mediaFileUrl(mediaId))
 
     const candidateId = `cand-${jobId}`
-    let candidate: Candidate
-
-    if (intent.isPatch && intent.maskCanvas) {
-      const width = intent.maskCanvas.width
-      const height = intent.maskCanvas.height
-      if (output.naturalWidth !== width || output.naturalHeight !== height) {
-        // A tool that does not return the input's dimensions cannot be
-        // patch-composited: the crop would land somewhere other than where it
-        // was sampled from. Say so rather than silently resampling.
-        lastError.value =
-          `This tool returned ${output.naturalWidth}×${output.naturalHeight} for a ` +
-          `${width}×${height} input. Its results cannot be applied as a patch.`
-        pending.value = pending.value.map(p =>
-          p.jobId === jobId ? { ...p, status: 'failed' as const, error: lastError.value! } : p
-        )
-        return
-      }
-
-      const bounds = maskBounds(intent.maskCanvas, width, height, PATCH_MARGIN_PX)
-      if (!bounds) {
-        lastError.value = 'The mask is empty.'
-        return
-      }
-      const patchCanvas = extractPatch(output, bounds)
-      const ref = await deps.uploadPayload(
-        `${candidateId}-patch.png`,
-        await canvasToBlob(patchCanvas)
+    const width = intent.maskCanvas.width
+    const height = intent.maskCanvas.height
+    if (output.naturalWidth !== width || output.naturalHeight !== height) {
+      // A tool that does not return the input's dimensions cannot be
+      // patch-composited: the crop would land somewhere other than where it
+      // was sampled from. Say so rather than silently resampling.
+      lastError.value =
+        `This tool returned ${output.naturalWidth}×${output.naturalHeight} for a ` +
+        `${width}×${height} input. Its results cannot be applied as a patch.`
+      pending.value = pending.value.map(p =>
+        p.jobId === jobId ? { ...p, status: 'failed' as const, error: lastError.value! } : p
       )
-      candidate = {
-        id: candidateId,
-        patch_ref: ref,
-        patch_origin: [bounds.x, bounds.y],
-        media_id: mediaId,
-        file_hash: media.file_hash,
-        job_id: String(jobId),
-        sampled_input_hash: intent.sampledInputHash,
-      }
-    } else {
-      // Whole-image results replace the composite outright, so the payload is
-      // the frame as returned.
-      const canvas = document.createElement('canvas')
-      canvas.width = output.naturalWidth
-      canvas.height = output.naturalHeight
-      canvas.getContext('2d')!.drawImage(output, 0, 0)
-      const ref = await deps.uploadPayload(
-        `${candidateId}-whole.png`,
-        await canvasToBlob(canvas)
-      )
-      candidate = {
-        id: candidateId,
-        patch_ref: ref,
-        media_id: mediaId,
-        file_hash: media.file_hash,
-        job_id: String(jobId),
-        sampled_input_hash: intent.sampledInputHash,
-        dims: [output.naturalWidth, output.naturalHeight],
-      }
+      return
+    }
+
+    const bounds = maskBounds(intent.maskCanvas, width, height, PATCH_MARGIN_PX)
+    if (!bounds) {
+      lastError.value = 'The mask is empty.'
+      return
+    }
+    const patchCanvas = extractPatch(output, bounds)
+    const ref = await deps.uploadPayload(
+      `${candidateId}-patch.png`,
+      await canvasToBlob(patchCanvas)
+    )
+    const candidate: Candidate = {
+      id: candidateId,
+      patch_ref: ref,
+      patch_origin: [bounds.x, bounds.y],
+      media_id: mediaId,
+      file_hash: media.file_hash,
+      job_id: String(jobId),
+      sampled_input_hash: intent.sampledInputHash,
     }
 
     deps.attachCandidates(intent.opId, [candidate])
@@ -321,6 +382,20 @@ export function useStackCandidates(deps: {
       }),
       onWebSocketEvent('generation_job_completed', async (data: any) => {
         const jobId = data.job?.id
+        const oneShot = oneShotIntents.get(jobId)
+        if (oneShot) {
+          oneShotIntents.delete(jobId)
+          if (!data.job.result_media_id) {
+            oneShot.reject(new Error('The run produced no output.'))
+            return
+          }
+          try {
+            oneShot.resolve(await loadImage(deps.mediaFileUrl(data.job.result_media_id)))
+          } catch (err: any) {
+            oneShot.reject(new Error(err?.message || 'Failed to read the result.'))
+          }
+          return
+        }
         if (!jobIntents.has(jobId)) return
         if (!data.job.result_media_id) {
           pending.value = pending.value.filter(p => p.jobId !== jobId)
@@ -338,6 +413,12 @@ export function useStackCandidates(deps: {
       }),
       onWebSocketEvent('generation_job_failed', (data: any) => {
         const jobId = data.job?.id
+        const oneShot = oneShotIntents.get(jobId)
+        if (oneShot) {
+          oneShotIntents.delete(jobId)
+          oneShot.reject(new Error(data.job?.error || 'The run failed.'))
+          return
+        }
         if (!jobIntents.has(jobId)) return
         pending.value = pending.value.map(p =>
           p.jobId === jobId
@@ -352,11 +433,17 @@ export function useStackCandidates(deps: {
   function stop() {
     unsubscribe.forEach(fn => fn())
     unsubscribe = []
+    // Nothing will ever resolve these once the socket handlers are gone, and a
+    // save awaiting one would hang with a spinner instead of reporting.
+    for (const intent of oneShotIntents.values()) {
+      intent.reject(new Error('The editor closed before the run finished.'))
+    }
+    oneShotIntents.clear()
   }
 
   function clearPending(opId?: string) {
     pending.value = opId ? pending.value.filter(p => p.opId !== opId) : []
   }
 
-  return { pending, lastError, submit, start, stop, clearPending }
+  return { pending, lastError, submit, runToolOnce, start, stop, clearPending }
 }

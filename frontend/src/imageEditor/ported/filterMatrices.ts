@@ -1,7 +1,7 @@
 /**
  * Copied from FILTER_MATRICES in packages/image-editor/src/constants.ts.
  *
- * The colour matrices behind the filter presets. Copied rather than imported
+ * The color matrices behind the filter presets. Copied rather than imported
  * so a migrated document and a newly filtered one go through the same numbers
  * even after the snapshot editor's package stops being built.
  */

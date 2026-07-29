@@ -11,14 +11,15 @@
  * step applies on top of.
  */
 
-export type OpClass = 'parametric' | 'patch' | 'whole' | 'container'
-
-export interface OpRegion {
-  /** Payload ref, relative to the document directory. */
-  mask_ref: string
-  feather_px: number
-  invert: boolean
-}
+/**
+ * There is no whole-image class, and adding one back would be a mistake.
+ *
+ * An op that replaces the composite occludes everything below it, and a layer
+ * that fully occludes the stack beneath it is not a layer — it is a new base.
+ * Those live in the version chain, where they are visible and forkable, rather
+ * than as a frozen row that the rest of the list's physics contradict.
+ */
+export type OpClass = 'parametric' | 'patch' | 'container'
 
 export interface OpBlend {
   feather_px: number
@@ -27,7 +28,7 @@ export interface OpBlend {
 
 export interface Candidate {
   id: string
-  /** Bbox-cropped patch PNG (patch ops only); whole-image ops use media_id. */
+  /** Bbox-cropped patch PNG — the only region the composite ever keeps. */
   patch_ref?: string
   /** Top-left of the patch in its input space. */
   patch_origin?: [number, number]
@@ -41,8 +42,6 @@ export interface Candidate {
    * nothing about staleness is stored.
    */
   sampled_input_hash: string
-  /** Whole-image ops record output dimensions; they may differ from the input. */
-  dims?: [number, number]
 }
 
 export interface BaseOp {
@@ -50,14 +49,13 @@ export interface BaseOp {
   class: OpClass
   enabled: boolean
   label: string
-  region?: OpRegion | null
   /**
    * The geometry below this op when its spatial payloads were created — the
    * anchor that makes those pixels addressable in the ORIGINAL image's
    * coordinates.
    *
-   * Everything spatial an op owns (its mask, its raster layer, its region, the
-   * candidates generated against its mask) lives in this frame. The compositor
+   * Everything spatial an op owns (its mask, its raster layer, the candidates
+   * generated against its mask) lives in this frame. The compositor
    * carries them into whatever the geometry is now with `M_now ∘ M_created⁻¹`.
    * Absent on documents written before this existed, which render as they
    * always did: unanchored, correct only while the geometry below them has not
@@ -73,11 +71,11 @@ export interface ParametricOp extends BaseOp {
 }
 
 export interface GenerativeOp extends BaseOp {
-  class: 'patch' | 'whole'
+  class: 'patch'
   exec: { kind: 'tool'; tool_id: string; task_type: string }
   /** STP parameters as submitted, minus the inputs. */
   params: Record<string, any>
-  /** Patch ops carry the mask they were sampled through. */
+  /** The mask this patch was sampled through. */
   mask_ref?: string
   blend?: OpBlend
   /** null while candidates are staged and none has been picked yet. */
@@ -105,6 +103,54 @@ export interface DocumentBase {
   file_hash: string
   width: number
   height: number
+  /**
+   * A payload in the document's own directory that supplies the base pixels
+   * instead of the revision's media.
+   *
+   * Written only by the flatten migration, which bakes a document that still
+   * had whole-image steps down to the pixels those steps produced. The
+   * asset/revision ids stay as they were: the save path still commits against
+   * the same revision, and the flattened pixels are what the stack now sits on.
+   */
+  payload_ref?: string
+}
+
+/**
+ * The terminal stage, and deliberately NOT a row.
+ *
+ * Upscale is the one operation allowed to change the base, and it does that at
+ * the save boundary — the only place a base change is legitimate. Keeping it
+ * out of `edits` is what stops it becoming a fence: nothing in the stack reads
+ * a composite it then replaces.
+ *
+ * `params` holds the TOOL's own parameters, by schema property name, exactly as
+ * ToolView holds them. The editor knows nothing about any particular upscaler:
+ * the `upscale-image` task defines the interface (`x-control: upscale_resolution`
+ * → `scale_factor` or `resolution`, plus whatever else a tool declares), the
+ * catalog defines the tool list, and the shared payload builder turns this into
+ * an invocation. A hardcoded factor name here would work for one provider and
+ * silently do nothing for the next.
+ */
+export interface OutputStage {
+  /** Off by default: a save writes the working size unless asked otherwise. */
+  enabled: boolean
+  /** `photo` runs a catalog upscale-image tool; `resample` is client-side Lanczos. */
+  method: 'photo' | 'resample'
+  /** Recorded when method is `photo`; same picker semantics as any generative op. */
+  tool_id: string | null
+  /**
+   * Tool parameters by schema property name, plus the upscale picker's own
+   * state (`resolutionMode` / `scaleFactor` / `targetResolution`) under the
+   * same names ToolView uses, so the payload builder resolves them identically.
+   */
+  params: Record<string, any>
+}
+
+export const DEFAULT_OUTPUT: OutputStage = {
+  enabled: false,
+  method: 'photo',
+  tool_id: null,
+  params: {},
 }
 
 export interface StackDocument {
@@ -114,6 +160,8 @@ export interface StackDocument {
   canvas: { width: number; height: number }
   /** Bottom to top: index 0 composites first. */
   edits: Op[]
+  /** Absent on documents written before the output stage existed: 1×. */
+  output?: OutputStage
 }
 
 /**
@@ -137,7 +185,7 @@ export const DOCUMENT_FORMAT = 'stimma-image-stack'
 export const DOCUMENT_VERSION = 1
 
 export function isGenerative(op: Op): op is GenerativeOp {
-  return op.class === 'patch' || op.class === 'whole'
+  return op.class === 'patch'
 }
 
 /** The candidate currently supplying this op's pixels, if any. */

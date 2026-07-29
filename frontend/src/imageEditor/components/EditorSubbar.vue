@@ -14,15 +14,18 @@ import ToolbarPopover from './ToolbarPopover.vue'
 import ToolIcon from './ToolIcon.vue'
 import BrushPicker from '../ported/BrushPicker.vue'
 import ColorPicker from '../ported/ColorPicker.vue'
+import PaintPicker from './PaintPicker.vue'
 import {
   CROP_ASPECTS,
 } from '../stack/adjustSections'
 import {
-  PAINT_ENGINES, SELECTION_MODES, TEXT_STYLES,
+  PAINT_ENGINES, TEXT_STYLES,
   familyById,
 } from '../stack/toolFamilies'
-import { FILTER_CATEGORIES, sectionsForFamily } from '../stack/adjustSections'
-import type { FamilyId, SelectionMode } from '../stack/toolFamilies'
+import { FILTER_CATEGORIES, LEVEL_EDITS, AUTO_EDITS } from '../stack/adjustSections'
+import type { FamilyId } from '../stack/toolFamilies'
+import type { Paint } from '../ported/shapeTypes'
+import { paintCss, paintSolid } from '../stack/paints'
 
 const props = defineProps<{
   family: FamilyId
@@ -44,29 +47,69 @@ const emit = defineEmits<{
 
 const family = computed(() => familyById(props.family))
 
-/** The three buttons the old Levels panel led with. */
+/** Stroke weights the width popover offers, in canvas pixels. */
+const STROKE_WEIGHTS = [2, 4, 8, 14, 22]
+
 /**
- * Effects, as things you add.
+ * The universal shape effects, as a small icon menu.
  *
- * Same shape as Filters, which is the point: in every adjustment family the
- * sub-toolbar offers what you can ADD, clicking it makes a step, and the step's
- * amount lives in its properties. An empty bar with all the controls hidden
- * behind a selection was a third interaction model for the same kind of thing.
+ * Gradient is not one: it is a color, chosen in the stroke or fill well.
  */
-const EFFECT_CHIPS = sectionsForFamily('effects').flatMap(section => section.controls)
-const activeEffect = computed(() =>
-  EFFECT_CHIPS.find(effect => effect.key === props.state.effectKey)
+const SHAPE_EFFECTS = [
+  { id: 'none', label: 'None' },
+  { id: 'neon', label: 'Neon' },
+] as const
+
+/** The current effect's label, shown on the toolbar chip so the state reads at a glance. */
+const shapeEffectLabel = computed(
+  () => SHAPE_EFFECTS.find(fx => fx.id === (props.state.annotateShapeEffect ?? 'none'))?.label ?? 'None',
 )
 
-const AUTO_ACTIONS = [
-  { id: 'levels', label: 'Auto levels' },
-  { id: 'contrast', label: 'Auto contrast' },
-  { id: 'balance', label: 'Auto balance' },
-]
+/** Which annotate sub-tools show which style controls. */
+const strokeSubs = ['arrow', 'draw', 'rectangle', 'ellipse', 'line']
+const fillSubs = ['rectangle', 'ellipse']
+// Sharpie strokes take their glow from the brush, not the shape style, so the
+// effect menu would lie on Draw.
+const effectSubs = ['arrow', 'rectangle', 'ellipse', 'line']
 
-function rgbaCss(color: { r: number; g: number; b: number; a?: number } | null) {
-  if (!color) return 'transparent'
-  return `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a ?? 1})`
+/**
+ * A SELECTED shape overrides the sub-tool: the controls shown are the ones the
+ * shape actually has, and they read/write its values. With nothing selected
+ * they are the latent tool's initial conditions.
+ */
+const shapeKind = computed<string | null>(() => props.state.selectedShapeKind ?? null)
+
+const strokeKinds = ['arrow', 'curved-arrow', 'line', 'path', 'rectangle', 'ellipse']
+const fillKinds = ['rectangle', 'ellipse']
+const effectKinds = ['arrow', 'curved-arrow', 'line', 'rectangle', 'ellipse']
+
+const showStroke = computed(() =>
+  shapeKind.value ? strokeKinds.includes(shapeKind.value) : strokeSubs.includes(props.sub ?? '')
+)
+const showFill = computed(() =>
+  shapeKind.value ? fillKinds.includes(shapeKind.value) : fillSubs.includes(props.sub ?? '')
+)
+const showEffect = computed(() =>
+  shapeKind.value ? effectKinds.includes(shapeKind.value) : effectSubs.includes(props.sub ?? '')
+)
+const showText = computed(() =>
+  shapeKind.value ? shapeKind.value === 'text' : props.sub === 'text'
+)
+
+/**
+ * Whether this slot can hold a gradient.
+ *
+ * Pen strokes are stamped pixels rather than a path the canvas can hand a
+ * gradient to, so Draw's color is a flat one — offering the tab there would
+ * be a promise the renderer cannot keep.
+ */
+const allowGradient = computed(() =>
+  shapeKind.value ? shapeKind.value !== 'path' : props.sub !== 'draw'
+)
+
+/** A well previews whatever paint it holds, gradient included. */
+function wellCss(paint: Paint | null) {
+  return paintCss(paint)
 }
 
 function chipClass(active: boolean, pending = false) {
@@ -78,7 +121,10 @@ function chipClass(active: boolean, pending = false) {
 </script>
 
 <template>
-  <div class="flex items-center gap-1.5 flex-wrap px-4 py-2 border-b border-edge-subtle bg-surface/40">
+  <div
+    class="flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface/80 backdrop-blur-sm"
+    :class="family.id === 'filters' ? 'pt-2' : 'px-4 py-2'"
+  >
     <!-- Sub-tools, for the families that have them. -->
     <template v-if="family.subTools.length">
       <Tooltip
@@ -123,14 +169,19 @@ function chipClass(active: boolean, pending = false) {
           </button>
           <span class="w-px h-5 bg-edge-subtle mx-1" />
 
-          <label v-if="sub === 'inpaint'" class="flex items-center gap-2 text-xs text-content-tertiary">
-            Brush
-            <input
-              type="range" min="8" max="300" class="w-28"
-              :value="state.brushSize"
-              @input="emit('set', { brushSize: Number(($event.target as HTMLInputElement).value) })"
-            />
-          </label>
+          <!-- The mask IS the selection: brushing it happens through the
+               selection rail's brush, the same as every other region. -->
+          <button
+            v-if="sub === 'inpaint' && state.hasSelection"
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                   bg-selection/15 text-content hover:bg-selection/25"
+            title="Clear the selection"
+            @click="emit('set', { clearSelection: true })"
+          >
+            Using selection
+            <span aria-hidden="true">×</span>
+          </button>
 
           <template v-if="sub === 'expand'">
             <button
@@ -142,19 +193,6 @@ function chipClass(active: boolean, pending = false) {
               @click="emit('set', { expandFactor: factor })"
             >
               +{{ Math.round((factor - 1) * 100) }}%
-            </button>
-          </template>
-
-          <template v-if="sub === 'upscale'">
-            <button
-              v-for="factor in [2, 4]"
-              :key="factor"
-              type="button"
-              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-              :class="chipClass(state.upscaleFactor === factor)"
-              @click="emit('set', { upscaleFactor: factor })"
-            >
-              {{ factor }}×
             </button>
           </template>
 
@@ -170,12 +208,11 @@ function chipClass(active: boolean, pending = false) {
             />
           </label>
           <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
-            {{ sub === 'expand' ? 'Expand' : sub === 'upscale' ? 'Upscale' : 'Run' }}
+            {{ sub === 'expand' ? 'Expand' : 'Run' }}
           </Button>
         </div>
 
         <textarea
-          v-if="sub !== 'upscale'"
           rows="2"
           class="w-full px-3 py-2 text-sm bg-surface-raised rounded-md text-content resize-none
                  placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
@@ -234,50 +271,7 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
-    <!-- Select ---------------------------------------------------------- -->
-    <template v-else-if="family.id === 'select'">
-      <Tooltip v-for="option in SELECTION_MODES" :key="option.id" :text="option.label">
-        <button
-          type="button"
-          class="p-1.5 rounded-md transition-colors"
-          :class="chipClass(state.combine === option.id)"
-          :aria-label="option.label"
-          @click="emit('set', { combine: option.id as SelectionMode })"
-        >
-          <ToolIcon :name="option.icon" />
-        </button>
-      </Tooltip>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <label v-if="sub === 'wand'" class="flex items-center gap-2 text-xs text-content-tertiary">
-        Tolerance
-        <input
-          type="range" min="1" max="128" class="w-24"
-          :value="state.tolerance"
-          @input="emit('set', { tolerance: Number(($event.target as HTMLInputElement).value) })"
-        />
-        <span class="tabular-nums w-6">{{ state.tolerance }}</span>
-      </label>
-      <label class="flex items-center gap-2 text-xs text-content-tertiary">
-        Feather
-        <input
-          type="range" min="0" max="48" class="w-24"
-          :value="state.featherPx"
-          @input="emit('set', { featherPx: Number(($event.target as HTMLInputElement).value) })"
-        />
-        <span class="tabular-nums w-8">{{ state.featherPx }}px</span>
-      </label>
-      <span v-if="state.hasSelection" class="w-px h-5 bg-edge-subtle mx-1" />
-      <button
-        v-if="state.hasSelection"
-        type="button"
-        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
-        @click="emit('set', { clearSelection: true })"
-      >
-        Clear selection
-      </button>
-    </template>
-
-    <!-- Paint ----------------------------------------------------------- -->
+    <!-- Retouch --------------------------------------------------------- -->
     <template v-else-if="family.id === 'paint'">
       <Tooltip
         v-for="engine in PAINT_ENGINES"
@@ -285,9 +279,9 @@ function chipClass(active: boolean, pending = false) {
         :text="engine.pending
           ? 'Not built yet'
           : engine.id === 'clone'
-            ? 'Alt-click to set the source, then paint'
-            : engine.readsPixels
-            ? 'Reads the pixels below — its layer carries an advisory'
+            ? 'Clone — alt-click to set the source, then paint'
+            : engine.id === 'patch'
+            ? 'Patch — select the flawed area, then drag it over clean pixels'
             : engine.label"
       >
         <button
@@ -329,6 +323,9 @@ function chipClass(active: boolean, pending = false) {
             :value="state.paintExposure"
             @input="emit('set', { paintExposure: Number(($event.target as HTMLInputElement).value) })"
           />
+          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
+            {{ state.paintExposure }}%
+          </span>
         </label>
         <button
           v-for="range in ['shadows', 'midtones', 'highlights']"
@@ -342,6 +339,17 @@ function chipClass(active: boolean, pending = false) {
         </button>
       </template>
       <template v-else-if="state.engineId === 'sponge'">
+        <label class="flex items-center gap-2 text-xs text-content-tertiary">
+          Strength
+          <input
+            type="range" min="1" max="100" class="w-20"
+            :value="state.paintStrength"
+            @input="emit('set', { paintStrength: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
+            {{ state.paintStrength }}%
+          </span>
+        </label>
         <button
           type="button"
           class="px-2 py-1.5 text-xs rounded-md"
@@ -366,15 +374,22 @@ function chipClass(active: boolean, pending = false) {
         Strength
         <input
           type="range" min="1" max="100" class="w-20"
-          :value="state.paintFlow"
-          @input="emit('set', { paintFlow: Number(($event.target as HTMLInputElement).value) })"
+          :value="state.paintStrength"
+          @input="emit('set', { paintStrength: Number(($event.target as HTMLInputElement).value) })"
         />
+        <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
+          {{ state.paintStrength }}%
+        </span>
       </label>
-      <ToolbarPopover label="Color" :width="292">
+      <ToolbarPopover
+        v-if="state.engineId === 'paint' || state.engineId === 'fill'"
+        label="Color"
+        :width="292"
+      >
         <template #trigger>
           <span
             class="w-4 h-4 rounded-md border border-edge-subtle"
-            :style="{ background: rgbaCss(state.paintColor) }"
+            :style="{ background: wellCss(state.paintColor) }"
           />
         </template>
         <ColorPicker
@@ -392,14 +407,32 @@ function chipClass(active: boolean, pending = false) {
       >
         New layer
       </button>
+      <!-- The invisible-scope trap, closed: if strokes are clipped, the bar
+           says so, and the × is the way out without leaving Paint. -->
+      <template v-if="state.hasSelection">
+        <span class="w-px h-5 bg-edge-subtle mx-1" />
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                 bg-selection/15 text-content hover:bg-selection/25"
+          title="Strokes only land inside the selection — click to clear it"
+          @click="emit('set', { clearSelection: true })"
+        >
+          Painting inside selection
+          <span aria-hidden="true">×</span>
+        </button>
+      </template>
     </template>
 
     <!-- Filters: picking one IS applying it, so the strip belongs where the
          decision is made rather than behind a selected step. -->
     <template v-else-if="family.id === 'filters'">
       <!-- One row that scrolls, rather than wrapping: the strip is a strip,
-           and wrapping it would push the canvas down every time it grew. -->
-      <div class="w-full min-w-0 flex items-start gap-1.5 overflow-x-auto custom-scrollbar pb-1.5">
+           and wrapping it would push the canvas down every time it grew. It
+           runs edge to edge — the lead-in padding lives INSIDE the overflow
+           region so the first tile doesn't touch the edge but the scroll
+           track still spans the full bar. -->
+      <div class="w-full min-w-0 flex items-start gap-1.5 overflow-x-auto custom-scrollbar px-3">
         <template v-for="category in FILTER_CATEGORIES" :key="category.id">
           <span v-if="category.label" class="w-px h-10 bg-edge-subtle mx-1 shrink-0" />
           <Tooltip
@@ -409,8 +442,8 @@ function chipClass(active: boolean, pending = false) {
           >
             <button
               type="button"
-              class="w-14 shrink-0 rounded-md p-0.5 transition-colors"
-              :class="state.activeFilter === preset.id
+              class="w-20 shrink-0 rounded-md p-0.5 transition-colors"
+              :class="state.appliedStripIds?.includes(preset.id)
                 ? 'bg-selection/25 text-content'
                 : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
               @click="emit('set', { applyFilter: preset.id })"
@@ -418,10 +451,10 @@ function chipClass(active: boolean, pending = false) {
               <img
                 v-if="state.filterThumbs?.[preset.id]"
                 :src="state.filterThumbs[preset.id]"
-                class="w-full h-12 rounded-media object-cover"
+                class="w-full h-16 rounded-media object-cover"
                 alt=""
               />
-              <div v-else class="w-full h-12 rounded-media bg-matte" />
+              <div v-else class="w-full h-16 rounded-media bg-matte" />
               <span class="block text-[10px] leading-tight truncate">{{ preset.label }}</span>
             </button>
           </Tooltip>
@@ -429,38 +462,23 @@ function chipClass(active: boolean, pending = false) {
       </div>
     </template>
 
-    <!--
-      Pick the effect, then move its slider. The step appears when the slider
-      moves, so choosing one costs nothing and there is no empty step left
-      behind by a preview you decided against.
-    -->
-    <template v-else-if="family.id === 'effects'">
-      <select
-        class="px-2 py-1.5 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-        :value="state.effectKey"
-        @change="emit('set', { effectKey: ($event.target as HTMLSelectElement).value })"
-      >
-        <option v-for="effect in EFFECT_CHIPS" :key="effect.key" :value="effect.key">
-          {{ effect.label }}
-        </option>
-      </select>
-      <label class="flex-1 min-w-40 flex items-center gap-2 text-xs text-content-tertiary">
-        <input
-          type="range" class="flex-1"
-          :min="activeEffect?.min ?? 0"
-          :max="activeEffect?.max ?? 100"
-          :step="activeEffect?.step ?? 1"
-          :value="state.effectAmount"
-          @input="emit('set', { effectAmount: Number(($event.target as HTMLInputElement).value) })"
-        />
-        <span class="w-8 text-right tabular-nums">{{ state.effectAmount }}</span>
-      </label>
-    </template>
-
-    <!-- Levels ---------------------------------------------------------- -->
+    <!-- Levels: six addable edits. Each click makes its own focused step —
+         a Tone, a Detail, a Tint, or an Auto (a Tone seeded from the
+         histogram) — whose controls live in its Properties. Same rule as the
+         strip: the bar offers what you can ADD. -->
     <template v-else-if="family.id === 'levels'">
       <button
-        v-for="auto in AUTO_ACTIONS"
+        v-for="edit in LEVEL_EDITS"
+        :key="edit.id"
+        type="button"
+        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+        @click="emit('set', { addLevel: edit.id })"
+      >
+        {{ edit.label }}
+      </button>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <button
+        v-for="auto in AUTO_EDITS"
         :key="auto.id"
         type="button"
         class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
@@ -470,9 +488,137 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
-    <!-- Annotate -------------------------------------------------------- -->
+    <!-- Annotate: the latent shape's full initial conditions, compact — every
+         control is an icon opening a popover. With a shape selected the same
+         controls edit it, so the strip doubles as a remote for the selection. -->
     <template v-else-if="family.id === 'annotate'">
-      <template v-if="sub === 'text'">
+      <template v-if="showStroke">
+        <!-- Stroke weight -->
+        <ToolbarPopover label="" :width="148">
+          <template #trigger>
+            <svg viewBox="0 0 16 16" class="w-4 h-4" fill="currentColor" aria-label="Stroke width">
+              <rect x="2" y="3" width="12" height="1" rx="0.5" />
+              <rect x="2" y="6.5" width="12" height="2" rx="1" />
+              <rect x="2" y="10.5" width="12" height="3.5" rx="1.5" />
+            </svg>
+          </template>
+          <button
+            v-for="weight in STROKE_WEIGHTS"
+            :key="weight"
+            type="button"
+            class="w-full flex items-center gap-3 px-2 py-1.5 rounded-md transition-colors"
+            :class="state.annotateStrokeWidth === weight
+              ? 'bg-selection/15 text-content'
+              : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+            @click="emit('set', { annotateStrokeWidth: weight })"
+          >
+            <span
+              class="flex-1 rounded-full bg-current"
+              :style="{ height: Math.min(weight, 12) + 'px' }"
+            />
+            <span class="text-[11px] tabular-nums w-8 text-right">{{ weight }}px</span>
+          </button>
+        </ToolbarPopover>
+
+        <!-- Stroke color: a ring, because the stroke is an outline. -->
+        <ToolbarPopover label="" :width="292">
+          <template #trigger>
+            <span
+              class="w-4 h-4 rounded-full ring-inset"
+              aria-label="Stroke color"
+              :style="{
+                background: wellCss(allowGradient ? state.annotatePaint : paintSolid(state.annotatePaint)),
+                mask: 'radial-gradient(circle, transparent 0 34%, #000 34%)',
+                WebkitMask: 'radial-gradient(circle, transparent 0 34%, #000 34%)',
+              }"
+            />
+          </template>
+          <PaintPicker
+            :model-value="allowGradient ? state.annotatePaint : paintSolid(state.annotatePaint)"
+            :image-palette="state.imagePalette"
+            :allow-gradient="allowGradient"
+            @update:model-value="emit('set', { annotatePaint: $event })"
+          />
+        </ToolbarPopover>
+
+        <!-- Fill: a solid square, because the fill is the inside. -->
+        <ToolbarPopover v-if="showFill" label="" :width="292">
+          <template #trigger>
+            <span
+              class="w-4 h-4 rounded-[4px] border border-edge-subtle"
+              aria-label="Fill color"
+              :style="state.annotateFillColor
+                ? { background: wellCss(state.annotateFillColor) }
+                : { background: 'repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.25) 3px 5px)' }"
+            />
+          </template>
+          <button
+            type="button"
+            class="w-full mb-2 px-2 py-1.5 text-xs rounded-md text-left transition-colors"
+            :class="!state.annotateFillColor
+              ? 'bg-selection/15 text-content'
+              : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+            @click="emit('set', { annotateFillColor: null })"
+          >
+            No fill
+          </button>
+          <PaintPicker
+            :model-value="state.annotateFillColor ?? { r: 0, g: 0, b: 0, a: 0.5 }"
+            :image-palette="state.imagePalette"
+            :allow-gradient="allowGradient"
+            @update:model-value="emit('set', { annotateFillColor: $event })"
+          />
+        </ToolbarPopover>
+
+        <!-- Effect: none, or the neon glow. -->
+        <ToolbarPopover v-if="showEffect" :label="shapeEffectLabel" :width="148">
+          <template #trigger>
+            <span class="sr-only">Effect</span>
+          </template>
+          <button
+            v-for="fx in SHAPE_EFFECTS"
+            :key="fx.id"
+            type="button"
+            class="w-full flex items-center gap-3 px-2 py-1.5 rounded-md transition-colors"
+            :class="(state.annotateShapeEffect ?? 'none') === fx.id
+              ? 'bg-selection/15 text-content'
+              : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+            @click="emit('set', { annotateShapeEffect: fx.id })"
+          >
+            <svg viewBox="0 0 24 16" class="w-6 h-4 shrink-0" fill="none">
+              <path
+                v-if="fx.id === 'neon'"
+                d="M2 8 h20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+                style="filter: drop-shadow(0 0 3px currentColor)"
+              />
+              <path v-else d="M2 8 h20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+            <span class="text-xs">{{ fx.label }}</span>
+          </button>
+        </ToolbarPopover>
+      </template>
+
+      <template v-if="showText">
+        <!-- Text color shares the stroke well; the presets carry the rest. -->
+        <ToolbarPopover label="" :width="292">
+          <template #trigger>
+            <span
+              class="w-4 h-4 rounded-full"
+              aria-label="Text color"
+              :style="{
+                background: wellCss(state.annotatePaint),
+                mask: 'radial-gradient(circle, transparent 0 34%, #000 34%)',
+                WebkitMask: 'radial-gradient(circle, transparent 0 34%, #000 34%)',
+              }"
+            />
+          </template>
+          <PaintPicker
+            :model-value="state.annotatePaint"
+            :image-palette="state.imagePalette"
+            :allow-gradient="allowGradient"
+            @update:model-value="emit('set', { annotatePaint: $event })"
+          />
+        </ToolbarPopover>
         <button
           v-for="style in TEXT_STYLES"
           :key="style.id"
@@ -484,9 +630,30 @@ function chipClass(active: boolean, pending = false) {
           {{ style.label }}
         </button>
       </template>
+
+      <!-- Opacity, inline: one slider does not deserve a popover. -->
+      <label
+        v-if="sub !== 'redact'"
+        class="flex items-center gap-2 text-xs text-content-tertiary"
+        title="Opacity"
+      >
+        <svg viewBox="0 0 16 16" class="w-4 h-4" fill="none" stroke="currentColor">
+          <circle cx="8" cy="8" r="6" />
+          <path d="M8 2 a6 6 0 0 1 0 12 Z" fill="currentColor" stroke="none" opacity="0.5" />
+        </svg>
+        <input
+          type="range" min="10" max="100" class="w-20"
+          :value="Math.round((state.annotateOpacity ?? 1) * 100)"
+          @input="emit('set', { annotateOpacity: Number(($event.target as HTMLInputElement).value) / 100 })"
+        />
+      </label>
     </template>
 
-    <div class="flex-1" />
-    <span v-if="hint" class="text-[11px] text-content-tertiary">{{ hint }}</span>
+    <!-- Only rendered with a hint: an empty spacer wraps to a phantom second
+         flex line, and the row-gap above it reads as padding under the bar. -->
+    <template v-if="hint">
+      <div class="flex-1" />
+      <span class="text-[11px] text-content-tertiary">{{ hint }}</span>
+    </template>
   </div>
 </template>

@@ -16,8 +16,9 @@ import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
 import { getCurrentProfileId } from '../../composables/useProfile'
 import { newOpId } from './opId'
-import type { JournalEntry, Op, StackDocument } from './types'
-import { DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
+import type { JournalEntry, Op, OutputStage, StackDocument } from './types'
+import { DEFAULT_OUTPUT, DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
+import { migrateShapePaints } from './migrateShapePaints'
 
 // Re-exported so callers keep one import for the document surface.
 export { newOpId }
@@ -58,6 +59,26 @@ export function useStackDocument() {
 
   // -- persistence ---------------------------------------------------------
 
+  /**
+   * A document written before a gradient was a color still says so in its
+   * annotate steps. Converting on the way in means the rest of the editor only
+   * ever sees paints — nothing downstream has to know there were two models.
+   */
+  function migrateDocumentPaints(document: any) {
+    for (const op of document?.edits ?? []) {
+      // `paint` remains a stable internal executor kind, but this editor is a
+      // photo retoucher rather than an illustration app. Normalize the old
+      // generated label without touching any genuinely custom row name.
+      if (op?.class === 'container' && op?.exec?.kind === 'paint' && op.label === 'Paint') {
+        op.label = 'Retouch'
+      }
+      if (op?.exec?.kind === 'annotate' && op.params?.shapes) {
+        op.params.shapes = migrateShapePaints(op.params.shapes)
+      }
+    }
+    return document
+  }
+
   async function open(assetId: number, revisionId?: number) {
     loadError.value = null
     const { data } = await axios.post(`${API_BASE}/image-stack/open`, {
@@ -67,7 +88,7 @@ export function useStackDocument() {
     documentId.value = data.document_id
 
     if (data.document) {
-      doc.value = data.document
+      doc.value = migrateDocumentPaints(data.document)
     } else {
       doc.value = {
         format: DOCUMENT_FORMAT,
@@ -82,6 +103,7 @@ export function useStackDocument() {
         },
         canvas: { width: data.base.width, height: data.base.height },
         edits: [],
+        output: { ...DEFAULT_OUTPUT },
       }
     }
 
@@ -259,28 +281,6 @@ export function useStackDocument() {
     )
   }
 
-  /**
-   * Scope an op to a region, or clear it.
-   *
-   * Regions are copied at creation, never live-linked to whatever they were
-   * copied from — an op references only its own payloads, which is what makes
-   * "drag a row" mean exactly one thing.
-   */
-  function setRegion(
-    opId: string,
-    region: { mask_ref: string; feather_px: number; invert: boolean } | null
-  ) {
-    const op = opById(opId)
-    if (!op) return
-    const was = op.region ? { ...op.region } : null
-    record(
-      'set_region',
-      { op_id: opId, region },
-      { op_id: opId, region: was },
-      () => { op.region = region }
-    )
-  }
-
   function pickCandidate(opId: string, candidateId: string | null) {
     const op = opById(opId) as any
     if (!op || op.picked === candidateId) return
@@ -319,6 +319,44 @@ export function useStackDocument() {
     const known = new Set((op.candidates || []).map((c: any) => c.id))
     op.candidates = [...(op.candidates || []), ...candidates.filter(c => !known.has(c.id))]
     schedulePersist()
+  }
+
+  /**
+   * The output stage. Journaled like any other document edit — it changes what
+   * a save writes, so undo has to reach it.
+   */
+  function setOutput(patch: Partial<OutputStage>) {
+    const d = doc.value
+    if (!d) return
+    const was = { ...DEFAULT_OUTPUT, ...(d.output || {}) }
+    const next = { ...was, ...patch }
+    if (JSON.stringify(was) === JSON.stringify(next)) return
+    record(
+      'set_output',
+      { output: next },
+      { output: was },
+      () => { d.output = next }
+    )
+  }
+
+  /**
+   * Swap the whole document for another one, journaling the swap.
+   *
+   * For conversions, not for editing: a migration changes the base, the canvas
+   * and the edit list at once, and expressing that as a run of ordinary edits
+   * would put a dozen meaningless entries in undo. The inverse carries the
+   * entire previous document, so one undo puts it back.
+   */
+  function replaceDocument(
+    next: StackDocument,
+    entry: { action: string; forward: any; inverse: any }
+  ) {
+    record(
+      entry.action,
+      entry.forward,
+      entry.inverse,
+      () => { doc.value = next }
+    )
   }
 
   function setBlend(opId: string, blend: Partial<{ feather_px: number; opacity: number }>, coalesceKey?: string) {
@@ -380,11 +418,13 @@ export function useStackDocument() {
         if (op) op.blend = inv.blend
         break
       }
-      case 'set_region': {
-        const op = d.edits.find(o => o.id === inv.op_id)
-        if (op) op.region = inv.region
+      case 'set_output':
+        d.output = inv.output
         break
-      }
+      // A conversion's inverse is the entire document it replaced.
+      case 'flatten_whole_ops':
+        if (inv.document) doc.value = inv.document
+        break
     }
   }
 
@@ -431,11 +471,9 @@ export function useStackDocument() {
         if (op) op.blend = fwd.blend
         break
       }
-      case 'set_region': {
-        const op = d.edits.find(o => o.id === fwd.op_id)
-        if (op) op.region = fwd.region
+      case 'set_output':
+        d.output = fwd.output
         break
-      }
     }
   }
 
@@ -468,10 +506,11 @@ export function useStackDocument() {
    * the profile middleware requires — so the profile rides the query string,
    * the same fallback the media file routes use.
    */
-  function payloadUrl(ref: string): string {
+  function payloadUrl(ref: string, revision?: number): string {
     const [subdir, name] = ref.split('/')
     return `${API_BASE}/image-stack/${documentId.value}/payloads/${name}`
       + `?subdir=${subdir}&profile=${getCurrentProfileId()}`
+      + (revision === undefined ? '' : `&revision=${revision}`)
   }
 
   async function uploadPayload(name: string, blob: Blob, subdir = 'payloads'): Promise<string> {
@@ -493,7 +532,7 @@ export function useStackDocument() {
    * generation_metadata.
    */
   function executedStackSummary() {
-    return ops.value.filter(op => op.enabled).map((op: any) => ({
+    const steps = ops.value.filter(op => op.enabled).map((op: any) => ({
       class: op.class,
       label: op.label,
       exec: op.exec,
@@ -501,6 +540,25 @@ export function useStackDocument() {
       // Provenance of the pixels that actually landed, not every candidate.
       job_id: (op.candidates || []).find((c: any) => c.id === op.picked)?.job_id ?? null,
     }))
+
+    // The output stage ran on these pixels, so it is part of what produced
+    // them — recorded as the last step it effectively is, and only when it
+    // actually did something.
+    const output = doc.value?.output
+    if (output?.enabled) {
+      steps.push({
+        class: 'output',
+        label: 'Output',
+        exec: output.method === 'photo' && output.tool_id
+          ? { kind: 'tool', tool_id: output.tool_id, task_type: 'upscale-image' }
+          : { kind: 'resample' },
+        // The tool's own parameters, as submitted — the same record every
+        // other step keeps.
+        params: { method: output.method, ...output.params },
+        job_id: null,
+      } as any)
+    }
+    return steps
   }
 
   return {
@@ -524,7 +582,8 @@ export function useStackDocument() {
     setParams,
     setLabel,
     setBlend,
-    setRegion,
+    setOutput,
+    replaceDocument,
     touchOp,
     pickCandidate,
     attachCandidates,

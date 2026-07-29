@@ -1,5 +1,5 @@
 /**
- * Pixel sampling, brush masks, colour maths and the patch solver.
+ * Pixel sampling, brush masks, color maths and the patch solver.
  *
  * COPIED from packages/image-editor/src/plugins/retouch/utils/pixelOps.ts (2026-07-27), with its
  * imports repointed at this directory. The snapshot editor is frozen — this
@@ -8,6 +8,7 @@
  */
 
 import type { Point } from './geometry';
+import { featherAlpha } from '../stack/featherAlpha';
 
 /**
  * Sample a pixel color from a canvas at the given position
@@ -272,36 +273,6 @@ export function applyBrushStamp(
 }
 
 /**
- * Get points along a stroke path with proper spacing
- */
-export function getStrokePoints(
-  startX: number, startY: number,
-  endX: number, endY: number,
-  spacing: number // Spacing as fraction of brush size
-): Point[] {
-  const points: Point[] = [];
-  const dx = endX - startX;
-  const dy = endY - startY;
-  const distance = Math.sqrt(dx * dx + dy * dy);
-
-  if (distance < spacing) {
-    points.push({ x: endX, y: endY });
-    return points;
-  }
-
-  const steps = Math.floor(distance / spacing);
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    points.push({
-      x: startX + dx * t,
-      y: startY + dy * t,
-    });
-  }
-
-  return points;
-}
-
-/**
  * Calculate average color in a circular region
  */
 export function getAverageColorInRegion(
@@ -385,15 +356,12 @@ export function sampleSurroundingPixels(
   return samples;
 }
 
-// Cached canvases for blur operations to avoid repeated allocations
-let blurTempCanvas: HTMLCanvasElement | null = null;
-let blurTempCtx: CanvasRenderingContext2D | null = null;
-let blurOutputCanvas: HTMLCanvasElement | null = null;
-let blurOutputCtx: CanvasRenderingContext2D | null = null;
-
 /**
  * Apply Gaussian blur to an alpha mask (used for softening patch edges)
- * Uses cached canvases to avoid allocation overhead
+ *
+ * V1 used CanvasRenderingContext2D.filter here. V2 deliberately uses the same
+ * typed-array feather as the stack compositor because canvas filters can
+ * silently no-op in WKWebView, leaving a crisp patch edge.
  */
 function blurAlphaMask(
   data: Uint8ClampedArray,
@@ -401,39 +369,11 @@ function blurAlphaMask(
   height: number,
   radius: number
 ): Uint8ClampedArray {
-  if (radius <= 0) return data;
-
-  // Reuse or create temp canvas
-  if (!blurTempCanvas || blurTempCanvas.width < width || blurTempCanvas.height < height) {
-    blurTempCanvas = document.createElement('canvas');
-    blurTempCanvas.width = Math.max(width, blurTempCanvas?.width || 0);
-    blurTempCanvas.height = Math.max(height, blurTempCanvas?.height || 0);
-    blurTempCtx = blurTempCanvas.getContext('2d', { willReadFrequently: true })!;
+  const alpha = new Uint8ClampedArray(width * height);
+  for (let i = 3, pixel = 0; i < data.length; i += 4, pixel++) {
+    alpha[pixel] = data[i];
   }
-
-  // Reuse or create output canvas
-  if (!blurOutputCanvas || blurOutputCanvas.width < width || blurOutputCanvas.height < height) {
-    blurOutputCanvas = document.createElement('canvas');
-    blurOutputCanvas.width = Math.max(width, blurOutputCanvas?.width || 0);
-    blurOutputCanvas.height = Math.max(height, blurOutputCanvas?.height || 0);
-    blurOutputCtx = blurOutputCanvas.getContext('2d', { willReadFrequently: true })!;
-  }
-
-  // Clear the region we'll use
-  blurTempCtx!.clearRect(0, 0, width, height);
-  blurOutputCtx!.clearRect(0, 0, width, height);
-
-  // Create ImageData from the selection data
-  const imageData = new ImageData(new Uint8ClampedArray(data), width, height);
-  blurTempCtx!.putImageData(imageData, 0, 0);
-
-  // Apply blur filter
-  blurOutputCtx!.filter = `blur(${radius}px)`;
-  blurOutputCtx!.drawImage(blurTempCanvas!, 0, 0, width, height, 0, 0, width, height);
-  blurOutputCtx!.filter = 'none';
-
-  // Get the blurred result
-  return blurOutputCtx!.getImageData(0, 0, width, height).data;
+  return featherAlpha(alpha, width, height, radius);
 }
 
 /**
@@ -466,7 +406,8 @@ export function applyPatch(
 
   // Expand bounds by blend width to allow blur to feather beyond selection edges
   // This prevents hard edges at the bounding box
-  const padding = Math.ceil(blendWidth * 1.5); // Extra padding for blur falloff
+  // featherAlpha runs three box passes, so its support extends to 3 × radius.
+  const padding = Math.ceil(blendWidth * 3);
   const expandedX = Math.max(0, Math.floor(x) - padding);
   const expandedY = Math.max(0, Math.floor(y) - padding);
   const expandedRight = Math.min(imageWidth, Math.floor(x + width) + padding);
@@ -551,9 +492,12 @@ export function applyPatch(
   }
 
   // Apply additional blur to the selection mask for softer edges
-  const blurredSelectionData = blendWidth > 0
-    ? blurAlphaMask(selectionData.data, actualWidth, actualHeight, blendWidth)
-    : selectionData.data;
+  const selectionAlpha = blurAlphaMask(
+    selectionData.data,
+    actualWidth,
+    actualHeight,
+    blendWidth
+  );
 
   // Reuse retouchDestData as destination output (already allocated)
   const destPixels = retouchDestData.data;
@@ -564,8 +508,8 @@ export function applyPatch(
   let edgeCount = 0;
 
   // First pass: compute color difference at selection edges
-  for (let i = 0; i < sourcePixels.length; i += 4) {
-    const selAlpha = blurredSelectionData[i + 3] / 255;
+  for (let i = 0, pixel = 0; i < sourcePixels.length; i += 4, pixel++) {
+    const selAlpha = selectionAlpha[pixel] / 255;
     // Edge is where alpha is between 0.2 and 0.8 (the blend zone)
     if (selAlpha > 0.2 && selAlpha < 0.8) {
       edgeRDiff += baseDestPixels[i] - sourcePixels[i];
@@ -583,9 +527,9 @@ export function applyPatch(
   }
 
   // Blend each pixel using selection alpha with color matching
-  for (let i = 0; i < sourcePixels.length; i += 4) {
+  for (let i = 0, pixel = 0; i < sourcePixels.length; i += 4, pixel++) {
     // Selection mask alpha (blurred for softer edges)
-    const selAlpha = blurredSelectionData[i + 3] / 255;
+    const selAlpha = selectionAlpha[pixel] / 255;
     if (selAlpha === 0) continue;
 
     // Source pixel with color matching applied

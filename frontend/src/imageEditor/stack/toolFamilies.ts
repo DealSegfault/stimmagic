@@ -15,8 +15,8 @@
 import type { IconName } from '../ported/icons'
 
 export type FamilyId =
-  | 'generate' | 'crop' | 'select' | 'paint'
-  | 'levels' | 'filters' | 'effects'
+  | 'generate' | 'crop' | 'paint'
+  | 'levels' | 'filters'
   | 'annotate'
 
 export interface SubTool {
@@ -38,7 +38,7 @@ export interface ToolFamily {
   defaultSub: string | null
 }
 
-export const FAMILY_ICONS: Record<FamilyId, string> = {
+export const FAMILY_ICONS: Record<FamilyId | 'select', string> = {
   // Sparkle: every model-backed verb lives under one family, and the family
   // name is what carries the cost meaning.
   generate:
@@ -51,8 +51,8 @@ export const FAMILY_ICONS: Record<FamilyId, string> = {
   paint:
     '<path d="M9.1 11.9l8.1-8.1a2.85 2.85 0 1 1 4 4l-8.1 8.1"/>'
     + '<path d="M7.1 14.9c-1.7 0-3 1.4-3 3 0 1.3-1.5 2-2 2 1.1 1.1 2.5 2 4 2 2.2 0 4-1.8 4-4a3 3 0 0 0-3-3z"/>',
-  // Sliders for Levels, a stack of frames for Filters, a starburst for Effects
-  // — the three doorways read as three different jobs at a glance.
+  // Sliders for Levels, a stack of frames for Filters — the two doorways read
+  // as two different jobs at a glance.
   levels:
     '<line x1="4" y1="7" x2="20" y2="7"/><circle cx="14" cy="7" r="2.2"/>'
     + '<line x1="4" y1="12" x2="20" y2="12"/><circle cx="8" cy="12" r="2.2"/>'
@@ -60,10 +60,6 @@ export const FAMILY_ICONS: Record<FamilyId, string> = {
   filters:
     '<rect x="3" y="3" width="13" height="13" rx="2"/>'
     + '<path d="M8 21h11a2 2 0 0 0 2-2V8"/>',
-  effects:
-    '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>'
-    + '<path d="M6.3 6.3l2.8 2.8M14.9 14.9l2.8 2.8M17.7 6.3l-2.8 2.8M9.1 14.9l-2.8 2.8"/>'
-    + '<circle cx="12" cy="12" r="2.5"/>',
   annotate:
     '<path d="M4 7V5h16v2"/><path d="M9 19h6"/><path d="M12 5v14"/>',
 }
@@ -74,12 +70,15 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     label: 'Generate',
     key: 'g',
     icon: FAMILY_ICONS.generate,
+    // Both sub-tools are masked patches, and that is the whole family: a
+    // generative step that replaced the entire composite would occlude the
+    // stack below it, which makes it a new base rather than a step. Whole
+    // image is gone; Upscale moved to the output stage, which produces a saved
+    // version instead of a row.
     defaultSub: 'inpaint',
     subTools: [
       { id: 'inpaint', label: 'Inpaint' },
-      { id: 'whole', label: 'Whole image' },
       { id: 'expand', label: 'Expand' },
-      { id: 'upscale', label: 'Upscale' },
     ],
   },
   {
@@ -91,31 +90,18 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     subTools: [],
   },
   {
-    id: 'select',
-    label: 'Select',
-    key: 's',
-    icon: FAMILY_ICONS.select,
-    defaultSub: 'rect',
-    subTools: [
-      { id: 'rect', label: 'Rectangle', icon: 'squareDashed' },
-      { id: 'ellipse', label: 'Ellipse', icon: 'circleDashed' },
-      { id: 'lasso', label: 'Lasso', icon: 'lasso' },
-      { id: 'magnetic', label: 'Magnetic', icon: 'magnetLasso' },
-      { id: 'wand', label: 'Wand', icon: 'wand' },
-    ],
-  },
-  {
     id: 'paint',
-    label: 'Paint',
+    label: 'Retouch',
     key: 'p',
     icon: FAMILY_ICONS.paint,
     defaultSub: null,
     subTools: [],
   },
-  // Levels, Filters and Effects are the snapshot editor's own names. They are
-  // three doorways into one adjustment step, not three steps: the pixel
-  // pipeline has a fixed order and splitting it would invite reordering it
-  // into an order the maths does not have.
+  // Levels and Filters are two doorways into the same adjust pipeline. Levels
+  // offers the dial edits (Tone, Detail, Tint, the Autos); Filters offers the
+  // strip of picked-by-eye looks, including the pixel looks that used to be a
+  // separate Effects family. Every entry in both is an ADD: click, get a
+  // focused step, edit it in Properties.
   {
     id: 'levels',
     label: 'Levels',
@@ -133,21 +119,16 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     subTools: [],
   },
   {
-    id: 'effects',
-    label: 'Effects',
-    key: 'e',
-    icon: FAMILY_ICONS.effects,
-    defaultSub: null,
-    subTools: [],
-  },
-  {
     id: 'annotate',
     label: 'Annotate',
     key: 'a',
     icon: FAMILY_ICONS.annotate,
+    // No 'select' sub-tool: object selection is the workspace's IDLE state
+    // (and the island's pointer), not an annotate mode. Inside the family,
+    // `sub = null` is select — where every drawing tool lands after its
+    // one-shot creation.
     defaultSub: 'arrow',
     subTools: [
-      { id: 'select', label: 'Select', icon: 'mousePointer' },
       { id: 'arrow', label: 'Arrow', icon: 'arrowUpRight' },
       { id: 'draw', label: 'Draw', icon: 'pencil' },
       { id: 'rectangle', label: 'Rectangle', icon: 'square' },
@@ -176,9 +157,7 @@ export interface PaintEngine {
   id: string
   label: string
   icon: IconName
-  hardness: number
-  flow: number
-  /** Reads the composite below rather than laying down the colour. */
+  /** Reads the composite below rather than laying down the color. */
   readsPixels?: boolean
   /** Not yet implemented. */
   pending?: boolean
@@ -189,19 +168,45 @@ export const PAINT_ENGINES: PaintEngine[] = [
   // hangs off the toolbar, so there is one Brush engine rather than one chip
   // per shape. What is listed here is what the engine DOES, which is the part
   // the picker cannot express.
-  { id: 'paint', label: 'Brush', icon: 'paintbrush', hardness: 0.6, flow: 1 },
-  { id: 'fill', label: 'Fill', icon: 'fill', hardness: 1, flow: 1 },
-  { id: 'blur', label: 'Blur', icon: 'droplet', hardness: 0.3, flow: 0.6, readsPixels: true },
-  { id: 'sharpen', label: 'Sharpen', icon: 'focus', hardness: 0.3, flow: 0.6, readsPixels: true },
-  { id: 'dodge', label: 'Dodge', icon: 'sun', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'burn', label: 'Burn', icon: 'moon', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'sponge', label: 'Sponge', icon: 'sponge', hardness: 0.3, flow: 0.4, readsPixels: true },
-  { id: 'heal', label: 'Heal', icon: 'bandage', hardness: 0.4, flow: 1, readsPixels: true },
-  { id: 'clone', label: 'Clone', icon: 'stamp', hardness: 0.4, flow: 1, readsPixels: true },
+  { id: 'paint', label: 'Brush', icon: 'paintbrush' },
+  { id: 'fill', label: 'Fill', icon: 'fill' },
+  { id: 'blur', label: 'Blur', icon: 'droplet', readsPixels: true },
+  { id: 'sharpen', label: 'Sharpen', icon: 'focus', readsPixels: true },
+  { id: 'dodge', label: 'Dodge', icon: 'sun', readsPixels: true },
+  { id: 'burn', label: 'Burn', icon: 'moon', readsPixels: true },
+  { id: 'sponge', label: 'Sponge', icon: 'sponge', readsPixels: true },
+  { id: 'heal', label: 'Heal', icon: 'bandage', readsPixels: true },
+  // Patch is selection-driven, not stroke-driven: select the flaw, drag it
+  // over clean pixels. Picking it with no selection arms the lasso.
+  { id: 'patch', label: 'Patch', icon: 'patch', readsPixels: true },
+  { id: 'clone', label: 'Clone', icon: 'stamp', readsPixels: true },
 ]
 
 export const PAINT_SWATCHES = [
   '#ffffff', '#000000', '#c9a276', '#5d4128', '#b0342c', '#2a4a6b', '#3f7a4f',
+]
+
+/**
+ * The selection tools, on the rail at the left of the canvas — not a family.
+ *
+ * Selection is workspace state, not a mode: it cuts across every family (an
+ * inpaint mask, a paint clip, an adjustment's region), so its tools live in
+ * chrome that is always reachable rather than behind a mode that would have to
+ * end the one you are in. Arming one SUSPENDS the open family — the pointer
+ * belongs to the selection until it is disarmed, and the family's session, step
+ * and controls all survive underneath.
+ */
+export type SelectToolId = 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
+
+export const SELECT_TOOLS: Array<{ id: SelectToolId; label: string; icon: IconName }> = [
+  { id: 'rect', label: 'Rectangle', icon: 'squareDashed' },
+  { id: 'ellipse', label: 'Ellipse', icon: 'circleDashed' },
+  { id: 'lasso', label: 'Lasso', icon: 'lasso' },
+  { id: 'magnetic', label: 'Magnetic', icon: 'magnetLasso' },
+  { id: 'wand', label: 'Wand', icon: 'wand' },
+  // Painting a selection is how most inpaint masks get made, which is why the
+  // brush is a selection tool rather than a Generate-only surface.
+  { id: 'brush', label: 'Brush', icon: 'paintbrush' },
 ]
 
 /** Combine modes for Select — how a new selection meets the existing one. */
@@ -214,13 +219,12 @@ export const SELECTION_MODES = [
 
 export type SelectionMode = typeof SELECTION_MODES[number]['id']
 
-/** Text style presets, parity with the annotate plugin's text effects. */
-export const TEXT_STYLES = [
-  { id: 'pill', label: 'Pill' },
-  { id: 'plain', label: 'Plain' },
-  { id: 'outline', label: 'Outline' },
-  { id: 'neon', label: 'Neon' },
-] as const
+/**
+ * Text style presets live in textStyles.ts, next to the property mapping they
+ * stand for — the toolbar and the inspector both need that mapping, and a bare
+ * list of labels here let the two drift apart.
+ */
+export { TEXT_STYLES } from './textStyles'
 
 export const SHAPE_KINDS = [
   { id: 'rectangle', label: 'Rectangle', icon: 'square' },

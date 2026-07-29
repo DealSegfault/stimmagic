@@ -5,7 +5,7 @@
  * writer, and the migrated op stack — and reports how far apart they are. The
  * canary flip depends on this: unit tests prove the field mapping, but only
  * rendering both proves the result, because the risk is order and inclusion (a
- * stage applied in the wrong place, or quietly left out), not the colour math,
+ * stage applied in the wrong place, or quietly left out), not the color math,
  * which both paths share by construction.
  *
  * Lives in src/ rather than in the test so the spec and any ad-hoc runner
@@ -54,7 +54,7 @@ export function defaultLegacyState(width: number, height: number): Record<string
 }
 
 /**
- * A deterministic, detail-dense source: colour ramps across all three channels
+ * A deterministic, detail-dense source: color ramps across all three channels
  * plus fine lines, so a missing or misordered stage shows up instead of hiding
  * in a flat field.
  */
@@ -193,7 +193,7 @@ export async function compareMigrationParity(
  */
 export const PARITY_FAMILIES: Array<{ name: string; state: Record<string, any> }> = [
   { name: 'light', state: { brightness: 25, contrast: 15, exposure: -10, gamma: 1.2 } },
-  { name: 'colour', state: { saturation: -30, temperature: 20 } },
+  { name: 'color', state: { saturation: -30, temperature: 20 } },
   { name: 'filter-preset', state: { filter: 'vintage' } },
   { name: 'effects-tonal', state: { vignette: 45, clarity: 30 } },
   { name: 'effects-spatial', state: { blur: 4, sharpen: 20 } },
@@ -205,7 +205,7 @@ export const PARITY_FAMILIES: Array<{ name: string; state: Record<string, any> }
     },
   },
   {
-    name: 'film-colour-isolation',
+    name: 'film-color-isolation',
     state: {
       colorIsolationEnabled: true, colorIsolationHue: 10,
       colorIsolationRange: 30, colorIsolationFeather: 20,

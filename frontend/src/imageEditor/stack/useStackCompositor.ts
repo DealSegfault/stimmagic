@@ -32,60 +32,15 @@ import {
   applyCrop,
   applyAdjust,
   applyRasterLayer,
-  applyThroughRegion,
   cropOutputSize,
   adjustIsIdentity,
 } from './opExecutors'
+import { featherAlpha } from './featherAlpha'
 
 export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
   inputHash: string
   op: Op
-}
-
-/**
- * Blur a mask's alpha with a separable box pass, repeated three times, which
- * approximates a Gaussian closely enough for a feather and stays fast on a
- * plain typed array. Deliberately not canvas `filter: blur()`.
- */
-export function featherAlpha(
-  alpha: Uint8ClampedArray,
-  width: number,
-  height: number,
-  radius: number
-): Uint8ClampedArray {
-  if (radius <= 0) return alpha
-  let src = alpha
-  let dst = new Uint8ClampedArray(alpha.length)
-  const r = Math.max(1, Math.round(radius))
-  for (let pass = 0; pass < 3; pass++) {
-    // Horizontal
-    for (let y = 0; y < height; y++) {
-      const row = y * width
-      let sum = 0
-      for (let x = -r; x <= r; x++) sum += src[row + Math.min(width - 1, Math.max(0, x))]
-      for (let x = 0; x < width; x++) {
-        dst[row + x] = sum / (2 * r + 1)
-        const out = row + Math.min(width - 1, Math.max(0, x - r))
-        const inp = row + Math.min(width - 1, Math.max(0, x + r + 1))
-        sum += src[inp] - src[out]
-      }
-    }
-    ;[src, dst] = [dst, src]
-    // Vertical
-    for (let x = 0; x < width; x++) {
-      let sum = 0
-      for (let y = -r; y <= r; y++) sum += src[Math.min(height - 1, Math.max(0, y)) * width + x]
-      for (let y = 0; y < height; y++) {
-        dst[y * width + x] = sum / (2 * r + 1)
-        const out = Math.min(height - 1, Math.max(0, y - r)) * width + x
-        const inp = Math.min(height - 1, Math.max(0, y + r + 1)) * width + x
-        sum += src[inp] - src[out]
-      }
-    }
-    ;[src, dst] = [dst, src]
-  }
-  return src
 }
 
 function makeCanvas(width: number, height: number): HTMLCanvasElement {
@@ -141,20 +96,6 @@ export function compositePatch(
   ctx.globalAlpha = opacity
   ctx.drawImage(patchCanvas, 0, 0)
   ctx.globalAlpha = 1
-  return out
-}
-
-/** Draw a whole-image result, which replaces the composite outright. */
-export function compositeWhole(
-  result: CanvasImageSource,
-  width: number,
-  height: number,
-  opacity = 1
-): HTMLCanvasElement {
-  const out = makeCanvas(width, height)
-  const ctx = out.getContext('2d')!
-  ctx.globalAlpha = opacity
-  ctx.drawImage(result, 0, 0, width, height)
   return out
 }
 
@@ -217,10 +158,43 @@ export function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png'): Pro
 }
 
 export interface CompositorDeps {
-  /** Resolve a payload ref to something drawable. */
-  loadPayload: (ref: string) => Promise<CanvasImageSource>
+  /**
+   * Resolve a payload ref to something drawable. `revision` changes whenever
+   * mutable paint pixels are rewritten under the same ref.
+   */
+  loadPayload: (ref: string, revision?: number) => Promise<CanvasImageSource>
   /** Resolve the base revision's pixels. */
   loadBase: () => Promise<CanvasImageSource>
+  /**
+   * The image as of each step, for the row previews — emitted during the
+   * replay, where each intermediate composite already exists. Computing these
+   * separately would mean replaying the stack once per row.
+   *
+   * Only steps the render actually recomputed are emitted: a render that
+   * resumes from a cached intermediate leaves the ones below it untouched, and
+   * their previews are unchanged by definition.
+   */
+  onStepPreview?: (opId: string, preview: string) => void
+}
+
+/** Longest edge of a row preview, in device-independent pixels. */
+const STEP_PREVIEW_PX = 72
+
+/**
+ * A row-preview-sized snapshot of a composite, cropped square from the center
+ * so a column of them reads as a column regardless of each frame's aspect.
+ */
+function squarePreview(source: HTMLCanvasElement): string {
+  const size = Math.min(source.width, source.height)
+  const canvas = makeCanvas(STEP_PREVIEW_PX, STEP_PREVIEW_PX)
+  canvas.getContext('2d')!.drawImage(
+    source,
+    (source.width - size) / 2, (source.height - size) / 2, size, size,
+    0, 0, STEP_PREVIEW_PX, STEP_PREVIEW_PX
+  )
+  // JPEG: the composite is opaque (it starts from the base), and a lossless
+  // 72px tile per step would hold megabytes of data URL on a long stack.
+  return canvas.toDataURL('image/jpeg', 0.72)
 }
 
 /**
@@ -321,6 +295,7 @@ export class StackCompositor {
       }
       const nextHash = i + 1 < inputs.length ? inputs[i + 1] : head
       this.remember(nextHash, current)
+      this.deps.onStepPreview?.(op.id, squarePreview(current))
     }
     this.cache.set(head, current)
     return current
@@ -350,8 +325,8 @@ export class StackCompositor {
     width: number,
     height: number
   ): Promise<CanvasImageSource> {
-    const payload = await this.deps.loadPayload(ref)
     const op = doc.edits[index] as any
+    const payload = await this.deps.loadPayload(ref, op?._revision ?? 0)
     const created = op?.payload_frame
     if (!created) return payload
 
@@ -390,25 +365,16 @@ export class StackCompositor {
       })
     }
 
-    if (op.class === 'whole') {
-      if (!picked?.patch_ref) return input
-      const result = await this.loadAnchored(picked.patch_ref, doc, index, width, height)
-      return compositeWhole(result, width, height, anyOp.blend?.opacity ?? 1)
-    }
-
     if (op.class === 'parametric') {
       const kind = anyOp.exec?.kind
       if (kind === 'crop') {
-        // Geometry is never scoped to a region: cropping part of an image is
-        // not a thing, and a region would have no space to be expressed in.
         return applyCrop(input, input.width, input.height, anyOp.params || {})
       }
       if (kind === 'adjust') {
         if (adjustIsIdentity(anyOp.params || {})) return input
         // The op's id seeds its noise, so a step's grain belongs to that step
         // and survives every re-render of everything around it.
-        const result = applyAdjust(input, width, height, anyOp.params || {}, seedFrom(op.id))
-        return this.scopeToRegion(input, result, op, width, height, doc, index)
+        return applyAdjust(input, width, height, anyOp.params || {}, seedFrom(op.id))
       }
       return input
     }
@@ -416,35 +382,15 @@ export class StackCompositor {
     if (op.class === 'container') {
       const kind = anyOp.exec?.kind
       if (kind === 'annotate') {
-        const result = applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
-        return this.scopeToRegion(input, result, op, width, height, doc, index)
+        return applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
       }
       if (!anyOp.raster_ref) return input
       const layer = await this.loadAnchored(anyOp.raster_ref, doc, index, width, height)
-      const result = applyRasterLayer(input, layer, width, height, anyOp.blend?.opacity ?? 1)
-      return this.scopeToRegion(input, result, op, width, height, doc, index)
+      return applyRasterLayer(input, layer, width, height, anyOp.blend?.opacity ?? 1)
     }
 
     // An op kind this build does not know is a no-op rather than an error: a
     // document written by a newer build must still open and render.
     return input
-  }
-
-  /** Limit an op's effect to its region, when it has one. */
-  private async scopeToRegion(
-    input: HTMLCanvasElement,
-    result: HTMLCanvasElement,
-    op: Op,
-    width: number,
-    height: number,
-    doc: StackDocument,
-    index: number
-  ): Promise<HTMLCanvasElement> {
-    if (!op.region?.mask_ref) return result
-    const mask = await this.loadAnchored(op.region.mask_ref, doc, index, width, height)
-    return applyThroughRegion(input, result, mask, width, height, {
-      featherPx: op.region.feather_px,
-      invert: op.region.invert,
-    })
   }
 }

@@ -635,6 +635,56 @@ export function useSelection() {
   }
 
   /**
+   * Brush a stroke into the selection mask directly.
+   *
+   * Stamps a radial-gradient tip along the segment so a fast drag stays
+   * continuous, matching the inpaint brush this replaces. `subtract` erases;
+   * every other combine mode lays selection down — a brush has no meaningful
+   * `intersect`. Produces a pixel selection, so the marching ants come from
+   * tracing; call `updateMarchingAnts` once at stroke end, not per stamp.
+   */
+  function brushStroke(
+    from: Point | null,
+    to: Point,
+    radius: number,
+    mode: SelectionMode,
+    hardness: number = 0.6
+  ): void {
+    const ctx = selectionCtx.value;
+    if (!ctx || radius <= 0) return;
+
+    ctx.save();
+    ctx.globalCompositeOperation = mode === 'subtract' ? 'destination-out' : 'source-over';
+
+    const stamp = (x: number, y: number) => {
+      const gradient = ctx.createRadialGradient(x, y, radius * hardness, x, y, radius);
+      gradient.addColorStop(0, 'rgba(255,255,255,1)');
+      gradient.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    if (from) {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const distance = Math.hypot(dx, dy);
+      const step = Math.max(1, radius / 3);
+      for (let travelled = 0; travelled < distance; travelled += step) {
+        const t = travelled / distance;
+        stamp(from.x + dx * t, from.y + dy * t);
+      }
+    }
+    stamp(to.x, to.y);
+    ctx.restore();
+
+    selectionShapes.value = [{ type: 'pixels' }];
+    isInverted.value = false;
+    baseShapesBeforeInvert.value = [];
+  }
+
+  /**
    * Fill selection with color on a target canvas
    */
   function fillWithColor(
@@ -816,6 +866,7 @@ export function useSelection() {
     finishLassoSelection,
     createMagneticLassoSelection,
     magicWandSelect,
+    brushStroke,
     feather,
     invert,
     fillWithColor,

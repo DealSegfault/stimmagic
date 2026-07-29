@@ -14,7 +14,11 @@ import type { Shape, PathShape, LineShape, CurvedArrowShape, RectangleShape, Ell
 import { TEXT_BASE_FONT_SIZE } from './shapeTypes';
 import type { Size, Point } from './geometry';
 import { colorToCss } from './geometry';
-import { applyNeonEffect, createGradient, getEffectiveStyle, getGradientColorAt } from './shapeEffects';
+import {
+  applyNeonEffect, getEffectiveStyle,
+  paintStyle, paintColor, paintColorAt,
+} from './shapeEffects';
+import type { Rect } from './shapeEffects';
 
 /**
  * State for text editing on canvas
@@ -269,11 +273,7 @@ export function renderLine(
   };
 
   // Set stroke style based on effect
-  if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-    ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-  } else {
-    ctx.strokeStyle = colorToCss(shape.strokeColor);
-  }
+  ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
 
   ctx.lineWidth = shape.strokeWidth;
   ctx.lineCap = 'round';
@@ -305,37 +305,26 @@ export function renderLine(
     ctx.stroke();
 
     // Draw line ends
+    // An arrowhead is filled as one solid piece, so it takes the paint's
+    // color where the head sits rather than the gradient itself.
     if (hasEnd) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        const endColor = getGradientColorAt({ x: x2, y: y2 }, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-        const endColorCss = colorToCss(endColor);
-        ctx.fillStyle = endColorCss;
-        ctx.strokeStyle = endColorCss;
-      } else {
-        ctx.fillStyle = colorToCss(shape.strokeColor);
-      }
+      const endCss = colorToCss(paintColorAt(shape.strokeColor, { x: x2, y: y2 }, bounds));
+      ctx.fillStyle = endCss;
+      ctx.strokeStyle = endCss;
       drawArrowHead(ctx, x2, y2, angle, shape.strokeWidth, isSolidEnd);
     }
 
     if (hasStart) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        const startColor = getGradientColorAt({ x: x1, y: y1 }, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-        const startColorCss = colorToCss(startColor);
-        ctx.fillStyle = startColorCss;
-        ctx.strokeStyle = startColorCss;
-      } else {
-        ctx.fillStyle = colorToCss(shape.strokeColor);
-      }
+      const startCss = colorToCss(paintColorAt(shape.strokeColor, { x: x1, y: y1 }, bounds));
+      ctx.fillStyle = startCss;
+      ctx.strokeStyle = startCss;
       drawArrowHead(ctx, x1, y1, angle + Math.PI, shape.strokeWidth, isSolidStart);
     }
   };
 
   // Apply neon effect if enabled (using pencil-style rendering)
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor;
-    const color = typeof glowColor === 'string'
-      ? { r: 255, g: 255, b: 255 }
-      : glowColor;
+    const color = effectiveStyle.glowColor ?? paintColor(shape.strokeColor, bounds);
     const glowIntensity = effectiveStyle.glowIntensity / 100;
     const baseWidth = shape.strokeWidth;
 
@@ -478,11 +467,7 @@ export function renderCurvedArrow(
   };
 
   // Set stroke style based on effect
-  if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-    ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-  } else {
-    ctx.strokeStyle = colorToCss(shape.strokeColor);
-  }
+  ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
 
   ctx.lineWidth = shape.strokeWidth;
   ctx.lineCap = 'round';
@@ -546,29 +531,16 @@ export function renderCurvedArrow(
       const endX = toPixels(endPoint.x, imageSize.width);
       const endY = toPixels(endPoint.y, imageSize.height);
 
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        const arrowColor = getGradientColorAt(
-          { x: endX, y: endY },
-          bounds,
-          effectiveStyle.gradientColors,
-          effectiveStyle.gradientDirection
-        );
-        const arrowColorCss = colorToCss(arrowColor);
-        ctx.fillStyle = arrowColorCss;
-        ctx.strokeStyle = arrowColorCss;
-      } else {
-        ctx.fillStyle = colorToCss(shape.strokeColor);
-      }
+      const arrowCss = colorToCss(paintColorAt(shape.strokeColor, { x: endX, y: endY }, bounds));
+      ctx.fillStyle = arrowCss;
+      ctx.strokeStyle = arrowCss;
       drawArrowHead(ctx, endX, endY, arrowEndAngle, shape.strokeWidth, isSolidEnd);
     }
   };
 
   // Apply neon effect if enabled (using pencil-style rendering)
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor;
-    const color = typeof glowColor === 'string'
-      ? { r: 255, g: 255, b: 255 }
-      : glowColor;
+    const color = effectiveStyle.glowColor ?? paintColor(shape.strokeColor, bounds);
     const glowIntensity = effectiveStyle.glowIntensity / 100;
     const baseWidth = shape.strokeWidth;
 
@@ -721,21 +693,12 @@ export function renderRectangle(
     buildPath();
 
     if (shape.backgroundColor) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        ctx.fillStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.fillStyle = colorToCss(shape.backgroundColor);
-      }
+      ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, bounds);
       ctx.fill();
     }
 
     if (shape.strokeColor && shape.strokeWidth) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2 && !shape.backgroundColor) {
-        // Apply gradient to stroke if no fill
-        ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.strokeStyle = colorToCss(shape.strokeColor);
-      }
+      ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
       ctx.lineWidth = shape.strokeWidth;
       ctx.stroke();
     }
@@ -743,7 +706,8 @@ export function renderRectangle(
 
   // Apply neon effect if enabled
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor ?? shape.backgroundColor;
+    const glowPaint = shape.strokeColor ?? shape.backgroundColor;
+    const glowColor = effectiveStyle.glowColor ?? (glowPaint && paintColor(glowPaint, bounds));
     if (glowColor) {
       applyNeonEffect(ctx, renderShape, glowColor, effectiveStyle.glowIntensity, buildPath, shape.strokeWidth);
     } else {
@@ -791,20 +755,12 @@ export function renderEllipse(
     buildPath();
 
     if (shape.backgroundColor) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        ctx.fillStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.fillStyle = colorToCss(shape.backgroundColor);
-      }
+      ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, bounds);
       ctx.fill();
     }
 
     if (shape.strokeColor && shape.strokeWidth) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2 && !shape.backgroundColor) {
-        ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.strokeStyle = colorToCss(shape.strokeColor);
-      }
+      ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
       ctx.lineWidth = shape.strokeWidth;
       ctx.stroke();
     }
@@ -812,7 +768,8 @@ export function renderEllipse(
 
   // Apply neon effect if enabled
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor ?? shape.backgroundColor;
+    const glowPaint = shape.strokeColor ?? shape.backgroundColor;
+    const glowColor = effectiveStyle.glowColor ?? (glowPaint && paintColor(glowPaint, bounds));
     if (glowColor) {
       applyNeonEffect(ctx, renderShape, glowColor, effectiveStyle.glowIntensity, buildPath, shape.strokeWidth);
     } else {
@@ -865,20 +822,12 @@ export function renderTriangle(
     buildPath();
 
     if (shape.backgroundColor) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        ctx.fillStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.fillStyle = colorToCss(shape.backgroundColor);
-      }
+      ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, bounds);
       ctx.fill();
     }
 
     if (shape.strokeColor && shape.strokeWidth) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2 && !shape.backgroundColor) {
-        ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.strokeStyle = colorToCss(shape.strokeColor);
-      }
+      ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
       ctx.lineWidth = shape.strokeWidth;
       ctx.lineJoin = 'round';
       ctx.stroke();
@@ -887,7 +836,8 @@ export function renderTriangle(
 
   // Apply neon effect if enabled
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor ?? shape.backgroundColor;
+    const glowPaint = shape.strokeColor ?? shape.backgroundColor;
+    const glowColor = effectiveStyle.glowColor ?? (glowPaint && paintColor(glowPaint, bounds));
     if (glowColor) {
       applyNeonEffect(ctx, renderShape, glowColor, effectiveStyle.glowIntensity, buildPath, shape.strokeWidth);
     } else {
@@ -954,20 +904,12 @@ export function renderStar(
     buildPath();
 
     if (shape.backgroundColor) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        ctx.fillStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.fillStyle = colorToCss(shape.backgroundColor);
-      }
+      ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, bounds);
       ctx.fill();
     }
 
     if (shape.strokeColor && shape.strokeWidth) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2 && !shape.backgroundColor) {
-        ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.strokeStyle = colorToCss(shape.strokeColor);
-      }
+      ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
       ctx.lineWidth = shape.strokeWidth;
       ctx.lineJoin = 'round';
       ctx.stroke();
@@ -976,7 +918,8 @@ export function renderStar(
 
   // Apply neon effect if enabled
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor ?? shape.backgroundColor;
+    const glowPaint = shape.strokeColor ?? shape.backgroundColor;
+    const glowColor = effectiveStyle.glowColor ?? (glowPaint && paintColor(glowPaint, bounds));
     if (glowColor) {
       applyNeonEffect(ctx, renderShape, glowColor, effectiveStyle.glowIntensity, buildPath, shape.strokeWidth);
     } else {
@@ -1040,20 +983,12 @@ export function renderPolygon(
     buildPath();
 
     if (shape.backgroundColor) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-        ctx.fillStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.fillStyle = colorToCss(shape.backgroundColor);
-      }
+      ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, bounds);
       ctx.fill();
     }
 
     if (shape.strokeColor && shape.strokeWidth) {
-      if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2 && !shape.backgroundColor) {
-        ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-      } else {
-        ctx.strokeStyle = colorToCss(shape.strokeColor);
-      }
+      ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
       ctx.lineWidth = shape.strokeWidth;
       ctx.lineJoin = 'round';
       ctx.stroke();
@@ -1062,7 +997,8 @@ export function renderPolygon(
 
   // Apply neon effect if enabled
   if (effectiveStyle.effect === 'neon') {
-    const glowColor = effectiveStyle.glowColor ?? shape.strokeColor ?? shape.backgroundColor;
+    const glowPaint = shape.strokeColor ?? shape.backgroundColor;
+    const glowColor = effectiveStyle.glowColor ?? (glowPaint && paintColor(glowPaint, bounds));
     if (glowColor) {
       applyNeonEffect(ctx, renderShape, glowColor, effectiveStyle.glowIntensity, buildPath, shape.strokeWidth);
     } else {
@@ -1278,11 +1214,7 @@ export function renderPath(
     };
 
     // Set stroke style based on effect
-    if (effectiveStyle.effect === 'gradient' && effectiveStyle.gradientColors.length >= 2) {
-      ctx.strokeStyle = createGradient(ctx, bounds, effectiveStyle.gradientColors, effectiveStyle.gradientDirection);
-    } else {
-      ctx.strokeStyle = colorToCss(shape.strokeColor);
-    }
+    ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
     ctx.lineWidth = shape.strokeWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -1463,11 +1395,18 @@ export function renderText(
   // baseHeightPx now contains actual glyph-based height from measureTextBase,
   // so the background will match the selection bounds exactly
   if (shape.backgroundColor) {
-    ctx.fillStyle = colorToCss(shape.backgroundColor);
-
     // Use baseHeightPx for consistent sizing with selection bounds
     const padding = (shape.backgroundPadding ?? 0) * baseHeightPx;
     const cornerRadius = (shape.backgroundCornerRadius ?? 0) * baseHeightPx * 0.5;
+
+    // The box is the gradient's box, padding included, so a gradient pill runs
+    // corner to corner rather than across the glyphs only.
+    ctx.fillStyle = paintStyle(ctx, shape.backgroundColor, {
+      x: -padding,
+      y: -padding,
+      width: baseWidthPx + padding * 2,
+      height: baseHeightPx + padding * 2,
+    });
 
     ctx.beginPath();
     ctx.roundRect(
@@ -1489,6 +1428,17 @@ export function renderText(
   // Split text into lines
   const lines = shape.text.split('\n');
   const lineHeight = TEXT_BASE_FONT_SIZE * 1.2;
+
+  /**
+   * The box a paint spans: the whole text block, in the canvas coordinates the
+   * text is drawn in. Per-line bounds would restart a gradient on every line.
+   */
+  const textBounds: Rect = {
+    x: 0,
+    y: 0,
+    width: baseWidthPx,
+    height: lineHeight * lines.length,
+  };
 
   // Measure actual glyph ascent with alphabetic baseline (same as measureTextBase)
   // This tells us how far glyphs extend above the baseline
@@ -1561,36 +1511,33 @@ export function renderText(
   lines.forEach((line, index) => {
     const textY = baselineY + index * lineHeight;
 
-    // Apply text effect
+    // Apply text effect. `textBounds` is the whole text block, so a gradient
+    // in any slot runs across the text rather than restarting per line.
     switch (textEffect) {
       case 'neon':
-        renderNeonText(ctx, line, textX, textY, shape, baseWidthPx, lineHeight * lines.length);
+        renderNeonText(ctx, line, textX, textY, shape, textBounds);
         break;
 
       case 'outline':
-        renderOutlineText(ctx, line, textX, textY, shape);
-        break;
-
-      case 'gradient':
-        renderGradientText(ctx, line, textX, textY, shape, baseWidthPx, lineHeight * lines.length, index, lines.length);
+        renderOutlineText(ctx, line, textX, textY, shape, textBounds);
         break;
 
       case 'shadow':
-        renderShadowText(ctx, line, textX, textY, shape, baseWidthPx, lineHeight * lines.length);
+        renderShadowText(ctx, line, textX, textY, shape, textBounds);
         break;
 
       case 'glitch':
-        renderGlitchText(ctx, line, textX, textY, shape, baseWidthPx, lineHeight * lines.length);
+        renderGlitchText(ctx, line, textX, textY, shape, textBounds);
         break;
 
       case 'knockout':
-        renderKnockoutText(ctx, line, textX, textY, shape, baseWidthPx, baseHeightPx, index, lines.length);
+        renderKnockoutText(ctx, line, textX, textY, shape, baseWidthPx, baseHeightPx, index, textBounds);
         break;
 
       default: // 'none' - standard rendering
         // Draw stroke/outline if present
         if (shape.strokeColor && shape.strokeWidth && shape.strokeWidth > 0) {
-          ctx.strokeStyle = colorToCss(shape.strokeColor);
+          ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, textBounds);
           ctx.lineWidth = shape.strokeWidth;
           ctx.lineJoin = 'round';
           ctx.miterLimit = 2;
@@ -1598,7 +1545,7 @@ export function renderText(
         }
 
         // Draw fill
-        ctx.fillStyle = colorToCss(shape.textColor);
+        ctx.fillStyle = paintStyle(ctx, shape.textColor, textBounds);
         ctx.fillText(line, textX, textY);
         break;
     }
@@ -1623,14 +1570,11 @@ function renderNeonText(
   textX: number,
   textY: number,
   shape: TextShape,
-  _baseWidthPx: number,
-  _totalHeight: number
+  bounds: Rect
 ) {
   const glowIntensity = (shape.glowIntensity ?? 50) / 100;
-  const color = shape.textColor;
-  const r = typeof color === 'string' ? 255 : color.r;
-  const g = typeof color === 'string' ? 255 : color.g;
-  const b = typeof color === 'string' ? 255 : color.b;
+  // A glow is light of one hue, so a gradient text glows in its middle color.
+  const { r, g, b } = paintColor(shape.textColor, bounds);
 
   // Save state
   const originalShadowBlur = ctx.shadowBlur;
@@ -1704,10 +1648,11 @@ function renderOutlineText(
   line: string,
   textX: number,
   textY: number,
-  shape: TextShape
+  shape: TextShape,
+  bounds: Rect
 ) {
   // Use strokeColor if set, otherwise use textColor for the outline
-  const strokeColor = shape.strokeColor ? colorToCss(shape.strokeColor) : colorToCss(shape.textColor);
+  const strokeColor = paintStyle(ctx, shape.strokeColor ?? shape.textColor, bounds);
   // Stroke width, default to a visible outline
   const strokeWidth = shape.strokeWidth ?? Math.max(4, TEXT_BASE_FONT_SIZE * 0.04);
 
@@ -1721,59 +1666,6 @@ function renderOutlineText(
 }
 
 /**
- * Render text with gradient fill effect
- * Instagram Stories-style gradient text
- */
-function renderGradientText(
-  ctx: CanvasRenderingContext2D,
-  line: string,
-  textX: number,
-  textY: number,
-  shape: TextShape,
-  baseWidthPx: number,
-  totalHeight: number,
-  _lineIndex: number,
-  _totalLines: number
-) {
-  const colors = shape.gradientColors ?? ['#ff6b6b', '#feca57', '#ff9ff3'];
-  const direction = shape.gradientDirection ?? 'horizontal';
-
-  // Create gradient based on direction
-  let gradient: CanvasGradient;
-
-  switch (direction) {
-    case 'vertical':
-      // Gradient spans all lines
-      gradient = ctx.createLinearGradient(0, 0, 0, totalHeight);
-      break;
-    case 'diagonal':
-      gradient = ctx.createLinearGradient(0, 0, baseWidthPx, totalHeight);
-      break;
-    default: // 'horizontal'
-      gradient = ctx.createLinearGradient(0, 0, baseWidthPx, 0);
-      break;
-  }
-
-  // Add color stops evenly distributed
-  colors.forEach((color, index) => {
-    gradient.addColorStop(index / (colors.length - 1), color);
-  });
-
-  // Draw stroke/outline if present (underneath gradient)
-  if (shape.strokeColor && shape.strokeWidth && shape.strokeWidth > 0) {
-    ctx.strokeStyle = colorToCss(shape.strokeColor);
-    ctx.lineWidth = shape.strokeWidth;
-    ctx.lineJoin = 'round';
-    ctx.miterLimit = 2;
-    ctx.strokeText(line, textX, textY);
-  }
-
-  // Draw gradient fill
-  ctx.fillStyle = gradient;
-  ctx.fillText(line, textX, textY);
-}
-
-/**
  * Render text with long shadow / 3D effect
  * Creates a retro poster-style stacked shadow
  */
@@ -1783,12 +1675,11 @@ function renderShadowText(
   textX: number,
   textY: number,
   shape: TextShape,
-  _baseWidthPx: number,
-  _totalHeight: number
+  bounds: Rect
 ) {
   const shadowLength = (shape.shadowLength ?? 50) / 100;
   const direction = shape.shadowDirection ?? 'bottom-right';
-  const textColor = colorToCss(shape.textColor);
+  const textFill = paintStyle(ctx, shape.textColor, bounds);
 
   // Calculate shadow direction offsets
   let dx = 1, dy = 1;
@@ -1805,13 +1696,8 @@ function renderShadowText(
     shadowColor = colorToCss(shape.shadowColor);
   } else {
     // Create a darker version of the text color
-    const tc = shape.textColor;
-    if (typeof tc === 'string') {
-      // If it's a string color, just use a dark gray
-      shadowColor = 'rgba(30, 30, 30, 1)';
-    } else {
-      shadowColor = `rgba(${Math.floor(tc.r * 0.3)}, ${Math.floor(tc.g * 0.3)}, ${Math.floor(tc.b * 0.3)}, ${tc.a ?? 1})`;
-    }
+    const tc = paintColor(shape.textColor, bounds);
+    shadowColor = `rgba(${Math.floor(tc.r * 0.3)}, ${Math.floor(tc.g * 0.3)}, ${Math.floor(tc.b * 0.3)}, ${tc.a ?? 1})`;
   }
 
   // Number of shadow layers based on length (more layers = smoother shadow)
@@ -1827,7 +1713,7 @@ function renderShadowText(
 
   // Draw stroke if present
   if (shape.strokeColor && shape.strokeWidth && shape.strokeWidth > 0) {
-    ctx.strokeStyle = colorToCss(shape.strokeColor);
+    ctx.strokeStyle = paintStyle(ctx, shape.strokeColor, bounds);
     ctx.lineWidth = shape.strokeWidth;
     ctx.lineJoin = 'round';
     ctx.miterLimit = 2;
@@ -1835,7 +1721,7 @@ function renderShadowText(
   }
 
   // Draw main text on top
-  ctx.fillStyle = textColor;
+  ctx.fillStyle = textFill;
   ctx.fillText(line, textX, textY);
 }
 
@@ -1849,11 +1735,9 @@ function renderGlitchText(
   textX: number,
   textY: number,
   shape: TextShape,
-  _baseWidthPx: number,
-  _totalHeight: number
+  bounds: Rect
 ) {
   const intensity = (shape.glitchIntensity ?? 50) / 100;
-  const textColor = shape.textColor;
 
   // Offset amount based on intensity
   const offset = TEXT_BASE_FONT_SIZE * 0.05 * intensity;
@@ -1872,7 +1756,7 @@ function renderGlitchText(
 
   // Draw main text on top
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = colorToCss(textColor);
+  ctx.fillStyle = paintStyle(ctx, shape.textColor, bounds);
   ctx.fillText(line, textX, textY);
 
   // Add optional scan lines for extra glitch feel at high intensity
@@ -1903,15 +1787,16 @@ function renderKnockoutText(
   baseWidthPx: number,
   baseHeightPx: number,
   lineIndex: number,
-  _totalLines: number
+  bounds: Rect
 ) {
   const lineHeight = TEXT_BASE_FONT_SIZE * 1.2;
 
   // Only render on the first line - we'll draw all text at once
   if (lineIndex !== 0) return;
 
-  // Use text color for the knockout box
-  const boxColor = shape.textColor;
+  // Use text color for the knockout box. It is drawn on an offscreen canvas
+  // in its own coordinates, so a gradient paint contributes its color.
+  const boxColor = paintColor(shape.textColor, bounds);
   const padding = (shape.backgroundPadding ?? 0.15) * baseHeightPx;
   const cornerRadius = (shape.backgroundCornerRadius ?? 0.1) * baseHeightPx * 0.5;
 

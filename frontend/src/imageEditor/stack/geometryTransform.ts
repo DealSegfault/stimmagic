@@ -236,7 +236,7 @@ export function payloadRewrites(
 
 function hasSpatialPayload(op: Op): boolean {
   const anyOp = op as any
-  return !!(anyOp.mask_ref || anyOp.raster_ref || op.region?.mask_ref)
+  return !!(anyOp.mask_ref || anyOp.raster_ref)
 }
 
 // -- vector payloads ---------------------------------------------------------
