@@ -536,7 +536,7 @@ class TestToolProvider(ToolProvider):
              ["input_images"]),
             ("erase-image:test-erase", "Test Erase", "erase-image",
              {**_images,
-              "mask": {"type": "string", "format": "file-path",
+              "mask": {"type": "string", "format": "file-path", "x-control": "mask_editor",
                        "x-mask-format": "white-black", "x-source-field": "input_images"},
               "dilate_pixels": {"type": "integer", "default": 10, "minimum": 0, "maximum": 25},
               **_seed},
