@@ -120,9 +120,13 @@ export function gradientAlpha(
 }
 
 /**
- * The white-on-black canvas the compositor expects. It reads the red channel
- * as coverage, so all three channels carry it and alpha stays opaque — the
- * same shape a drawn mask payload has.
+ * The mask canvas the compositor expects — coverage in EVERY channel.
+ *
+ * The two compositing paths disagree about where a mask keeps its coverage:
+ * `compositeRetouchRegion` reads the ALPHA channel, `compositePatch` and
+ * `maskBounds` read RED. Writing coverage to all four satisfies both, and an
+ * opaque alpha would silently make a region cover the whole frame — the effect
+ * applies everywhere and stops looking local at all.
  */
 export function gradientMaskCanvas(
   mask: GradientMask,
@@ -139,7 +143,7 @@ export function gradientMaskCanvas(
     image.data[i] = alpha[p]
     image.data[i + 1] = alpha[p]
     image.data[i + 2] = alpha[p]
-    image.data[i + 3] = 255
+    image.data[i + 3] = alpha[p]
   }
   ctx.putImageData(image, 0, 0)
   return canvas

@@ -37,6 +37,7 @@ import {
 } from './opExecutors'
 import { featherAlpha } from './featherAlpha'
 import { gradientMaskCanvas, isGradientMask } from './regionMask'
+import type { GradientMask } from './types'
 import { retouchRegionAlpha } from './retouchRegionAlpha'
 import { maskedRetouchAdjustmentParams } from './adjustSections'
 
@@ -443,7 +444,7 @@ export class StackCompositor {
       const frame = region.payload_frame
       const authoredWidth = Math.max(1, Math.round(frame?.width ?? width / previewScale))
       const authoredHeight = Math.max(1, Math.round(frame?.height ?? height / previewScale))
-      const rasterised = gradientMaskCanvas(mask, authoredWidth, authoredHeight)
+      const rasterised = this.rasteriseGradient(mask, authoredWidth, authoredHeight)
       // Rasterised full-frame, so it has no compact origin of its own.
       return this.positionRetouchPayload(
         rasterised, { ...region, payload_origin: [0, 0] }, doc, index, width, height,
@@ -451,6 +452,34 @@ export class StackCompositor {
     }
     if (!region.mask_ref) return null
     return this.loadRetouchPayload(region.mask_ref, region, doc, index, width, height)
+  }
+
+  /**
+   * Rasterising a ramp is a full-frame per-pixel pass, and a region's geometry
+   * usually does NOT change between renders — every adjustment slider re-renders
+   * the same mask. Caching it keeps a gradient region as cheap to re-render as a
+   * drawn one; without it, tuning Exposure on a gradient costs several times
+   * what tuning it on a brushed region costs.
+   *
+   * One entry per region geometry: the key is the geometry itself, so a moved
+   * handle misses and everything else hits.
+   */
+  private gradientRaster = new Map<string, HTMLCanvasElement>()
+
+  private rasteriseGradient(
+    mask: GradientMask,
+    width: number,
+    height: number,
+  ): HTMLCanvasElement {
+    const key = `${JSON.stringify(mask)}@${width}x${height}`
+    const cached = this.gradientRaster.get(key)
+    if (cached) return cached
+    const rasterised = gradientMaskCanvas(mask, width, height)
+    // Handle drags walk through many geometries; keep the map from growing
+    // without bound while still holding the handful a document really uses.
+    if (this.gradientRaster.size > 24) this.gradientRaster.clear()
+    this.gradientRaster.set(key, rasterised)
+    return rasterised
   }
 
   private positionRetouchPayload(

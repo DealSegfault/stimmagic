@@ -90,19 +90,20 @@ const emit = defineEmits<{
   objectPick: [{ x: number; y: number; shiftKey: boolean; altKey: boolean }]
   /**
    * A NEW ramp, dragged out with a gradient tool armed, in source pixels.
-   * `committed` is false for every frame of the drag and true on release, so
-   * the host can preview freely and persist once.
+   *
+   * Emitted ONCE, on release. While the pointer is down the ramp is a local
+   * draft drawn straight to the overlay: persisting each move would re-render
+   * the composite at full resolution per mouse event, and the guides — a few
+   * lines and dots — would queue up behind seconds of pixel work.
    */
-  gradient: [mask: GradientMask, committed: boolean]
+  gradient: [mask: GradientMask]
   /**
-   * An EXISTING ramp re-aimed by its handles. Deliberately a different event:
-   * dragging a handle must edit the region it belongs to, while dragging out a
-   * fresh ramp must make a new one, and one event for both cannot tell them
-   * apart.
+   * An EXISTING ramp re-aimed by its handles, also once on release.
+   * Deliberately a different event: dragging a handle must edit the region it
+   * belongs to, while dragging out a fresh ramp must make a new one, and one
+   * event for both cannot tell them apart.
    */
-  gradientEdit: [mask: GradientMask, committed: boolean]
-  /** The gradient gesture ended with nothing worth keeping. */
-  gradientCancel: []
+  gradientEdit: [mask: GradientMask]
 }>()
 
 const overlay = ref<HTMLCanvasElement | null>(null)
@@ -124,10 +125,16 @@ let gradientStart: Point | null = null
 /** Which handle of an existing gradient the pointer owns. */
 type HandleId = 'lin1' | 'lin2' | 'radc' | 'radx' | 'rady'
 let handleDrag: HandleId | null = null
+/** A saved gradient's geometry while its handle is being dragged. */
+const handleDraft = ref<GradientMask | null>(null)
 
-/** The gradient the canvas should be drawing: a live draft outranks the saved one. */
+/**
+ * The gradient the canvas should be drawing. A live draft outranks the saved
+ * one so the guides track the pointer at pointer speed, with no document write
+ * and no render in the loop.
+ */
 const shownGradient = computed<GradientMask | null>(
-  () => draftGradient.value ?? props.gradient
+  () => draftGradient.value ?? handleDraft.value ?? props.gradient
 )
 
 const scale = computed(() =>
@@ -236,11 +243,8 @@ function onPointerMove(event: PointerEvent) {
   const point = pointFrom(event)
   if (props.armed === 'linear' || props.armed === 'radial') {
     if (!gradientStart) return
-    const next = gradientFrom(gradientStart, point)
-    draftGradient.value = next
-    // Nothing is persisted until the ramp is big enough to mean something, so
-    // a click or a twitch never leaves a region behind.
-    if (gradientWorthKeeping(next)) emit('gradient', next, false)
+    // Draw only. Nothing is persisted and nothing is rendered until release.
+    draftGradient.value = gradientFrom(gradientStart, point)
     draw()
     return
   }
@@ -265,10 +269,9 @@ function onPointerUp(event: PointerEvent) {
     gradientStart = null
     draftGradient.value = null
     // A tap, or a ramp too short to read as one, is a miss rather than an
-    // invisible region: leave the selection exactly as it was, and let the host
-    // drop anything the drag created before it shrank back.
+    // invisible region: nothing was persisted during the drag, so leaving the
+    // selection exactly as it was is all it takes.
     if (!mask || !gradientWorthKeeping(mask)) {
-      emit('gradientCancel')
       draw()
       return
     }
@@ -323,7 +326,7 @@ function commitGradient(mask: GradientMask) {
       props.combine,
     )
   }
-  emit('gradient', mask, true)
+  emit('gradient', mask)
   // The ramp IS the edge treatment; feathering it again only blurs a blur.
   publish(false)
 }
@@ -379,16 +382,20 @@ function onHandleDown(id: HandleId, event: PointerEvent) {
 
 function onHandleMove(event: PointerEvent) {
   if (!handleDrag || !props.source) return
+  // Same rule as creation: move the guides, touch no pixels.
   const next = moveGradientHandle(handleDrag, pointFromClient(event))
-  if (next) emit('gradientEdit', next, false)
+  if (!next) return
+  handleDraft.value = next
+  draw()
 }
 
 function onHandleUp(event: PointerEvent) {
   if (!handleDrag) return
-  const next = moveGradientHandle(handleDrag, pointFromClient(event))
+  const next = moveGradientHandle(handleDrag, pointFromClient(event)) ?? handleDraft.value
   handleDrag = null
-  if (!next || isDegenerate(next)) return
-  emit('gradientEdit', next, true)
+  handleDraft.value = null
+  if (!next || isDegenerate(next)) { draw(); return }
+  emit('gradientEdit', next)
 }
 
 /** Handle drags land on a DOM node, so the overlay rect is the shared frame. */
@@ -640,6 +647,7 @@ watch(() => props.armed, armed => {
     cursor.value = null
   }
   draftGradient.value = null
+  handleDraft.value = null
   gradientStart = null
   draw()
 })

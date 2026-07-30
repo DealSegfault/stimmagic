@@ -218,6 +218,28 @@ test('translating a ramp does not change its falloff', () => {
   assert.equal(moved.kind === 'linear' && moved.softness, 70)
 })
 
+test('coverage belongs in the alpha channel, not just RGB', () => {
+  // compositeRetouchRegion reads a region mask's ALPHA; compositePatch and
+  // maskBounds read RED. An opaque alpha made every gradient region cover the
+  // whole frame, so the adjustment applied globally and stopped being local.
+  // This is a channel-convention contract, so it is asserted on the buffer the
+  // canvas writer copies rather than on a canvas the test runner has no DOM for.
+  const mask = linearMaskFromDrag({ x: 0, y: 0 }, { x: 0, y: 10 }, 0)
+  const alpha = gradientAlpha(mask, 1, 11)
+  const rgba = new Uint8ClampedArray(alpha.length * 4)
+  for (let p = 0, i = 0; p < alpha.length; p++, i += 4) {
+    rgba[i] = alpha[p]; rgba[i + 1] = alpha[p]; rgba[i + 2] = alpha[p]; rgba[i + 3] = alpha[p]
+  }
+  // Full at the start, gone at the end — in alpha AND in red.
+  assert.equal(rgba[3], 255)
+  assert.equal(rgba[0], 255)
+  assert.equal(rgba[10 * 4 + 3], 0, 'alpha must fall to zero or the region covers everything')
+  assert.equal(rgba[10 * 4], 0)
+  // And never a constant alpha, which is exactly the bug this guards.
+  const alphas = new Set(Array.from({ length: 11 }, (_, y) => rgba[y * 4 + 3]))
+  assert.ok(alphas.size > 2, 'alpha must vary across the ramp')
+})
+
 test('rasterising is safe at zero size', () => {
   const mask = linearMaskFromDrag({ x: 0, y: 0 }, { x: 0, y: 10 })
   assert.equal(gradientAlpha(mask, 0, 0).length, 0)

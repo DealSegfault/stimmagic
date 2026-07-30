@@ -328,13 +328,6 @@ let suppressMaskedAdjustmentSync = false
  * second, frozen mask for the region. Consumed by `onSelectionChange`.
  */
 let gradientGestureLanding = false
-/**
- * The region a gradient drag is currently shaping. The first frame past the
- * too-small threshold creates it and every later frame re-aims THAT region, so
- * one gesture makes one region instead of one per pointer move. Cleared on
- * release, and the region is removed outright if the gesture ends too small.
- */
-let gradientDraftRegionId: string | null = null
 
 // Retouch
 const retouchRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
@@ -2891,8 +2884,9 @@ async function commitMaskedAdjustmentMask(
   retouchOpId.value = opId
   selectedOpId.value = opId
   selectedRetouchRegionId.value = regionId
-  // Completing the gesture is a judgement moment: show the repaired image,
-  // not its diagnostic boundary. The selected child still opens Properties.
+  // The workspace selection remains the visible source of truth after the
+  // adjustment lands. Keep the region's separate diagnostic wash off so it
+  // does not double up with the marching-ants feedback.
   selectedRetouchFeedbackVisible.value = false
   await render()
   await refreshRetouchInput()
@@ -3059,12 +3053,12 @@ const selectedGradient = computed<GradientMask | null>(() => {
  * compositor rasterises the ramp on every render. That is what keeps the
  * handles live for the life of the document.
  *
- * `committed` is false for every frame of a drag. Both cases write straight to
- * the stack — the render cache already keys on the region, so a moved handle
- * invalidates exactly this op and nothing below it — but only a committed one
- * closes the undo step.
+ * Called once per gesture, on release. The canvas owns the in-flight drag and
+ * draws it locally, because a document write per pointer move re-renders the
+ * composite at full resolution per mouse event — which buries the guides under
+ * a second of pixel work and makes the tool feel broken.
  */
-function onGradientChange(mask: GradientMask, committed: boolean) {
+function onGradientChange(mask: GradientMask) {
   if (!isMaskedAdjustmentSub(sub.value)) {
     // Not a masked adjustment: the ramp is only a selection (Repaint, Remove,
     // an inpaint mask), which the canvas already applied. Remember the shape
@@ -3077,33 +3071,16 @@ function onGradientChange(mask: GradientMask, committed: boolean) {
   // emits the geometry first and publishes second, both synchronously, so this
   // is armed here and consumed by the change handler.
   gradientGestureLanding = true
-  // A fresh drag makes its OWN region — even with one selected, so the second
-  // ramp never silently eats the first — but only one for the whole gesture.
-  persistGradientRegion(mask, committed, { into: gradientDraftRegionId })
-  if (committed) gradientDraftRegionId = null
-}
-
-/**
- * The gesture ended without a ramp worth keeping. If it had already grown big
- * enough to make a region, that region goes with it: a drag the person backed
- * out of must leave nothing behind.
- */
-function onGradientCancel() {
-  const draftId = gradientDraftRegionId
-  gradientDraftRegionId = null
-  // No publish is coming for this gesture, so the one-shot must not survive to
-  // swallow the next gesture's mask.
-  gradientGestureLanding = false
-  if (!draftId) return
-  const location = retouchRegionLocation(draftId)
-  if (location) removeRetouchRegion(location.op.id, draftId)
+  // A fresh drag makes its OWN region, even with one selected, so the second
+  // ramp never silently eats the first.
+  persistGradientRegion(mask, { into: null })
 }
 
 /** A handle drag re-aims the region the handles belong to, and only that one. */
-function onGradientEdit(mask: GradientMask, committed: boolean) {
+function onGradientEdit(mask: GradientMask) {
   const into = selectedGradientRegionId()
   if (!into) return
-  persistGradientRegion(mask, committed, { into })
+  persistGradientRegion(mask, { into })
 }
 
 /** The selected region, but only when it is a gradient we can edit in place. */
@@ -3126,12 +3103,11 @@ function rememberGradientDefaults(mask: GradientMask) {
 function onInspectorGradient(mask: GradientMask) {
   const into = selectedGradientRegionId()
   if (!into) return
-  persistGradientRegion(mask, true, { into, space: 'authored' })
+  persistGradientRegion(mask, { into, space: 'authored' })
 }
 
 function persistGradientRegion(
   mask: GradientMask,
-  committed: boolean,
   options: { into: string | null; space?: 'composite' | 'authored' },
 ) {
   rememberGradientDefaults(mask)
@@ -3183,20 +3159,16 @@ function persistGradientRegion(
     } else {
       stack.setRegions(opId, [...(existingOp.regions ?? []), region])
     }
-    // Every later frame of this drag re-aims the region just made.
-    gradientDraftRegionId = regionId
     selectedOpId.value = opId
     selectedRetouchRegionId.value = regionId
     // A ramp needs no boundary readout; the guides already say where it is.
     selectedRetouchFeedbackVisible.value = false
   }
 
-  if (committed) {
-    // The ramp is the mask now, so the tool lets the canvas go — the next
-    // gesture is tuning the adjustment, not drawing another region.
-    armedSelectTool.value = null
-    selectionFeedbackVisible.value = false
-  }
+  // The ramp is the mask now, so the tool lets the canvas go. Its guides remain
+  // visible to confirm where the adjustment landed; explicit canvas dismissal or
+  // another editing action can hide them.
+  armedSelectTool.value = null
   void render().then(refreshRetouchInput)
 }
 
@@ -4136,9 +4108,10 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
     // mode in the palette.
     if (selectCombine.value === 'new') selectCombine.value = 'add'
     queueMaskedAdjustmentMask(mask)
-    // The rendered correction is what the person needs to judge immediately.
-    // Its saved mask remains selected and can be reopened from the child row.
-    selectionFeedbackVisible.value = false
+    // Hand the pointer back after the gesture, but keep the ants visible. This
+    // is especially important for asynchronous AI selection: hiding feedback
+    // here made the successful mask appear only after another selection tool
+    // was armed.
     armedSelectTool.value = null
   }
 }
@@ -5226,7 +5199,6 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
             @object-pick="onObjectPick"
             @gradient="onGradientChange"
             @gradient-edit="onGradientEdit"
-            @gradient-cancel="onGradientCancel"
           />
           <!-- The selected annotation's own verbs, over the shape they act
                on. Inside the display box so it shares the shapes' coordinate
