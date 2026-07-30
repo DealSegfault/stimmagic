@@ -23,7 +23,8 @@ import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
 import { canonicalOp, stackHashes } from './stackHashes'
 import {
-  coTransform, geometryBelow, isIdentity, multiply, rewritePayload,
+  geometryBelow, isIdentity, multiply, payloadToDocument,
+  rewritePayload, transformShapes, translate,
 } from './geometryTransform'
 import type { Affine } from './geometryTransform'
 export { canonicalOp, stackHashes }
@@ -39,12 +40,22 @@ import { featherAlpha } from './featherAlpha'
 import { gradientMaskCanvas, isGradientMask } from './regionMask'
 import type { GradientMask } from './types'
 import { retouchRegionAlpha } from './retouchRegionAlpha'
+import { cutoutAlpha } from './cutoutAlpha'
 import { maskedRetouchAdjustmentParams } from './adjustSections'
 
 export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
   inputHash: string
   op: Op
+}
+
+export interface PreparedPatchMask {
+  x: number
+  y: number
+  width: number
+  height: number
+  /** Feathered coverage, compact to the only rectangle that can change. */
+  alpha: Uint8ClampedArray
 }
 
 function makeCanvas(width: number, height: number): HTMLCanvasElement {
@@ -67,40 +78,105 @@ export function compositePatch(
   mask: CanvasImageSource,
   width: number,
   height: number,
-  options: { origin?: [number, number]; featherPx?: number; opacity?: number } = {}
+  options: {
+    origin?: [number, number]
+    featherPx?: number
+    opacity?: number
+    preparedMask?: PreparedPatchMask | null
+  } = {}
 ): HTMLCanvasElement {
   const { origin = [0, 0], featherPx = 6, opacity = 1 } = options
 
-  // 1. The mask's alpha, feathered. Masks arrive as white-on-black.
+  const prepared = options.preparedMask === undefined
+    ? preparePatchMask(mask, width, height, featherPx)
+    : options.preparedMask
+
+  // An empty mask is a no-op, but callers still expect an owned output canvas.
+  const out = makeCanvas(width, height)
+  const ctx = out.getContext('2d')!
+  ctx.drawImage(input, 0, 0, width, height)
+  if (!prepared) return out
+
+  // Patch CPU work stays inside the affected rectangle. The old path allocated,
+  // read and feathered width×height buffers for every small removal.
+  const patchCanvas = makeCanvas(prepared.width, prepared.height)
+  const patchCtx = patchCanvas.getContext('2d', { willReadFrequently: true })!
+  patchCtx.drawImage(
+    patch,
+    origin[0] - prepared.x,
+    origin[1] - prepared.y,
+  )
+  const patchData = patchCtx.getImageData(0, 0, prepared.width, prepared.height)
+  for (let i = 0, p = 0; i < patchData.data.length; i += 4, p++) {
+    patchData.data[i + 3] = Math.round(
+      patchData.data[i + 3] * (prepared.alpha[p] / 255),
+    )
+  }
+  patchCtx.putImageData(patchData, 0, 0)
+
+  ctx.globalAlpha = opacity
+  ctx.drawImage(patchCanvas, prepared.x, prepared.y)
+  ctx.globalAlpha = 1
+  return out
+}
+
+/**
+ * Prepare the input-independent part of a patch composite once.
+ *
+ * The full mask is scanned only to discover its bounds. Feathering and every
+ * later per-pixel pass operate on a compact rectangle, expanded by the exact
+ * support of the three box-blur passes.
+ */
+export function preparePatchMask(
+  mask: CanvasImageSource,
+  width: number,
+  height: number,
+  featherPx: number,
+): PreparedPatchMask | null {
   const maskCanvas = makeCanvas(width, height)
   const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true })!
   maskCtx.drawImage(mask, 0, 0, width, height)
   const maskData = maskCtx.getImageData(0, 0, width, height)
-  const luminance = new Uint8ClampedArray(width * height)
-  for (let i = 0, p = 0; i < maskData.data.length; i += 4, p++) {
-    luminance[p] = maskData.data[i]
-  }
-  const feathered = featherAlpha(luminance, width, height, featherPx)
 
-  // 2. The patch, positioned in its input space, with the feathered mask as
-  //    its alpha channel.
-  const patchCanvas = makeCanvas(width, height)
-  const patchCtx = patchCanvas.getContext('2d', { willReadFrequently: true })!
-  patchCtx.drawImage(patch, origin[0], origin[1])
-  const patchData = patchCtx.getImageData(0, 0, width, height)
-  for (let i = 0, p = 0; i < patchData.data.length; i += 4, p++) {
-    patchData.data[i + 3] = Math.round(patchData.data[i + 3] * (feathered[p] / 255))
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (maskData.data[(y * width + x) * 4] === 0) continue
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
   }
-  patchCtx.putImageData(patchData, 0, 0)
+  if (maxX < minX || maxY < minY) return null
 
-  // 3. Draw over the input.
-  const out = makeCanvas(width, height)
-  const ctx = out.getContext('2d')!
-  ctx.drawImage(input, 0, 0, width, height)
-  ctx.globalAlpha = opacity
-  ctx.drawImage(patchCanvas, 0, 0)
-  ctx.globalAlpha = 1
-  return out
+  const support = Math.max(0, Math.round(featherPx)) * 3 + 1
+  minX = Math.max(0, minX - support)
+  minY = Math.max(0, minY - support)
+  maxX = Math.min(width - 1, maxX + support)
+  maxY = Math.min(height - 1, maxY + support)
+  const compactWidth = maxX - minX + 1
+  const compactHeight = maxY - minY + 1
+  const luminance = new Uint8ClampedArray(compactWidth * compactHeight)
+  for (let y = 0; y < compactHeight; y++) {
+    const sourceRow = (minY + y) * width
+    const targetRow = y * compactWidth
+    for (let x = 0; x < compactWidth; x++) {
+      luminance[targetRow + x] = maskData.data[
+        (sourceRow + minX + x) * 4
+      ]
+    }
+  }
+  return {
+    x: minX,
+    y: minY,
+    width: compactWidth,
+    height: compactHeight,
+    alpha: featherAlpha(luminance, compactWidth, compactHeight, featherPx),
+  }
 }
 
 /**
@@ -119,26 +195,57 @@ export function compositeRetouchRegion(
   options: { featherPx?: number; opacity?: number } = {},
 ): HTMLCanvasElement {
   const { featherPx = 0, opacity = 1 } = options
-  const resultCanvas = makeCanvas(width, height)
-  const resultCtx = resultCanvas.getContext('2d', { willReadFrequently: true })!
-  resultCtx.drawImage(result, 0, 0, width, height)
-  const resultData = resultCtx.getImageData(0, 0, width, height)
-
   const maskCanvas = makeCanvas(width, height)
   const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true })!
   maskCtx.drawImage(mask, 0, 0, width, height)
   const maskData = maskCtx.getImageData(0, 0, width, height)
-  const maskAlpha = new Uint8ClampedArray(width * height)
-  const resultAlpha = new Uint8ClampedArray(width * height)
-  for (let i = 3, pixel = 0; i < maskData.data.length; i += 4, pixel++) {
-    maskAlpha[pixel] = maskData.data[i]
-    resultAlpha[pixel] = resultData.data[i]
+
+  let minX = width
+  let minY = height
+  let maxX = -1
+  let maxY = -1
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (maskData.data[(y * width + x) * 4 + 3] === 0) continue
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
+  }
+  const output = makeCanvas(width, height)
+  const outputCtx = output.getContext('2d')!
+  outputCtx.drawImage(input, 0, 0, width, height)
+  if (maxX < minX || maxY < minY) return output
+
+  const support = Math.max(0, Math.round(featherPx)) * 3 + 1
+  minX = Math.max(0, minX - support)
+  minY = Math.max(0, minY - support)
+  maxX = Math.min(width - 1, maxX + support)
+  maxY = Math.min(height - 1, maxY + support)
+  const localWidth = maxX - minX + 1
+  const localHeight = maxY - minY + 1
+
+  const resultCanvas = makeCanvas(localWidth, localHeight)
+  const resultCtx = resultCanvas.getContext('2d', { willReadFrequently: true })!
+  resultCtx.drawImage(result, -minX, -minY, width, height)
+  const resultData = resultCtx.getImageData(0, 0, localWidth, localHeight)
+  const maskAlpha = new Uint8ClampedArray(localWidth * localHeight)
+  const resultAlpha = new Uint8ClampedArray(localWidth * localHeight)
+  for (let y = 0; y < localHeight; y++) {
+    const sourceRow = (minY + y) * width
+    const targetRow = y * localWidth
+    for (let x = 0; x < localWidth; x++) {
+      const target = targetRow + x
+      maskAlpha[target] = maskData.data[(sourceRow + minX + x) * 4 + 3]
+      resultAlpha[target] = resultData.data[target * 4 + 3]
+    }
   }
   const compositingAlpha = retouchRegionAlpha(
     resultAlpha,
     maskAlpha,
-    width,
-    height,
+    localWidth,
+    localHeight,
     featherPx,
   )
   for (let i = 3, pixel = 0; i < resultData.data.length; i += 4, pixel++) {
@@ -146,12 +253,54 @@ export function compositeRetouchRegion(
   }
   resultCtx.putImageData(resultData, 0, 0)
 
-  const output = makeCanvas(width, height)
-  const outputCtx = output.getContext('2d')!
-  outputCtx.drawImage(input, 0, 0, width, height)
   outputCtx.globalAlpha = opacity
-  outputCtx.drawImage(resultCanvas, 0, 0)
+  outputCtx.drawImage(resultCanvas, minX, minY)
   outputCtx.globalAlpha = 1
+  return output
+}
+
+/**
+ * Composite a cutout (Remove background) step: multiply the input's alpha by
+ * the matte's alpha.
+ *
+ * The matte is a full-frame candidate whose COLOR pixels are deliberately
+ * ignored — the kept foreground is the live composite below, so edits under
+ * the cutout keep showing through it. Where the positioned matte has no
+ * coverage (geometry changed under a stale step) the alpha is zero and those
+ * pixels cut away; the staleness advisory is what says to resample.
+ */
+export function applyCutout(
+  input: CanvasImageSource,
+  matte: CanvasImageSource,
+  width: number,
+  height: number,
+  options: { featherPx?: number; opacity?: number } = {},
+): HTMLCanvasElement {
+  const { featherPx = 0, opacity = 1 } = options
+
+  const output = makeCanvas(width, height)
+  const outputCtx = output.getContext('2d', { willReadFrequently: true })!
+  outputCtx.drawImage(input, 0, 0, width, height)
+  const outputData = outputCtx.getImageData(0, 0, width, height)
+
+  const matteCanvas = makeCanvas(width, height)
+  const matteCtx = matteCanvas.getContext('2d', { willReadFrequently: true })!
+  matteCtx.drawImage(matte, 0, 0, width, height)
+  const matteData = matteCtx.getImageData(0, 0, width, height)
+
+  const inputAlpha = new Uint8ClampedArray(width * height)
+  const matteAlpha = new Uint8ClampedArray(width * height)
+  for (let i = 3, pixel = 0; i < outputData.data.length; i += 4, pixel++) {
+    inputAlpha[pixel] = outputData.data[i]
+    matteAlpha[pixel] = matteData.data[i]
+  }
+  const composited = cutoutAlpha(
+    inputAlpha, matteAlpha, width, height, featherPx, opacity,
+  )
+  for (let i = 3, pixel = 0; i < outputData.data.length; i += 4, pixel++) {
+    outputData.data[i] = composited[pixel]
+  }
+  outputCtx.putImageData(outputData, 0, 0)
   return output
 }
 
@@ -256,9 +405,11 @@ function squarePreview(source: HTMLCanvasElement): string {
 /**
  * Replays a stack into a composite, caching intermediates by input hash.
  *
- * Bounded LRU over ImageBitmaps: an unbounded cache on a 30-step stack of
- * 8MP frames is hundreds of megabytes, and the common editing motion (append at
- * top, adjust the top op) only ever needs the one entry below the edit.
+ * Two byte-budgeted LRUs: replay stages and completed branch heads. Keeping
+ * recent heads separate means an on/off branch cannot evict the exact canvas
+ * needed to toggle back merely by filling the stage cache while it replays.
+ * Byte budgets, rather than entry counts, make a 512px preview and an 8MP
+ * source pay their actual memory cost.
  */
 /** A stable 32-bit seed from an op id — same step, same grain, every render. */
 function seedFrom(id: string): number {
@@ -277,17 +428,41 @@ function contentHash(value: string): string {
 
 export class StackCompositor {
   private cache = new Map<string, HTMLCanvasElement>()
+  private cacheBytes = 0
+  /** Recent completed branches are retained separately from replay stages. */
+  private heads = new Map<string, HTMLCanvasElement>()
+  private headBytes = 0
+  /**
+   * The immutable base has its own trust domain. It must never be populated
+   * from a replay stage or a persisted head projection.
+   */
+  private bases = new Map<string, HTMLCanvasElement>()
+  /** Input-independent, compact feather masks reused across lower-stack edits. */
+  private preparedPatchMasks = new Map<string, PreparedPatchMask | null>()
+  private preparedPatchMaskBytes = 0
+  private readonly maxPreparedPatchMaskBytes = 32 * 1024 * 1024
   /** Ops that could not be applied on the last render, for the UI to report. */
   readonly failedOpIds = new Set<string>()
-  private maxEntries: number
+  private readonly maxCacheBytes: number
+  private readonly maxHeadBytes: number
 
-  constructor(private deps: CompositorDeps, maxEntries = 12) {
-    this.maxEntries = maxEntries
+  constructor(
+    private deps: CompositorDeps,
+    options: { stageCacheBytes?: number; headCacheBytes?: number } = {},
+  ) {
+    this.maxCacheBytes = options.stageCacheBytes ?? 160 * 1024 * 1024
+    this.maxHeadBytes = options.headCacheBytes ?? 96 * 1024 * 1024
   }
 
   clear() {
     this.cache.clear()
+    this.cacheBytes = 0
+    this.heads.clear()
+    this.headBytes = 0
+    this.bases.clear()
     this.gradientRaster.clear()
+    this.preparedPatchMasks.clear()
+    this.preparedPatchMaskBytes = 0
   }
 
   /**
@@ -300,7 +475,7 @@ export class StackCompositor {
    * with that step's exact preview through the normal callback.
    */
   prime(hash: string, canvas: HTMLCanvasElement, fallbackPreviewOpIds: string[] = []) {
-    this.remember(hash, canvas)
+    this.rememberHead(hash, canvas)
     if (!fallbackPreviewOpIds.length) return
     const preview = squarePreview(canvas)
     for (const opId of fallbackPreviewOpIds) {
@@ -310,18 +485,50 @@ export class StackCompositor {
 
   /** Drop cached composites at and above a given input hash. */
   invalidateFrom(hash: string) {
-    this.cache.delete(hash)
+    this.deleteStage(hash)
+    this.deleteHead(hash)
+  }
+
+  private canvasBytes(canvas: HTMLCanvasElement): number {
+    return canvas.width * canvas.height * 4
+  }
+
+  private deleteStage(key: string) {
+    const existing = this.cache.get(key)
+    if (!existing) return
+    this.cacheBytes -= this.canvasBytes(existing)
+    this.cache.delete(key)
+  }
+
+  private deleteHead(key: string) {
+    const existing = this.heads.get(key)
+    if (!existing) return
+    this.headBytes -= this.canvasBytes(existing)
+    this.heads.delete(key)
   }
 
   private remember(key: string, canvas: HTMLCanvasElement) {
-    // Refreshing an existing key must not evict an unrelated entry.
-    this.cache.delete(key)
-    // Map preserves insertion order, so the first key is the least recently used.
-    if (this.cache.size >= this.maxEntries) {
+    this.deleteStage(key)
+    const bytes = this.canvasBytes(canvas)
+    while (this.cache.size && this.cacheBytes + bytes > this.maxCacheBytes) {
       const oldest = this.cache.keys().next().value
-      if (oldest !== undefined) this.cache.delete(oldest)
+      if (oldest === undefined) break
+      this.deleteStage(oldest)
     }
     this.cache.set(key, canvas)
+    this.cacheBytes += bytes
+  }
+
+  private rememberHead(key: string, canvas: HTMLCanvasElement) {
+    this.deleteHead(key)
+    const bytes = this.canvasBytes(canvas)
+    while (this.heads.size && this.headBytes + bytes > this.maxHeadBytes) {
+      const oldest = this.heads.keys().next().value
+      if (oldest === undefined) break
+      this.deleteHead(oldest)
+    }
+    this.heads.set(key, canvas)
+    this.headBytes += bytes
   }
 
   private cached(key: string): HTMLCanvasElement | null {
@@ -333,6 +540,44 @@ export class StackCompositor {
     return canvas
   }
 
+  private cachedHead(key: string): HTMLCanvasElement | null {
+    const canvas = this.heads.get(key)
+    if (!canvas) return null
+    this.heads.delete(key)
+    this.heads.set(key, canvas)
+    return canvas
+  }
+
+  private preparedPatchMask(
+    key: string,
+    mask: CanvasImageSource,
+    width: number,
+    height: number,
+    featherPx: number,
+  ): PreparedPatchMask | null {
+    if (this.preparedPatchMasks.has(key)) {
+      const cached = this.preparedPatchMasks.get(key) ?? null
+      this.preparedPatchMasks.delete(key)
+      this.preparedPatchMasks.set(key, cached)
+      return cached
+    }
+    const prepared = preparePatchMask(mask, width, height, featherPx)
+    const bytes = prepared?.alpha.byteLength ?? 1
+    while (
+      this.preparedPatchMasks.size
+      && this.preparedPatchMaskBytes + bytes > this.maxPreparedPatchMaskBytes
+    ) {
+      const oldest = this.preparedPatchMasks.keys().next().value
+      if (oldest === undefined) break
+      const removed = this.preparedPatchMasks.get(oldest)
+      this.preparedPatchMaskBytes -= removed?.alpha.byteLength ?? 1
+      this.preparedPatchMasks.delete(oldest)
+    }
+    this.preparedPatchMasks.set(key, prepared)
+    this.preparedPatchMaskBytes += bytes
+    return prepared
+  }
+
   /**
    * The composite an op at `index` applies to — everything strictly below it.
    * Resampling a step needs this, not the head: a step re-samples against what
@@ -342,9 +587,44 @@ export class StackCompositor {
     return this.render({ ...doc, edits: doc.edits.slice(0, index) })
   }
 
+  private async renderBase(doc: StackDocument): Promise<HTMLCanvasElement> {
+    const key = JSON.stringify([
+      doc.base.file_hash,
+      doc.base.payload_ref ?? null,
+      doc.canvas.width,
+      doc.canvas.height,
+    ])
+    const cached = this.bases.get(key)
+    if (cached) return cached
+
+    const source = await this.deps.loadBase()
+    const base = makeCanvas(doc.canvas.width, doc.canvas.height)
+    base.getContext('2d')!.drawImage(
+      source,
+      0,
+      0,
+      doc.canvas.width,
+      doc.canvas.height,
+    )
+    this.bases.set(key, base)
+    return base
+  }
+
   async render(doc: StackDocument): Promise<HTMLCanvasElement> {
     const { inputs, head } = stackHashes(doc)
-    const cachedHead = this.cached(head)
+
+    // This is a correctness boundary, not merely a fast path. When every edit
+    // is disabled, no replay or persisted projection is allowed to answer for
+    // the original image. Only the immutable base source can supply it.
+    if (!doc.edits.some(op => op.enabled)) {
+      const base = await this.renderBase(doc)
+      this.rememberHead(head, base)
+      const preview = squarePreview(base)
+      for (const op of doc.edits) this.deps.onStepPreview?.(op.id, preview)
+      return base
+    }
+
+    const cachedHead = this.cachedHead(head) ?? this.cached(head)
     if (cachedHead) return cachedHead
     this.failedOpIds.clear()
 
@@ -355,7 +635,7 @@ export class StackCompositor {
     let startIndex = 0
     let current: HTMLCanvasElement | null = null
     for (let i = doc.edits.length - 1; i >= 0; i--) {
-      const cached = this.cached(inputs[i])
+      const cached = this.cached(inputs[i]) ?? this.cachedHead(inputs[i])
       if (cached) {
         current = cached
         startIndex = i
@@ -363,9 +643,7 @@ export class StackCompositor {
       }
     }
     if (!current) {
-      const base = await this.deps.loadBase()
-      current = makeCanvas(width, height)
-      current.getContext('2d')!.drawImage(base, 0, 0, width, height)
+      current = await this.renderBase(doc)
       if (doc.edits.length) this.remember(inputs[0], current)
     }
 
@@ -392,11 +670,12 @@ export class StackCompositor {
         this.failedOpIds.add(op.id)
         console.warn(`[imageStack] step "${op.label}" could not be applied`, error)
       }
-      const nextHash = i + 1 < inputs.length ? inputs[i + 1] : head
-      this.remember(nextHash, current)
+      const isHead = i + 1 >= inputs.length
+      const nextHash = isHead ? head : inputs[i + 1]
+      if (!isHead) this.remember(nextHash, current)
       this.deps.onStepPreview?.(op.id, squarePreview(current))
     }
-    this.cache.set(head, current)
+    this.rememberHead(head, current)
     return current
   }
 
@@ -422,16 +701,41 @@ export class StackCompositor {
     doc: StackDocument,
     index: number,
     width: number,
-    height: number
+    height: number,
+    options: {
+      /** Canonical local-payload → document transform. */
+      payloadToDocument?: number[]
+      /** Compatibility origin in the authored frame. */
+      origin?: [number, number]
+      /** Compatibility frame when the canonical transform is absent. */
+      payloadFrame?: { matrix: number[] }
+      revision?: number
+    } = {},
   ): Promise<CanvasImageSource> {
     const op = doc.edits[index] as any
-    const payload = await this.deps.loadPayload(ref, op?._revision ?? 0)
-    const created = op?.payload_frame
-    if (!created) return payload
-
+    const payload = await this.deps.loadPayload(
+      ref,
+      options.revision ?? op?._revision ?? 0,
+    )
     const now = geometryBelow(doc, index)
-    const matrix = coTransform(created.matrix as Affine, now.matrix)
-    if (!matrix || isIdentity(matrix)) return payload
+    const previewScale = Number((doc as any)._preview_scale ?? 1)
+    const documentToPreview: Affine = [
+      previewScale, 0, 0, previewScale, 0, 0,
+    ]
+    const nowFromDocument = multiply(now.matrix, documentToPreview)
+    const origin = options.origin ?? [0, 0]
+    const canonical = options.payloadToDocument as Affine | undefined
+    const legacyFrame = options.payloadFrame
+    const documentFromPayload = canonical
+      ?? (legacyFrame ? payloadToDocument(legacyFrame, origin) : null)
+
+    // Unanchored legacy payloads still live in the stage they are being used
+    // in. Fold a compact origin into one transform so the compositor never
+    // positions transformed pixels a second time.
+    const matrix = documentFromPayload
+      ? multiply(nowFromDocument, documentFromPayload)
+      : multiply(documentToPreview, translate(origin[0], origin[1]))
+    if (isIdentity(matrix)) return payload
     return rewritePayload(payload, matrix, width, height)
   }
 
@@ -517,23 +821,19 @@ export class StackCompositor {
   ): CanvasImageSource {
     const created = region.payload_frame
     const [x, y] = region.payload_origin ?? [0, 0]
-    const placePayload: Affine = [1, 0, 0, 1, x, y]
     const previewScale = Number((doc as any)._preview_scale ?? 1)
     const baseScale: Affine = [previewScale, 0, 0, previewScale, 0, 0]
-    if (!created) {
-      const positioned = multiply(baseScale, placePayload)
-      return isIdentity(positioned)
-        ? payload
-        : rewritePayload(payload, positioned, width, height)
-    }
-
     const now = geometryBelow(doc, index)
-    // Preview documents keep authored payload coordinates but render against
-    // a smaller base. Include that base-space scale in the new transform.
-    const nowFromAuthoredBase = multiply(now.matrix, baseScale)
-    const carry = coTransform(created.matrix as Affine, nowFromAuthoredBase)
-    if (!carry) return payload
-    const positioned = multiply(carry, placePayload)
+    // Preview documents render document space at a smaller scale. Canonical
+    // payload anchors remain in source document pixels; scaling is solely a
+    // document-to-stage concern.
+    const nowFromDocument = multiply(now.matrix, baseScale)
+    const canonical = region.payload_to_document as Affine | undefined
+    const documentFromPayload = canonical
+      ?? (created ? payloadToDocument(created, [x, y]) : null)
+    const positioned = documentFromPayload
+      ? multiply(nowFromDocument, documentFromPayload)
+      : multiply(baseScale, translate(x, y))
     return isIdentity(positioned)
       ? payload
       : rewritePayload(payload, positioned, width, height)
@@ -556,16 +856,61 @@ export class StackCompositor {
     if (op.class === 'patch') {
       // No pick yet — the op is staged, and a staged op contributes nothing.
       if (!picked?.patch_ref || !anyOp.mask_ref) return input
+      // A cutout's candidate is a matte, not a patch: its alpha cuts the
+      // composite instead of its pixels drawing over it.
+      if (anyOp.operation === 'cutout') {
+        const matte = await this.loadAnchored(picked.patch_ref, doc, index, width, height, {
+          payloadToDocument: picked.payload_to_document,
+          origin: picked.patch_origin,
+          payloadFrame: anyOp.payload_frame,
+          revision: anyOp._revision ?? 0,
+        })
+        return applyCutout(input, matte, width, height, {
+          featherPx: anyOp.blend?.feather_px ?? 0,
+          opacity: anyOp.blend?.opacity ?? 1,
+        })
+      }
       // The patch was generated FOR this mask in the same frame, so the two
       // travel together.
       const [patch, mask] = await Promise.all([
-        this.loadAnchored(picked.patch_ref, doc, index, width, height),
-        this.loadAnchored(anyOp.mask_ref, doc, index, width, height),
+        this.loadAnchored(picked.patch_ref, doc, index, width, height, {
+          payloadToDocument: picked.payload_to_document,
+          origin: picked.patch_origin,
+          payloadFrame: anyOp.payload_frame,
+          revision: anyOp._revision ?? 0,
+        }),
+        this.loadAnchored(anyOp.mask_ref, doc, index, width, height, {
+          payloadToDocument: anyOp.payload_to_document,
+          payloadFrame: anyOp.payload_frame,
+          revision: anyOp._revision ?? 0,
+        }),
       ])
+      const featherPx = anyOp.blend?.feather_px ?? 6
+      const geometry = geometryBelow(doc, index)
+      const maskCacheKey = JSON.stringify([
+        anyOp.mask_ref,
+        anyOp._revision ?? 0,
+        anyOp.payload_to_document ?? anyOp.payload_frame ?? null,
+        geometry.matrix,
+        (doc as any)._preview_scale ?? 1,
+        width,
+        height,
+        featherPx,
+      ])
+      const preparedMask = this.preparedPatchMask(
+        maskCacheKey,
+        mask,
+        width,
+        height,
+        featherPx,
+      )
       return compositePatch(input, patch, mask, width, height, {
-        origin: picked.patch_origin || [0, 0],
-        featherPx: anyOp.blend?.feather_px ?? 6,
+        // Both payloads are already projected into this stage. Keeping a
+        // second origin here was the crop-reorder bug.
+        origin: [0, 0],
+        featherPx,
         opacity: anyOp.blend?.opacity ?? 1,
+        preparedMask,
       })
     }
 
@@ -586,7 +931,17 @@ export class StackCompositor {
     if (op.class === 'container') {
       const kind = anyOp.exec?.kind
       if (kind === 'annotate') {
-        return applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
+        const shapes = anyOp.shapes_in_document
+          ? transformShapes(
+              anyOp.params?.shapes || [],
+              geometryBelow(doc, index).matrix,
+              doc.canvas.width,
+              doc.canvas.height,
+              width,
+              height,
+            )
+          : anyOp.params?.shapes || []
+        return applyAnnotations(input, width, height, shapes, input)
       }
       if (kind === 'retouch-regions') {
         let output = input
@@ -665,7 +1020,10 @@ export class StackCompositor {
         return output
       }
       if (!anyOp.raster_ref) return input
-      const layer = await this.loadAnchored(anyOp.raster_ref, doc, index, width, height)
+      const layer = await this.loadAnchored(anyOp.raster_ref, doc, index, width, height, {
+        payloadToDocument: anyOp.payload_to_document,
+        payloadFrame: anyOp.payload_frame,
+      })
       return applyRasterLayer(input, layer, width, height, anyOp.blend?.opacity ?? 1)
     }
 

@@ -13,7 +13,7 @@
  */
 import { computed, ref } from 'vue'
 import {
-  ADJUST_SECTIONS, adjustControl, effectLookOf, levelEditById,
+  ADJUST_SECTIONS, adjustControl, effectLookStepOf, levelEditById,
 } from '../stack/adjustSections'
 import type { AdjustSliderControl } from '../stack/adjustSections'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
@@ -27,6 +27,10 @@ const props = defineProps<{
   picking?: boolean
   clipShadows?: boolean
   clipHighlights?: boolean
+  /** This step can be converted to a scoped one (it is a level edit). */
+  scopeEligible?: boolean
+  /** A workspace selection exists to limit to. */
+  hasSelection?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -35,6 +39,8 @@ const emit = defineEmits<{
   /** Point color asks the host view to arm the canvas eyedropper. */
   pick: []
   clip: [{ shadows: boolean; highlights: boolean }]
+  /** Convert this whole-image step into one scoped to the selection. */
+  limit: []
 }>()
 
 function valueOf(control: AdjustSliderControl) {
@@ -59,14 +65,14 @@ const levelEdit = computed(() =>
   props.params?.section ? levelEditById(props.params.section) ?? null : null
 )
 
-/** A pixel-look step from the strip: one effect param, shown as Amount. */
+/**
+ * A pixel-look step from the strip: shown as Amount plus the look's own
+ * supporting dials. A migrated blob that happens to carry the key never
+ * matches and keeps its full surface.
+ */
 const effectLook = computed(() => {
   if (levelEdit.value) return null
-  const look = effectLookOf(props.params || {})
-  if (!look?.effect) return null
-  // Only a single-purpose step reads as Amount; a migrated blob that happens
-  // to carry the key keeps its full surface.
-  return Object.keys(props.params || {}).length === 1 ? look : null
+  return effectLookStepOf(props.params || {}) ?? null
 })
 
 const effectControl = computed(() =>
@@ -111,8 +117,8 @@ const openSection = ref<string>('levels')
       </label>
     </section>
 
-    <!-- A pixel look's only property: how much of it. -->
-    <section v-else-if="effectLook && effectControl" class="px-3 py-2">
+    <!-- A pixel look: how much of it, plus the look's own supporting dials. -->
+    <section v-else-if="effectLook && effectControl" class="px-3 py-2 space-y-2">
       <label class="flex items-center gap-2 text-xs text-content-tertiary">
         <span class="w-16 shrink-0">Amount</span>
         <input
@@ -124,6 +130,22 @@ const openSection = ref<string>('levels')
           @change="emit('commit')"
         />
         <span class="w-8 text-right tabular-nums">{{ valueOf(effectControl) }}</span>
+      </label>
+      <label
+        v-for="control in effectLook.supporting ?? []"
+        :key="control.key"
+        class="flex items-center gap-2 text-xs text-content-tertiary"
+      >
+        <span class="w-16 shrink-0">{{ control.label }}</span>
+        <input
+          type="range" class="flex-1"
+          :min="control.min" :max="control.max" :step="control.step"
+          :disabled="disabled"
+          :value="valueOf(control)"
+          @input="setValue(control.key, Number(($event.target as HTMLInputElement).value))"
+          @change="emit('commit')"
+        />
+        <span class="w-8 text-right tabular-nums">{{ valueOf(control) }}</span>
       </label>
     </section>
 
@@ -193,5 +215,27 @@ const openSection = ref<string>('levels')
         </div>
       </section>
     </template>
+
+    <!-- Scope: this step covers the whole image; with a live selection it can
+         become a scoped step instead, keeping its values. The reverse verb
+         lives on the scoped step's own surface. -->
+    <section v-if="scopeEligible" class="px-3 py-2 space-y-1.5">
+      <h3 class="text-xs font-semibold text-content-secondary">Scope</h3>
+      <div class="flex items-center gap-2">
+        <span class="flex-1 text-xs text-content-tertiary">Whole image</span>
+        <button
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle
+                 disabled:opacity-40 disabled:hover:bg-transparent
+                 disabled:hover:text-content-secondary"
+          :disabled="!hasSelection"
+          :title="hasSelection ? undefined : 'Make a selection first'"
+          @click="emit('limit')"
+        >
+          Limit to selection
+        </button>
+      </div>
+    </section>
   </div>
 </template>

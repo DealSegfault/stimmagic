@@ -3,12 +3,14 @@
  * Point color: pick a color from the image, then shift only it.
  *
  * The picked reference lives in the document (`pointHue/Sat/Lum`); the edit
- * is the shifts around it. Target-match is the brand-color move: choose the
- * color this SHOULD be — in the same picker used everywhere else, which takes
- * a hex — and Match solves the shifts, which stay editable as ordinary
- * sliders afterward.
+ * is the shifts around it. Target is the brand-color move: choose the color
+ * this SHOULD be — in the same picker used everywhere else — and the shifts
+ * are solved the moment the target changes, then stay editable as ordinary
+ * sliders afterward. There is no Apply step: picking a color and naming the
+ * color it should be is the whole instruction, so a button between them was
+ * a click that could only ever be pressed.
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ColorPicker from '../ported/ColorPicker.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
 import {
@@ -86,82 +88,86 @@ function setValue(key: string, value: number) {
   emit('change', { [key]: value }, key)
 }
 
-function applyMatch() {
+/**
+ * Solve the shifts for the current pick/target pair.
+ *
+ * Live (uncommitted) while the target is being dragged around the spectrum, so
+ * the canvas tracks the drag the way a slider does; the commit lands on
+ * release. Both coalesce under one key, so the whole exploration is one undo.
+ */
+function solveMatch(commit: boolean) {
   if (props.disabled || !targetHsl.value || !hasPicked.value) return
   emit('change', matchShifts(picked.value, targetHsl.value), 'point-match')
-  emit('commit')
+  if (commit) emit('commit')
 }
+
+// A target chosen before the pick is not a mistake — it is the person saying
+// what they want first. It solves as soon as there is something to solve.
+watch([targetHsl, hasPicked], () => solveMatch(false))
 </script>
 
 <template>
   <div class="space-y-3">
-    <div class="space-y-1.5">
-      <span class="block text-xs font-semibold text-content-secondary">Picked color</span>
-      <div class="flex items-center gap-2">
+    <!--
+      Two wells on one row: the color that IS there, and the color it should
+      be. Both are the same 24px swatch, so the row reads as a before/after
+      rather than as two unrelated controls, and neither carries a status
+      sentence that would wrap the panel at sidebar width.
+    -->
+    <div class="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
+      <div class="space-y-1.5 min-w-0">
+        <span class="block text-xs font-semibold text-content-secondary">Picked</span>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+          class="w-full inline-flex items-center gap-2 px-1.5 py-1.5 rounded-md
                  transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60
                  disabled:cursor-not-allowed disabled:opacity-50"
           :class="picking
             ? 'bg-selection/15 text-content'
             : 'bg-surface-raised text-content-secondary hover:text-content hover:bg-overlay-subtle'"
           :disabled="disabled"
+          :title="hasPicked ? pickedHex : undefined"
           @click="emit('pick')"
         >
-          <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <path d="m2 22 1-1h3l9-9" /><path d="M3 21v-3l9-9" />
-            <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3l.4.4Z" />
-          </svg>
-          {{ picking ? 'Click the image…' : 'Pick from image' }}
+          <span
+            class="w-6 h-6 rounded-md border border-edge-strong shrink-0"
+            :class="!hasPicked && `[background:repeating-conic-gradient(rgba(255,255,255,.12)_0%_25%,rgba(255,255,255,.04)_0%_50%)_0_0/8px_8px]`"
+            :style="hasPicked ? { background: pickedCss } : undefined"
+          />
+          <span class="text-[11.5px] font-mono truncate">
+            {{ picking ? 'Click image' : hasPicked ? pickedHex : 'Pick…' }}
+          </span>
         </button>
-        <span
-          v-if="hasPicked"
-          class="w-6 h-6 rounded-md border border-edge-strong shrink-0"
-          :style="{ background: pickedCss }"
-          :title="pickedHex"
-        />
-        <span v-else class="text-[11px] text-content-tertiary">Nothing picked yet</span>
       </div>
-    </div>
 
-    <div class="space-y-1.5">
-      <span class="block text-xs font-semibold text-content-secondary">Target</span>
-      <div class="flex items-center gap-2">
+      <span class="pb-2 text-content-tertiary text-xs shrink-0">→</span>
+
+      <div class="space-y-1.5 min-w-0">
+        <span class="block text-xs font-semibold text-content-secondary">Target</span>
         <ToolbarPopover label="" :width="272" :disabled="disabled" aria-label="Target color">
           <template #trigger>
-            <span class="inline-flex items-center gap-1.5">
+            <span class="w-full inline-flex items-center gap-2 px-1.5 py-1.5 rounded-md
+                         bg-surface-raised text-content-secondary">
               <span
                 class="w-6 h-6 rounded-md border border-edge-strong shrink-0"
                 :class="!targetCss && `[background:repeating-conic-gradient(rgba(255,255,255,.12)_0%_25%,rgba(255,255,255,.04)_0%_50%)_0_0/8px_8px]`"
                 :style="targetCss ? { background: targetCss } : undefined"
               />
-              <span class="text-[11.5px] font-mono text-content-secondary">
+              <span class="text-[11.5px] font-mono truncate">
                 {{ targetCss ?? 'Choose…' }}
               </span>
             </span>
           </template>
-          <ColorPicker
-            :model-value="targetColor"
-            @update:model-value="targetColor = $event"
-          />
+          <!-- The picker emits per pointer move; the release is the commit,
+               exactly as a slider's @change is. -->
+          <div @pointerup="solveMatch(true)" @keyup.enter="solveMatch(true)">
+            <ColorPicker
+              :model-value="targetColor"
+              @update:model-value="targetColor = $event"
+            />
+          </div>
         </ToolbarPopover>
-        <div class="flex-1" />
-        <button
-          type="button"
-          class="px-2.5 py-1 text-[11.5px] rounded-md bg-accent/15 text-accent-hi
-                 transition-colors hover:bg-accent/25
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60
-                 disabled:cursor-not-allowed disabled:opacity-40"
-          :disabled="disabled || !targetColor || !hasPicked"
-          @click="applyMatch"
-        >
-          Match
-        </button>
       </div>
-      <p class="text-[11px] text-content-tertiary">
-        Match sets the shifts below so the picked color lands on the target.
-      </p>
     </div>
 
     <div class="space-y-2">

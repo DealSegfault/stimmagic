@@ -1,10 +1,7 @@
 /**
  * Local blur and sharpen kernels used by the pixel-reading Paint brushes.
  *
- * COPIED from packages/image-editor/src/plugins/retouch/utils/imageFilters.ts (2026-07-27), imports
- * repointed at this directory. The snapshot editor is frozen; this copy lets
- * the op-stack editor evolve it without touching an editor that should never
- * change again.
+ * Ported from the retired editor on 2026-07-27, with imports repointed here.
  */
 
 export function applyBoxBlur(

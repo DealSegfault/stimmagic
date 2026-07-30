@@ -585,11 +585,6 @@ async def test_asset_trash_restore_preserves_revision_and_clears_expiration(
     assert asset_id not in {item["asset"]["id"] for item in active.json()["items"]}
     trash = await client.get("/api/assets", params={"state": "trashed"})
     assert asset_id in {item["asset"]["id"] for item in trash.json()["items"]}
-    manifest = await client.get("/api/assets/trash-deletion-manifest")
-    entry = next(
-        item for item in manifest.json()["items"] if item["asset_id"] == asset_id
-    )
-    assert entry["media_ids"] == [media.id]
 
     restored = await client.post(f"/api/assets/{asset_id}/restore")
     assert restored.status_code == 200
@@ -1136,6 +1131,7 @@ async def test_empty_asset_trash_permanently_deletes_all_roots(client, db_sessio
     response = await client.delete("/api/assets")
     assert response.status_code == 202
     assert response.json()["accepted"] == trashed_before + 2
+    assert set(response.json()["asset_ids"]) >= set(asset_ids)
     async with db_session() as session:
         operation_ids = list(
             await session.scalars(
@@ -1169,13 +1165,6 @@ async def test_batch_permanent_delete_queues_one_operation_per_asset(
             asset.state = "trashed"
             asset.deleted_at = deleted_at
         await session.commit()
-    manifest = await client.post(
-        "/api/assets/batch/deletion-manifest",
-        json={"asset_ids": asset_ids},
-    )
-    assert manifest.status_code == 200
-    assert [item["asset_id"] for item in manifest.json()["items"]] == asset_ids
-    assert all(item["media_ids"] for item in manifest.json()["items"])
     response = await client.post(
         "/api/assets/batch/permanent", json={"asset_ids": asset_ids}
     )

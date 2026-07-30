@@ -14,16 +14,15 @@ test('Adjust keeps the stable Levels family id and shortcut', () => {
   assert.equal(familyById('levels').key, 'l')
 })
 
-test('Retouch starts with region repair tools while Paint keeps its working engines', () => {
-  assert.deepEqual(
-    familyById('retouch').subTools.map(tool => tool.id),
-    [
-      'heal', 'clone', 'patch', 'remove', 'repaint',
-      'light', 'color', 'detail', 'mixer', 'point', 'grade',
-    ],
-  )
-  assert.equal(familyById('retouch').subTools.find(tool => tool.id === 'remove')?.icon, undefined)
-  assert.equal(familyById('retouch').subTools.find(tool => tool.id === 'repaint')?.icon, undefined)
+test('Retouch is repairs only — the adjustment surface lives under Adjust', () => {
+  const subs = familyById('retouch').subTools.map(tool => tool.id)
+  assert.ok(subs.includes('heal') && subs.includes('clone') && subs.includes('patch'))
+  assert.ok(subs.includes('remove') && subs.includes('repaint'))
+  // The six masked-adjustment doorways were merged into the Adjust family
+  // (selection-aware clicks, plan §14); Retouch must not regrow them.
+  for (const gone of ['light', 'color', 'detail', 'mixer', 'point', 'grade']) {
+    assert.ok(!subs.includes(gone), `retouch should not offer '${gone}'`)
+  }
   assert.ok(PAINT_ENGINES.some(engine => engine.id === 'heal'))
   assert.deepEqual(
     TOOL_FAMILIES.filter(family => family.id === 'retouch').map(family => family.defaultSub),

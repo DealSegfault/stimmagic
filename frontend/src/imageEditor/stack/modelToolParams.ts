@@ -6,6 +6,8 @@
  * through unchanged, by its schema property name.
  */
 
+import type { ModelReferenceImage } from './types'
+
 export const HOST_MANAGED_MODEL_PARAMS = new Set([
   'prompt',
   'input_images',
@@ -21,6 +23,23 @@ export interface ModelReferenceLimits {
   /** Additional reference-image requirements after reserving the target slot. */
   min: number
   max: number
+}
+
+/**
+ * Materialize Vue-backed draft references as plain document data.
+ *
+ * `structuredClone()` rejects reactive proxies, including an empty reactive
+ * array. Copying the declared scalar fields also prevents UI-only state from
+ * leaking into persisted operations or generation payloads.
+ */
+export function copyModelReferenceImages(
+  images: readonly ModelReferenceImage[],
+): ModelReferenceImage[] {
+  return images.map(image => ({
+    media_id: image.media_id,
+    file_hash: image.file_hash,
+    ...(image.filename ? { filename: image.filename } : {}),
+  }))
 }
 
 /**

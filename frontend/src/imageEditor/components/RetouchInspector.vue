@@ -36,6 +36,10 @@ const emit = defineEmits<{
   /** New geometry for this region's gradient mask. */
   gradient: [GradientMask]
   gradientCommit: []
+  /** Route the next selection gestures into this region's mask. */
+  editMask: []
+  /** Convert this scoped step to a whole-image one, keeping its values. */
+  unscope: []
 }>()
 
 /**
@@ -106,6 +110,32 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
         @pick="emit('pick')"
         @clip="emit('clip', $event)"
       />
+    </section>
+
+    <!-- Scope: an adjustment region is a scoped Adjust step. Its mask can be
+         re-edited with the selection tools, or dropped to cover the whole
+         image (the values survive; the mask and its blend dials do not). -->
+    <section v-if="isAdjustment" class="mt-5 space-y-1.5">
+      <h3 class="text-xs font-semibold text-content-secondary">Scope</h3>
+      <div class="flex items-center gap-2">
+        <span class="flex-1 text-xs text-content-tertiary">Selection</span>
+        <button
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          @click="emit('editMask')"
+        >
+          Edit mask
+        </button>
+        <button
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          @click="emit('unscope')"
+        >
+          Apply to whole image
+        </button>
+      </div>
     </section>
 
     <!-- Mask: only gradients have a shape that outlives the gesture. -->

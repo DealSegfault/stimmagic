@@ -136,12 +136,6 @@ jobs:
           uv python install --force 3.11
           uv run --python 3.11 python --version
 
-      - name: Build image editor package
-        working-directory: packages/image-editor
-        run: |
-          npm install
-          npm run build
-
       - name: Install frontend deps
         working-directory: frontend
         run: npm install

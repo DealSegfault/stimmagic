@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  copyModelReferenceImages,
   editableModelParamNames,
   modelReferenceLimits,
   modelToolDefaults,
@@ -95,4 +96,17 @@ test('tools without explicit multi-image capacity expose no reference slots', ()
     max: 0,
   })
   assert.equal(modelReferenceLimits(null).max, 0)
+})
+
+test('reactive-style reference proxies become plain ordered document data', () => {
+  const reactiveStyle = new Proxy([
+    new Proxy({ media_id: 42, file_hash: 'first', filename: 'first.png' }, {}),
+    new Proxy({ media_id: 84, file_hash: 'second' }, {}),
+  ], {})
+
+  assert.deepEqual(copyModelReferenceImages(reactiveStyle), [
+    { media_id: 42, file_hash: 'first', filename: 'first.png' },
+    { media_id: 84, file_hash: 'second' },
+  ])
+  assert.deepEqual(copyModelReferenceImages(new Proxy([], {})), [])
 })

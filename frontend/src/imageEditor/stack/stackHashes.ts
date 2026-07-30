@@ -35,17 +35,26 @@ export function canonicalOp(op: Op): string {
     op.class,
     anyOp.exec,
     anyOp.params ?? null,
+    anyOp.shapes_in_document ?? null,
     // Retouch is the one container with editable children. Child order is
     // render order, so it is deliberately part of the parent's pixel identity.
     anyOp.regions ?? null,
     anyOp.defaults ?? null,
     anyOp.mask_ref ?? null,
     anyOp.raster_ref ?? null,
+    anyOp.payload_to_document ?? null,
     // Bumped when a payload is rewritten under the same ref, so a stroke added
     // to an existing layer actually invalidates the composite above it.
     anyOp._revision ?? 0,
     anyOp.blend ?? null,
-    picked ? [picked.file_hash, picked.patch_ref ?? null, picked.patch_origin ?? null] : null,
+    picked
+      ? [
+          picked.file_hash,
+          picked.patch_ref ?? null,
+          picked.payload_to_document ?? null,
+          picked.patch_origin ?? null,
+        ]
+      : null,
   ])
 }
 
@@ -55,6 +64,11 @@ export function stackHashes(doc: StackDocument): { inputs: string[]; head: strin
   const inputs: string[] = []
   for (const op of doc.edits) {
     inputs.push(hash)
+    // Disabled steps are pixel identities, but they remain distinct replay
+    // states. Collapsing them onto their input hash lets one hash mean both
+    // "the immutable base" and "a later stack position". That alias is unsafe
+    // for stage/head caching and, in the worst case, can publish an edited
+    // projection under the base file hash.
     hash = hashString(hash + '|' + canonicalOp(op))
   }
   return { inputs, head: hash }

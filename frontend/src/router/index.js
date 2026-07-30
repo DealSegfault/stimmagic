@@ -162,31 +162,11 @@ const routes = [
     component: StimpacksView
   },
   {
-    path: '/edit-image',
-    name: 'edit-image-landing',
-    component: ImageEditorView,
-    props: { editorId: null, mediaId: null }
-  },
-  {
-    path: '/edit-image/:editorId',
-    name: 'edit-image-empty',
-    component: ImageEditorView,
-    props: true
-  },
-  {
-    path: '/edit-image/:editorId/:mediaId',
+    // One stack document per Asset. Reopening the same Asset resumes the same
+    // document rather than creating another editor instance.
+    path: '/edit-image/:assetId',
     name: 'edit-image',
     component: ImageEditorView,
-    props: true
-  },
-  {
-    // Op-stack editor. Keyed by ASSET, not by an editor instance counter:
-    // one stack per asset, so reopening the same asset resumes the same
-    // document instead of starting a second one. Reached only on the channels
-    // where v2 is enabled — see openImageEditor().
-    path: '/edit-image-v2/:assetId',
-    name: 'edit-image-v2',
-    component: () => import('../views/ImageEditorV2View.vue'),
     props: true
   },
   {

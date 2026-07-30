@@ -10,9 +10,9 @@ import { recordEntityVisit, updateRecentEntityName, type RecentEntityType } from
 export type WorkspaceTabType = 'tool' | 'chat' | 'board' | 'editor' | 'lineage' | 'project' | 'flow'
 
 export interface WorkspaceTab {
-  id: string              // 'tool:{fullToolId}[:project:{p}]:i:{K}', 'chat:{id}', 'board:{id}', 'editor:{editorId}'
+  id: string              // 'tool:{fullToolId}[:project:{p}]:i:{K}', 'chat:{id}', 'board:{id}', 'editor:asset:{assetId}'
   type: WorkspaceTabType
-  entityId: string        // fullToolId, chatId, boardId, or editorId (unique instance)
+  entityId: string        // fullToolId, chatId, boardId, or asset-prefixed editor id
   pinned: boolean
   displayOrder: number
   displayName: string     // cached name for rendering without extra API calls
@@ -80,9 +80,6 @@ let nextDisplayOrder = 0
 // Recently closed tabs stack (in-memory only, not persisted)
 const recentlyClosed: WorkspaceTab[] = []
 const MAX_RECENTLY_CLOSED = 20
-
-// Editor instance counter - initialized from existing tabs
-let editorIdCounter = 0
 
 // Tool instance counter — persisted and strictly monotonic. Never derived
 // downward from live tabs: a closed instance's storage keys survive until the
@@ -281,31 +278,8 @@ function pruneNeverActivatedDuplicates() {
   }
 }
 
-function initEditorIdCounter() {
-  // Migrate old-format editor tabs (entityId was mediaId, no editorMediaId).
-  // Asset-keyed (v2) editor tabs are never instance-keyed, so they are exempt
-  // from both the migration and the counter.
-  for (const tab of tabs.value) {
-    if (isV2EditorTab(tab)) continue
-    if (tab.type === 'editor' && !tab.editorMediaId) {
-      // Old format: entityId is the mediaId. Migrate to new format.
-      const oldMediaId = tab.entityId
-      const newEditorId = String(editorIdCounter++)
-      tab.editorMediaId = oldMediaId
-      tab.entityId = newEditorId
-      tab.id = `editor:${newEditorId}`
-    }
-  }
-  // Set counter past any existing editor IDs
-  for (const tab of tabs.value) {
-    if (isV2EditorTab(tab)) continue
-    if (tab.type === 'editor') {
-      const num = parseInt(tab.entityId, 10)
-      if (!isNaN(num) && num >= editorIdCounter) {
-        editorIdCounter = num + 1
-      }
-    }
-  }
+function removeSnapshotEditorTabs() {
+  tabs.value = tabs.value.filter(tab => tab.type !== 'editor' || editorAssetId(tab) !== null)
 }
 
 // Flag to prevent saving during profile/settings reload
@@ -346,7 +320,7 @@ function loadFromStorage() {
         tabs.value = parsed
         // Restore nextDisplayOrder
         nextDisplayOrder = parsed.reduce((max: number, t: WorkspaceTab) => Math.max(max, t.displayOrder), 0) + 1
-        initEditorIdCounter()
+        removeSnapshotEditorTabs()
         migrateToolTabsToInstances()
         pruneNeverActivatedDuplicates()
         return
@@ -421,43 +395,23 @@ export function makeTabId(type: WorkspaceTabType, entityId: string, projectId?: 
   return `${type}:${entityId}`
 }
 
-/**
- * Editor tabs come in two flavours, keyed differently on purpose (see
- * imageEditor/stack/openImageEditor.ts): the snapshot editor keys by an editor
- * INSTANCE counter, while the op-stack editor keys by ASSET, because a stack
- * belongs to its asset and reopening it must resume the same document.
- *
- * Both are `editor` tabs so they share one sidebar treatment, so the
- * asset-keyed ones carry a prefixed entityId — otherwise instance 3 and asset 3
- * would both be `editor:3`.
- */
-const V2_EDITOR_ENTITY_PREFIX = 'asset:'
+const EDITOR_ENTITY_PREFIX = 'asset:'
 
-export function v2EditorEntityId(assetId: string | number): string {
-  return `${V2_EDITOR_ENTITY_PREFIX}${assetId}`
+export function editorEntityId(assetId: string | number): string {
+  return `${EDITOR_ENTITY_PREFIX}${assetId}`
 }
 
-export function isV2EditorTab(tab: WorkspaceTab): boolean {
-  return tab.type === 'editor' && tab.entityId.startsWith(V2_EDITOR_ENTITY_PREFIX)
+/** The Asset an editor tab edits, or null for a stale pre-cutover tab. */
+export function editorAssetId(tab: WorkspaceTab): string | null {
+  return tab.type === 'editor' && tab.entityId.startsWith(EDITOR_ENTITY_PREFIX)
+    ? tab.entityId.slice(EDITOR_ENTITY_PREFIX.length)
+    : null
 }
 
-/** The asset a v2 editor tab edits, or null if it isn't one. */
-export function v2EditorAssetId(tab: WorkspaceTab): string | null {
-  return isV2EditorTab(tab) ? tab.entityId.slice(V2_EDITOR_ENTITY_PREFIX.length) : null
-}
-
-/**
- * Router location for an editor tab — the one place the two editors' route
- * shapes are resolved, so every "go to this tab" site (sidebar, App, tab
- * context menu) stays in agreement.
- */
+/** Router location for an Asset-keyed editor tab. */
 export function editorTabRoute(tab: WorkspaceTab) {
-  const assetId = v2EditorAssetId(tab)
-  if (assetId !== null) return { name: 'edit-image-v2' as const, params: { assetId } }
-  if (tab.editorMediaId) {
-    return { name: 'edit-image' as const, params: { editorId: tab.entityId, mediaId: tab.editorMediaId } }
-  }
-  return { name: 'edit-image-empty' as const, params: { editorId: tab.entityId } }
+  const assetId = editorAssetId(tab)
+  return { name: 'edit-image' as const, params: { assetId: assetId ?? '' } }
 }
 
 /**
@@ -465,11 +419,8 @@ export function editorTabRoute(tab: WorkspaceTab) {
  * editorTabRoute in the other direction (active-tab checks).
  */
 export function editorRouteTabId(route: { name?: unknown; params: Record<string, any> }): string | null {
-  if (route.name === 'edit-image-v2' && route.params.assetId) {
-    return makeTabId('editor', v2EditorEntityId(String(route.params.assetId)))
-  }
-  if (route.name === 'edit-image' || route.name === 'edit-image-empty') {
-    return makeTabId('editor', String(route.params.editorId))
+  if (route.name === 'edit-image' && route.params.assetId) {
+    return makeTabId('editor', editorEntityId(String(route.params.assetId)))
   }
   return null
 }
@@ -500,13 +451,6 @@ export function useWorkspaceTabs() {
     try {
       localStorage.setItem(getLastLibraryRouteKey(), path)
     } catch {}
-  }
-
-  /**
-   * Allocate a new unique editor instance ID.
-   */
-  function nextEditorId(): string {
-    return String(editorIdCounter++)
   }
 
   /**
@@ -643,39 +587,12 @@ export function useWorkspaceTabs() {
   }
 
   /**
-   * Add an editor tab with a unique instance ID. Returns the tab.
-   */
-  function addEditorTab(editorId: string, mediaId?: string): WorkspaceTab {
-    const id = makeTabId('editor', editorId)
-    const existing = tabs.value.find(t => t.id === id)
-    if (existing) {
-      if (mediaId && existing.editorMediaId !== mediaId) {
-        existing.editorMediaId = mediaId
-        tabs.value = [...tabs.value]
-      }
-      return existing
-    }
-
-    const tab: WorkspaceTab = {
-      id,
-      type: 'editor',
-      entityId: editorId,
-      pinned: false,
-      displayOrder: nextDisplayOrder++,
-      displayName: 'Darkroom',
-      editorMediaId: mediaId
-    }
-    tabs.value = [...tabs.value, tab]
-    return tab
-  }
-
-  /**
-   * Add (or refresh) the op-stack editor tab for an asset. One tab per asset:
+   * Add (or refresh) the editor tab for an Asset. One tab per Asset:
    * reopening the same asset resumes the same document, so it focuses the
    * existing tab rather than starting a second one.
    */
-  function addEditorV2Tab(assetId: string, opts?: { mediaId?: string; name?: string }): WorkspaceTab {
-    const entityId = v2EditorEntityId(assetId)
+  function addEditorTab(assetId: string, opts?: { mediaId?: string; name?: string }): WorkspaceTab {
+    const entityId = editorEntityId(assetId)
     const id = makeTabId('editor', entityId)
     const existing = tabs.value.find(t => t.id === id)
     if (existing) {
@@ -1025,10 +942,8 @@ export function useWorkspaceTabs() {
     allTabs,
     addTab,
     addEditorTab,
-    addEditorV2Tab,
     updateEditorMedia,
     updateLineageFocus,
-    nextEditorId,
     resolveToolInstance,
     getToolInstanceTab,
     duplicateToolTab,

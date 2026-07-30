@@ -1,9 +1,8 @@
 /**
- * Copied from FILTER_MATRICES in packages/image-editor/src/constants.ts.
+ * Filter preset matrices ported from the retired editor.
  *
  * The color matrices behind the filter presets. Copied rather than imported
- * so a migrated document and a newly filtered one go through the same numbers
- * even after the snapshot editor's package stops being built.
+ * so every filter surface goes through the same numbers.
  */
 export const FILTER_MATRICES: Record<string, number[]> = {
   none: [

@@ -147,23 +147,6 @@ class TestDocument:
     async def test_unknown_document_is_404(self, client: httpx.AsyncClient):
         assert (await client.get("/api/image-stack/999999")).status_code == 404
 
-    async def test_legacy_editor_documents_are_not_reachable(
-        self, client: httpx.AsyncClient, db_session, tmp_path
-    ):
-        """The snapshot editor's rows share the table but not this surface."""
-        from asset_service import create_working_document
-
-        asset_id, _, _ = await _asset(db_session, tmp_path, name="doc-legacy-type")
-        async with db_session() as session:
-            legacy = await create_working_document(
-                session, asset_id=asset_id, editor_type="image"
-            )
-            await session.commit()
-            legacy_id = legacy.id
-
-        assert (await client.get(f"/api/image-stack/{legacy_id}")).status_code == 404
-
-
 class TestJournal:
     async def test_entries_append_and_read_back(
         self, client: httpx.AsyncClient, db_session, tmp_path
@@ -484,6 +467,52 @@ class TestSaveEdit:
         after = (await client.get(f"/api/image-stack/{document_id}")).json()["document"]
         assert after == document
 
+    async def test_reopen_after_save_reports_the_working_document_base(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        """Asset head may advance; the live recipe's base must not."""
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="save-reopen")
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        original_base = opened["base"]
+        document = _document(
+            original_base,
+            edits=[{"id": "01J0", "class": "patch", "enabled": True}],
+        )
+        await client.put(
+            f"/api/image-stack/{document_id}/document",
+            json={"document": document},
+        )
+
+        saved = await client.post(
+            "/api/media/save-edit",
+            files={
+                "file": (
+                    "flattened.png",
+                    _png_bytes((256, 128), (0, 128, 255)),
+                    "image/png",
+                )
+            },
+            data={
+                "source_media_id": str(media_id),
+                "asset_id": str(asset_id),
+                "base_revision_id": str(original_base["revision_id"]),
+                "working_document_id": str(document_id),
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["revision_id"] != original_base["revision_id"]
+
+        reopened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        assert reopened["document_id"] == document_id
+        assert reopened["document"] == document
+        assert reopened["base"] == original_base
+        assert reopened["head_revision_id"] == saved.json()["revision_id"]
+
     async def test_save_as_new_forks_the_document(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
@@ -523,41 +552,28 @@ class TestSaveEdit:
     async def test_unknown_stack_document_is_rejected(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
-        _, media_id, _ = await _asset(db_session, tmp_path, name="save-unknown-doc")
-        response = await client.post(
-            "/api/media/save-edit",
-            files={"file": ("c.png", _png_bytes(), "image/png")},
-            data={"source_media_id": str(media_id), "working_document_id": "999999"},
-        )
-        assert response.status_code == 404
-
-    async def test_legacy_sidecar_save_is_unchanged(
-        self, client: httpx.AsyncClient, db_session, tmp_path
-    ):
-        """The snapshot editor's path must not shift under the extension."""
-        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="save-legacy")
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="save-unknown-doc")
         response = await client.post(
             "/api/media/save-edit",
             files={"file": ("c.png", _png_bytes(), "image/png")},
             data={
                 "source_media_id": str(media_id),
                 "asset_id": str(asset_id),
-                "editor_project": json.dumps({"version": 1, "state": {}}),
+                "working_document_id": "999999",
             },
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 404
 
-        async with db_session() as session:
-            document = await session.scalar(
-                select(WorkingDocument).where(
-                    WorkingDocument.asset_id == response.json()["asset_id"],
-                    WorkingDocument.editor_type == "image",
-                    WorkingDocument.deleted_at.is_(None),
-                )
-            )
-            assert document is not None
-            assert document.state_locator.endswith(".json")
-
+    async def test_stack_document_is_required(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="save-no-doc")
+        response = await client.post(
+            "/api/media/save-edit",
+            files={"file": ("c.png", _png_bytes(), "image/png")},
+            data={"source_media_id": str(media_id), "asset_id": str(asset_id)},
+        )
+        assert response.status_code == 422
 
 class TestStepNaming:
     """A generative step is named after what it did, or keeps its verb.

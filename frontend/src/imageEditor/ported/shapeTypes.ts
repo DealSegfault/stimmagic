@@ -1,8 +1,7 @@
 /**
- * Copied from packages/image-editor/src/types/shapes.ts.
+ * Ported from the retired editor's shape vocabulary.
  *
- * The shape vocabulary the annotate tools speak. Copied because the snapshot
- * editor is frozen and these declarations are the contract its renderer, hit
+ * These declarations are the contract the renderer, hit
  * testing and resize maths are written against — retyping them would only
  * create a second, subtly different vocabulary.
  */

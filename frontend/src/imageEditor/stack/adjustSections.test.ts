@@ -5,9 +5,12 @@ import {
   LEVEL_EDITS,
   MIXER_BANDS,
   MIXER_MODES,
+  PHOTO_ADJUSTMENT_CONTROLS,
   PHOTO_ADJUSTMENT_GROUPS,
+  effectLookStepOf,
   mixerKey,
   photoAdjustmentGroup,
+  stripEntryById,
 } from './adjustSections.ts'
 
 test('Adjust and masked Retouch share one adjustment group schema', () => {
@@ -28,25 +31,21 @@ test('the shared schema includes the photographic parity controls', () => {
     photoAdjustmentGroup('light')?.controls.map(control => control.key),
     [
       'exposure', 'contrast', 'highlights', 'shadows', 'whites', 'blacks',
-      'brightness', 'gamma', 'curve',
+      'curve',
     ],
   )
   assert.deepEqual(
     photoAdjustmentGroup('color')?.controls.map(control => control.key),
-    [
-      'temperature', 'tint', 'hue', 'saturation', 'vibrance',
-      'colorizeHue', 'colorizeAmount', 'defringe',
-    ],
+    ['temperature', 'tint', 'vibrance', 'saturation'],
   )
   assert.deepEqual(
     photoAdjustmentGroup('detail')?.controls.map(control => control.key),
     [
-      'texture', 'clarity', 'dehaze', 'moire',
+      'texture', 'clarity', 'dehaze', 'moire', 'defringe',
       'sharpen', 'sharpenRadius', 'sharpenDetail', 'sharpenMasking',
       'noiseReduction', 'noiseReductionDetail', 'noiseReductionContrast',
       'colorNoiseReduction', 'colorNoiseReductionDetail',
       'colorNoiseReductionSmoothness',
-      'noise', 'grainSize', 'grainRoughness', 'blur',
     ],
   )
   assert.deepEqual(
@@ -69,4 +68,30 @@ test('the shared schema includes the photographic parity controls', () => {
       'gradeBlend', 'gradeBalance',
     ],
   )
+})
+
+test('strip-look dials stay in the render schema without being group sliders', () => {
+  const offered = new Set(
+    PHOTO_ADJUSTMENT_GROUPS.flatMap(group => group.controls.map(control => control.key))
+  )
+  const schema = new Set(PHOTO_ADJUSTMENT_CONTROLS.map(control => control.key))
+  for (const key of [
+    'colorizeHue', 'colorizeAmount', 'noise', 'grainSize', 'grainRoughness', 'blur',
+  ]) {
+    assert.ok(!offered.has(key), `${key} offered by a group`)
+    assert.ok(schema.has(key), `${key} fell out of the render schema`)
+  }
+})
+
+test('strip looks match their own steps, supporting dials included', () => {
+  const colorize = stripEntryById('colorize')!
+  assert.equal(
+    effectLookStepOf({ colorizeAmount: 50, colorizeHue: 30 })?.id, 'colorize'
+  )
+  assert.deepEqual(colorize.seed, { colorizeHue: 30 })
+  assert.equal(effectLookStepOf({ noise: 40, grainSize: 25 })?.id, 'grain')
+  assert.equal(effectLookStepOf({ blur: 10 })?.id, 'blur')
+  // A migrated blob carrying extra params is never a strip step.
+  assert.equal(effectLookStepOf({ noise: 40, vignette: 20 }), undefined)
+  assert.equal(effectLookStepOf({}), undefined)
 })

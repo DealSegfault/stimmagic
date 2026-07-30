@@ -1036,7 +1036,7 @@ import { useAgentActivity } from '../composables/useAgentActivity'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useSendToTool } from '../composables/useSendToTool'
-import { useWorkspaceTabs, toolTabRoute, editorTabRoute, editorRouteTabId, v2EditorAssetId, type WorkspaceTab } from '../composables/useWorkspaceTabs'
+import { useWorkspaceTabs, toolTabRoute, editorTabRoute, editorRouteTabId, editorAssetId, type WorkspaceTab } from '../composables/useWorkspaceTabs'
 import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 import { isEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import { removeRecentEntity } from '../composables/useRecentEntities'
@@ -1156,7 +1156,7 @@ const { sendToTool } = useSendToTool()
 
 // Workspace tabs
 const {
-  pinnedTabs, openTabs, allTabs, addTab, addEditorTab, addEditorV2Tab, updateEditorMedia, nextEditorId,
+  pinnedTabs, openTabs, allTabs, addTab, addEditorTab, updateEditorMedia,
   findNextTab, removeTab, updateTabName, removeTabByEntity,
   reconcileToolPins, moveTab, setLastLibraryRoute, getLastLibraryRoute,
   markTabActivated, updateTabCustomName
@@ -1579,7 +1579,7 @@ function isTabActive(tab: WorkspaceTab): boolean {
 }
 
 function hasUnsavedEdits(tab: WorkspaceTab): boolean {
-  const assetId = v2EditorAssetId(tab)
+  const assetId = editorAssetId(tab)
   return assetId !== null && isEditorDirty(assetId)
 }
 
@@ -1792,14 +1792,9 @@ async function handleTabMediaDrop(tab: WorkspaceTab, e: DragEvent) {
       console.error('Failed to add media to board:', error)
     }
   } else if (tab.type === 'editor') {
-    if (v2EditorAssetId(tab) !== null) {
-      // An op-stack tab IS its asset's document — another image can't be loaded
-      // into it. Open that image's own editor instead.
-      void openImageEditor(router, mediaId)
-    } else {
-      updateEditorMedia(tab.id, String(mediaId))
-      router.push({ name: 'edit-image', params: { editorId: tab.entityId, mediaId } })
-    }
+    // An editor tab IS its Asset's document — another image can't be loaded
+    // into it. Open that image's own editor instead.
+    void openImageEditor(router, mediaId)
   }
 }
 
@@ -2615,13 +2610,11 @@ watch(
           }
         }).catch(() => {})
       }
-    } else if ((name === 'edit-image' || name === 'edit-image-empty') && params.editorId) {
-      addEditorTab(String(params.editorId), params.mediaId ? String(params.mediaId) : undefined)
-    } else if (name === 'edit-image-v2' && params.assetId) {
-      // The op-stack editor's route carries only the asset, so the thumbnail
+    } else if (name === 'edit-image' && params.assetId) {
+      // The editor route carries only the Asset, so the thumbnail
       // and name come from the asset's head revision.
       const assetId = String(params.assetId)
-      const tab = addEditorV2Tab(assetId)
+      const tab = addEditorTab(assetId)
       fetch(`/api/assets/${assetId}`).then(r => r.ok ? r.json() : null).then(data => {
         if (!data) return
         if (data.media?.id != null) updateEditorMedia(tab.id, String(data.media.id))

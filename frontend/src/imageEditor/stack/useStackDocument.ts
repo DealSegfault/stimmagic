@@ -133,7 +133,6 @@ export function useStackDocument() {
       documentId: data.document_id,
       base: data.base,
       headRevisionId: data.head_revision_id,
-      legacyProject: data.legacy_project,
     }
   }
 

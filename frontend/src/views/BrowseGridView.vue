@@ -294,9 +294,9 @@ import { getCurrentProfileId } from '../composables/useProfile'
 import { makeProfileKey } from '../utils/storageKeys'
 import { useMediaList } from '../composables/useMediaList'
 import { isSettingsLoaded } from '../appConfig'
-import { useWorkspaceTabs } from '../composables/useWorkspaceTabs'
 import { cloneDefaultBrowseFilters, normalizeBrowseFilters } from '../constants/browseFilters'
 import { assetIdOf, mediaIdOf } from '../utils/assetIdentity'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 
 // Props
 const props = defineProps({
@@ -359,7 +359,6 @@ const trashHeaderSubtitle = computed(() => {
 
 const route = useRoute()
 const router = useRouter()
-const { nextEditorId } = useWorkspaceTabs()
 const { decodeFiltersFromUrl } = useUrlState()
 const {
   getMediaItem: getPayloadMediaItem,
@@ -1245,7 +1244,7 @@ function handleCompareSelected() {
 // Multi-select helper - edit selected image
 function handleEditImage() {
   if (selectedItemIds.value.length === 1) {
-    router.push({ name: 'edit-image', params: { editorId: nextEditorId(), mediaId: selectedItemIds.value[0] } })
+    void openImageEditor(router, selectedItemIds.value[0])
     multiSelectMode.value = false
     selectedItemIds.value = []
   }

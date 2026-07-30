@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * Copied from packages/image-editor/src/components/common/BrushPicker.vue.
+ * Ported from the retired editor's brush picker.
  *
- * Copied rather than reused: the snapshot editor is frozen, and the preset
+ * Kept intact because the preset
  * grid, the live canvas previews of each tip, and the size / hardness /
  * opacity / flow / spacing sliders are already the picker we want. A brush is
  * not a property of the layer it painted, so per the placement rule this hangs

@@ -1,10 +1,10 @@
 /**
- * Shared filter definitions for in-app (built-in) image filters.
+ * Shared definitions for the app's built-in post-processing filters.
  *
  * Single source of truth consumed by:
- * - the editor's filter/finetune plugins (matrices/ranges),
  * - the ToolView post-processing chain step cards (param UI),
- * - the backend server-side port (backend/postprocessing/filter_defs.py mirrors
+ * - the image editor's filter preset labels,
+ * - the backend server-side port (backend/filters/defs.py mirrors
  *   this file; a parity test asserts ids/params/ranges match).
  *
  * Keep this file declarative — ids, labels, params, ranges, defaults. The
@@ -12,7 +12,8 @@
  * backend/postprocessing/builtin_filters.py (server).
  */
 
-import { FILTER_CATEGORIES, FILTER_MATRICES } from './constants';
+import { FILTER_CATEGORIES } from '../imageEditor/stack/adjustSections';
+import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices';
 
 export interface ChainFilterParam {
   name: string;
@@ -40,10 +41,10 @@ export interface ChainFilterDef {
   params: ChainFilterParam[];
 }
 
-/** Color preset choices come from the editor's filter categories (minus "none"). */
+/** Color preset choices come from the editor's filter categories. */
 export const COLOR_FILTER_OPTIONS = FILTER_CATEGORIES
   .flatMap(cat => cat.filters)
-  .filter(f => f.id !== 'none')
+  .filter(f => f.id !== 'none' && !f.effect)
   .map(f => ({ value: f.id, label: f.label }));
 
 /**

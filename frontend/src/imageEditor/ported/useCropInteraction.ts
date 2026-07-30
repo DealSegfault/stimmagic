@@ -1,6 +1,6 @@
 /**
- * Copied from packages/image-editor/src/composables/useInteraction.ts, keeping
- * the crop half and dropping pan, zoom and touch.
+ * Ported from the retired editor's interaction code, keeping the crop half
+ * and dropping pan, zoom and touch.
  *
  * The new editor fits the image to the viewport and does not pan or zoom, so
  * those paths had nowhere to go — worse, the old code moves the crop to stay

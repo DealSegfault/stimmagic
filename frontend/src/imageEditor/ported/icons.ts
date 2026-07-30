@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/components/icons/index.ts.
+ * Ported from the retired editor's icon registry.
  *
  * The tool glyphs — dashed square and circle for the marquees, the lasso and
  * the magnetic lasso, the wand, the brush and its engines, the annotate tools.
@@ -108,6 +108,9 @@ export const icons = {
   stamp: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21h14a2 2 0 0 0 2-2v-1H3v1a2 2 0 0 0 2 2z"/><path d="M10 14v-3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v3"/><path d="M18 14v-3a1 1 0 0 0-1-1h-2a1 1 0 0 0-1 1v3"/><path d="M12 3a4 4 0 0 1 4 4v3H8V7a4 4 0 0 1 4-4z"/><rect x="3" y="14" width="18" height="4"/></svg>`,
 
   bandage: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18.9 5.1a8 8 0 0 0-11.3 0L3 9.7a4 4 0 0 0 0 5.7l5.7 5.7a4 4 0 0 0 5.7 0l4.6-4.6a8 8 0 0 0 0-11.4Z"/><path d="m9.5 14.5 5-5"/><circle cx="10" cy="10" r="0.5" fill="currentColor"/><circle cx="14" cy="14" r="0.5" fill="currentColor"/><circle cx="12" cy="12" r="0.5" fill="currentColor"/></svg>`,
+
+  // A kept subject inside a dashed frame — the frame is what gets cut away.
+  cutout: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5" stroke-dasharray="3 2.5"/><circle cx="12" cy="10.5" r="3"/><path d="M6.5 19c1.1-2.6 3.1-4 5.5-4s4.4 1.4 5.5 4"/></svg>`,
 
   // Fabric patch: a square with stitch threads poking out on every side.
   patch: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 1v5M12 1v5M15 1v5"/><path d="M9 18v5M12 18v5M15 18v5"/><path d="M1 9h5M1 12h5M1 15h5"/><path d="M18 9h5M18 12h5M18 15h5"/></svg>`,

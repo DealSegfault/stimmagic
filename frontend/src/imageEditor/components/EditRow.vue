@@ -105,6 +105,21 @@ const isGenerative = computed(() => props.op.class === 'patch')
 const retouchRegions = computed(() =>
   anyOp.value.exec?.kind === 'retouch-regions' ? anyOp.value.regions ?? [] : []
 )
+/**
+ * A scoped Adjust step is one adjustment region wearing a row: the row IS the
+ * region, so listing "1 region" under it is forensic noise. Real Retouch
+ * containers (repairs, or several regions) keep the list.
+ */
+const showsRegionList = computed(() =>
+  retouchRegions.value.length > 1
+  || (
+    retouchRegions.value.length === 1
+    && !(
+      retouchRegions.value[0].kind === 'adjust'
+      || !!photoAdjustmentGroup(String(retouchRegions.value[0].kind))
+    )
+  )
+)
 const hasSpatialFeedback = computed(() =>
   retouchRegions.value.length > 0
   || (props.op.class === 'patch' && !!anyOp.value.mask_ref)
@@ -234,7 +249,7 @@ const previewTint = computed(() =>
       <!-- Retouch is the stack's one hierarchy level. Gestures are folded
            into editable regions inside one top-level edit, never promoted to
            peer rows beside Crop, Adjust, Paint, and the base image. -->
-      <template v-if="retouchRegions.length">
+      <template v-if="showsRegionList">
         <button
           type="button"
           class="mt-1 -ml-0.5 inline-flex items-center gap-1 text-xs text-content-tertiary

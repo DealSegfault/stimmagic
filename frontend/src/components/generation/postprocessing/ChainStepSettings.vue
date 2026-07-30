@@ -193,7 +193,7 @@ import SettingsDropdown from '../../ui/SettingsDropdown.vue'
 import UpscaleResolutionPicker from '../UpscaleResolutionPicker.vue'
 import { useToolSchemaFeatures } from '../../../composables/useToolSchemaFeatures'
 import { useProvidersApi, type ProviderTool } from '../../../composables/useProvidersApi'
-import { getChainFilterDef } from '@stimma/image-editor'
+import { getChainFilterDef } from '../../../utils/filterDefs'
 import { snapDimsToGrid } from '../../../utils/resolutionControls'
 import {
   defaultChainStepPromptOptions,

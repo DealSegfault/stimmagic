@@ -914,7 +914,7 @@ interface GenerateMoreTool {
 }
 
 const router = useRouter()
-const { nextEditorId, tabs: workspaceTabs } = useWorkspaceTabs()
+const { tabs: workspaceTabs } = useWorkspaceTabs()
 const contextMenu = useMediaContextMenu()
 const { printAssetDetail, printContactSheet } = usePrint()
 const { deleteMedia, restoreFromTrash, permanentlyDeleteMedia, getMediaFileUrl, getMediaItem, getMediaFaces, getMarkers, addMarkerToMedia, removeMarkerFromMedia, downloadMedia, bulkDeleteMedia, bulkRestoreFromTrash, bulkPermanentlyDelete, bulkMarkerOperation, createSetFromMedia, getThumbnailUrl, getBoards, createBoard, addMediaToBoard, removeMediaFromProject } = useMediaApi()

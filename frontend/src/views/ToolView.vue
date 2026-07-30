@@ -1095,7 +1095,7 @@ import PostProcessingPanel from '../components/generation/postprocessing/PostPro
 import SchemaParamGroup from '../components/generation/SchemaParamGroup.vue'
 import { resolveParamConstraints } from '../utils/paramConstraints'
 import { CHAIN_TOOL_TASK_TYPES, defaultInsertIndex, emptyChain, mergeRecordedChain, newStepId, normalizeChain, stepInputMedia, stepAcceptedMedia, toRecordedSteps, type ChainStep, type PostProcessingChain } from '../utils/postProcessingChain'
-import { CHAIN_FILTER_DEFS, getChainFilterDef, getChainFilterDefaults } from '@stimma/image-editor'
+import { CHAIN_FILTER_DEFS, getChainFilterDef, getChainFilterDefaults } from '../utils/filterDefs'
 import RemixBanner from '../components/generation/RemixBanner.vue'
 import PromptAgentChat from '../components/generation/PromptAgentChat.vue'
 import JobsGrid from '../components/generation/JobsGrid.vue'

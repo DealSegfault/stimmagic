@@ -8,7 +8,7 @@
  * steps that ran).
  */
 
-import { getChainFilterAccepts } from '@stimma/image-editor'
+import { getChainFilterAccepts } from './filterDefs'
 import { DEFAULT_PROMPT_OPTIONS, type PromptOptions } from '../composables/useGenerationPreferences'
 
 export type ChainStepKind = 'tool' | 'filter'

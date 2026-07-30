@@ -1,10 +1,7 @@
 /**
  * The selection model: one mask, combine modes, feather, marching ants.
  *
- * COPIED from packages/image-editor/src/plugins/retouch/composables/useSelection.ts (2026-07-27), with its
- * imports repointed at this directory. The snapshot editor is frozen — this
- * copy exists so the op-stack editor can evolve it without touching an
- * editor that should never change again.
+ * Ported from the retired editor on 2026-07-27, with imports repointed here.
  */
 
 import { ref, shallowRef, markRaw } from 'vue';

@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/utils/effects.ts.
+ * Ported from the retired editor's effects implementation.
  *
  * Vignette, clarity, blur, sharpen, grain, glow, fringing, halftone, VHS and
  * glitch — the Effects family's pixel work, copied with the color pipeline it

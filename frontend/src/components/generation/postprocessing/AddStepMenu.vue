@@ -79,7 +79,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { ProviderTool } from '../../../composables/useProvidersApi'
-import type { ChainFilterDef } from '@stimma/image-editor'
+import type { ChainFilterDef } from '../../../utils/filterDefs'
 import ToolIcon from '../../tools/ToolIcon.vue'
 import { isStimmaCloudTool } from '../../../utils/stimmaCloud'
 import { CHAIN_TOOL_TASK_TYPES } from '../../../utils/postProcessingChain'

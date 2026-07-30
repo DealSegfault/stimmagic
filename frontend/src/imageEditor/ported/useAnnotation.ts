@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/composables/useAnnotation.ts.
+ * Ported from the retired editor's annotation interaction.
  *
  * Every annotation gesture: draw, select, move, resize, rotate, the curved
  * arrow that smooths as it is dragged, redaction, and the keyboard handling.
@@ -1120,7 +1120,7 @@ export function useAnnotation(
     // Check if clicking on a shape (for potential move).
     //
     // ADAPTED: only the Select tool picks up what is under the cursor. In the
-    // snapshot editor every tool did, so clicking to place a shape on top of
+    // retired editor every tool did, so clicking to place a shape on top of
     // an existing one moved that one instead — the drawing tool became
     // unusable exactly where the picture was already busy. Photoshop and
     // Figma both split this: a creation tool always creates, and selecting is
@@ -1186,7 +1186,7 @@ export function useAnnotation(
   /**
    * A detached copy of a shape.
    *
-   * A JSON round trip, not structuredClone: the snapshot editor kept its shapes
+   * A JSON round trip, not structuredClone: the retired editor kept its shapes
    * in a shallowRef, but here they live inside the op stack's deep ref, so
    * every shape reaching this code is a reactive Proxy — and structuredClone
    * throws DataCloneError on one, which killed the gesture mid-drag. Shapes are

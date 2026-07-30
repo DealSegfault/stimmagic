@@ -44,6 +44,8 @@ export interface ToolPrefs {
   eraseToolId?: string
   /** Catalog tool used by Retouch → Remove (`erase-image` or inpaint fallback). */
   removeToolId?: string
+  /** Catalog tool used by Retouch → Remove background (`remove-background`). */
+  cutoutToolId?: string
   /** Sticky model prompts, separate because Expand and Repaint are different jobs. */
   expandPrompt?: string
   repaintPrompt?: string

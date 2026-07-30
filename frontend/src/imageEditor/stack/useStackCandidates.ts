@@ -33,6 +33,8 @@ import {
   extractPatch,
   maskBounds,
 } from './useStackCompositor'
+import { multiply } from './geometryTransform'
+import type { Affine } from './geometryTransform'
 import { convertMaskPixels } from '../../utils/maskFormat'
 import type { MaskFormat } from '../../composables/useToolSchemaFeatures'
 import type { Candidate, ModelReferenceImage } from './types'
@@ -93,6 +95,8 @@ export interface SubmitRequest {
   referenceImages?: ModelReferenceImage[]
   /** Content hash of the input composite, stamped onto every candidate. */
   sampledInputHash: string
+  /** Complete affine from the submitted input frame into document space. */
+  payloadToDocument?: number[]
 }
 
 /** A single run whose whole output is the result — the output stage's upscale. */
@@ -129,6 +133,7 @@ export function useStackCandidates(deps: {
     opId: string
     maskCanvas: HTMLCanvasElement
     sampledInputHash: string
+    payloadToDocument?: number[]
   }>()
 
   /** One-shot runs (the output stage), keyed by job id. */
@@ -314,6 +319,9 @@ export function useStackCandidates(deps: {
           opId: request.opId,
           maskCanvas: maskSnapshot,
           sampledInputHash: request.sampledInputHash,
+          payloadToDocument: request.payloadToDocument
+            ? [...request.payloadToDocument]
+            : undefined,
         })
         pending.value = pending.value.map(item =>
           item.jobId === placeholderIds[i] ? { ...item, jobId } : item
@@ -410,6 +418,14 @@ export function useStackCandidates(deps: {
       const candidate: Candidate = {
         id: candidateId,
         patch_ref: ref,
+        // The compact origin is part of the canonical transform. Keeping the
+        // compatibility field as well lets older readers place the patch.
+        payload_to_document: intent.payloadToDocument
+          ? multiply(
+              intent.payloadToDocument as Affine,
+              [1, 0, 0, 1, bounds.x, bounds.y],
+            )
+          : undefined,
         patch_origin: [bounds.x, bounds.y],
         media_id: mediaId,
         file_hash: media.file_hash,

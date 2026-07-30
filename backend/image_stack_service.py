@@ -1,8 +1,6 @@
 """Storage for the op-stack image editor's working documents.
 
-The document is a *directory* at the WorkingDocument's ``state_locator``, not a
-file (the legacy editor's per-generation JSON snapshots live alongside under a
-different ``editor_type``):
+The document is a *directory* at the WorkingDocument's ``state_locator``:
 
     <state_locator>/
       document.json      the current stack — small, atomically rewritten

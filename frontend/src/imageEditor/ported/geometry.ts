@@ -1,8 +1,7 @@
 /**
- * Geometry primitives, copied from the snapshot editor's `types/geometry.ts`.
+ * Geometry primitives ported from the retired editor.
  *
- * Copied rather than imported: the snapshot editor is frozen, and the new
- * editor needs to be free to change these without touching it.
+ * The current editor owns this implementation.
  */
 
 export interface Point {
@@ -52,6 +51,6 @@ export interface ViewTransform {
 export type SelectionMode = 'new' | 'add' | 'subtract' | 'intersect'
 
 // The brush types live with the rest of the shape vocabulary, where the
-// snapshot editor put them. Re-exported here so the paint side does not have
+// retired editor put them. Re-exported here so the paint side does not have
 // to know that.
 export type { BrushSettings, BrushPreset } from './shapeTypes'

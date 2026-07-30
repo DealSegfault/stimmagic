@@ -287,16 +287,13 @@ void main() {
     u_tone2.w * (1.0 - smoothstep(0.0, 0.28, luma)) * 0.28;
   color += tonal;
 
-  // temperature, tint, hue, saturation
+  // temperature, tint, saturation
   color.r += max(u_color1.x, 0.0) * 0.18;
   color.b += max(-u_color1.x, 0.0) * 0.18;
   color.rb += max(u_color1.y, 0.0) * 0.14;
   color.g += max(-u_color1.y, 0.0) * 0.14;
-  vec3 hsv = rgb2hsv(clamp(color, 0.0, 1.0));
-  hsv.x = fract(hsv.x + u_color1.z / 360.0);
-  color = hsv2rgb(hsv);
   luma = luminance(color);
-  color = vec3(luma) + (color - vec3(luma)) * (1.0 + u_color1.w);
+  color = vec3(luma) + (color - vec3(luma)) * (1.0 + u_color1.z);
 
   // colorize hue, colorize amount, dehaze, grain
   float dehaze = u_color2.z;
@@ -458,8 +455,8 @@ export function buildLiveAdjustUniforms(
     color1: [
       delta(current, base, 'temperature'),
       delta(current, base, 'tint'),
-      value(current, 'hue') - value(base, 'hue'),
       delta(current, base, 'saturation'),
+      0,
     ],
     color2: [
       value(current, 'colorizeHue'),

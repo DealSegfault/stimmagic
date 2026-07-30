@@ -1,29 +1,26 @@
 /**
  * Geometry co-transform.
  *
- * Every op's mask, patch and strokes are stored in ITS OWN input space — the
- * composite it applies to. When the effective geometry below an op changes (a
- * crop is added, removed, toggled, reordered or re-parameterised), those
- * payloads are rewritten through `M_new ∘ M_old⁻¹`, where `M` is the composed
- * affine of every enabled geometry op below it.
+ * The base image establishes permanent document space. Every spatial payload
+ * owns one complete local-payload → document affine; every stack boundary owns
+ * a document → stage affine. Rendering composes those two transforms.
  *
- * The rewrite is stored, not a display transform, so the dumb-reference rule
- * holds: afterwards the op still references only its input composite and its
- * own payloads, and nothing has to remember a history of transforms.
- *
- * Losslessness comes from always deriving from the AS-CREATED master in
- * `payloads/` rather than from the last derivative. Crop something away and
- * un-crop it and the payload returns intact, because the master was never the
- * thing that got cropped.
+ * Crops therefore never rewrite a mask, patch, stroke, selection or vector.
+ * Crop something away and un-crop it and the payload returns intact because
+ * its document anchor and master pixels never changed.
  */
 
 import type { CropParams } from './opExecutors'
-import type { Op, StackDocument } from './types'
+import type { StackDocument } from './types'
 
 /** 2D affine as [a, b, c, d, e, f] — the argument order of setTransform. */
 export type Affine = [number, number, number, number, number, number]
 
 export const IDENTITY: Affine = [1, 0, 0, 1, 0, 0]
+
+export function translate(x: number, y: number): Affine {
+  return [1, 0, 0, 1, x, y]
+}
 
 export function multiply(m: Affine, n: Affine): Affine {
   return [
@@ -156,6 +153,39 @@ export function coTransform(oldMatrix: Affine, newMatrix: Affine): Affine | null
 }
 
 /**
+ * Canonical anchor for pixels authored in a stack stage.
+ *
+ * `frame.matrix` maps permanent document coordinates into the authored stage.
+ * Its inverse therefore maps that stage back into document space. Compact
+ * payload origins are folded into the same affine so position can never drift
+ * into a second coordinate system.
+ */
+export function payloadToDocument(
+  frame: { matrix: number[] },
+  origin: [number, number] = [0, 0],
+): Affine | null {
+  const documentFromFrame = invert(frame.matrix as Affine)
+  if (!documentFromFrame) return null
+  return multiply(documentFromFrame, translate(origin[0], origin[1]))
+}
+
+/**
+ * Project a canonically anchored payload into the input stage of `index`.
+ */
+export function stageFromPayload(
+  doc: StackDocument,
+  index: number,
+  documentFromPayload: Affine,
+): { matrix: Affine; width: number; height: number } {
+  const stage = geometryBelow(doc, index)
+  return {
+    matrix: multiply(stage.matrix, documentFromPayload),
+    width: stage.width,
+    height: stage.height,
+  }
+}
+
+/**
  * Redraw a payload through a co-transform into the new frame.
  *
  * Always fed the as-created master, never the previous derivative, so a crop
@@ -205,38 +235,6 @@ export function intersectsFrame(
     minY = Math.min(minY, ty); maxY = Math.max(maxY, ty)
   }
   return maxX > 0 && maxY > 0 && minX < frameWidth && minY < frameHeight
-}
-
-/**
- * Ops whose payloads need rewriting after a geometry change, and the matrix to
- * rewrite each through. Only ops that HAVE spatial payloads are listed.
- */
-export function payloadRewrites(
-  before: StackDocument,
-  after: StackDocument
-): Array<{ opId: string; matrix: Affine; width: number; height: number }> {
-  const rewrites: Array<{ opId: string; matrix: Affine; width: number; height: number }> = []
-
-  for (let index = 0; index < after.edits.length; index++) {
-    const op = after.edits[index]
-    if (!hasSpatialPayload(op)) continue
-
-    const previousIndex = before.edits.findIndex(candidate => candidate.id === op.id)
-    if (previousIndex < 0) continue
-
-    const oldGeometry = geometryBelow(before, previousIndex)
-    const newGeometry = geometryBelow(after, index)
-    const matrix = coTransform(oldGeometry.matrix, newGeometry.matrix)
-    if (!matrix || isIdentity(matrix)) continue
-
-    rewrites.push({ opId: op.id, matrix, width: newGeometry.width, height: newGeometry.height })
-  }
-  return rewrites
-}
-
-function hasSpatialPayload(op: Op): boolean {
-  const anyOp = op as any
-  return !!(anyOp.mask_ref || anyOp.raster_ref)
 }
 
 // -- vector payloads ---------------------------------------------------------

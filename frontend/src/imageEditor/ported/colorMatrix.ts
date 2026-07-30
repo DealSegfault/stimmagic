@@ -1,10 +1,9 @@
 /**
- * Copied from packages/image-editor/src/utils/colorMatrix.ts.
+ * Ported from the retired editor's color matrix pipeline.
  *
  * The color pipeline: matrix composition, the base adjustments, split toning,
- * gradient maps and color isolation. This is the code the migration parity
- * proof is measured against, so a second implementation would not merely drift
- * — it would make the proof meaningless.
+ * gradient maps and color isolation. Keeping the established implementation
+ * avoids a second color pipeline drifting from saved documents.
  */
 /**
  * Color Matrix Operations

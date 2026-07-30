@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/composables/useTextEditing.ts.
+ * Ported from the retired editor's text interaction.
  *
  * Canvas-native text editing: caret, selection, wrapping, and the measurement
  * that keeps a text box's display size in step with its content. Copied with

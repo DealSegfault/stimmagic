@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/utils/canvas.ts.
+ * Ported from the retired editor's canvas transforms.
  *
  * Screen → canvas → image-space transforms. The annotation code is written in
  * normalized image space and converts at the edges; these are those edges.

@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/utils/shapes.ts.
+ * Ported from the retired editor's shape renderer.
  *
  * The annotation renderer and its geometry: the curved arrow that smooths as
  * it is dragged (computeSmoothedPath / catmullRomToBezier / simplifyPath), the
@@ -3147,4 +3147,3 @@ export function moveShape(shape: Shape, dx: number, dy: number): Partial<Shape> 
       return { x: shape.x + dx, y: shape.y + dy };
   }
 }
-

@@ -235,7 +235,6 @@ import { useStimpacksApi } from './composables/useStimpacksApi'
 import { setupLayoutRenderer } from './composables/useLayoutRenderer'
 import { makeGlobalKey } from './utils/storageKeys'
 import { updateCheckIntervalMs } from './utils/updateCheckSchedule'
-import { initEditorProjectPrivacyCleanup } from './utils/editorProjectPrivacy'
 import { setPrivacyLockdownActive, isPrivacyLockdownActive } from './composables/usePrivacyLockdown'
 
 const route = useRoute()
@@ -348,18 +347,11 @@ function getComponentKey(route) {
   if (route.name === 'saved-view') {
     return `saved-view-${route.params.id}`
   }
-  // Image editor - each editorId gets its own cached instance
-  if (route.name === 'edit-image' || route.name === 'edit-image-empty') {
-    return `editor-${route.params.editorId}`
-  }
-  if (route.name === 'edit-image-landing') {
-    return 'image-editor-landing'
-  }
-  // Op-stack editor - one cached instance per ASSET (a stack belongs to its
+  // One cached editor instance per Asset (a stack belongs to its
   // asset). Without the asset in the key every asset shares one instance and
   // the second one opened shows the first one's image.
-  if (route.name === 'edit-image-v2') {
-    return `editor-v2-${route.params.assetId}`
+  if (route.name === 'edit-image') {
+    return `editor-${route.params.assetId}`
   }
   if (route.name === 'lineage') {
     return `lineage-${route.params.mediaId}`
@@ -740,7 +732,6 @@ async function loadAppSettings() {
   const privacyLockdown = settings.privacy_lockdown_active === true
   setPrivacyLockdownActive(privacyLockdown)
   initFeatureFlags(useWebSocket().on)
-  initEditorProjectPrivacyCleanup(useWebSocket().on)
   // Account push events (balance/entitlements) -> quiet data refreshes.
   initAccountEvents()
   // Sidebar "finished while away" dots must track even when the sidebar

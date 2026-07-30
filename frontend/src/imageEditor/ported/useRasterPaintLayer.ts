@@ -3,10 +3,7 @@
  * engines (clone, heal, patch, dodge/burn, sponge, blur/sharpen), all applied
  * through the active selection mask.
  *
- * COPIED from packages/image-editor/src/plugins/retouch/composables/useRetouchLayer.ts (2026-07-27), imports
- * repointed at this directory. The snapshot editor is frozen; this copy lets
- * the op-stack editor evolve it without touching an editor that should never
- * change again.
+ * Ported from the retired editor on 2026-07-27, with imports repointed here.
  */
 
 import { ref, shallowRef, markRaw } from 'vue';

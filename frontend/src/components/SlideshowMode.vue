@@ -1241,8 +1241,6 @@ import {
 } from '../utils/slideshowLiveQueue'
 
 const router = useRouter()
-const { nextEditorId } = useWorkspaceTabs()
-
 const { setKeywordFilter, setTagFilter, setSimilarFilter } = useBrowseFilters()
 
 const props = defineProps({

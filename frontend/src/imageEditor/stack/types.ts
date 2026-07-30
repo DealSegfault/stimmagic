@@ -32,7 +32,12 @@ export interface Candidate {
   id: string
   /** Bbox-cropped patch PNG — the only region the composite ever keeps. */
   patch_ref?: string
-  /** Top-left of the patch in its input space. */
+  /**
+   * Complete affine from this compact patch's local pixels into the permanent
+   * document space established by the base image.
+   */
+  payload_to_document?: number[]
+  /** Read compatibility: top-left of the patch in its authored input frame. */
   patch_origin?: [number, number]
   /** Raw model output — context-owned Media, never a library Asset. */
   media_id: number
@@ -62,6 +67,14 @@ export interface BaseOp {
   enabled: boolean
   label: string
   /**
+   * Complete affine from this op's full-frame spatial payloads into permanent
+   * document space. New documents use this as the positional authority.
+   *
+   * Crops only change document-to-stage geometry; they never rewrite this
+   * transform or the master payload.
+   */
+  payload_to_document?: number[]
+  /**
    * The geometry below this op when its spatial payloads were created — the
    * anchor that makes those pixels addressable in the ORIGINAL image's
    * coordinates.
@@ -69,9 +82,8 @@ export interface BaseOp {
    * Everything spatial an op owns (its mask, its raster layer, the candidates
    * generated against its mask) lives in this frame. The compositor
    * carries them into whatever the geometry is now with `M_now ∘ M_created⁻¹`.
-   * Absent on documents written before this existed, which render as they
-   * always did: unanchored, correct only while the geometry below them has not
-   * changed.
+   * Read compatibility for documents written before `payload_to_document`.
+   * The compositor derives the canonical transform from this authored frame.
    */
   payload_frame?: { matrix: number[]; width: number; height: number }
 }
@@ -85,8 +97,15 @@ export interface ParametricOp extends BaseOp {
 export interface GenerativeOp extends BaseOp {
   class: 'patch'
   exec: { kind: 'tool'; tool_id: string; task_type: string }
-  /** The editor verb; distinct from the provider task used to fulfill it. */
-  operation?: 'remove' | 'repaint' | 'expand' | 'erase'
+  /**
+   * The editor verb; distinct from the provider task used to fulfill it.
+   *
+   * `cutout` (Remove background) inverts the compositing contract: the picked
+   * candidate's ALPHA multiplies the input's alpha instead of its pixels being
+   * drawn over the input. The color below stays live — an adjustment under the
+   * cutout keeps showing through the kept foreground.
+   */
+  operation?: 'remove' | 'repaint' | 'expand' | 'erase' | 'cutout'
   /** STP parameters as submitted, minus the inputs. */
   params: Record<string, any>
   /** Ordered auxiliary images submitted after the edited target image. */
@@ -122,6 +141,8 @@ export interface LegacyPaintLayerOp extends Omit<PaintLayerOp, 'exec'> {
 export interface AnnotationOp extends BaseOp {
   class: 'container'
   exec: { kind: 'annotate' }
+  /** Shapes are normalized against the permanent base document dimensions. */
+  shapes_in_document?: boolean
   params: { shapes: any[] }
 }
 
@@ -263,12 +284,19 @@ export interface RetouchRegion {
   mask_ref?: string
   /** Absent means `{kind:'raster'}` — see RegionMask. */
   mask?: RegionMask
-  /** This region's own authored frame; later regions may be added after crops move. */
+  /**
+   * Complete affine from this region's compact payload (or gradient geometry)
+   * into permanent document space.
+   */
+  payload_to_document?: number[]
+  /** Read compatibility and authored raster dimensions for older documents. */
   payload_frame?: { matrix: number[]; width: number; height: number }
   /** Heal/Clone/Patch donor anchor in the parent's authored pixel frame. */
   source?: { x: number; y: number }
   /** Destination anchor paired with `source` for canvas feedback. */
   target?: { x: number; y: number }
+  /** New regions store source/target directly in permanent document space. */
+  points_in_document?: boolean
   /** Cached or generated repair pixels, when this region has them. */
   result_ref?: string
   /** Top-left of the cropped mask/result payload in the authored frame. */

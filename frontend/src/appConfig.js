@@ -90,15 +90,6 @@ export function getAppBranch() {
 }
 
 /**
- * The op-stack image editor ships alongside the snapshot editor and takes over
- * the `edit-image` entry verbs on debug and canary builds only. Production and
- * beta keep the old editor until an explicit cutover.
- */
-export function isImageEditorV2Enabled() {
-  return appBranchRef.value === 'dev' || appBranchRef.value === 'canary'
-}
-
-/**
  * Set developer mode from backend settings.
  * Shows/hides debug tools and developer options in the UI.
  */

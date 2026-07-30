@@ -1,6 +1,6 @@
 /**
  * The tool families and their sub-tools — the MVP toolset, a superset of
- * the snapshot editor's plugins.
+ * the editor's former plugin groupings.
  *
  * Clicking a family enters a MODE and opens its sub-toolbar. It never edits the
  * stack: the step is created on the first real gesture — a paint stroke, a
@@ -105,16 +105,21 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'heal', label: 'Heal', icon: 'bandage' },
       { id: 'clone', label: 'Clone', icon: 'stamp', hint: 'Clone — alt-click a source, then brush' },
       { id: 'patch', label: 'Patch', icon: 'patch', hint: 'Patch — select an area, then drag to its source' },
-      // Model-backed region edits deliberately use text: unlike the manual
-      // repair glyphs, their names communicate the semantic job and cost.
-      { id: 'remove', label: 'Remove', hint: 'Remove an object or distraction' },
-      { id: 'repaint', label: 'Repaint', hint: 'Repaint — replace the selected content from a prompt' },
-      { id: 'light', label: 'Light', icon: 'sun', labeled: true, hint: 'Light — select a region, then tune its light' },
-      { id: 'color', label: 'Color', icon: 'palette', labeled: true, hint: 'Color — select a region, then tune its color' },
-      { id: 'detail', label: 'Detail', icon: 'focus', labeled: true, hint: 'Detail — select a region, then tune its detail' },
-      { id: 'mixer', label: 'Mixer', icon: 'mixer', labeled: true, hint: 'Mixer — select a region, then tune its colors per hue' },
-      { id: 'point', label: 'Point color', icon: 'pointColor', labeled: true, hint: 'Point color — pick a color in the region, shift only it' },
-      { id: 'grade', label: 'Grading', icon: 'grading', labeled: true, hint: 'Grading — select a region, then tint its shadows, midtones and highlights' },
+      // Model-backed region edits keep their text: unlike the manual repair
+      // glyphs, their names communicate the semantic job and cost. Their icons
+      // say what the model does with the region — erase it, or invent new
+      // content for it — rather than repeating one generic magic glyph.
+      // The two removals sit together — parallel names, parallel jobs — and
+      // Regenerate, the open-ended directed edit, closes the group.
+      { id: 'remove', label: 'Remove object', icon: 'eraser', labeled: true, hint: 'Remove an object or distraction' },
+      // Whole-image, no selection: the model finds the subject itself. Its
+      // output's alpha becomes a live matte over the composite, so the cut
+      // stays a row — toggle it off and the background is back.
+      { id: 'cutout', label: 'Remove background', icon: 'cutout', labeled: true, hint: 'Make the background transparent' },
+      // "Regenerate": the base is a generated image, and this generates the
+      // selection again under new instructions — not "Repaint", which read as
+      // manual brushwork with a Paint family two buttons away.
+      { id: 'repaint', label: 'Regenerate', icon: 'sparkles', labeled: true, hint: 'Regenerate — replace the selection with what you describe' },
     ],
   },
   {
@@ -265,6 +270,23 @@ export const SELECT_TOOLS: Array<{
     icon: 'gradientRadial',
     hint: 'Radial gradient — drag out from the centre of the effect',
   },
+]
+
+/**
+ * The Select rail collapsed to six slots: kin tools (the two marquees, the two
+ * lassos, the two gradients) share a slot with a flyout, Photoshop-style. The
+ * slot shows whichever member was used last, so the common case stays one
+ * click; the flyout is only for switching kin. Membership is by shape of
+ * gesture, not implementation — that is what makes the pairs feel like one
+ * tool with a variant.
+ */
+export const SELECT_TOOL_GROUPS: Array<{ id: string; members: SelectToolId[] }> = [
+  { id: 'marquee', members: ['rect', 'ellipse'] },
+  { id: 'lasso', members: ['lasso', 'magnetic'] },
+  { id: 'wand', members: ['wand'] },
+  { id: 'brush', members: ['brush'] },
+  { id: 'object', members: ['object'] },
+  { id: 'gradient', members: ['linear', 'radial'] },
 ]
 
 /** Combine modes for Select — how a new selection meets the existing one. */

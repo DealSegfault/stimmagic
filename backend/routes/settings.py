@@ -331,9 +331,7 @@ class SettingsResponse(BaseModel):
     # dev builds have no telemetry regardless of this value.
     telemetry_enabled: Optional[bool] = None
     distribution: str = "dev"  # Build distribution: 'dev' | 'official'
-    # Release channel: 'production' | 'beta' | 'canary' | 'dev'. Surfaces so the
-    # frontend can gate a parallel implementation on the channel rather than on
-    # a per-user flag (the image editor v2 rollout).
+    # Release channel: 'production' | 'beta' | 'canary' | 'dev'.
     app_branch: str = "dev"
     privacy_lockdown_active: bool = False
     llm_reasoning_levels: Dict[str, str] = Field(default_factory=dict)

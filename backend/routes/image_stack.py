@@ -5,9 +5,8 @@ so generated candidates can be owned by something durable. See
 ``image_stack_service`` for the on-disk shape.
 
 The editor screen is the single writer for a given document; these routes are
-storage, not orchestration. The one piece of policy here is the open handshake,
-which resolves the base revision and reports whether a legacy ``editor_project``
-sidecar exists so the client can offer to migrate it.
+storage, not orchestration. The open handshake resolves the base Revision and
+creates or resumes the Asset's stack document.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import image_stack_service as stack
@@ -53,8 +51,6 @@ class OpenStackResponse(BaseModel):
     document: Optional[dict] = None
     # The head at open time, so the client can tell when it has drifted.
     head_revision_id: Optional[int] = None
-    # A legacy snapshot-editor sidecar exists and has not been migrated yet.
-    legacy_project: Optional[dict] = None
 
 
 class WriteDocumentRequest(BaseModel):
@@ -109,8 +105,7 @@ async def open_stack(
     if media is None:
         raise HTTPException(status_code=404, detail="Base revision has no media")
 
-    # Entering the editor is a use of the Asset — the same retention boundary
-    # the legacy editor honors on open.
+    # Entering the editor is a use of the Asset and clears auto-expiration.
     from asset_association_service import clear_asset_expiration
     await clear_asset_expiration(session, asset.id)
 
@@ -128,51 +123,43 @@ async def open_stack(
 
     stored = await stack.read_document(directory)
 
-    # A legacy sidecar is only interesting while the stack is still empty: once
-    # v2 has written a document, that document is authoritative and the sidecar
-    # is left untouched for the old editor (cross-channel divergence is by
-    # design — see the channel-gated rollout).
-    legacy_project = None
-    if stored is None and media.has_editor_sidecar:
-        legacy_project = await _read_legacy_sidecar(session, asset.id)
+    # A resumed working document keeps the base its recipe was authored
+    # against. Saving advances the Asset's current Revision, but that flattened
+    # output must never become the base under the still-live stack or every
+    # edit is effectively baked in before it is replayed. The document JSON is
+    # the authoritative description of that base.
+    base_info = BaseInfo(
+        asset_id=asset.id,
+        revision_id=revision.id,
+        media_id=media.id,
+        file_hash=media.file_hash,
+        width=media.width or 0,
+        height=media.height or 0,
+    )
+    if stored is not None:
+        stored_base = stored.get("base") if isinstance(stored, dict) else None
+        if isinstance(stored_base, dict):
+            try:
+                base_info = BaseInfo(
+                    asset_id=int(stored_base["asset_id"]),
+                    revision_id=int(stored_base["revision_id"]),
+                    media_id=int(stored_base["media_id"]),
+                    file_hash=str(stored_base["file_hash"]),
+                    width=int(stored_base["width"]),
+                    height=int(stored_base["height"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                log.warning(
+                    f"image-stack: stored document {document.id} has an invalid "
+                    "base; falling back to the requested revision"
+                )
 
     return OpenStackResponse(
         document_id=document.id,
-        base=BaseInfo(
-            asset_id=asset.id,
-            revision_id=revision.id,
-            media_id=media.id,
-            file_hash=media.file_hash,
-            width=media.width or 0,
-            height=media.height or 0,
-        ),
+        base=base_info,
         document=stored,
         head_revision_id=asset.current_revision_id,
-        legacy_project=legacy_project,
     )
-
-
-async def _read_legacy_sidecar(session: AsyncSession, asset_id: int) -> Optional[dict]:
-    """The snapshot editor's serialized project, if one was ever saved."""
-    from editor_service import load_working_document_state
-
-    legacy = await session.scalar(
-        select(WorkingDocument)
-        .where(
-            WorkingDocument.asset_id == asset_id,
-            WorkingDocument.editor_type == "image",
-            WorkingDocument.deleted_at.is_(None),
-        )
-        .order_by(WorkingDocument.id.desc())
-    )
-    if legacy is None or not legacy.state_locator:
-        return None
-    try:
-        state = await load_working_document_state(legacy)
-    except (FileNotFoundError, OSError, ValueError) as exc:
-        log.info(f"image-stack: legacy sidecar unreadable for asset {asset_id}: {exc}")
-        return None
-    return state if isinstance(state, dict) else None
 
 
 @router.get("/{document_id}")

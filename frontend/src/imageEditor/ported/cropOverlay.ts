@@ -1,6 +1,5 @@
 /**
- * Copied from `drawCropOverlay` in
- * packages/image-editor/src/components/EditorCanvas.vue.
+ * Ported from the retired editor's `drawCropOverlay`.
  *
  * The look is the whole point: everything outside the crop dims via an
  * even-odd fill, the kept region stays bright, a dashed blue border and a

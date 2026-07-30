@@ -81,12 +81,6 @@ jobs:
       - name: Setup Python
         run: uv python install 3.11
 
-      - name: Build image editor package
-        working-directory: packages/image-editor
-        run: |
-          npm install
-          npm run build
-
       - name: Install frontend deps
         working-directory: frontend
         run: npm install

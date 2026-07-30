@@ -8,7 +8,13 @@
  * system. Nobody gets forty controls in a toolbar; nobody loses them either.
  */
 import { computed } from 'vue'
-import { AdjustmentsHorizontalIcon, ClockIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import {
+  AdjustmentsHorizontalIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  ClockIcon,
+  XMarkIcon,
+} from '@heroicons/vue/24/outline'
 import Button from '../../components/ui/Button.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
@@ -75,8 +81,14 @@ const fillSubs = ['rectangle', 'ellipse']
 // Sharpie strokes take their glow from the brush, not the shape style, so the
 // effect menu would lie on Draw.
 const effectSubs = ['arrow', 'rectangle', 'ellipse', 'line']
-const retouchAdjustmentSubs = ['light', 'color', 'detail', 'mixer', 'point', 'grade']
-const retouchModelSubs = ['remove', 'repaint']
+/** The subs whose surface is the model compose card. */
+const retouchModelSubs = ['remove', 'repaint', 'cutout']
+/**
+ * The model-backed half of the Retouch bar. The bar is two jobs — manual
+ * repair on the left with its brush, generative verbs grouped on the right —
+ * so membership here is by what runs the edit, not by card shape.
+ */
+const retouchGenerativeSubs = ['remove', 'repaint', 'cutout']
 
 /**
  * A SELECTED shape overrides the sub-tool: the controls shown are the ones the
@@ -131,8 +143,9 @@ function chipClass(active: boolean, pending = false) {
     class="flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface/80 backdrop-blur-sm"
     :class="family.id === 'filters' ? 'pt-2' : 'px-4 py-2'"
   >
-    <!-- Sub-tools, for the families that have them. -->
-    <template v-if="family.subTools.length">
+    <!-- Sub-tools, for the families that have them. Retouch lays its own out:
+         its bar is two jobs, not one list. -->
+    <template v-if="family.subTools.length && family.id !== 'retouch'">
       <template
         v-for="option in family.subTools"
         :key="option.id"
@@ -152,12 +165,77 @@ function chipClass(active: boolean, pending = false) {
             <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
           </button>
         </Tooltip>
-        <span
-          v-if="family.id === 'retouch' && (option.id === 'patch' || option.id === 'repaint')"
-          class="w-px h-5 bg-edge-subtle mx-1"
-        />
       </template>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
+    </template>
+
+    <!-- Retouch's chip row: the manual repair tools with their brush beside
+         them on the left, the model-backed verbs as their own group on the
+         right. The picker belongs to Heal/Clone/Patch, so it sits with them
+         instead of trailing the whole bar. -->
+    <template v-if="family.id === 'retouch'">
+      <template
+        v-for="option in family.subTools.filter(tool => !retouchGenerativeSubs.includes(tool.id))"
+        :key="option.id"
+      >
+        <Tooltip :text="option.pending ? 'Not built yet' : option.hint ?? option.label">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+            :class="chipClass(sub === option.id, option.pending)"
+            :disabled="option.pending"
+            :aria-label="option.label"
+            @click="emit('sub', option.id)"
+          >
+            <ToolIcon v-if="option.icon" :name="option.icon" />
+            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
+          </button>
+        </Tooltip>
+      </template>
+
+      <!-- The sub-tool chip beside this says what manual repair is being
+           authored. The brush only defines its region; it is not itself a
+           Paint stroke. Patch is selection-driven, so it has no brush. -->
+      <ToolbarPopover
+        v-if="sub !== 'patch' && !retouchGenerativeSubs.includes(sub ?? '')"
+        :label="`${Math.round(state.retouchBrush.size)}px`"
+      >
+        <template #trigger>
+          <span
+            class="w-4 h-4 rounded-full bg-content"
+            :style="{
+              opacity: state.retouchBrush.opacity / 100,
+              filter: `blur(${(100 - state.retouchBrush.hardness) / 40}px)`,
+            }"
+          />
+        </template>
+        <BrushPicker
+          :model-value="state.retouchBrush"
+          :stroke-color="state.paintColor"
+          @update:model-value="emit('set', { retouchBrush: $event })"
+        />
+      </ToolbarPopover>
+
+      <div class="flex-1" />
+
+      <template
+        v-for="option in family.subTools.filter(tool => retouchGenerativeSubs.includes(tool.id))"
+        :key="option.id"
+      >
+        <Tooltip :text="option.pending ? 'Not built yet' : option.hint ?? option.label">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+            :class="chipClass(sub === option.id, option.pending)"
+            :disabled="option.pending"
+            :aria-label="option.label"
+            @click="emit('sub', option.id)"
+          >
+            <ToolIcon v-if="option.icon" :name="option.icon" />
+            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
+          </button>
+        </Tooltip>
+      </template>
     </template>
 
     <!-- Generate ------------------------------------------------------- -->
@@ -325,7 +403,9 @@ function chipClass(active: boolean, pending = false) {
             @update:model-value="emit('set', { referenceImages: $event })"
           />
           <p v-if="sub !== 'repaint'" class="px-3 py-2.5 text-sm text-content-muted">
-            Select the area to remove, then Run.
+            {{ sub === 'cutout'
+              ? 'Makes the background transparent.'
+              : 'Select the area to remove, then Run.' }}
           </p>
 
           <!-- The run controls, docked into the card's footer under the input. -->
@@ -366,7 +446,7 @@ function chipClass(active: boolean, pending = false) {
               :width="320"
               :disabled="!state.recentRepaintPrompts?.length"
               close-on-select
-              aria-label="Recent Repaint prompts"
+              aria-label="Recent Regenerate prompts"
             >
               <template #trigger>
                 <ClockIcon class="w-3.5 h-3.5" />
@@ -412,26 +492,52 @@ function chipClass(active: boolean, pending = false) {
             </ToolbarPopover>
 
             <div class="flex-1" />
+            <!-- A cutout is whole-image and deterministic: no mask to grow,
+                 no variations to pick between. -->
             <label
+              v-if="sub !== 'cutout'"
               class="flex items-center gap-1.5 text-xs text-content-tertiary"
               title="Grow the mask past the selection edge before the model runs — a mask that hugs the object leaves its outline behind. Negative shrinks."
             >
               Expand mask
-              <span class="flex items-center gap-0.5">
+              <span
+                class="flex items-center gap-0.5 pl-2 pr-1 py-1 rounded-md bg-overlay-subtle focus-within:ring-1 focus-within:ring-accent/50"
+              >
                 <input
                   type="number"
                   min="-50"
                   max="50"
-                  class="w-12 px-2 py-1 rounded-md font-mono tabular-nums text-content bg-overlay-subtle"
+                  class="w-6 bg-transparent border-0 p-0 outline-none text-right font-mono tabular-nums text-content [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                   :value="state.maskExpandPercent"
                   @input="emit('set', {
                     maskExpandPercent: Number(($event.target as HTMLInputElement).value),
                   })"
                 />
-                %
+                <span class="font-mono text-content">%</span>
+                <span class="flex flex-col ml-0.5 -my-0.5">
+                  <button
+                    type="button"
+                    class="flex items-center justify-center w-4 h-3 text-content-tertiary hover:text-content"
+                    aria-label="Increase expand mask"
+                    @click="emit('set', { maskExpandPercent: Math.min(50, state.maskExpandPercent + 1) })"
+                  >
+                    <ChevronUpIcon class="w-3 h-3" />
+                  </button>
+                  <button
+                    type="button"
+                    class="flex items-center justify-center w-4 h-3 text-content-tertiary hover:text-content"
+                    aria-label="Decrease expand mask"
+                    @click="emit('set', { maskExpandPercent: Math.max(-50, state.maskExpandPercent - 1) })"
+                  >
+                    <ChevronDownIcon class="w-3 h-3" />
+                  </button>
+                </span>
               </span>
             </label>
-            <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
+            <label
+              v-if="sub !== 'cutout'"
+              class="flex items-center gap-1.5 text-xs text-content-tertiary"
+            >
               Variations
               <input
                 type="number"
@@ -451,27 +557,6 @@ function chipClass(active: boolean, pending = false) {
         </div>
       </div>
 
-      <!-- The sub-tool chip above says what manual repair is being authored.
-           The brush only defines its region; it is not itself a Paint stroke. -->
-      <ToolbarPopover
-        v-else-if="sub !== 'patch' && !retouchAdjustmentSubs.includes(sub ?? '')"
-        :label="`${Math.round(state.retouchBrush.size)}px`"
-      >
-        <template #trigger>
-          <span
-            class="w-4 h-4 rounded-full bg-content"
-            :style="{
-              opacity: state.retouchBrush.opacity / 100,
-              filter: `blur(${(100 - state.retouchBrush.hardness) / 40}px)`,
-            }"
-          />
-        </template>
-        <BrushPicker
-          :model-value="state.retouchBrush"
-          :stroke-color="state.paintColor"
-          @update:model-value="emit('set', { retouchBrush: $event })"
-        />
-      </ToolbarPopover>
     </template>
 
     <!-- Paint ----------------------------------------------------------- -->
@@ -650,15 +735,38 @@ function chipClass(active: boolean, pending = false) {
       </div>
     </template>
 
-    <!-- Adjust: six addable edits. Each click makes its own focused step —
-         a Light, a Color, a Detail, or an Auto (a Light edit seeded from the
-         histogram) — whose controls live in its Properties. Same rule as the
-         strip: the bar offers what you can ADD. -->
+    <!-- Adjust: the addable edits. Each click makes its own focused step —
+         an Auto (a Light edit seeded from the histogram), a Light, a Color,
+         a Detail — whose controls live in its Properties. Same rule as the
+         strip: the bar offers what you can ADD. With a workspace selection
+         live, an added edit is scoped to it (the tooltips say so). The Autos
+         lead: they are the most-reached-for actions here, and frequency owns
+         the left edge. -->
     <template v-else-if="family.id === 'levels'">
+      <!-- The Autos stay whole-image even while a selection exists: their seeds
+           come from the full-frame histogram, and scoping the result of a
+           global computation would be quietly wrong (plan §14, Q15). -->
+      <Tooltip
+        v-for="auto in AUTO_EDITS"
+        :key="auto.id"
+        :text="state.hasSelection ? `${auto.label} — applies to the whole image` : auto.label"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          :aria-label="auto.label"
+          @click="emit('set', { auto: auto.id })"
+        >
+          <ToolIcon :name="auto.icon" />
+          {{ auto.label }}
+        </button>
+      </Tooltip>
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
       <Tooltip
         v-for="edit in LEVEL_EDITS"
         :key="edit.id"
-        :text="edit.label"
+        :text="state.hasSelection ? `${edit.label} — applies to the selection` : edit.label"
       >
         <button
           type="button"
@@ -671,16 +779,6 @@ function chipClass(active: boolean, pending = false) {
           {{ edit.label }}
         </button>
       </Tooltip>
-      <span class="w-px h-5 bg-edge-subtle mx-1" />
-      <button
-        v-for="auto in AUTO_EDITS"
-        :key="auto.id"
-        type="button"
-        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
-        @click="emit('set', { auto: auto.id })"
-      >
-        {{ auto.label }}
-      </button>
     </template>
 
     <!-- Annotate: the latent shape's full initial conditions, compact — every

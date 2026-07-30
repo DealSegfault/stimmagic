@@ -188,7 +188,7 @@ import { computed, watch, onMounted } from 'vue'
 import { MediaImage } from './index'
 import KeyValueList from '../ui/KeyValueList.vue'
 import { useMarkers } from '../../composables/useMarkers'
-import { getFilterDisplayLabel } from '@stimma/image-editor'
+import { getFilterDisplayLabel } from '../../utils/filterDefs'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 
 const props = defineProps({

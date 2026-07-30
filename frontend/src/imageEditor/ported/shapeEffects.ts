@@ -1,5 +1,5 @@
 /**
- * Copied from packages/image-editor/src/utils/effects/shapeEffects.ts.
+ * Ported from the retired editor's shape effects.
  *
  * Neon glow, gradients and style resolution for shapes. Copied with shapes.ts,
  * which calls into it on nearly every render path.

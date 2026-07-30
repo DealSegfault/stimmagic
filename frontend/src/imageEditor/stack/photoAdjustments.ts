@@ -10,7 +10,6 @@ export interface PhotographicAdjustmentParams {
   whites?: number
   blacks?: number
   curve?: ToneCurve
-  hue?: number
   vibrance?: number
   colorizeHue?: number
   colorizeAmount?: number
@@ -103,7 +102,7 @@ export function hasPhotographicAdjustments(params: PhotographicAdjustmentParams)
     (params.highlights ?? 0) !== 0 || (params.shadows ?? 0) !== 0 ||
     (params.whites ?? 0) !== 0 || (params.blacks ?? 0) !== 0 ||
     !isIdentityToneCurve(params.curve) ||
-    (params.hue ?? 0) !== 0 || (params.vibrance ?? 0) !== 0 ||
+    (params.vibrance ?? 0) !== 0 ||
     (params.colorizeAmount ?? 0) !== 0 ||
     (params.dehaze ?? 0) !== 0 ||
     hasMixerAdjustments(params) ||
@@ -125,20 +124,6 @@ function hueColor(hue: number, saturation: number, value: number): [number, numb
   else rgb = [chroma, 0, x]
   const m = value - chroma
   return [rgb[0] + m, rgb[1] + m, rgb[2] + m]
-}
-
-function rotateHue(r: number, g: number, b: number, degrees: number): [number, number, number] {
-  const max = Math.max(r, g, b)
-  const min = Math.min(r, g, b)
-  const delta = max - min
-  if (delta < 1e-6) return [r, g, b]
-  let hue = max === r
-    ? 60 * (((g - b) / delta) % 6)
-    : max === g
-      ? 60 * ((b - r) / delta + 2)
-      : 60 * ((r - g) / delta + 4)
-  if (hue < 0) hue += 360
-  return hueColor(hue + degrees, max <= 0 ? 0 : delta / max, max)
 }
 
 /** RGB (0..1) → HSL with hue in degrees, saturation and lightness 0..1. */
@@ -197,7 +182,6 @@ export function applyPhotographicAdjustments(
   const whites = (params.whites ?? 0) / 100
   const blacks = (params.blacks ?? 0) / 100
   const curve = params.curve
-  const hue = params.hue ?? 0
   const vibrance = (params.vibrance ?? 0) / 100
   const colorize = (params.colorizeAmount ?? 0) / 100
   const colorizeHue = params.colorizeHue ?? 0
@@ -294,8 +278,6 @@ export function applyPhotographicAdjustments(
       g = curveLookup(g, curveLuts.green)
       b = curveLookup(b, curveLuts.blue)
     }
-
-    if (hue !== 0) [r, g, b] = rotateHue(r, g, b, hue)
 
     if (vibrance !== 0) {
       luminance = r * 0.2126 + g * 0.7152 + b * 0.0722

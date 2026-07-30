@@ -66,6 +66,30 @@ test('a disabled op is never stale — it contributes nothing to compare', () =>
   assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
 })
 
+test('a disabled op has a distinct replay identity from its input', () => {
+  const d = doc([adjust('a'), { ...adjust('b'), enabled: false }, adjust('c')])
+  const { inputs } = stackHashes(d)
+  assert.notEqual(
+    inputs[2],
+    inputs[1],
+    'an identity step must not alias two stack positions in the compositor cache',
+  )
+})
+
+test('an all-disabled stack can never use the immutable base as its head cache key', () => {
+  const d = doc([
+    { ...adjust('a'), enabled: false },
+    { ...adjust('b'), enabled: false },
+    { ...adjust('c'), enabled: false },
+  ])
+  const { head } = stackHashes(d)
+  assert.notEqual(
+    head,
+    d.base.file_hash,
+    'an edited projection must never be publishable under the base file hash',
+  )
+})
+
 test('a staged op with no pick has nothing to be stale against', () => {
   const d = doc([adjust('d'), patch('a', null)])
   assert.equal(deriveStackState(d).ops[1].staleness, 'clean')

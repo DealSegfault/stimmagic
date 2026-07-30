@@ -1815,11 +1815,10 @@ class SaveEditResponse(BaseModel):
 async def save_edited_image(
     file: UploadFile,
     source_media_id: int = Form(...),
-    asset_id: Optional[int] = Form(None),
-    editor_project: Optional[str] = Form(None),
+    asset_id: int = Form(...),
     save_as_new: bool = Form(False),
     base_revision_id: Optional[int] = Form(None),
-    working_document_id: Optional[int] = Form(None),
+    working_document_id: int = Form(...),
     stack_summary: Optional[str] = Form(None),
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -1832,13 +1831,10 @@ async def save_edited_image(
     3. Records lineage with task_type="image-to-image"
     4. Returns the new media item ID and file hash
 
-    Two editors share this route. The snapshot editor posts ``editor_project``
-    and gets a per-generation sidecar. The op-stack editor posts
-    ``working_document_id`` (its own document, already persisted as a directory)
-    plus ``stack_summary`` — the ops that were enabled at save time — and gets
-    that document's base advanced to the committed Revision. The stack document
-    is never rewritten here: it is the recipe, and it keeps applying from its own
-    base.
+    ``working_document_id`` identifies the stack document, already persisted as
+    a directory. ``stack_summary`` records the ops that were enabled at save
+    time. Saving advances the Asset head but not the working document's base:
+    the stack is a recipe over the Revision it was authored against.
     """
     from upload_service import UploadService, UploadError
     from utils.lineage import record_lineage, propagate_tool_lineage
@@ -1852,13 +1848,6 @@ async def save_edited_image(
     if not source_item:
         raise HTTPException(status_code=404, detail=f"Source asset {source_media_id} not found")
 
-    parsed_project = None
-    if editor_project:
-        try:
-            parsed_project = json.loads(editor_project)
-        except (json.JSONDecodeError, TypeError) as exc:
-            raise HTTPException(status_code=400, detail="Invalid editor project JSON") from exc
-
     parsed_stack_summary = None
     if stack_summary:
         try:
@@ -1866,17 +1855,30 @@ async def save_edited_image(
         except (json.JSONDecodeError, TypeError) as exc:
             raise HTTPException(status_code=400, detail="Invalid stack summary JSON") from exc
 
-    stack_document = None
-    if working_document_id is not None:
-        import image_stack_service as stack_service
-        from database import WorkingDocument
-        stack_document = await session.get(WorkingDocument, working_document_id)
-        if (
-            stack_document is None
-            or stack_document.deleted_at is not None
-            or stack_document.editor_type != stack_service.EDITOR_TYPE
-        ):
-            raise HTTPException(status_code=404, detail="Stack document not found")
+    import image_stack_service as stack_service
+    from database import WorkingDocument
+    stack_document = await session.get(WorkingDocument, working_document_id)
+    if (
+        stack_document is None
+        or stack_document.deleted_at is not None
+        or stack_document.editor_type != stack_service.EDITOR_TYPE
+    ):
+        raise HTTPException(status_code=404, detail="Stack document not found")
+    source_asset = await session.get(Asset, asset_id)
+    if source_asset is None:
+        raise HTTPException(status_code=404, detail="Target Asset not found")
+    if source_asset.state != "active":
+        raise HTTPException(status_code=400, detail="Source Asset is unavailable")
+    if stack_document.asset_id != source_asset.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Stack document does not belong to the target Asset",
+        )
+    source_revision = await session.get(
+        AssetRevision, source_asset.current_revision_id
+    )
+    if source_revision is None:
+        raise HTTPException(status_code=400, detail="Source Asset has no current Revision")
 
     # Read file content
     try:
@@ -1908,36 +1910,7 @@ async def save_edited_image(
         if not db_media_item:
             raise RuntimeError(f"Media item {media_item.id} not found after upload")
 
-        from database import Asset, AssetRevision, AssetSnapshot, MediaOwner
-        source_asset = await session.get(Asset, asset_id) if asset_id is not None else None
-        source_revision = None
-        if source_asset is not None:
-            source_revision = await session.get(
-                AssetRevision, source_asset.current_revision_id
-            )
-        else:
-            source_revision = await session.scalar(
-                select(AssetRevision).where(
-                    AssetRevision.primary_media_id == source_media_id,
-                    AssetRevision.deleted_at.is_(None),
-                )
-            )
-        if asset_id is not None and source_asset is None:
-            raise HTTPException(status_code=404, detail="Target Asset not found")
-        if source_revision is None:
-            from asset_service import create_asset_from_media
-            source_asset = await create_asset_from_media(
-                session,
-                media_id=source_media_id,
-                origin_type="editor_legacy_source",
-            )
-            source_revision = await session.get(
-                AssetRevision, source_asset.current_revision_id
-            )
-        elif source_asset is None:
-            source_asset = await session.get(Asset, source_revision.asset_id)
-        if source_asset is None or source_asset.state != "active":
-            raise HTTPException(status_code=400, detail="Source Asset is unavailable")
+        from database import AssetSnapshot, MediaOwner
 
         # Entering the editor is a use of the Asset. The frontend clears this
         # when the editor opens; repeat it transactionally on save so every
@@ -2014,7 +1987,7 @@ async def save_edited_image(
             )
             target_asset = source_asset
 
-        if stack_document is not None and not save_as_new:
+        if not save_as_new:
             # The stack keeps its own document AND its base.
             #
             # Save emits a rasterized Revision; it does not re-parent the
@@ -2025,30 +1998,13 @@ async def save_edited_image(
             # longer removed anything, because its effect was baked into what
             # the stack was now sitting on.
             document = stack_document
-        elif stack_document is not None:
+        else:
             # Save As New forks the working document with the asset.
             document = await create_working_document(
                 session,
                 asset_id=target_asset.id,
                 editor_type=stack_document.editor_type,
                 base_revision_id=committed_revision.id,
-            )
-        else:
-            document = await create_working_document(
-                session,
-                asset_id=target_asset.id,
-                editor_type="image",
-                base_revision_id=committed_revision.id,
-                branch_key=f"revision-{parent_revision.id}",
-            )
-        if parsed_project is not None:
-            from core.profile_context import get_current_profile
-            from editor_service import save_working_document_state
-            await save_working_document_state(
-                session,
-                document=document,
-                profile_id=get_current_profile(),
-                project=parsed_project,
             )
         from core.profile_context import get_current_profile
         existing_source_snapshot = await session.scalar(
@@ -2089,13 +2045,10 @@ async def save_edited_image(
             source_revision_id=parent_revision.id,
             role="editor_source",
         )
-        # The op-stack editor keeps its base: its document is a recipe over the
-        # revision it was built against, and re-parenting it to its own output
-        # would double every edit. The legacy flat editor has no stack to
-        # re-apply, so its document does follow the commit.
-        if stack_document is None or save_as_new:
+        # A fork starts from its newly committed Revision. The original stack
+        # keeps the base its recipe was authored against.
+        if save_as_new:
             document.base_revision_id = committed_revision.id
-        db_media_item.has_editor_sidecar = False
 
         provisional_owners = list(await session.scalars(
             select(MediaOwner).where(
@@ -2139,101 +2092,6 @@ async def save_edited_image(
         asset_id=target_asset.id,
         revision_id=committed_revision.id,
     )
-
-
-@router.get("/api/media/{media_id}/editor-project")
-async def get_editor_project(
-    media_id: int,
-    session: AsyncSession = Depends(get_db_session)
-):
-    """
-    Get the editor project state for a media item from its sidecar file.
-
-    Returns the project content from the .stimmaedit.json sidecar file.
-    Returns 404 if the media item doesn't exist or has no sidecar file.
-    """
-    import json as json_module
-    import os
-
-    # Get the media item
-    result = await session.execute(
-        select(MediaItem).where(
-            MediaItem.id == media_id,
-            MediaItem.deleted_at.is_(None),
-            MediaItem.ephemeral_run_id.is_(None),
-        )
-    )
-    item = result.scalar_one_or_none()
-
-    if not item:
-        raise HTTPException(status_code=404, detail="Asset not found")
-
-    from database import AssetRevision, AssetSnapshot, WorkingDocument
-    revision = await session.scalar(
-        select(AssetRevision).where(
-            AssetRevision.primary_media_id == media_id,
-            AssetRevision.deleted_at.is_(None),
-        )
-    )
-    if revision is not None:
-        document = await session.scalar(
-            select(WorkingDocument)
-            .where(
-                WorkingDocument.asset_id == revision.asset_id,
-                WorkingDocument.editor_type == "image",
-                WorkingDocument.deleted_at.is_(None),
-            )
-            .order_by(WorkingDocument.updated_at.desc(), WorkingDocument.id.desc())
-        )
-        if document is not None and document.state_locator:
-            from editor_service import load_working_document_state
-            try:
-                project = await load_working_document_state(document)
-            except (OSError, json_module.JSONDecodeError) as exc:
-                raise HTTPException(
-                    status_code=500, detail="Editor working document is unavailable"
-                ) from exc
-            source_snapshot = await session.scalar(
-                select(AssetSnapshot).where(
-                    AssetSnapshot.owner_kind == "working_document",
-                    AssetSnapshot.owner_id == str(document.id),
-                    AssetSnapshot.role == "source",
-                    AssetSnapshot.deleted_at.is_(None),
-                )
-            )
-            return {
-                "version": 2,
-                "asset_id": revision.asset_id,
-                "revision_id": revision.id,
-                "working_document_id": document.id,
-                "source_media_id": source_snapshot.media_id if source_snapshot else None,
-                "project": project,
-            }
-
-    if not item.has_editor_sidecar:
-        raise HTTPException(status_code=404, detail="No editor project found for this asset")
-
-    # Read the sidecar file
-    sidecar_path = item.file_path + '.stimmaedit.json'
-
-    if not os.path.exists(sidecar_path):
-        # Sidecar flag is set but file doesn't exist - clear the flag
-        item.has_editor_sidecar = False
-        await session.commit()
-        raise HTTPException(status_code=404, detail="Editor sidecar file not found")
-
-    try:
-        with open(sidecar_path, 'r', encoding='utf-8') as f:
-            sidecar_data = json_module.load(f)
-
-        return {
-            "version": sidecar_data.get("version", 1),
-            "source_media_id": sidecar_data.get("source_media_id"),  # Original image to load for re-editing
-            "project": sidecar_data.get("project")
-        }
-    except Exception as e:
-        log.error(f"Failed to read editor sidecar {sidecar_path}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to read editor project")
 
 
 # ============================================================================

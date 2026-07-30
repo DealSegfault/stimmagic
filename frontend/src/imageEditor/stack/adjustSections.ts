@@ -133,8 +133,6 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'shadows', label: 'Shadows', min: -100, max: 100, step: 1, default: 0 },
       { key: 'whites', label: 'Whites', min: -100, max: 100, step: 1, default: 0 },
       { key: 'blacks', label: 'Blacks', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'gamma', label: 'Gamma', min: 0.1, max: 3, step: 0.05, default: 1 },
       { kind: 'curve', key: 'curve', label: 'Curve', default: DEFAULT_TONE_CURVE },
     ],
   },
@@ -146,12 +144,8 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
     controls: [
       { key: 'temperature', label: 'Temperature', min: -100, max: 100, step: 1, default: 0 },
       { key: 'tint', label: 'Tint', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'hue', label: 'Hue', min: -180, max: 180, step: 1, default: 0 },
-      { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
       { key: 'vibrance', label: 'Vibrance', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'colorizeHue', label: 'Colorize hue', min: 0, max: 360, step: 1, default: 0 },
-      { key: 'colorizeAmount', label: 'Colorize', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'defringe', label: 'Defringe', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
     ],
   },
   {
@@ -164,6 +158,7 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'clarity', label: 'Clarity', min: -100, max: 100, step: 1, default: 0 },
       { key: 'dehaze', label: 'Dehaze', min: -100, max: 100, step: 1, default: 0 },
       { key: 'moire', label: 'Moiré', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'defringe', label: 'Defringe', min: 0, max: 100, step: 1, default: 0 },
       { key: 'sharpen', label: 'Sharpening', min: 0, max: 150, step: 1, default: 0 },
       { key: 'sharpenRadius', label: 'Sharpen radius', min: 0.5, max: 3, step: 0.1, default: 1 },
       { key: 'sharpenDetail', label: 'Sharpen detail', min: 0, max: 100, step: 1, default: 0 },
@@ -174,10 +169,6 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'colorNoiseReduction', label: 'Color noise', min: 0, max: 100, step: 1, default: 0 },
       { key: 'colorNoiseReductionDetail', label: 'Color detail', min: 0, max: 100, step: 1, default: 0 },
       { key: 'colorNoiseReductionSmoothness', label: 'Color smoothness', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'noise', label: 'Grain', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'grainSize', label: 'Grain size', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'grainRoughness', label: 'Grain roughness', min: 0, max: 100, step: 1, default: 50 },
-      { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
     ],
   },
   {
@@ -233,9 +224,47 @@ export function photoAdjustmentGroup(id: string): PhotoAdjustmentGroup | undefin
   return PHOTO_ADJUSTMENT_GROUPS.find(group => group.id === id || group.section === id)
 }
 
-export const PHOTO_ADJUSTMENT_CONTROLS = PHOTO_ADJUSTMENT_GROUPS.flatMap(
-  group => group.controls,
-)
+/** Colorize's two halves; the strip's Colorize look shows Hue under Amount. */
+const COLORIZE_HUE_CONTROL: AdjustSliderControl =
+  { key: 'colorizeHue', label: 'Hue', min: 0, max: 360, step: 1, default: 0 }
+const COLORIZE_AMOUNT_CONTROL: AdjustSliderControl =
+  { key: 'colorizeAmount', label: 'Colorize', min: 0, max: 100, step: 1, default: 0 }
+
+/** Grain's supporting dials, shown on the strip's Grain look. */
+const GRAIN_SIZE_CONTROL: AdjustSliderControl =
+  { key: 'grainSize', label: 'Size', min: 0, max: 100, step: 1, default: 0 }
+const GRAIN_ROUGHNESS_CONTROL: AdjustSliderControl =
+  { key: 'grainRoughness', label: 'Roughness', min: 0, max: 100, step: 1, default: 50 }
+
+/**
+ * The strip looks' dials that are not group sliders: Colorize renders through
+ * the photographic pipeline and Grain/Blur preview through the GPU drag path,
+ * so all of them must be part of the projected render schema.
+ */
+const STRIP_LOOK_CONTROLS: AdjustSliderControl[] = [
+  COLORIZE_HUE_CONTROL,
+  COLORIZE_AMOUNT_CONTROL,
+  { key: 'noise', label: 'Grain', min: 0, max: 100, step: 1, default: 0 },
+  GRAIN_SIZE_CONTROL,
+  GRAIN_ROUGHNESS_CONTROL,
+  { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
+]
+
+/**
+ * Brightness and gamma exist ONLY on migrated snapshot-editor blob steps (the
+ * ADJUST_SECTIONS surface); no group offers them. They stay in the projection
+ * because blob steps render and GPU-preview through it like everything else.
+ */
+const LEGACY_BLOB_CONTROLS: AdjustSliderControl[] = [
+  { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
+  { key: 'gamma', label: 'Gamma', min: 0.1, max: 3, step: 0.05, default: 1 },
+]
+
+export const PHOTO_ADJUSTMENT_CONTROLS = [
+  ...PHOTO_ADJUSTMENT_GROUPS.flatMap(group => group.controls),
+  ...STRIP_LOOK_CONTROLS,
+  ...LEGACY_BLOB_CONTROLS,
+]
 
 export const PHOTO_ADJUSTMENT_KEYS = PHOTO_ADJUSTMENT_CONTROLS.map(
   control => control.key,
@@ -327,9 +356,17 @@ export const ADJUST_SECTIONS: AdjustSection[] = [
   },
 ]
 
-const CONTROLS_BY_KEY = new Map(
-  ADJUST_SECTIONS.flatMap(section => section.controls.map(control => [control.key, control]))
-)
+/** Strip dials first, so a legacy section's own definition wins on clash. */
+const CONTROLS_BY_KEY = new Map([
+  ...STRIP_LOOK_CONTROLS.map(
+    control => [control.key, control] as [string, AdjustSliderControl]
+  ),
+  ...ADJUST_SECTIONS.flatMap(
+    section => section.controls.map(
+      control => [control.key, control] as [string, AdjustSliderControl]
+    )
+  ),
+])
 
 export function adjustControl(key: string): AdjustSliderControl | undefined {
   return CONTROLS_BY_KEY.get(key)
@@ -367,11 +404,16 @@ export function levelEditById(id: string): LevelEdit | undefined {
  * and lands as a normal Light step seeded with them — inspectable, adjustable
  * and deletable like anything else, not a fire-and-forget action.
  */
-export const AUTO_EDITS = [
-  { id: 'levels', label: 'Auto levels' },
-  { id: 'contrast', label: 'Auto contrast' },
-  { id: 'balance', label: 'Auto balance' },
-] as const
+export const AUTO_EDITS: Array<{
+  id: 'levels' | 'contrast' | 'balance'
+  label: string
+  icon: IconName
+}> = [
+  // One glyph for all three: the icon says "automatic", the label says what.
+  { id: 'levels', label: 'Auto levels', icon: 'wand' },
+  { id: 'contrast', label: 'Auto contrast', icon: 'wand' },
+  { id: 'balance', label: 'Auto balance', icon: 'wand' },
+]
 
 /**
  * The strip: the snapshot editor's filter presets by category, plus the
@@ -387,6 +429,10 @@ export interface StripEntry {
   label: string
   /** Present on pixel-look entries: the AdjustParams key and the value a click adds. */
   effect?: { key: string; add: number }
+  /** Extra dials the look's inspector shows under Amount (Colorize hue, Grain size…). */
+  supporting?: AdjustSliderControl[]
+  /** Extra params set at creation, beyond the effect key itself. */
+  seed?: Record<string, number>
 }
 
 export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: StripEntry[] }> = [
@@ -398,6 +444,14 @@ export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: Stri
       { id: 'dramatic', label: 'Dramatic' }, { id: 'cold', label: 'Cold' },
       { id: 'warm', label: 'Warm' }, { id: 'pastel', label: 'Pastel' },
       { id: 'fade', label: 'Fade' }, { id: 'vintage', label: 'Vintage' },
+      {
+        id: 'colorize', label: 'Colorize',
+        effect: { key: 'colorizeAmount', add: 50 },
+        supporting: [COLORIZE_HUE_CONTROL],
+        // Seeded sepia-ish rather than the schema-default red: the tile and the
+        // first click should read as "tint the photo", not "paint it red".
+        seed: { colorizeHue: 30 },
+      },
     ],
   },
   {
@@ -434,7 +488,12 @@ export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: Stri
     filters: [
       { id: 'glow', label: 'Glow', effect: { key: 'glow', add: 50 } },
       { id: 'vignette', label: 'Vignette', effect: { key: 'vignette', add: 50 } },
-      { id: 'grain', label: 'Grain', effect: { key: 'noise', add: 40 } },
+      {
+        id: 'grain', label: 'Grain',
+        effect: { key: 'noise', add: 40 },
+        supporting: [GRAIN_SIZE_CONTROL, GRAIN_ROUGHNESS_CONTROL],
+      },
+      { id: 'blur', label: 'Blur', effect: { key: 'blur', add: 10 } },
     ],
   },
 ]
@@ -458,6 +517,23 @@ export function effectLookOf(params: Record<string, any>): StripEntry | undefine
   return FILTER_STRIP.find(
     entry => entry.effect && params[entry.effect.key] !== undefined
   )
+}
+
+/**
+ * The strip look this step IS, if it is one: its effect key is present and it
+ * carries nothing beyond that look's own surface (Amount + supporting dials).
+ * A migrated blob that happens to include the key carries other params too and
+ * must never match — clicking the strip would delete a whole legacy adjustment.
+ */
+export function effectLookStepOf(params: Record<string, any>): StripEntry | undefined {
+  const look = effectLookOf(params)
+  if (!look?.effect) return undefined
+  const allowed = new Set([
+    look.effect.key,
+    ...(look.supporting ?? []).map(control => control.key),
+    ...Object.keys(look.seed ?? {}),
+  ])
+  return Object.keys(params).every(key => allowed.has(key)) ? look : undefined
 }
 
 /** Groups this op has actually touched — what the row subtitle names. */

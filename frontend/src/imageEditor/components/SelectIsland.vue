@@ -1,16 +1,19 @@
 <script setup lang="ts">
 /**
  * The selection island: a floating pill at the bottom of the canvas, the same
- * shape as the browser's selection bar. All of selection lives here — the
- * tools, the combine modes, one fixed slider slot for the armed tool's primary
- * parameter, invert/deselect — floating OVER the matte, so nothing about
- * arming a tool or opening a family ever pushes the canvas or the toolbars
- * around.
+ * shape as the browser's selection bar, floating OVER the matte so nothing
+ * about arming a tool ever pushes the canvas or the toolbars around.
  *
- * Every control is ALWAYS present; what varies is only whether it is enabled.
- * A bar that reshapes as tools arm and disarm makes the eye re-find every
- * control on every change — dimming is calm, appearing is jumpy. Settings
- * only: the island never carries one-off actions.
+ * The island carries IDENTITY only — the pointer, the six tool slots, the
+ * combine modes, invert/deselect — and never a parameter. Arming a tool
+ * raises a panel above the island with that tool's FULL parameter set (the
+ * same gesture the Object tool has always used for its prompt), so every
+ * setting has exactly one home and the bar itself never reflows. Idle shows
+ * no panel at all.
+ *
+ * Kin tools share a slot with a hover flyout (the two marquees, the two
+ * lassos, the two gradients); the slot shows whichever member was used last,
+ * so the common case stays one click.
  *
  * Selection is workspace state, not a mode: clicking a tool arms it (the
  * pointer goes to the selection overlay, the open family is suspended, not
@@ -20,8 +23,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolIcon from './ToolIcon.vue'
-import ToolbarPopover from './ToolbarPopover.vue'
-import { SELECT_TOOLS, SELECTION_MODES } from '../stack/toolFamilies'
+import { SELECT_TOOLS, SELECT_TOOL_GROUPS, SELECTION_MODES } from '../stack/toolFamilies'
 import type { SelectToolId, SelectionMode } from '../stack/toolFamilies'
 import {
   FEATHER_SLIDER_MAX,
@@ -63,18 +65,83 @@ const emit = defineEmits<{
   aiSelect: [string]
 }>()
 
+const toolById = Object.fromEntries(SELECT_TOOLS.map(tool => [tool.id, tool]))
+const armedTool = computed(() => (props.armed ? toolById[props.armed] : null))
+
+/** Each slot shows its last-used member; arming any member claims the slot. */
+const groupCurrent = ref<Record<string, SelectToolId>>(
+  Object.fromEntries(SELECT_TOOL_GROUPS.map(group => [group.id, group.members[0]]))
+)
+watch(() => props.armed, armed => {
+  if (!armed) return
+  const group = SELECT_TOOL_GROUPS.find(g => g.members.includes(armed))
+  if (group) groupCurrent.value[group.id] = armed
+}, { immediate: true })
+
 /** Combine describes how the next gesture meets the visible selection, so its
  * state remains visible/editable after a one-shot workflow disarms the tool. */
 const combineEnabled = computed(() => props.armed !== null || props.hasSelection)
-const toolSettingsEnabled = computed(() => props.armed !== null)
 
 /**
- * The Object tool's popup: arming the tool raises a small panel above the
- * island carrying its second gesture — select by NAME — beside the caption
- * for its first (click the thing). It lives with the tool rather than on the
- * island row because the field is meaningless while a geometric tool owns the
- * pointer; disarming folds it away. The typed prompt survives a run —
- * re-running and refining are the common follow-ups.
+ * The armed tool's parameters, in bar order. Feather is selection-edge state
+ * shared by every geometric tool; the rest belong to one tool each. A ramp's
+ * ease and an ellipse's falloff are the same idea and deliberately not the
+ * same number: 100% softness on a ramp has no edge left, while 100% feather
+ * on an ellipse still ends somewhere.
+ */
+interface PanelSlider {
+  label: string
+  min: number
+  max: number
+  unit: string
+  value: number
+  readout: number
+  set: (value: number) => void
+}
+
+const featherSlider = (): PanelSlider => ({
+  label: 'Feather',
+  min: 0, max: FEATHER_SLIDER_MAX, unit: 'px',
+  value: featherSliderFromPx(props.featherPx),
+  readout: props.featherPx,
+  set: value => emit('set', { featherPx: featherPxFromSlider(value) }),
+})
+
+const plainSlider = (
+  label: string, key: string, value: number, min: number, max: number, unit: string
+): PanelSlider => ({
+  label, min, max, unit, value, readout: value,
+  set: v => emit('set', { [key]: v }),
+})
+
+const panelSliders = computed<PanelSlider[]>(() => {
+  switch (props.armed) {
+    case 'wand': return [
+      plainSlider('Threshold', 'tolerance', props.tolerance, 1, 100, ''),
+      plainSlider('Spread', 'spread', props.spread, 0, 100, '%'),
+      plainSlider('Grow', 'growPx', props.growPx, -40, 40, 'px'),
+      featherSlider(),
+    ]
+    case 'brush': return [
+      plainSlider('Brush', 'selectBrushSize', props.brushSize, 8, 300, 'px'),
+      featherSlider(),
+    ]
+    case 'linear': return [
+      plainSlider('Softness', 'gradientSoftness', props.gradientSoftness, 0, 100, ''),
+    ]
+    case 'radial': return [
+      plainSlider('Feather', 'gradientFeather', props.gradientFeather, 2, 100, ''),
+    ]
+    case 'rect': case 'ellipse': case 'lasso': case 'magnetic': return [featherSlider()]
+    default: return []
+  }
+})
+
+/**
+ * The Object tool's panel content: both of the tool's gestures are stated
+ * there — the field for select-by-name, the placeholder caption for
+ * click-to-select. The typed prompt survives a run — re-running and refining
+ * are the common follow-ups.
  */
 const aiPrompt = ref('')
 const shownAiError = ref<string | null>(null)
@@ -91,71 +158,22 @@ function submitAiPrompt() {
   emit('aiSelect', prompt)
 }
 
-/**
- * ONE slider slot, fixed geometry; each tool brings its primary parameter.
- * Only the label, range and binding swap when a tool arms — a readout
- * changing, not a layout change, so no click target ever moves. The wand's
- * secondary refinements live in the fixed options slot beside the slider.
- */
-const SLIDER_SLOTS = {
-  feather: { label: 'Feather', key: 'featherPx', min: 0, max: FEATHER_SLIDER_MAX, unit: 'px' },
-  tolerance: { label: 'Threshold', key: 'tolerance', min: 1, max: 100, unit: '' },
-  brush: { label: 'Brush', key: 'selectBrushSize', min: 8, max: 300, unit: 'px' },
-  // A ramp's ease and an ellipse's falloff are the same idea and deliberately
-  // not the same number: 100% softness on a ramp has no edge left, while 100%
-  // feather on an ellipse still ends somewhere.
-  softness: { label: 'Softness', key: 'gradientSoftness', min: 0, max: 100, unit: '' },
-  falloff: { label: 'Feather', key: 'gradientFeather', min: 2, max: 100, unit: '' },
-} as const
-
-const slot = computed(() => {
-  if (props.armed === 'wand') return SLIDER_SLOTS.tolerance
-  if (props.armed === 'brush') return SLIDER_SLOTS.brush
-  if (props.armed === 'linear') return SLIDER_SLOTS.softness
-  if (props.armed === 'radial') return SLIDER_SLOTS.falloff
-  return SLIDER_SLOTS.feather
-})
-
-const slotValue = computed(() => {
-  if (props.armed === 'wand') return props.tolerance
-  if (props.armed === 'brush') return props.brushSize
-  if (props.armed === 'linear') return props.gradientSoftness
-  if (props.armed === 'radial') return props.gradientFeather
-  return featherSliderFromPx(props.featherPx)
-})
-
-const slotReadout = computed(() =>
-  slot.value.key === 'featherPx' ? props.featherPx : slotValue.value
-)
-
-function onSliderInput(value: number) {
-  if (slot.value.key === 'featherPx') {
-    emit('set', { featherPx: featherPxFromSlider(value) })
-    return
-  }
-  emit('set', { [slot.value.key]: value })
-}
-
 function buttonClass(active: boolean, enabled = true) {
   if (!enabled) return 'text-content-tertiary/50 cursor-default'
   return active
     ? 'bg-selection/15 text-content'
     : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'
 }
-
-function sliderClass(enabled: boolean) {
-  return enabled ? '' : 'opacity-40 pointer-events-none'
-}
 </script>
 
 <template>
   <!-- The host positions this root (absolute over the matte); that same
-       positioning is what the tool panel's `absolute bottom-full` anchors to,
-       so the wrapper must NOT add a position class of its own. -->
+       positioning is what the raised panel's `absolute bottom-full` anchors
+       to, so the wrapper must NOT add a position class of its own. -->
   <div class="w-max">
-  <!-- The Object tool's panel, raised over the island while the tool is
-       armed. Both of the tool's gestures are stated here: the field for
-       select-by-name, the caption for click-to-select. -->
+  <!-- The armed tool's panel, raised over the island. One home for every
+       parameter: the Object tool brings its prompt, everything else brings
+       its sliders. Disarming folds it away. -->
   <Transition
     enter-active-class="transition duration-150 ease-out"
     enter-from-class="opacity-0 translate-y-1"
@@ -163,42 +181,78 @@ function sliderClass(enabled: boolean) {
     leave-to-class="opacity-0 translate-y-1"
   >
     <div
-      v-if="armed === 'object'"
+      v-if="armed"
       class="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 w-max
-             px-2.5 py-2 space-y-1.5
+             px-3 py-2
              bg-surface border border-edge-subtle rounded-lg shadow-lg"
     >
-      <div class="flex items-center gap-1.5">
-        <input
-          ref="aiInput"
-          v-model="aiPrompt"
-          type="text"
-          placeholder="Select by name, or click the object…"
-          aria-label="Select by name"
-          class="w-64 px-2.5 py-1.5 text-xs rounded-md bg-overlay-subtle/60 text-content
-                 placeholder:text-content-tertiary border focus:outline-none"
-          :class="[
-            shownAiError ? 'border-red-400/70' : 'border-edge-subtle focus:border-accent/60',
-            aiBusy ? 'animate-pulse' : '',
-          ]"
-          :disabled="aiBusy"
-          @input="shownAiError = null"
-          @keydown.enter.prevent="submitAiPrompt"
-        />
-        <button
-          type="button"
-          class="px-2.5 py-1.5 text-xs rounded-md whitespace-nowrap transition-colors"
-          :class="aiPrompt.trim() && !aiBusy
-            ? 'bg-accent/15 text-accent hover:bg-accent/25'
-            : 'text-content-tertiary/50 cursor-default'"
-          :disabled="!aiPrompt.trim() || aiBusy"
-          @click="submitAiPrompt"
+      <template v-if="armed === 'object'">
+        <div class="flex items-center gap-1.5">
+          <input
+            ref="aiInput"
+            v-model="aiPrompt"
+            type="text"
+            placeholder="Select by name, or click the object…"
+            aria-label="Select by name"
+            class="w-64 px-2.5 py-1.5 text-xs rounded-md bg-overlay-subtle/60 text-content
+                   placeholder:text-content-tertiary border focus:outline-none"
+            :class="[
+              shownAiError ? 'border-red-400/70' : 'border-edge-subtle focus:border-accent/60',
+              aiBusy ? 'animate-pulse' : '',
+            ]"
+            :disabled="aiBusy"
+            @input="shownAiError = null"
+            @keydown.enter.prevent="submitAiPrompt"
+          />
+          <button
+            type="button"
+            class="px-2.5 py-1.5 text-xs rounded-md whitespace-nowrap transition-colors"
+            :class="aiPrompt.trim() && !aiBusy
+              ? 'bg-accent/15 text-accent hover:bg-accent/25'
+              : 'text-content-tertiary/50 cursor-default'"
+            :disabled="!aiPrompt.trim() || aiBusy"
+            @click="submitAiPrompt"
+          >
+            {{ aiBusy ? 'Selecting…' : 'Select' }}
+          </button>
+        </div>
+        <!-- Failures only; the happy path needs no second line. -->
+        <p v-if="shownAiError" class="mt-1.5 text-xs text-red-400">{{ shownAiError }}</p>
+      </template>
+
+      <div v-else class="flex items-center gap-3">
+        <span class="flex items-center gap-1.5 text-xs font-medium text-content-secondary">
+          <ToolIcon v-if="armedTool" :name="armedTool.icon" />
+          {{ armedTool?.label }}
+        </span>
+        <span class="w-px h-5 bg-edge-subtle" />
+        <label
+          v-for="slider in panelSliders"
+          :key="slider.label"
+          class="flex items-center gap-2 text-xs text-content-tertiary"
         >
-          {{ aiBusy ? 'Selecting…' : 'Select' }}
-        </button>
+          <span>{{ slider.label }}</span>
+          <input
+            type="range" class="w-24"
+            :min="slider.min" :max="slider.max"
+            :value="slider.value"
+            @input="slider.set(Number(($event.target as HTMLInputElement).value))"
+          />
+          <span class="tabular-nums w-10 text-content-secondary">{{ slider.readout }}{{ slider.unit }}</span>
+        </label>
+        <label
+          v-if="armed === 'wand'"
+          class="flex items-center gap-1.5 text-xs text-content-secondary cursor-pointer"
+        >
+          <input
+            type="checkbox"
+            class="accent-accent"
+            :checked="antialias"
+            @change="emit('set', { antialias: ($event.target as HTMLInputElement).checked })"
+          />
+          Anti-alias
+        </label>
       </div>
-      <!-- Failures only; the happy path needs no second line. -->
-      <p v-if="shownAiError" class="text-xs text-red-400">{{ shownAiError }}</p>
     </div>
   </Transition>
 
@@ -224,22 +278,64 @@ function sliderClass(enabled: boolean) {
     </Tooltip>
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 
-    <Tooltip
-      v-for="tool in SELECT_TOOLS"
-      :key="tool.id"
-      :text="tool.hint ?? `Select — ${tool.label}`"
+    <span
+      v-for="group in SELECT_TOOL_GROUPS"
+      :key="group.id"
+      class="relative group/fly"
     >
-      <button
-        type="button"
-        class="p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-        :class="buttonClass(armed === tool.id)"
-        :aria-label="`Select — ${tool.label}`"
-        :aria-pressed="armed === tool.id"
-        @click="emit('arm', tool.id)"
+      <Tooltip
+        v-if="group.members.length === 1"
+        :text="toolById[group.members[0]].hint ?? `Select — ${toolById[group.members[0]].label}`"
       >
-        <ToolIcon :name="tool.icon" />
-      </button>
-    </Tooltip>
+        <button
+          type="button"
+          class="p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :class="buttonClass(armed === group.members[0])"
+          :aria-label="`Select — ${toolById[group.members[0]].label}`"
+          :aria-pressed="armed === group.members[0]"
+          @click="emit('arm', group.members[0])"
+        >
+          <ToolIcon :name="toolById[group.members[0]].icon" />
+        </button>
+      </Tooltip>
+      <template v-else>
+        <!-- The slot arms its last-used member; the corner tick marks a group.
+             No tooltip here — the flyout itself names the members. -->
+        <button
+          type="button"
+          class="relative p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :class="buttonClass(armed === groupCurrent[group.id])"
+          :aria-label="`Select — ${toolById[groupCurrent[group.id]].label}`"
+          :aria-pressed="armed === groupCurrent[group.id]"
+          @click="emit('arm', groupCurrent[group.id])"
+        >
+          <ToolIcon :name="toolById[groupCurrent[group.id]].icon" />
+          <svg
+            viewBox="0 0 6 6" aria-hidden="true"
+            class="absolute right-[3px] bottom-[3px] w-1.5 h-1.5 text-content-tertiary pointer-events-none"
+          ><path d="M6 0v6H0z" fill="currentColor" /></svg>
+        </button>
+        <!-- pb-1 keeps the hover unbroken across the gap to the flyout. -->
+        <div
+          class="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 hidden group-hover/fly:block z-menu"
+        >
+          <div class="flex flex-col gap-0.5 p-1 bg-surface border border-edge-subtle rounded-lg shadow-lg">
+            <button
+              v-for="id in group.members"
+              :key="id"
+              type="button"
+              class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs whitespace-nowrap transition-colors"
+              :class="buttonClass(armed === id)"
+              :title="toolById[id].hint"
+              @click="emit('arm', id)"
+            >
+              <ToolIcon :name="toolById[id].icon" />
+              {{ toolById[id].label }}
+            </button>
+          </div>
+        </div>
+      </template>
+    </span>
 
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 
@@ -256,88 +352,6 @@ function sliderClass(enabled: boolean) {
         <ToolIcon :name="option.icon" />
       </button>
     </Tooltip>
-
-    <span class="w-px h-5 bg-edge-subtle mx-1" />
-
-    <label
-      class="flex items-center gap-2 text-xs text-content-tertiary"
-      :class="sliderClass(toolSettingsEnabled)"
-    >
-      <span class="w-14 text-right">{{ slot.label }}</span>
-      <input
-        type="range" class="w-24"
-        :min="slot.min" :max="slot.max"
-        :value="slotValue"
-        :disabled="!toolSettingsEnabled"
-        @input="onSliderInput(Number(($event.target as HTMLInputElement).value))"
-      />
-      <span class="tabular-nums w-10 text-content-secondary">{{ slotReadout }}{{ slot.unit }}</span>
-    </label>
-
-    <ToolbarPopover
-      label=""
-      aria-label="Wand settings"
-      :width="284"
-      :disabled="armed !== 'wand'"
-    >
-      <template #trigger>
-        <ToolIcon name="sliders" />
-      </template>
-      <div class="space-y-3">
-        <p class="text-xs font-semibold text-content-secondary">Wand refinement</p>
-
-        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
-          <span class="text-content-tertiary">Spread</span>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            :value="spread"
-            @input="emit('set', { spread: Number(($event.target as HTMLInputElement).value) })"
-          />
-          <span class="font-mono tabular-nums text-right text-content-secondary">{{ spread }}%</span>
-        </label>
-
-        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
-          <span class="text-content-tertiary">Grow</span>
-          <input
-            type="range"
-            min="-40"
-            max="40"
-            :value="growPx"
-            @input="emit('set', { growPx: Number(($event.target as HTMLInputElement).value) })"
-          />
-          <span class="font-mono tabular-nums text-right text-content-secondary">{{ growPx }}px</span>
-        </label>
-
-        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
-          <span class="text-content-tertiary">Feather</span>
-          <input
-            type="range"
-            min="0"
-            :max="FEATHER_SLIDER_MAX"
-            :value="featherSliderFromPx(featherPx)"
-            @input="emit('set', {
-              featherPx: featherPxFromSlider(Number(($event.target as HTMLInputElement).value)),
-            })"
-          />
-          <span class="font-mono tabular-nums text-right text-content-secondary">{{ featherPx }}px</span>
-        </label>
-
-        <label class="flex items-center justify-between gap-3 text-xs text-content-secondary">
-          <span>
-            Anti-alias
-            <span class="block text-content-tertiary">Smooth hard mask edges</span>
-          </span>
-          <input
-            type="checkbox"
-            class="accent-accent"
-            :checked="antialias"
-            @change="emit('set', { antialias: ($event.target as HTMLInputElement).checked })"
-          />
-        </label>
-      </div>
-    </ToolbarPopover>
 
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 

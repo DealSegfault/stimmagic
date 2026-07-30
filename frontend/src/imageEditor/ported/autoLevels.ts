@@ -1,6 +1,5 @@
 /**
- * Copied from the histogram analysis in
- * packages/image-editor/src/plugins/finetune/FinetuneControls.vue.
+ * Ported from the retired editor's histogram analysis.
  *
  * Auto Levels, Auto Contrast and Auto Balance — the three buttons the old
  * Levels panel led with. They read a 256px thumbnail's histogram and propose
