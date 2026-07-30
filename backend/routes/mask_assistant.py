@@ -8,6 +8,7 @@ import base64
 import io
 from typing import List, Optional
 
+import numpy as np
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from PIL import Image
@@ -69,6 +70,98 @@ def _convert_grayscale_to_rgba(mask_data: bytes) -> bytes:
     output = io.BytesIO()
     rgba.save(output, format='PNG')
     return output.getvalue()
+
+
+# --- Editor selection endpoint ---
+#
+# /select serves the image editor's AI selection gestures (prompt-to-mask,
+# click-to-mask). It differs from /segment in that the image arrives as pixels
+# (the editor's composite exists only client-side), and masks return in the
+# selection-canvas convention: white-on-transparent RGBA, alpha = selected.
+#
+# Prompt mode (concept model): every instance of a named concept, above
+# confidence, one detection each. Point mode (tracker model): the object under
+# a click, returned at EVERY granularity the tracker offers (largest area
+# first) so the editor can default to the object and cycle finer on repeated
+# clicks without another request.
+
+class SelectRequest(BaseModel):
+    image_data_url: str  # PNG/JPEG data URL of the composite being selected over
+    prompt: Optional[str] = None  # text mode: select every instance of a concept
+    point: Optional[dict] = None  # click mode: {x, y} normalized 0-1; one object
+    confidence: float = 0.5
+    max_detections: int = 8
+
+
+class SelectDetection(BaseModel):
+    mask_data_url: str  # white-on-transparent RGBA PNG, alpha = selected
+    score: float
+    bbox: dict  # {x, y, width, height} in sent-image pixels
+
+
+class SelectResponse(BaseModel):
+    success: bool
+    detections: List[SelectDetection] = []
+    error: Optional[str] = None
+
+
+def _decode_data_url(data_url: str) -> bytes:
+    header, _, payload = data_url.partition(",")
+    if not payload or ";base64" not in header:
+        raise ValueError("Expected a base64 image data URL")
+    return base64.b64decode(payload)
+
+
+def _mask_png_to_selection_rgba(mask_png: bytes) -> str:
+    """SAM3 grayscale mask (white = object) -> white-on-transparent RGBA data URL."""
+    gray = np.asarray(Image.open(io.BytesIO(mask_png)).convert("L"))
+    rgba = np.zeros((*gray.shape, 4), dtype=np.uint8)
+    rgba[gray > 128] = (255, 255, 255, 255)
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@router.post("/select", response_model=SelectResponse)
+async def select_with_sam3(request: SelectRequest):
+    """Segment the posted image for the editor's AI selection gestures."""
+    try:
+        image_bytes = _decode_data_url(request.image_data_url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image data URL: {e}")
+
+    if request.point is not None:
+        from sam3_tracker_service import get_sam3_tracker_service
+        result = await get_sam3_tracker_service().point_masks(
+            image_bytes=image_bytes,
+            points=[(float(request.point.get("x", 0)), float(request.point.get("y", 0)), 1)],
+        )
+    elif request.prompt:
+        result = await get_sam3_service().segment(
+            image_bytes=image_bytes,
+            prompt=request.prompt,
+            confidence_threshold=request.confidence,
+            max_detections=request.max_detections,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Provide prompt or point")
+
+    if result.error:
+        return SelectResponse(success=False, error=result.error)
+
+    detections = [
+        SelectDetection(
+            mask_data_url=_mask_png_to_selection_rgba(d.mask_data),
+            score=d.score,
+            bbox=d.bbox.to_dict(),
+        )
+        for d in result.detections
+        if d.mask_data
+    ]
+    if not detections:
+        target = f"'{request.prompt}'" if request.prompt else "an object at that point"
+        return SelectResponse(success=False, error=f"No match for {target}")
+    return SelectResponse(success=True, detections=detections)
 
 
 @router.post("/segment", response_model=SegmentResponse)

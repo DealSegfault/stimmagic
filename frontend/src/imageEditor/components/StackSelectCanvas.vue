@@ -46,6 +46,8 @@ const props = withDefaults(defineProps<{
   brushSize?: number
   /** Visual chrome only; the selection model remains intact while hidden. */
   visible?: boolean
+  /** An objectPick is being segmented; the cursor says so. */
+  busy?: boolean
 }>(), {
   armed: null,
   combine: 'new',
@@ -58,7 +60,13 @@ const props = withDefaults(defineProps<{
   visible: true,
 })
 
-const emit = defineEmits<{ change: [HTMLCanvasElement | null] }>()
+const emit = defineEmits<{
+  change: [HTMLCanvasElement | null]
+  /** Object tool click, in source pixels; the host runs segmentation and
+   *  lands the result through applyMask. Modifiers override the combine
+   *  mode for the one gesture: shift adds, alt subtracts. */
+  objectPick: [{ x: number; y: number; shiftKey: boolean; altKey: boolean }]
+}>()
 
 const overlay = ref<HTMLCanvasElement | null>(null)
 const selection = props.model
@@ -102,6 +110,17 @@ function publish(applyFeather = true) {
 function onPointerDown(event: PointerEvent) {
   if (!props.source || !props.armed) return
   const point = pointFrom(event)
+
+  // Object select is a click, not a drag: hand the point to the host and let
+  // the async mask land through applyMask when segmentation returns.
+  if (props.armed === 'object') {
+    emit('objectPick', {
+      x: point.x, y: point.y,
+      shiftKey: event.shiftKey, altKey: event.altKey,
+    })
+    return
+  }
+
   drawing = true
   overlay.value?.setPointerCapture(event.pointerId)
 
@@ -325,6 +344,15 @@ function invert() {
   publish(false)
 }
 
+/**
+ * Land an externally produced mask (AI select) as this gesture's selection,
+ * through the same combine-and-publish path a drawn gesture takes.
+ */
+function applyMask(mask: CanvasImageSource, mode: SelectionMode) {
+  selection.applyMaskCanvas(mask, mode)
+  publish()
+}
+
 function resize() {
   const canvas = overlay.value
   if (!canvas || !props.source) return
@@ -339,6 +367,7 @@ function resize() {
 defineExpose({
   clear,
   invert,
+  applyMask,
   redraw: draw,
   selectionCanvas: () => (selection.hasSelection() ? selection.getSelectionMask() : null),
 })
@@ -370,7 +399,7 @@ onBeforeUnmount(stopAnts)
     <canvas
       ref="overlay"
       class="w-full h-full touch-none"
-      :class="armed && visible ? 'cursor-crosshair' : ''"
+      :class="armed && visible ? (busy ? 'cursor-progress' : 'cursor-crosshair') : ''"
       :style="{ width: displayWidth + 'px', height: displayHeight + 'px' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"

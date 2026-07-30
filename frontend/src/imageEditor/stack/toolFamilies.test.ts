@@ -17,7 +17,10 @@ test('Adjust keeps the stable Levels family id and shortcut', () => {
 test('Retouch starts with region repair tools while Paint keeps its working engines', () => {
   assert.deepEqual(
     familyById('retouch').subTools.map(tool => tool.id),
-    ['heal', 'clone', 'patch', 'remove', 'repaint', 'light', 'color', 'detail'],
+    [
+      'heal', 'clone', 'patch', 'remove', 'repaint',
+      'light', 'color', 'detail', 'mixer', 'point', 'grade',
+    ],
   )
   assert.equal(familyById('retouch').subTools.find(tool => tool.id === 'remove')?.icon, undefined)
   assert.equal(familyById('retouch').subTools.find(tool => tool.id === 'repaint')?.icon, undefined)

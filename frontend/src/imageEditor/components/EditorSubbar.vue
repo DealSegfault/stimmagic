@@ -73,7 +73,7 @@ const fillSubs = ['rectangle', 'ellipse']
 // Sharpie strokes take their glow from the brush, not the shape style, so the
 // effect menu would lie on Draw.
 const effectSubs = ['arrow', 'rectangle', 'ellipse', 'line']
-const retouchAdjustmentSubs = ['light', 'color', 'detail']
+const retouchAdjustmentSubs = ['light', 'color', 'detail', 'mixer', 'point', 'grade']
 const retouchModelSubs = ['remove', 'repaint']
 
 /**
@@ -147,7 +147,7 @@ function chipClass(active: boolean, pending = false) {
             @click="emit('sub', option.id)"
           >
             <ToolIcon v-if="option.icon" :name="option.icon" />
-            <span v-else>{{ option.label }}</span>
+            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
           </button>
         </Tooltip>
         <span
@@ -389,6 +389,25 @@ function chipClass(active: boolean, pending = false) {
             </ToolbarPopover>
 
             <div class="flex-1" />
+            <label
+              class="flex items-center gap-1.5 text-xs text-content-tertiary"
+              title="Grow the mask past the selection edge before the model runs — a mask that hugs the object leaves its outline behind. Negative shrinks."
+            >
+              Expand mask
+              <span class="flex items-center gap-0.5">
+                <input
+                  type="number"
+                  min="-50"
+                  max="50"
+                  class="w-12 px-2 py-1 rounded-md font-mono tabular-nums text-content bg-overlay-subtle"
+                  :value="state.maskExpandPercent"
+                  @input="emit('set', {
+                    maskExpandPercent: Number(($event.target as HTMLInputElement).value),
+                  })"
+                />
+                %
+              </span>
+            </label>
             <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
               Variations
               <input
@@ -626,6 +645,7 @@ function chipClass(active: boolean, pending = false) {
           @click="emit('set', { addLevel: edit.id })"
         >
           <ToolIcon :name="edit.icon" />
+          {{ edit.label }}
         </button>
       </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />

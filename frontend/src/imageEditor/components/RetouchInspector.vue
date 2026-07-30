@@ -20,11 +20,18 @@ import {
 const props = defineProps<{
   region: RetouchRegion
   histogram?: ToneCurveHistogram
+  /** Point color only: the canvas eyedropper is currently armed. */
+  picking?: boolean
+  clipShadows?: boolean
+  clipHighlights?: boolean
 }>()
 
 const emit = defineEmits<{
   settings: [Partial<RetouchRegionSettings>, string]
   settingsCommit: []
+  /** Point color asks the host view to arm the canvas eyedropper. */
+  pick: []
+  clip: [{ shadows: boolean; highlights: boolean }]
 }>()
 
 function setFeather(region: RetouchRegion, pixels: number) {
@@ -35,9 +42,7 @@ function setFeather(region: RetouchRegion, pixels: number) {
 
 const isAdjustment = computed(() =>
   props.region.kind === 'adjust'
-  || props.region.kind === 'light'
-  || props.region.kind === 'color'
-  || props.region.kind === 'detail'
+  || !!photoAdjustmentGroup(props.region.kind)
 )
 const adjustmentGroup = computed(() =>
   photoAdjustmentGroup(props.region.kind === 'adjust' ? 'light' : props.region.kind)
@@ -59,9 +64,15 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
         :controls="adjustmentGroup.controls"
         :values="region.settings"
         :histogram="histogram"
+        :presentation="adjustmentGroup.presentation"
+        :picking="picking"
+        :clip-shadows="clipShadows"
+        :clip-highlights="clipHighlights"
         :coalesce-prefix="`retouch:${region.id}`"
         @change="setPhotoValue"
         @commit="emit('settingsCommit')"
+        @pick="emit('pick')"
+        @clip="emit('clip', $event)"
       />
     </section>
 

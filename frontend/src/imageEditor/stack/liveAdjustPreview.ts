@@ -11,6 +11,10 @@ import {
   photoAdjustmentRenderParams,
 } from './adjustSections.ts'
 import {
+  MIXER_BAND_HUES,
+  mixerBandValues,
+} from './photoAdjustments.ts'
+import {
   TONE_CURVE_LUT_SIZE,
   toneCurveChannelLut,
 } from './toneCurve.ts'
@@ -44,6 +48,33 @@ ${segments.join('\n')}
 `
 }
 
+/**
+ * Per-band Mixer weights, generated from the shared band centers so the GPU
+ * partition is the CPU's: triangles between neighbouring centers, wrapped at
+ * red, weights summing to one.
+ */
+const MIXER_VALUE_GLSL = (() => {
+  const components = ['x', 'y', 'z', 'w']
+  const terms = MIXER_BAND_HUES.map((center, index) => {
+    const previous = MIXER_BAND_HUES[(index + 7) % 8]
+    const next = MIXER_BAND_HUES[(index + 1) % 8]
+    const leftWidth = ((center - previous) + 360) % 360
+    const rightWidth = ((next - center) + 360) % 360
+    const vector = index < 4 ? 'v1' : 'v2'
+    const component = components[index % 4]
+    return `  d = mod(hueDeg - ${center.toFixed(1)} + 180.0, 360.0) - 180.0;\n`
+      + `  total += clamp(1.0 - max(-d / ${leftWidth.toFixed(1)}, d / ${rightWidth.toFixed(1)}), 0.0, 1.0) * ${vector}.${component};`
+  })
+  return `
+float mixerValue(float hueDeg, vec4 v1, vec4 v2) {
+  float total = 0.0;
+  float d;
+${terms.join('\n')}
+  return total;
+}
+`
+})()
+
 const FRAGMENT_SHADER = `
 precision highp float;
 uniform sampler2D u_source;
@@ -68,6 +99,22 @@ uniform vec4 u_nr2;
 uniform vec4 u_nr3;
 uniform vec4 u_grain1;
 uniform vec2 u_grain2;
+uniform vec4 u_mix_hue1;
+uniform vec4 u_mix_hue2;
+uniform vec4 u_mix_sat1;
+uniform vec4 u_mix_sat2;
+uniform vec4 u_mix_lum1;
+uniform vec4 u_mix_lum2;
+uniform vec4 u_point1;
+uniform vec4 u_point2;
+uniform vec4 u_point3;
+uniform vec4 u_point4;
+uniform vec4 u_grade1;
+uniform vec4 u_grade2;
+uniform vec4 u_grade3;
+uniform vec4 u_grade4;
+uniform vec4 u_grade5;
+uniform vec4 u_grade6;
 varying vec2 v_uv;
 
 float luminance(vec3 color) {
@@ -95,6 +142,51 @@ float hash(vec2 p) {
 ${curveDeltaShaderFunction('curveDeltaRed', 'u_curve_delta_red')}
 ${curveDeltaShaderFunction('curveDeltaGreen', 'u_curve_delta_green')}
 ${curveDeltaShaderFunction('curveDeltaBlue', 'u_curve_delta_blue')}
+${MIXER_VALUE_GLSL}
+
+// Point color as an absolute application: preview takes apply(current) minus
+// apply(base) so a drag on any knob moves the pixels already on screen.
+// ref = [hueDeg, sat, lum, rangeDeg]; shift = [hueShiftDeg, satShift, lumShift, 0].
+vec3 pointApply(vec3 source, vec4 ref, vec4 shift) {
+  vec3 hsv = rgb2hsv(clamp(source, 0.0, 1.0));
+  float l = hsv.z * (1.0 - hsv.y * 0.5);
+  float denom = min(l, 1.0 - l);
+  float sl = denom <= 1.0e-4 ? 0.0 : (hsv.z - l) / denom;
+  float hueDeg = hsv.x * 360.0;
+  float d = mod(hueDeg - ref.x + 180.0, 360.0) - 180.0;
+  float hw = ref.y < 0.05
+    ? 1.0
+    : smoothstep(0.0, 1.0, clamp(1.0 - abs(d) / ref.w, 0.0, 1.0));
+  float sw = smoothstep(0.0, 1.0, clamp(1.0 - abs(sl - ref.y) / 0.7, 0.0, 1.0));
+  float lw = smoothstep(0.0, 1.0, clamp(1.0 - abs(l - ref.z) / 0.7, 0.0, 1.0));
+  float w = hw * sw * lw;
+  hueDeg += shift.x * w;
+  sl = clamp(sl * (1.0 + shift.y * w), 0.0, 1.0);
+  l += shift.z * w * (shift.z > 0.0 ? (1.0 - l) : l) * 0.6;
+  l = clamp(l, 0.0, 1.0);
+  float v = l + sl * min(l, 1.0 - l);
+  float sv = v <= 1.0e-4 ? 0.0 : 2.0 * (1.0 - l / v);
+  return hsv2rgb(vec3(fract(hueDeg / 360.0), sv, v));
+}
+
+// Three-zone grading. g1 = [shadowHue01, midHue01, highHue01, blend];
+// g2 = [shadowSat, midSat, highSat, balance]; g3 = [shadowLum, midLum, highLum, 0].
+vec3 gradeApply(vec3 source, vec4 g1, vec4 g2, vec4 g3) {
+  float luma = luminance(clamp(source, 0.0, 1.0));
+  float midpoint = 0.5 + g2.w * 0.2;
+  float softness = 0.12 + g1.w * 0.33;
+  float lowCross = midpoint - 0.17;
+  float highCross = midpoint + 0.17;
+  float sw = 1.0 - smoothstep(lowCross - softness, lowCross + softness, luma);
+  float hw = smoothstep(highCross - softness, highCross + softness, luma);
+  float mw = clamp(1.0 - sw - hw, 0.0, 1.0);
+  vec3 result = source;
+  result += (hsv2rgb(vec3(g1.x, 1.0, 1.0)) - 0.5) * g2.x * 0.3 * sw;
+  result += (hsv2rgb(vec3(g1.y, 1.0, 1.0)) - 0.5) * g2.y * 0.3 * mw;
+  result += (hsv2rgb(vec3(g1.z, 1.0, 1.0)) - 0.5) * g2.z * 0.3 * hw;
+  result += vec3((g3.x * sw + g3.y * mw + g3.z * hw) * 0.25);
+  return result;
+}
 
 vec3 signedMix(vec3 original, vec3 target, float amount) {
   return amount >= 0.0
@@ -235,6 +327,23 @@ void main() {
   float fringe = clamp(max(purple, green) * saturation * 2.0, 0.0, 1.0);
   color = signedMix(color, vec3(luminance(color)), u_color3.y * fringe);
 
+  // Mixer: per-hue H/S/L deltas, gray-guarded like the CPU path.
+  vec3 mixerHsv = rgb2hsv(clamp(color, 0.0, 1.0));
+  float mixerHueDeg = mixerHsv.x * 360.0;
+  float mixerGuard = smoothstep(0.04, 0.16, mixerHsv.y);
+  float mixerHueDelta = mixerValue(mixerHueDeg, u_mix_hue1, u_mix_hue2) * mixerGuard;
+  float mixerSatDelta = mixerValue(mixerHueDeg, u_mix_sat1, u_mix_sat2) * mixerGuard;
+  float mixerLumDelta = mixerValue(mixerHueDeg, u_mix_lum1, u_mix_lum2) * mixerGuard;
+  mixerHsv.x = fract(mixerHsv.x + mixerHueDelta * 30.0 / 360.0);
+  mixerHsv.y = clamp(mixerHsv.y * (1.0 + mixerSatDelta), 0.0, 1.0);
+  color = hsv2rgb(mixerHsv);
+  color += mixerLumDelta * (mixerLumDelta > 0.0 ? (vec3(1.0) - color) : color) * 0.5;
+
+  // Point color and grading preview as apply(current) - apply(base).
+  color += pointApply(color, u_point1, u_point2) - pointApply(color, u_point3, u_point4);
+  color += gradeApply(color, u_grade1, u_grade2, u_grade3)
+    - gradeApply(color, u_grade4, u_grade5, u_grade6);
+
   luma = luminance(color);
   vec3 tintColor = hsv2rgb(vec3(fract(u_color2.x / 360.0), 0.72, max(0.12, luma)));
   color = mix(color, tintColor, clamp(u_color2.y, 0.0, 1.0));
@@ -297,6 +406,22 @@ export interface LiveAdjustUniforms {
   nr3: number[]
   grain1: number[]
   grain2: number[]
+  mixHue1: number[]
+  mixHue2: number[]
+  mixSat1: number[]
+  mixSat2: number[]
+  mixLum1: number[]
+  mixLum2: number[]
+  point1: number[]
+  point2: number[]
+  point3: number[]
+  point4: number[]
+  grade1: number[]
+  grade2: number[]
+  grade3: number[]
+  grade4: number[]
+  grade5: number[]
+  grade6: number[]
 }
 
 /**
@@ -401,7 +526,82 @@ export function buildLiveAdjustUniforms(
       value(current, 'grainRoughness', 50) / 100,
       value(base, 'grainRoughness', 50) / 100,
     ],
+    ...mixerUniforms(current, base),
+    point1: pointReference(current),
+    point2: pointShifts(current),
+    point3: pointReference(base),
+    point4: pointShifts(base),
+    grade1: gradeHues(current),
+    grade2: gradeSats(current),
+    grade3: gradeLums(current),
+    grade4: gradeHues(base),
+    grade5: gradeSats(base),
+    grade6: gradeLums(base),
   }
+}
+
+function mixerUniforms(current: AdjustmentValues, base: AdjustmentValues) {
+  const deltas = (mode: 'Hue' | 'Sat' | 'Lum') => {
+    const currentBands = mixerBandValues(current, mode)
+    const baseBands = mixerBandValues(base, mode)
+    return currentBands.map((band, index) => (band - baseBands[index]) / 100)
+  }
+  const hue = deltas('Hue')
+  const sat = deltas('Sat')
+  const lum = deltas('Lum')
+  return {
+    mixHue1: hue.slice(0, 4),
+    mixHue2: hue.slice(4),
+    mixSat1: sat.slice(0, 4),
+    mixSat2: sat.slice(4),
+    mixLum1: lum.slice(0, 4),
+    mixLum2: lum.slice(4),
+  }
+}
+
+function pointReference(values: AdjustmentValues) {
+  return [
+    value(values, 'pointHue'),
+    value(values, 'pointSat') / 100,
+    value(values, 'pointLum') / 100,
+    12 + value(values, 'pointRange', 50) * 0.78,
+  ]
+}
+
+function pointShifts(values: AdjustmentValues) {
+  return [
+    value(values, 'pointHueShift'),
+    value(values, 'pointSatShift') / 100,
+    value(values, 'pointLumShift') / 100,
+    0,
+  ]
+}
+
+function gradeHues(values: AdjustmentValues) {
+  return [
+    value(values, 'gradeShadowHue') / 360,
+    value(values, 'gradeMidHue') / 360,
+    value(values, 'gradeHighlightHue') / 360,
+    value(values, 'gradeBlend', 50) / 100,
+  ]
+}
+
+function gradeSats(values: AdjustmentValues) {
+  return [
+    value(values, 'gradeShadowSat') / 100,
+    value(values, 'gradeMidSat') / 100,
+    value(values, 'gradeHighlightSat') / 100,
+    value(values, 'gradeBalance') / 100,
+  ]
+}
+
+function gradeLums(values: AdjustmentValues) {
+  return [
+    value(values, 'gradeShadowLum') / 100,
+    value(values, 'gradeMidLum') / 100,
+    value(values, 'gradeHighlightLum') / 100,
+    0,
+  ]
 }
 
 export class LiveAdjustPreview {
@@ -560,6 +760,22 @@ export class LiveAdjustPreview {
     set4('u_nr3', uniforms.nr3)
     set4('u_grain1', uniforms.grain1)
     set2('u_grain2', uniforms.grain2)
+    set4('u_mix_hue1', uniforms.mixHue1)
+    set4('u_mix_hue2', uniforms.mixHue2)
+    set4('u_mix_sat1', uniforms.mixSat1)
+    set4('u_mix_sat2', uniforms.mixSat2)
+    set4('u_mix_lum1', uniforms.mixLum1)
+    set4('u_mix_lum2', uniforms.mixLum2)
+    set4('u_point1', uniforms.point1)
+    set4('u_point2', uniforms.point2)
+    set4('u_point3', uniforms.point3)
+    set4('u_point4', uniforms.point4)
+    set4('u_grade1', uniforms.grade1)
+    set4('u_grade2', uniforms.grade2)
+    set4('u_grade3', uniforms.grade3)
+    set4('u_grade4', uniforms.grade4)
+    set4('u_grade5', uniforms.grade5)
+    set4('u_grade6', uniforms.grade6)
     gl.drawArrays(gl.TRIANGLES, 0, 6)
     gl.flush()
     return this.canvas

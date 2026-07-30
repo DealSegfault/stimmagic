@@ -69,6 +69,7 @@ import {
   regionCropBase64,
 } from '../imageEditor/stack/nameStepFromRegion'
 import { apiErrorMessage } from '../imageEditor/stack/errors'
+import { DEFAULT_MASK_EXPAND_PERCENT, expandMaskCanvas } from '../imageEditor/stack/maskMorphology'
 import { setEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import {
   readToolPrefs, writeToolPrefs, rememberSubTool,
@@ -122,6 +123,7 @@ import {
   photoAdjustmentRenderParams,
 } from '../imageEditor/stack/adjustSections'
 import type { StripEntry } from '../imageEditor/stack/adjustSections'
+import { rgbToHslColor } from '../imageEditor/stack/pointColorMatch'
 import { applyColorMatrix } from '../imageEditor/ported/colorMatrix'
 import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices'
 import { applyEffects } from '../imageEditor/ported/effects'
@@ -154,6 +156,14 @@ const initialToolPrefs = readToolPrefs()
 type Mode = null | 'expand' | 'adjust' | 'crop'
 const mode = ref<Mode>(null)
 const candidateCount = ref(4)
+/**
+ * How far Remove/Repaint grow the mask past the selection edge at submit
+ * (negative shrinks). Generation needs reach beyond the object or its outline
+ * survives; the on-canvas selection itself stays exactly as drawn.
+ */
+const maskExpandPercent = ref(
+  initialToolPrefs.maskExpandPercent ?? DEFAULT_MASK_EXPAND_PERCENT,
+)
 const selectedOpId = ref<string | null>(null)
 
 const tools = ref<any[]>([])
@@ -1377,6 +1387,7 @@ function beginMaskedAdjustment(kind: Exclude<MaskedAdjustmentKind, 'adjust'>) {
 const subbarState = computed(() => ({
   prompt: prompt.value,
   candidateCount: candidateCount.value,
+  maskExpandPercent: maskExpandPercent.value,
   expandFactor: expandFactor.value,
   cropAspect: cropAspect.value,
   rotation: cropParamsOf().cropRotation ?? 0,
@@ -1416,7 +1427,7 @@ const subbarState = computed(() => ({
  * selection tool must let go.
  */
 const SUBBAR_KEEPS_SELECT = new Set([
-  'prompt', 'candidateCount', 'expandFactor', 'toolParamPatch',
+  'prompt', 'candidateCount', 'maskExpandPercent', 'expandFactor', 'toolParamPatch',
   'removeRecentPrompt',
 ])
 
@@ -1424,6 +1435,10 @@ function onSubbarSet(patch: Record<string, any>) {
   if (Object.keys(patch).some(key => !SUBBAR_KEEPS_SELECT.has(key))) disarmSelect()
   if ('prompt' in patch) prompt.value = patch.prompt
   if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
+  if ('maskExpandPercent' in patch) {
+    maskExpandPercent.value = patch.maskExpandPercent
+    writeToolPrefs({ maskExpandPercent: patch.maskExpandPercent })
+  }
   if ('expandFactor' in patch) expandFactor.value = patch.expandFactor
   if ('removeRecentPrompt' in patch) {
     recentRepaintPrompts.value = recentRepaintPrompts.value.filter(
@@ -1575,6 +1590,13 @@ async function run() {
       submitMask = grown.borderMask
     }
     if (!submitMask) throw new Error('There is nothing selected to work on.')
+
+    // Remove/Repaint grow their mask copy past the selection edge: a crisp
+    // object-hugging mask leaves the model repainting inside the outline it
+    // was meant to replace. Expand's border mask is already sized on purpose.
+    if (action !== 'expand') {
+      expandMaskCanvas(submitMask, maskExpandPercent.value)
+    }
 
     const maskPayloadRef = await stack.uploadPayload(
       `${opId}-mask.png`, await canvasToBlob(submitMask)
@@ -2645,8 +2667,13 @@ const DEFAULT_RETOUCH_REGION_SETTINGS: RetouchRegionSettings = {
   ...photoAdjustmentRenderParams({}),
 }
 
-type MaskedAdjustmentKind = 'light' | 'color' | 'detail' | 'adjust'
-const MASKED_ADJUSTMENT_SUBS = ['light', 'color', 'detail'] as const
+type MaskedAdjustmentKind =
+  | 'light' | 'color' | 'detail'
+  | 'mixer' | 'point' | 'grade'
+  | 'adjust'
+const MASKED_ADJUSTMENT_SUBS = [
+  'light', 'color', 'detail', 'mixer', 'point', 'grade',
+] as const
 
 function isMaskedAdjustmentSub(value: string | null): value is Exclude<MaskedAdjustmentKind, 'adjust'> {
   return MASKED_ADJUSTMENT_SUBS.includes(value as any)
@@ -3637,6 +3664,147 @@ function invertSelection() {
   selectRef.value?.invert()
 }
 
+// -- AI select (prompt-to-mask) ---------------------------------------------
+
+const aiSelectBusy = ref(false)
+const aiSelectError = ref<string | null>(null)
+
+/** Longest side sent to segmentation. SAM3 works at ~1k; sending more is transfer cost, not quality. */
+const AI_SELECT_MAX_SIDE = 1536
+
+/**
+ * The last Object click's granularity stack. The tracker returns the clicked
+ * object at every granularity (object → part → subpart, area-descending);
+ * clicking the SAME spot again steps to the next one, locally, against the
+ * selection as it was before the first application — no second request.
+ */
+let objectPickState: {
+  src: HTMLCanvasElement
+  x: number
+  y: number
+  masks: HTMLImageElement[]
+  index: number
+  mode: SelectionMode
+  before: HTMLCanvasElement | null
+} | null = null
+/** True while an applyMask below is publishing, so onSelectionChange can tell
+ *  our own change events from a gesture that invalidates the cycle stack. */
+let applyingAiMask = false
+
+function loadMaskImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('mask decode failed'))
+    img.src = dataUrl
+  })
+}
+
+function applyAiMask(mask: CanvasImageSource, mode: SelectionMode) {
+  applyingAiMask = true
+  try {
+    selectRef.value?.applyMask(mask, mode)
+  } finally {
+    applyingAiMask = false
+  }
+}
+
+/**
+ * AI select: segment the CURRENT composite (the pixels the selection will sit
+ * over) and land the result exactly as a drawn gesture would, through the
+ * combine mode. Two request shapes, one product rule: a PROMPT names a concept
+ * and selects every instance of it ("sky", "people"); a POINT (normalized 0-1)
+ * is the Object tool's click and selects the one object under it.
+ */
+async function runAiSelect(
+  request: { prompt?: string; point?: { x: number; y: number } },
+  mode: SelectionMode = selectCombine.value,
+) {
+  if (aiSelectBusy.value) return
+  // Crop replaces the display box, so there is no overlay to land a mask on.
+  if (family.value === 'crop') leaveMode()
+  const src = composite.value
+  if (!src || !selectRef.value) return
+  aiSelectBusy.value = true
+  aiSelectError.value = null
+  showSelectionFeedback()
+  try {
+    const scale = Math.min(1, AI_SELECT_MAX_SIDE / Math.max(src.width, src.height))
+    let sent: HTMLCanvasElement = src
+    if (scale < 1) {
+      sent = document.createElement('canvas')
+      sent.width = Math.round(src.width * scale)
+      sent.height = Math.round(src.height * scale)
+      sent.getContext('2d')!.drawImage(src, 0, 0, sent.width, sent.height)
+    }
+    const { data } = await axios.post('/api/mask/select', {
+      image_data_url: sent.toDataURL('image/png'),
+      ...request,
+    })
+    if (!data.success || !data.detections?.length) {
+      aiSelectError.value = data.error
+        || (request.prompt ? `No match for “${request.prompt}”` : 'No object at that point')
+      return
+    }
+    const masks = await Promise.all(
+      data.detections.map((d: any) => loadMaskImage(d.mask_data_url))
+    )
+    if (request.point) {
+      // One object, several granularities: apply the object-level mask and
+      // keep the rest for same-spot cycling.
+      objectPickState = {
+        src,
+        x: request.point.x * src.width,
+        y: request.point.y * src.height,
+        masks,
+        index: 0,
+        mode,
+        before: selModel.toSnapshot(),
+      }
+      applyAiMask(masks[0], mode)
+      return
+    }
+    // A named concept: every instance, as one selection.
+    const union = document.createElement('canvas')
+    union.width = sent.width
+    union.height = sent.height
+    const unionCtx = union.getContext('2d')!
+    for (const mask of masks) unionCtx.drawImage(mask, 0, 0, union.width, union.height)
+    applyAiMask(union, mode)
+  } catch (e: any) {
+    aiSelectError.value = e?.message || 'Selection failed'
+  } finally {
+    aiSelectBusy.value = false
+  }
+}
+
+/** A same-spot re-click means "not that granularity": within this radius (in
+ *  source pixels, scaled for large sources) the click cycles instead of
+ *  re-segmenting. */
+function objectCycleRadius(src: HTMLCanvasElement): number {
+  return Math.max(8, Math.max(src.width, src.height) * 0.01)
+}
+
+/** The Object tool's click: segment under the point; modifiers override the
+ *  combine mode for this one gesture (shift adds, alt subtracts). */
+function onObjectPick(pick: { x: number; y: number; shiftKey: boolean; altKey: boolean }) {
+  const src = composite.value
+  if (!src) return
+  const cycle = objectPickState
+  if (
+    cycle && cycle.src === src && cycle.masks.length > 1
+    && Math.hypot(pick.x - cycle.x, pick.y - cycle.y) <= objectCycleRadius(src)
+  ) {
+    cycle.index = (cycle.index + 1) % cycle.masks.length
+    if (cycle.before) selModel.loadFromSnapshot(cycle.before)
+    else selModel.clearSelection()
+    applyAiMask(cycle.masks[cycle.index], cycle.mode)
+    return
+  }
+  const mode: SelectionMode = pick.shiftKey ? 'add' : pick.altKey ? 'subtract' : selectCombine.value
+  void runAiSelect({ point: { x: pick.x / src.width, y: pick.y / src.height } }, mode)
+}
+
 /**
  * The affine from the crop geometry's frame to the actual composite frame —
  * the part `geometryBelow` cannot see, because Expand grows the frame with
@@ -3661,6 +3829,10 @@ function frameAdjust(
 /** Every gesture end republishes: the mask consumers copy, and the master the
  *  geometry sync re-derives from. */
 function onSelectionChange(mask: HTMLCanvasElement | null) {
+  // Any change the Object tool didn't publish itself (a drawn gesture, clear,
+  // invert) makes its granularity stack stale — cycling would resurrect the
+  // pre-click selection over the user's newer edits.
+  if (!applyingAiMask) objectPickState = null
   selection.value = mask
   // The patch flow is select-then-DRAG: the moment the selection lands, the
   // pointer hands back to the paint canvas so the very next gesture drags it.
@@ -4412,6 +4584,134 @@ watch(annotationOverlayActive, () => { void render() })
 // only on the composite.
 watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'post' })
 watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: 'post' })
+
+// -- clipping overlays -------------------------------------------------------
+
+/**
+ * Clipping indicators: workspace state toggled from the curve plot's corners,
+ * never part of the document. The overlay canvas sits over the composite and
+ * marks blown highlights red and crushed shadows blue.
+ */
+const clipShadows = ref(false)
+const clipHighlights = ref(false)
+const clipCanvas = ref<HTMLCanvasElement | null>(null)
+const showClipOverlay = computed(() => clipShadows.value || clipHighlights.value)
+
+function setClipIndicators(state: { shadows: boolean; highlights: boolean }) {
+  clipShadows.value = state.shadows
+  clipHighlights.value = state.highlights
+}
+
+/** The warning needs display resolution, not the full-resolution frame. */
+const CLIP_SCAN_MAX_PIXELS = 1_500_000
+
+function paintClipOverlay() {
+  const target = clipCanvas.value
+  const source = composite.value
+  if (!target || !source || !showClipOverlay.value) return
+  const scale = Math.min(
+    1,
+    Math.sqrt(CLIP_SCAN_MAX_PIXELS / Math.max(1, source.width * source.height)),
+  )
+  const width = Math.max(1, Math.round(source.width * scale))
+  const height = Math.max(1, Math.round(source.height * scale))
+  const staging = document.createElement('canvas')
+  staging.width = width
+  staging.height = height
+  const stagingContext = staging.getContext('2d', { willReadFrequently: true })!
+  stagingContext.drawImage(source, 0, 0, width, height)
+  const frame = stagingContext.getImageData(0, 0, width, height)
+  const overlay = stagingContext.createImageData(width, height)
+  const pixels = frame.data
+  const marks = overlay.data
+  for (let index = 0; index < pixels.length; index += 4) {
+    if (pixels[index + 3] === 0) continue
+    const maxChannel = Math.max(pixels[index], pixels[index + 1], pixels[index + 2])
+    const minChannel = Math.min(pixels[index], pixels[index + 1], pixels[index + 2])
+    if (clipHighlights.value && maxChannel >= 254) {
+      marks[index] = 239
+      marks[index + 1] = 68
+      marks[index + 2] = 68
+      marks[index + 3] = 230
+    } else if (clipShadows.value && minChannel <= 1) {
+      marks[index] = 96
+      marks[index + 1] = 165
+      marks[index + 2] = 250
+      marks[index + 3] = 230
+    }
+  }
+  target.width = width
+  target.height = height
+  target.getContext('2d')!.putImageData(overlay, 0, 0)
+}
+
+watch(
+  [clipShadows, clipHighlights, composite, clipCanvas],
+  () => nextTick(paintClipOverlay),
+  { flush: 'post' },
+)
+
+// -- point-color eyedropper ----------------------------------------------------
+
+/** Which inspector the armed eyedropper writes its pick into. */
+const pointPickTarget = ref<'adjust' | 'retouch' | null>(null)
+const pointPicking = computed(() => pointPickTarget.value !== null)
+
+function armPointColorPick() {
+  if (inspectorKind.value === 'retouch' && selectedRetouchRegion.value) {
+    pointPickTarget.value = 'retouch'
+  } else if (selectedAdjustOp.value) {
+    pointPickTarget.value = 'adjust'
+  }
+}
+
+function onPointColorPick(event: PointerEvent) {
+  const target = pointPickTarget.value
+  const canvas = displayCanvas.value
+  pointPickTarget.value = null
+  if (!target || !canvas?.width || !canvas.height) return
+  const rect = canvas.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+  const x = Math.max(0, Math.min(
+    canvas.width - 1,
+    Math.floor((event.clientX - rect.left) / rect.width * canvas.width),
+  ))
+  const y = Math.max(0, Math.min(
+    canvas.height - 1,
+    Math.floor((event.clientY - rect.top) / rect.height * canvas.height),
+  ))
+  const sample = canvas.getContext('2d')?.getImageData(x, y, 1, 1).data
+  if (!sample) return
+  const picked = rgbToHslColor(sample[0], sample[1], sample[2])
+  const patch = {
+    pointHue: Math.round(picked.hue),
+    pointSat: Math.round(picked.sat),
+    pointLum: Math.round(picked.lum),
+  }
+  if (target === 'retouch') {
+    setRetouchRegionSettings(patch, 'point-pick')
+    void commitRetouchSettingsRender()
+  } else {
+    onAdjustInspectorChange(patch, 'adjust:point-pick')
+    void commitAdjustInspectorChange()
+  }
+}
+
+function pointPickKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  pointPickTarget.value = null
+  event.stopPropagation()
+  event.preventDefault()
+}
+
+watch(pointPicking, active => {
+  if (active) window.addEventListener('keydown', pointPickKeydown, true)
+  else window.removeEventListener('keydown', pointPickKeydown, true)
+})
+
+// Switching steps or panels disarms the dropper — a pick belongs to the
+// inspector that asked for it.
+watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
 </script>
 
 <template>
@@ -4547,6 +4847,20 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
             class="rounded-media w-full h-full"
             :style="{ width: zoomedDisplayBox.width + 'px', height: zoomedDisplayBox.height + 'px' }"
           />
+          <!-- Clipping overlay: marks blown highlights and crushed shadows
+               over the composite. Pointer-transparent — it is a read-out. -->
+          <canvas
+            v-if="showClipOverlay"
+            ref="clipCanvas"
+            class="absolute inset-0 w-full h-full pointer-events-none rounded-media"
+          />
+          <!-- Armed point-color eyedropper: one click samples the composite
+               under the cursor into the selected step, Esc disarms. -->
+          <div
+            v-if="pointPicking"
+            class="absolute inset-0 z-20 cursor-crosshair"
+            @pointerdown.stop.prevent="onPointColorPick"
+          />
           <StackPaintCanvas
             v-if="family === 'retouch' && !isMaskedAdjustmentSub(sub) && !isModelRetouchSub(sub)"
             ref="retouchRef"
@@ -4629,6 +4943,7 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
             :source="composite"
             :model="selModel"
             :armed="armedSelectTool"
+            :busy="aiSelectBusy"
             :visible="selectionFeedbackVisible"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
@@ -4640,6 +4955,7 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
             :wand-antialias="selectAntialias"
             :brush-size="selectBrushSize"
             @change="onSelectionChange"
+            @object-pick="onObjectPick"
           />
           <!-- The selected annotation's own verbs, over the shape they act
                on. Inside the display box so it shares the shapes' coordinate
@@ -4686,12 +5002,15 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
           :grow-px="selectGrow"
           :antialias="selectAntialias"
           :brush-size="selectBrushSize"
+          :ai-busy="aiSelectBusy"
+          :ai-error="aiSelectError"
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-chrome"
           @arm="armSelectTool"
           @pointer="activatePointer"
           @set="onSelectionSet"
           @invert="invertSelection"
           @clear="clearSelection"
+          @ai-select="(prompt: string) => runAiSelect({ prompt })"
         />
       </div>
       </div>
@@ -4864,8 +5183,13 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
             <RetouchInspector
               :region="selectedRetouchRegion"
               :histogram="toneCurveHistogram"
+              :picking="pointPicking"
+              :clip-shadows="clipShadows"
+              :clip-highlights="clipHighlights"
               @settings="setRetouchRegionSettings"
               @settings-commit="commitRetouchSettingsRender"
+              @pick="armPointColorPick"
+              @clip="setClipIndicators"
             />
           </div>
         </div>
@@ -4915,8 +5239,13 @@ watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: '
           <AdjustInspector
             :params="adjustInspectorParams"
             :histogram="toneCurveHistogram"
+            :picking="pointPicking"
+            :clip-shadows="clipShadows"
+            :clip-highlights="clipHighlights"
             @change="onAdjustInspectorChange"
             @commit="commitAdjustInspectorChange"
+            @pick="armPointColorPick"
+            @clip="setClipIndicators"
           />
           </div>
         </div>

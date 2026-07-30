@@ -24,6 +24,11 @@ export interface SubTool {
   label: string
   /** A glyph from the ported registry; the label becomes its tooltip. */
   icon?: IconName
+  /**
+   * Show the label BESIDE the icon. The adjustment chips carry this: with six
+   * of them on the bar, a glyph alone no longer says which is which.
+   */
+  labeled?: boolean
   /** Optional interaction help shown only in the tooltip. */
   hint?: string
   /** Not yet implemented; shown so the shape of the family is honest. */
@@ -104,9 +109,12 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       // repair glyphs, their names communicate the semantic job and cost.
       { id: 'remove', label: 'Remove', hint: 'Remove an object or distraction' },
       { id: 'repaint', label: 'Repaint', hint: 'Repaint — replace the selected content from a prompt' },
-      { id: 'light', label: 'Light', icon: 'sun', hint: 'Light — select a region, then tune its light' },
-      { id: 'color', label: 'Color', icon: 'palette', hint: 'Color — select a region, then tune its color' },
-      { id: 'detail', label: 'Detail', icon: 'focus', hint: 'Detail — select a region, then tune its detail' },
+      { id: 'light', label: 'Light', icon: 'sun', labeled: true, hint: 'Light — select a region, then tune its light' },
+      { id: 'color', label: 'Color', icon: 'palette', labeled: true, hint: 'Color — select a region, then tune its color' },
+      { id: 'detail', label: 'Detail', icon: 'focus', labeled: true, hint: 'Detail — select a region, then tune its detail' },
+      { id: 'mixer', label: 'Mixer', icon: 'mixer', labeled: true, hint: 'Mixer — select a region, then tune its colors per hue' },
+      { id: 'point', label: 'Point color', icon: 'pointColor', labeled: true, hint: 'Point color — pick a color in the region, shift only it' },
+      { id: 'grade', label: 'Grading', icon: 'grading', labeled: true, hint: 'Grading — select a region, then tint its shadows, midtones and highlights' },
     ],
   },
   {
@@ -217,7 +225,7 @@ export const PAINT_SWATCHES = [
  * belongs to the selection until it is disarmed, and the family's session, step
  * and controls all survive underneath.
  */
-export type SelectToolId = 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
+export type SelectToolId = 'object' | 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
 
 export const SELECT_TOOLS: Array<{ id: SelectToolId; label: string; icon: IconName }> = [
   { id: 'rect', label: 'Rectangle', icon: 'squareDashed' },
@@ -228,6 +236,10 @@ export const SELECT_TOOLS: Array<{ id: SelectToolId; label: string; icon: IconNa
   // Painting a selection is how most inpaint masks get made, which is why the
   // brush is a selection tool rather than a Generate-only surface.
   { id: 'brush', label: 'Brush', icon: 'paintbrush' },
+  // AI select (SAM3): click segments the object under the pointer; its popup
+  // over the island adds select-by-name. Last on the rail — the manual tools
+  // read as one geometric group, and this one arms extra UI.
+  { id: 'object', label: 'Object', icon: 'sparkles' },
 ]
 
 /** Combine modes for Select — how a new selection meets the existing one. */

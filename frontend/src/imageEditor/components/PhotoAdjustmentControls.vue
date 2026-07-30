@@ -2,10 +2,14 @@
 import type {
   AdjustControl,
   AdjustSliderControl,
+  PhotoAdjustmentGroup,
   ToneCurve,
 } from '../stack/adjustSections'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
 import { toneCurveValueOf } from '../stack/adjustSections'
+import ColorGradingControl from './ColorGradingControl.vue'
+import HueMixerControl from './HueMixerControl.vue'
+import PointColorControl from './PointColorControl.vue'
 import ToneCurveControl from './ToneCurveControl.vue'
 
 const props = defineProps<{
@@ -14,11 +18,20 @@ const props = defineProps<{
   histogram?: ToneCurveHistogram
   disabled?: boolean
   coalescePrefix: string
+  /** A custom surface for the whole group; the keys stay plain sliders. */
+  presentation?: PhotoAdjustmentGroup['presentation']
+  /** Point color only: the canvas eyedropper is currently armed. */
+  picking?: boolean
+  clipShadows?: boolean
+  clipHighlights?: boolean
 }>()
 
 const emit = defineEmits<{
   change: [Record<string, any>, string]
   commit: []
+  /** Point color asks the host view to arm the canvas eyedropper. */
+  pick: []
+  clip: [{ shadows: boolean; highlights: boolean }]
 }>()
 
 function sliderValue(control: AdjustSliderControl) {
@@ -33,10 +46,37 @@ function curveValue(control: Extract<AdjustControl, { kind: 'curve' }>): ToneCur
 function setValue(key: string, value: number | ToneCurve) {
   emit('change', { [key]: value }, `${props.coalescePrefix}:${key}`)
 }
+
+function forwardChange(patch: Record<string, any>, coalesceKey: string) {
+  emit('change', patch, `${props.coalescePrefix}:${coalesceKey}`)
+}
 </script>
 
 <template>
-  <div class="space-y-2">
+  <HueMixerControl
+    v-if="presentation === 'mixer'"
+    :values="values"
+    :disabled="disabled"
+    @change="forwardChange"
+    @commit="emit('commit')"
+  />
+  <PointColorControl
+    v-else-if="presentation === 'point'"
+    :values="values"
+    :disabled="disabled"
+    :picking="picking"
+    @change="forwardChange"
+    @commit="emit('commit')"
+    @pick="emit('pick')"
+  />
+  <ColorGradingControl
+    v-else-if="presentation === 'grade'"
+    :values="values"
+    :disabled="disabled"
+    @change="forwardChange"
+    @commit="emit('commit')"
+  />
+  <div v-else class="space-y-2">
     <template v-for="control in controls" :key="control.key">
       <ToneCurveControl
         v-if="control.kind === 'curve'"
@@ -45,8 +85,11 @@ function setValue(key: string, value: number | ToneCurve) {
         :value="curveValue(control)"
         :histogram="histogram"
         :disabled="disabled"
+        :clip-shadows="clipShadows"
+        :clip-highlights="clipHighlights"
         @input="setValue(control.key, $event)"
         @commit="emit('commit')"
+        @clip="emit('clip', $event)"
       />
       <label
         v-else

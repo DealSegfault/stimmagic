@@ -38,6 +38,7 @@ import Tooltip from '../../components/ui/Tooltip.vue'
 import { getTaskTypeIconSvg } from '../../utils/taskTypeIcons'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 import { ROW_SQUARE, ROW_COLUMN, ROW_COLUMN_INLINE } from './rowLayout'
+import { photoAdjustmentGroup } from '../stack/adjustSections'
 import type { Op } from '../stack/types'
 import type { Staleness } from '../stack/stackState'
 import {
@@ -121,6 +122,10 @@ watch(
 function regionLabel(region: any): string {
   if (region.label) return region.label
   const kind = String(region.kind || 'region')
+  // Adjustment regions read as their group ('Point color', 'Grading'), the
+  // same name the chip that created them carried.
+  const group = photoAdjustmentGroup(kind)
+  if (group) return group.label
   return `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
 }
 

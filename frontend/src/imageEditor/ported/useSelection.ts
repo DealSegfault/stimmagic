@@ -684,6 +684,39 @@ export function useSelection() {
   }
 
   /**
+   * Composite an externally produced mask (AI select) into the selection.
+   *
+   * The mask is any drawable with white/opaque = selected — the model's own
+   * convention — and is scaled to the selection frame, so a downscaled
+   * segmentation result lands registered to the full-size composite. Produces
+   * a pixel selection: the ants come from tracing, like the wand's.
+   */
+  function applyMaskCanvas(mask: CanvasImageSource, mode: SelectionMode): void {
+    const ctx = selectionCtx.value;
+    if (!ctx) return;
+    const { width, height } = ctx.canvas;
+    ctx.save();
+    if (mode === 'new') {
+      ctx.clearRect(0, 0, width, height);
+      ctx.globalCompositeOperation = 'source-over';
+    } else if (mode === 'add') {
+      ctx.globalCompositeOperation = 'source-over';
+    } else if (mode === 'subtract') {
+      ctx.globalCompositeOperation = 'destination-out';
+    } else {
+      ctx.globalCompositeOperation = 'destination-in';
+    }
+    ctx.drawImage(mask, 0, 0, width, height);
+    ctx.restore();
+
+    selectionShapes.value = [{ type: 'pixels' }];
+    isInverted.value = false;
+    baseShapesBeforeInvert.value = [];
+    if (mode === 'new') currentFeatherRadius.value = 0;
+    updateMarchingAnts();
+  }
+
+  /**
    * Fill selection with color on a target canvas
    */
   function fillWithColor(
@@ -865,6 +898,7 @@ export function useSelection() {
     finishLassoSelection,
     createMagneticLassoSelection,
     magicWandSelect,
+    applyMaskCanvas,
     brushStroke,
     feather,
     invert,

@@ -16,12 +16,23 @@ const props = defineProps<{
   histogram?: ToneCurveHistogram
   disabled?: boolean
   label?: string
+  /** Clipping overlays on the canvas — workspace state owned by the view. */
+  clipShadows?: boolean
+  clipHighlights?: boolean
 }>()
 
 const emit = defineEmits<{
   input: [ToneCurve]
   commit: []
+  clip: [{ shadows: boolean; highlights: boolean }]
 }>()
+
+function toggleClip(edge: 'shadows' | 'highlights') {
+  emit('clip', {
+    shadows: edge === 'shadows' ? !props.clipShadows : !!props.clipShadows,
+    highlights: edge === 'highlights' ? !props.clipHighlights : !!props.clipHighlights,
+  })
+}
 
 const plot = ref<HTMLDivElement | null>(null)
 const channel = ref<ToneCurveChannel>('rgb')
@@ -262,196 +273,242 @@ function reset() {
       </button>
     </div>
 
-    <div class="flex items-center justify-between gap-2">
-      <div class="inline-flex items-center gap-0.5" role="radiogroup" aria-label="Curve channel">
-        <button
-          v-for="option in TONE_CURVE_CHANNELS"
-          :key="option"
-          type="button"
-          class="min-w-8 rounded-md px-2 py-1 text-[11px] font-medium
-                 transition-colors duration-150
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          :class="[
-            CHANNEL_TEXT[option],
-            channel === option ? 'bg-selection/15' : 'text-content-tertiary hover:bg-overlay-subtle',
-          ]"
-          :aria-checked="channel === option"
-          role="radio"
-          @click="channel = option"
-        >
-          {{ CHANNEL_LABELS[option] }}
-        </button>
-      </div>
+    <!-- The plot is capped, so the rows that belong to it are capped with it —
+         a narrow graph between full-width rows reads as a mistake. -->
+    <div class="mx-auto w-full max-w-[264px] space-y-2.5">
+      <div class="flex items-center justify-between gap-2">
+        <div class="inline-flex items-center gap-0.5" role="radiogroup" aria-label="Curve channel">
+          <button
+            v-for="option in TONE_CURVE_CHANNELS"
+            :key="option"
+            type="button"
+            class="min-w-8 rounded-md px-2 py-1 text-[11px] font-medium
+                   transition-colors duration-150
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+            :class="[
+              CHANNEL_TEXT[option],
+              channel === option ? 'bg-selection/15' : 'text-content-tertiary hover:bg-overlay-subtle',
+            ]"
+            :aria-checked="channel === option"
+            role="radio"
+            @click="channel = option"
+          >
+            {{ CHANNEL_LABELS[option] }}
+          </button>
+        </div>
 
-      <select
-        class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-[11px]
-               text-content-secondary focus-visible:outline-none
-               focus-visible:ring-2 ring-accent/60"
-        aria-label="Curve preset"
-        :disabled="disabled"
-        value=""
-        @change="applyPreset(($event.target as HTMLSelectElement).value);
-                 ($event.target as HTMLSelectElement).value = ''"
-      >
-        <option value="" disabled>Preset</option>
-        <option value="linear">Linear</option>
-        <option value="medium">Medium contrast</option>
-        <option value="strong">Strong contrast</option>
-      </select>
-    </div>
-
-    <div class="w-full aspect-square rounded-md bg-matte p-2">
-      <div
-        ref="plot"
-        class="relative h-full w-full cursor-crosshair touch-none"
-        role="group"
-        :aria-label="`${CHANNEL_LABELS[channel]} ${label ?? 'tone curve'}`"
-        @pointerdown="addPoint"
-        @pointermove="movePoint"
-        @pointerup="finishPoint"
-        @pointercancel="finishPoint"
-      >
-        <svg
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          class="pointer-events-none absolute inset-0 h-full w-full"
-          aria-hidden="true"
-        >
-          <path
-            d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100 M 0 25 H 100 M 0 50 H 100 M 0 75 H 100"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="0.5"
-            class="text-edge-subtle"
-            vector-effect="non-scaling-stroke"
-          />
-
-          <path
-            v-if="histogram"
-            :d="histogramPath(histogram.luminance)"
-            fill="currentColor"
-            class="text-content-muted opacity-25"
-          />
-          <path
-            v-if="histogram"
-            :d="histogramPath(histogram.red)"
-            fill="currentColor"
-            class="text-red-400 opacity-10"
-          />
-          <path
-            v-if="histogram"
-            :d="histogramPath(histogram.green)"
-            fill="currentColor"
-            class="text-green-400 opacity-10"
-          />
-          <path
-            v-if="histogram"
-            :d="histogramPath(histogram.blue)"
-            fill="currentColor"
-            class="text-blue-400 opacity-10"
-          />
-
-          <path
-            d="M 0 100 L 100 0"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="0.75"
-            stroke-dasharray="3 3"
-            class="text-content-muted opacity-70"
-            vector-effect="non-scaling-stroke"
-          />
-
-          <path
-            v-for="inactive in inactivePaths"
-            :key="inactive.channel"
-            :d="inactive.path"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="0.75"
-            class="text-content-muted opacity-25"
-            vector-effect="non-scaling-stroke"
-          />
-          <path
-            :d="activePath"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.75"
-            :class="CHANNEL_STROKE[channel]"
-            vector-effect="non-scaling-stroke"
-          />
-        </svg>
-
-        <button
-          v-for="(point, index) in points"
-          :key="`${channel}:${index}`"
-          type="button"
-          class="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2
-                 cursor-move rounded-full border-2 bg-matte
-                 transition-colors duration-150
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60
-                 ring-offset-1 ring-offset-matte
-                 disabled:cursor-not-allowed disabled:opacity-50"
-          :class="[
-            channel === 'rgb' ? 'border-content' :
-              channel === 'red' ? 'border-red-400' :
-                channel === 'green' ? 'border-green-400' : 'border-blue-400',
-            selectedIndex === index && (
-              channel === 'rgb' ? 'bg-content' :
-                channel === 'red' ? 'bg-red-400' :
-                  channel === 'green' ? 'bg-green-400' : 'bg-blue-400'
-            ),
-          ]"
-          :style="{ left: `${point[0] * 100}%`, top: `${(1 - point[1]) * 100}%` }"
+        <select
+          class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-[11px]
+                 text-content-secondary focus-visible:outline-none
+                 focus-visible:ring-2 ring-accent/60"
+          aria-label="Curve preset"
           :disabled="disabled"
-          role="slider"
-          aria-valuemin="0"
-          aria-valuemax="255"
-          :aria-valuenow="Math.round(point[1] * 255)"
-          :aria-label="`${CHANNEL_LABELS[channel]} curve point ${index + 1}`"
-          @pointerdown="startPoint($event, index)"
-          @dblclick.stop="removePoint(index)"
-          @keydown="keyboardPoint($event, index)"
-        />
+          value=""
+          @change="applyPreset(($event.target as HTMLSelectElement).value);
+                   ($event.target as HTMLSelectElement).value = ''"
+        >
+          <option value="" disabled>Preset</option>
+          <option value="linear">Linear</option>
+          <option value="medium">Medium contrast</option>
+          <option value="strong">Strong contrast</option>
+        </select>
       </div>
-    </div>
 
-    <div class="grid grid-cols-2 gap-2">
-      <label class="grid grid-cols-[auto_1fr] items-center gap-1.5 text-[11px]">
-        <span class="text-content-tertiary">Input</span>
-        <input
-          type="number"
-          min="0"
-          max="255"
-          step="1"
-          :disabled="disabled || !selectedPoint || selectedIndex === 0 || selectedIndex === points.length - 1"
-          :value="selectedPoint ? Math.round(selectedPoint[0] * 255) : ''"
-          class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-right
-                 font-mono tabular-nums text-content-secondary
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60
-                 disabled:opacity-40"
-          @change="setSelectedCoordinate(0, ($event.target as HTMLInputElement).value)"
-        />
-      </label>
-      <label class="grid grid-cols-[auto_1fr] items-center gap-1.5 text-[11px]">
-        <span class="text-content-tertiary">Output</span>
-        <input
-          type="number"
-          min="0"
-          max="255"
-          step="1"
-          :disabled="disabled || !selectedPoint"
-          :value="selectedPoint ? Math.round(selectedPoint[1] * 255) : ''"
-          class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-right
-                 font-mono tabular-nums text-content-secondary
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60
-                 disabled:opacity-40"
-          @change="setSelectedCoordinate(1, ($event.target as HTMLInputElement).value)"
-        />
-      </label>
-    </div>
+      <!-- Square by construction: input and output share the 0–255 scale, so the
+           identity diagonal has to read at 45°. -->
+      <div class="w-full aspect-square rounded-md bg-matte p-2">
+        <div
+          ref="plot"
+          class="relative h-full w-full cursor-crosshair touch-none"
+          role="group"
+          :aria-label="`${CHANNEL_LABELS[channel]} ${label ?? 'tone curve'}`"
+          @pointerdown="addPoint"
+          @pointermove="movePoint"
+          @pointerup="finishPoint"
+          @pointercancel="finishPoint"
+        >
+          <svg
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            class="pointer-events-none absolute inset-0 h-full w-full"
+            aria-hidden="true"
+          >
+            <path
+              d="M 25 0 V 100 M 50 0 V 100 M 75 0 V 100 M 0 25 H 100 M 0 50 H 100 M 0 75 H 100"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="0.5"
+              class="text-edge-subtle"
+              vector-effect="non-scaling-stroke"
+            />
 
-    <p class="text-[11px] text-content-tertiary">
-      Click the graph to add a point. Double-click a point to remove it.
-    </p>
+            <path
+              v-if="histogram"
+              :d="histogramPath(histogram.luminance)"
+              fill="currentColor"
+              class="text-content-muted opacity-25"
+            />
+            <path
+              v-if="histogram"
+              :d="histogramPath(histogram.red)"
+              fill="currentColor"
+              class="text-red-400 opacity-10"
+            />
+            <path
+              v-if="histogram"
+              :d="histogramPath(histogram.green)"
+              fill="currentColor"
+              class="text-green-400 opacity-10"
+            />
+            <path
+              v-if="histogram"
+              :d="histogramPath(histogram.blue)"
+              fill="currentColor"
+              class="text-blue-400 opacity-10"
+            />
+
+            <path
+              d="M 0 100 L 100 0"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="0.75"
+              stroke-dasharray="3 3"
+              class="text-content-muted opacity-70"
+              vector-effect="non-scaling-stroke"
+            />
+
+            <path
+              v-for="inactive in inactivePaths"
+              :key="inactive.channel"
+              :d="inactive.path"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="0.75"
+              class="text-content-muted opacity-25"
+              vector-effect="non-scaling-stroke"
+            />
+            <path
+              :d="activePath"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              :class="CHANNEL_STROKE[channel]"
+              vector-effect="non-scaling-stroke"
+            />
+          </svg>
+
+          <!-- Clipping indicators: the histogram is already the tonal read-out,
+               so its corners carry the warnings — shadows left, highlights
+               right — toggling overlays on the canvas itself. -->
+          <button
+            type="button"
+            class="absolute left-0 top-0 grid h-5 w-5 place-items-center rounded-md
+                   transition-colors duration-150
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+            :class="clipShadows
+              ? 'text-blue-400'
+              : 'text-content-muted hover:bg-overlay-subtle hover:text-content-tertiary'"
+            :aria-pressed="clipShadows"
+            aria-label="Show shadow clipping"
+            title="Show shadow clipping"
+            @pointerdown.stop
+            @click.stop="toggleClip('shadows')"
+          >
+            <svg viewBox="0 0 10 10" class="h-2 w-2" aria-hidden="true">
+              <path d="M5 1 L9 8 H1 Z" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="absolute right-0 top-0 grid h-5 w-5 place-items-center rounded-md
+                   transition-colors duration-150
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+            :class="clipHighlights
+              ? 'text-red-400'
+              : 'text-content-muted hover:bg-overlay-subtle hover:text-content-tertiary'"
+            :aria-pressed="clipHighlights"
+            aria-label="Show highlight clipping"
+            title="Show highlight clipping"
+            @pointerdown.stop
+            @click.stop="toggleClip('highlights')"
+          >
+            <svg viewBox="0 0 10 10" class="h-2 w-2" aria-hidden="true">
+              <path d="M5 1 L9 8 H1 Z" fill="currentColor" />
+            </svg>
+          </button>
+
+          <button
+            v-for="(point, index) in points"
+            :key="`${channel}:${index}`"
+            type="button"
+            class="absolute h-3 w-3 -translate-x-1/2 -translate-y-1/2
+                   cursor-move rounded-full border-2 bg-matte
+                   transition-colors duration-150
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60
+                   ring-offset-1 ring-offset-matte
+                   disabled:cursor-not-allowed disabled:opacity-50"
+            :class="[
+              channel === 'rgb' ? 'border-content' :
+                channel === 'red' ? 'border-red-400' :
+                  channel === 'green' ? 'border-green-400' : 'border-blue-400',
+              selectedIndex === index && (
+                channel === 'rgb' ? 'bg-content' :
+                  channel === 'red' ? 'bg-red-400' :
+                    channel === 'green' ? 'bg-green-400' : 'bg-blue-400'
+              ),
+            ]"
+            :style="{ left: `${point[0] * 100}%`, top: `${(1 - point[1]) * 100}%` }"
+            :disabled="disabled"
+            role="slider"
+            aria-valuemin="0"
+            aria-valuemax="255"
+            :aria-valuenow="Math.round(point[1] * 255)"
+            :aria-label="`${CHANNEL_LABELS[channel]} curve point ${index + 1}`"
+            @pointerdown="startPoint($event, index)"
+            @dblclick.stop="removePoint(index)"
+            @keydown="keyboardPoint($event, index)"
+          />
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <label class="grid grid-cols-[auto_1fr] items-center gap-1.5 text-[11px]">
+          <span class="text-content-tertiary">Input</span>
+          <input
+            type="number"
+            min="0"
+            max="255"
+            step="1"
+            :disabled="disabled || !selectedPoint || selectedIndex === 0 || selectedIndex === points.length - 1"
+            :value="selectedPoint ? Math.round(selectedPoint[0] * 255) : ''"
+            class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-right
+                   font-mono tabular-nums text-content-secondary
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60
+                   disabled:opacity-40"
+            @change="setSelectedCoordinate(0, ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label class="grid grid-cols-[auto_1fr] items-center gap-1.5 text-[11px]">
+          <span class="text-content-tertiary">Output</span>
+          <input
+            type="number"
+            min="0"
+            max="255"
+            step="1"
+            :disabled="disabled || !selectedPoint"
+            :value="selectedPoint ? Math.round(selectedPoint[1] * 255) : ''"
+            class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-right
+                   font-mono tabular-nums text-content-secondary
+                   focus-visible:outline-none focus-visible:ring-2 ring-accent/60
+                   disabled:opacity-40"
+            @change="setSelectedCoordinate(1, ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+      </div>
+
+      <p class="text-[11px] text-content-tertiary">
+        Click the graph to add a point. Double-click a point to remove it.
+      </p>
+    </div>
   </div>
 </template>

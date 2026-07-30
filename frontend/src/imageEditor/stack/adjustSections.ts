@@ -14,6 +14,7 @@
  * pixel pipeline; a step simply carries only the params its doorway set.
  */
 
+import type { IconName } from '../ported/icons'
 import {
   DEFAULT_TONE_CURVE,
   toneCurveValueOf,
@@ -54,16 +55,63 @@ export function isAdjustSlider(control: AdjustControl): control is AdjustSliderC
   return control.kind !== 'curve'
 }
 
-export type PhotoAdjustmentGroupId = 'light' | 'color' | 'detail'
+export type PhotoAdjustmentGroupId =
+  | 'light' | 'color' | 'detail'
+  | 'mixer' | 'point' | 'grade'
+
+export type PhotoAdjustmentSection =
+  | 'tone' | 'tint' | 'detail'
+  | 'mixer' | 'point' | 'grade'
 
 export interface PhotoAdjustmentGroup {
   id: PhotoAdjustmentGroupId
   /** Stable document marker used by existing whole-image adjustment steps. */
-  section: 'tone' | 'tint' | 'detail'
+  section: PhotoAdjustmentSection
   label: string
-  icon: 'sun' | 'palette' | 'focus'
+  icon: IconName
   controls: AdjustControl[]
+  /**
+   * A custom inspector surface for the group. The controls stay plain
+   * sliders in the schema — projection, parity and masked sharing all treat
+   * them as numbers — and only the rendering is specialised.
+   */
+  presentation?: 'mixer' | 'point' | 'grade'
 }
+
+/**
+ * The Mixer's fixed hue bands. Centers are the classic HSL-panel anchors;
+ * weights between neighbouring centers are triangular, so every hue belongs
+ * to at most two bands and the weights always sum to one.
+ */
+export const MIXER_BANDS = [
+  { id: 'Red', label: 'Red', hue: 0, swatch: '#f87171' },
+  { id: 'Orange', label: 'Orange', hue: 30, swatch: '#fb923c' },
+  { id: 'Yellow', label: 'Yellow', hue: 60, swatch: '#facc15' },
+  { id: 'Green', label: 'Green', hue: 120, swatch: '#4ade80' },
+  { id: 'Aqua', label: 'Aqua', hue: 180, swatch: '#2dd4bf' },
+  { id: 'Blue', label: 'Blue', hue: 240, swatch: '#60a5fa' },
+  { id: 'Purple', label: 'Purple', hue: 285, swatch: '#a78bfa' },
+  { id: 'Magenta', label: 'Magenta', hue: 330, swatch: '#f472b6' },
+] as const
+
+export type MixerMode = 'Hue' | 'Sat' | 'Lum'
+export const MIXER_MODES: Array<{ id: MixerMode; label: string }> = [
+  { id: 'Hue', label: 'Hue' },
+  { id: 'Sat', label: 'Saturation' },
+  { id: 'Lum', label: 'Luminance' },
+]
+
+export function mixerKey(mode: MixerMode, band: (typeof MIXER_BANDS)[number]['id']) {
+  return `mixer${mode}${band}`
+}
+
+const MIXER_CONTROLS: AdjustSliderControl[] = MIXER_MODES.flatMap(mode =>
+  MIXER_BANDS.map(band => ({
+    key: mixerKey(mode.id, band.id),
+    label: band.label,
+    min: -100, max: 100, step: 1, default: 0,
+  })),
+)
 
 /**
  * The photographic adjustment surface.
@@ -130,6 +178,53 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'grainSize', label: 'Grain size', min: 0, max: 100, step: 1, default: 0 },
       { key: 'grainRoughness', label: 'Grain roughness', min: 0, max: 100, step: 1, default: 50 },
       { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
+    ],
+  },
+  {
+    id: 'mixer',
+    section: 'mixer',
+    label: 'Mixer',
+    icon: 'mixer',
+    presentation: 'mixer',
+    controls: MIXER_CONTROLS,
+  },
+  {
+    id: 'point',
+    section: 'point',
+    label: 'Point color',
+    icon: 'pointColor',
+    presentation: 'point',
+    // The reference (hue/sat/lum) is what the eyedropper picked; the shifts
+    // are the edit. Identity while every shift is zero, whatever the picked
+    // reference is.
+    controls: [
+      { key: 'pointHue', label: 'Picked hue', min: 0, max: 360, step: 1, default: 0 },
+      { key: 'pointSat', label: 'Picked saturation', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'pointLum', label: 'Picked luminance', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'pointHueShift', label: 'Hue shift', min: -180, max: 180, step: 1, default: 0 },
+      { key: 'pointSatShift', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'pointLumShift', label: 'Luminance', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'pointRange', label: 'Range', min: 0, max: 100, step: 1, default: 50 },
+    ],
+  },
+  {
+    id: 'grade',
+    section: 'grade',
+    label: 'Grading',
+    icon: 'grading',
+    presentation: 'grade',
+    controls: [
+      { key: 'gradeShadowHue', label: 'Shadow hue', min: 0, max: 360, step: 1, default: 0 },
+      { key: 'gradeShadowSat', label: 'Shadow strength', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'gradeShadowLum', label: 'Shadow luminance', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'gradeMidHue', label: 'Midtone hue', min: 0, max: 360, step: 1, default: 0 },
+      { key: 'gradeMidSat', label: 'Midtone strength', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'gradeMidLum', label: 'Midtone luminance', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'gradeHighlightHue', label: 'Highlight hue', min: 0, max: 360, step: 1, default: 0 },
+      { key: 'gradeHighlightSat', label: 'Highlight strength', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'gradeHighlightLum', label: 'Highlight luminance', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'gradeBlend', label: 'Blend', min: 0, max: 100, step: 1, default: 50 },
+      { key: 'gradeBalance', label: 'Balance', min: -100, max: 100, step: 1, default: 0 },
     ],
   },
 ]
@@ -246,10 +341,11 @@ export function adjustControl(key: string): AdjustSliderControl | undefined {
  * two of the levels blob", and the row should read the same way.
  */
 export interface LevelEdit {
-  id: 'tone' | 'detail' | 'tint'
+  id: PhotoAdjustmentSection
   label: string
-  icon: 'sun' | 'palette' | 'focus'
+  icon: IconName
   controls: AdjustControl[]
+  presentation?: PhotoAdjustmentGroup['presentation']
   /** Params set at creation, beyond the marker — what makes the edit DO its thing. */
   seed?: Record<string, any>
 }
@@ -259,6 +355,7 @@ export const LEVEL_EDITS: LevelEdit[] = PHOTO_ADJUSTMENT_GROUPS.map(group => ({
   label: group.label,
   icon: group.icon,
   controls: group.controls,
+  presentation: group.presentation,
 }))
 
 export function levelEditById(id: string): LevelEdit | undefined {

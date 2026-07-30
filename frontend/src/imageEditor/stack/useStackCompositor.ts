@@ -511,6 +511,9 @@ export class StackCompositor {
             || region.kind === 'light'
             || region.kind === 'color'
             || region.kind === 'detail'
+            || region.kind === 'mixer'
+            || region.kind === 'point'
+            || region.kind === 'grade'
           ) {
             const settings = region.settings ?? {}
             const adjusted = applyAdjust(

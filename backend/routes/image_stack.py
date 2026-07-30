@@ -260,6 +260,23 @@ def _clean_step_label(text: str) -> Optional[str]:
     return label[0].upper() + label[1:]
 
 
+def _bare_noun(text: str) -> Optional[str]:
+    """Reduce a subject phrase to the one noun the row needs.
+
+    Models answer "german shepherd dog" or "abandoned house" however tightly the
+    instruction is worded, and no amount of prompting kills the adjective every
+    time. The head noun of an English noun phrase is its last word, so the
+    phrase is cut back to that: "dog", "house". This does clip real compounds
+    ("fire hydrant" -> "hydrant"), which reads fine in a row and is the price of
+    a rule that never leaves an adjective standing.
+    """
+    words = " ".join((text or "").split()).strip('".\'').lower().split()
+    if not words or len(words) > 4:
+        # Not a subject phrase — a sentence or a refusal. Keep the verb label.
+        return None
+    return words[-1]
+
+
 @router.post("/name-edit", response_model=NameEditResponse)
 async def name_edit(request: NameEditRequest):
     """Name a Remove or Repaint step from what it actually did.
@@ -279,18 +296,31 @@ async def name_edit(request: NameEditRequest):
     if request.operation == "remove":
         instruction = (
             "This is a crop of a photo, centered on something that is about to "
-            "be erased. Name that subject in one to three lowercase words, as a "
-            "noun phrase. Reply with ONLY the name — no punctuation, no "
-            "sentence, no explanation."
+            "be erased. Reply with ONE lowercase word: the plainest common noun "
+            "for it. No breed, no color, no age, no condition, no adjectives of "
+            "any kind. Examples of well-formed answers:\n"
+            "a german shepherd in a field -> dog\n"
+            "a boarded-up farmhouse -> house\n"
+            "a red pickup truck -> truck\n"
+            "a woman in a yellow raincoat -> woman\n"
+            "Reply with ONLY that word — no punctuation, no sentence, no "
+            "explanation."
         )
     elif request.operation == "repaint" and target:
         instruction = (
             "This is a crop of a photo, centered on content that is about to be "
             "replaced. The replacement was requested as: "
             f"\"{target}\"\n"
-            "Reply with ONLY \"X -> Y\", where X names in one or two lowercase "
-            "words what is there now and Y names in one or two lowercase words "
-            "what it becomes. No other text."
+            "Reply with ONLY \"X -> Y\", where X names what is there now and Y "
+            "names what it becomes. Lowercase, one word per side whenever one "
+            "word will do, two at the most, and only keep an adjective when it "
+            "is the whole point of the change. Examples of well-formed "
+            "answers:\n"
+            "dog -> cat\n"
+            "house -> barn\n"
+            "tree -> statue\n"
+            "cloudy sky -> clear sky\n"
+            "No other text."
         )
     else:
         return NameEditResponse()
@@ -304,11 +334,13 @@ async def name_edit(request: NameEditRequest):
         )
         if error or not result:
             return NameEditResponse()
-        label = _clean_step_label(result)
+        if request.operation == "remove":
+            subject = _bare_noun(result)
+            label = _clean_step_label(f"remove {subject}") if subject else None
+        else:
+            label = _clean_step_label(result)
         if not label:
             return NameEditResponse()
-        if request.operation == "remove":
-            label = _clean_step_label(f"remove {label.lower()}")
         return NameEditResponse(label=label)
     except Exception as exc:
         log.debug("step naming failed", error_type=type(exc).__name__)

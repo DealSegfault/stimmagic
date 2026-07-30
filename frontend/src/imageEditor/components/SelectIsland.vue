@@ -17,7 +17,7 @@
  * left); clicking the armed tool — or reaching for any family control that
  * wants the canvas back — disarms it.
  */
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolIcon from './ToolIcon.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
@@ -44,6 +44,10 @@ const props = defineProps<{
    * tool: this is true when no family is open and no region tool is armed.
    */
   pointerActive?: boolean
+  /** A prompt-to-mask request is in flight; the field shows it and re-arms after. */
+  aiBusy?: boolean
+  /** The last prompt-to-mask failure, shown on the field until the next keystroke. */
+  aiError?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -52,9 +56,33 @@ const emit = defineEmits<{
   set: [Record<string, any>]
   invert: []
   clear: []
+  aiSelect: [string]
 }>()
 
 const combineEnabled = computed(() => props.armed !== null)
+
+/**
+ * The Object tool's popup: arming the tool raises a small panel above the
+ * island carrying its second gesture — select by NAME — beside the caption
+ * for its first (click the thing). It lives with the tool rather than on the
+ * island row because the field is meaningless while a geometric tool owns the
+ * pointer; disarming folds it away. The typed prompt survives a run —
+ * re-running and refining are the common follow-ups.
+ */
+const aiPrompt = ref('')
+const shownAiError = ref<string | null>(null)
+const aiInput = ref<HTMLInputElement | null>(null)
+watch(() => props.aiError, value => { shownAiError.value = value ?? null })
+watch(() => props.armed, armed => {
+  if (armed === 'object') nextTick(() => aiInput.value?.focus())
+  else shownAiError.value = null
+})
+
+function submitAiPrompt() {
+  const prompt = aiPrompt.value.trim()
+  if (!prompt || props.aiBusy) return
+  emit('aiSelect', prompt)
+}
 
 /**
  * ONE slider slot, fixed geometry; each tool brings its primary parameter.
@@ -105,6 +133,59 @@ function sliderClass(enabled: boolean) {
 </script>
 
 <template>
+  <!-- The host positions this root (absolute over the matte); that same
+       positioning is what the tool panel's `absolute bottom-full` anchors to,
+       so the wrapper must NOT add a position class of its own. -->
+  <div class="w-max">
+  <!-- The Object tool's panel, raised over the island while the tool is
+       armed. Both of the tool's gestures are stated here: the field for
+       select-by-name, the caption for click-to-select. -->
+  <Transition
+    enter-active-class="transition duration-150 ease-out"
+    enter-from-class="opacity-0 translate-y-1"
+    leave-active-class="transition duration-100 ease-in"
+    leave-to-class="opacity-0 translate-y-1"
+  >
+    <div
+      v-if="armed === 'object'"
+      class="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 w-max
+             px-2.5 py-2 space-y-1.5
+             bg-surface border border-edge-subtle rounded-lg shadow-lg"
+    >
+      <div class="flex items-center gap-1.5">
+        <input
+          ref="aiInput"
+          v-model="aiPrompt"
+          type="text"
+          placeholder="Select by name, or click the object…"
+          aria-label="Select by name"
+          class="w-64 px-2.5 py-1.5 text-xs rounded-md bg-overlay-subtle/60 text-content
+                 placeholder:text-content-tertiary border focus:outline-none"
+          :class="[
+            shownAiError ? 'border-red-400/70' : 'border-edge-subtle focus:border-accent/60',
+            aiBusy ? 'animate-pulse' : '',
+          ]"
+          :disabled="aiBusy"
+          @input="shownAiError = null"
+          @keydown.enter.prevent="submitAiPrompt"
+        />
+        <button
+          type="button"
+          class="px-2.5 py-1.5 text-xs rounded-md whitespace-nowrap transition-colors"
+          :class="aiPrompt.trim() && !aiBusy
+            ? 'bg-accent/15 text-accent hover:bg-accent/25'
+            : 'text-content-tertiary/50 cursor-default'"
+          :disabled="!aiPrompt.trim() || aiBusy"
+          @click="submitAiPrompt"
+        >
+          {{ aiBusy ? 'Selecting…' : 'Select' }}
+        </button>
+      </div>
+      <!-- Failures only; the happy path needs no second line. -->
+      <p v-if="shownAiError" class="text-xs text-red-400">{{ shownAiError }}</p>
+    </div>
+  </Transition>
+
   <div
     class="flex items-center gap-1 px-2.5 py-1.5 w-max
            bg-surface border border-edge-subtle rounded-lg shadow-lg"
@@ -257,5 +338,6 @@ function sliderClass(enabled: boolean) {
     >
       Deselect
     </button>
+  </div>
   </div>
 </template>

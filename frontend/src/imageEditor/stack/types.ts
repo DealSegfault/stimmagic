@@ -117,6 +117,7 @@ export type RetouchRegionKind =
   | 'heal' | 'clone' | 'patch' | 'remove'
   | 'adjust' // read compatibility for the first local-adjustment build
   | 'light' | 'color' | 'detail'
+  | 'mixer' | 'point' | 'grade'
 
 /**
  * Finishing controls for one repair region.
@@ -165,6 +166,26 @@ export interface RetouchRegionSettings {
   noise: number
   grainSize: number
   grainRoughness: number
+  /** Mixer: `mixer{Hue|Sat|Lum}{Band}` sliders, -100..100. */
+  [key: `mixer${string}`]: number
+  pointHue: number
+  pointSat: number
+  pointLum: number
+  pointHueShift: number
+  pointSatShift: number
+  pointLumShift: number
+  pointRange: number
+  gradeShadowHue: number
+  gradeShadowSat: number
+  gradeShadowLum: number
+  gradeMidHue: number
+  gradeMidSat: number
+  gradeMidLum: number
+  gradeHighlightHue: number
+  gradeHighlightSat: number
+  gradeHighlightLum: number
+  gradeBlend: number
+  gradeBalance: number
 }
 
 /**

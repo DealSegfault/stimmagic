@@ -1,10 +1,12 @@
 <script setup lang="ts">
 /**
  * The editor's color picker, rebuilt to the Variant-A mock
- * (plans/COLOR_PICKER_MOCK.html): the color IS the header — well, editable
- * hex, opacity %, eyedropper — over Grid/Spectrum/Sliders tabs, a slim
- * opacity row, and exactly two swatch rows: "From this image" (the extracted
- * palette) and "Recent" (self-filling). The preset cartoon palettes are gone.
+ * (plans/COLOR_PICKER_MOCK.html): the color IS the header — well, opacity %,
+ * eyedropper — over Grid/Spectrum/Manual tabs, a slim opacity row, and
+ * exactly two swatch rows: "From this image" (the extracted palette) and
+ * "Recent" (self-filling). The preset cartoon palettes are gone. The Manual
+ * tab holds every way of NAMING a color rather than pointing at one: the hex
+ * field and the RGB sliders with editable channel numbers.
  *
  * The grid is generated in OKLCH — perceptual lightness/chroma steps — so
  * every row keeps a visible difference; the old HSL ramp collapsed its light
@@ -319,7 +321,7 @@ const opacityBg = computed(() => {
   return `linear-gradient(to right, rgba(${r},${g},${b},0), rgb(${r},${g},${b}))`;
 });
 
-// -- hex + eyedropper --------------------------------------------------------
+// -- manual entry + eyedropper -------------------------------------------------
 
 function handleHexChange() {
   const color = hexToRgb(hexInput.value);
@@ -329,6 +331,16 @@ function handleHexChange() {
   } else if (props.modelValue) {
     hexInput.value = rgbToHex(props.modelValue);
   }
+}
+
+/** A typed channel value is a committed pick, like an entered hex. */
+function handleChannelEntry(channel: 'r' | 'g' | 'b', raw: string) {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return;
+  editColor.value[channel] = Math.round(Math.max(0, Math.min(255, value)));
+  hexInput.value = rgbToHex(editColor.value);
+  applyColor();
+  pushRecent(editColor.value);
 }
 
 const eyeDropperSupported = ref(false);
@@ -385,10 +397,11 @@ function chooseTab(tab: 'grid' | 'spectrum' | 'sliders') {
   } catch { /* preference just doesn't persist */ }
 }
 
+// 'sliders' keeps its stored id so a remembered tab choice survives the rename.
 const TABS = [
   { id: 'grid', label: 'Grid' },
   { id: 'spectrum', label: 'Spectrum' },
-  { id: 'sliders', label: 'Sliders' },
+  { id: 'sliders', label: 'Manual' },
 ] as const;
 </script>
 
@@ -405,18 +418,7 @@ const TABS = [
             : 'repeating-conic-gradient(rgba(255,255,255,.12) 0% 25%, rgba(255,255,255,.04) 0% 50%) 0 0/8px 8px',
         }"
       />
-      <div class="flex-1 flex items-center gap-1.5 px-2 py-1 bg-surface-raised rounded-md">
-        <span class="text-xs text-content-tertiary">#</span>
-        <input
-          v-model="hexInput"
-          maxlength="6"
-          spellcheck="false"
-          class="w-full bg-transparent text-xs tabular-nums uppercase text-content
-                 focus:outline-none"
-          @change="handleHexChange"
-          @keyup.enter="handleHexChange"
-        />
-      </div>
+      <div class="flex-1" />
       <div class="flex items-center gap-0.5 px-2 py-1 bg-surface-raised rounded-md">
         <input
           :value="editOpacity"
@@ -498,8 +500,22 @@ const TABS = [
       />
     </div>
 
-    <!-- Sliders -->
+    <!-- Manual: name the color instead of pointing at one — hex first, then
+         the RGB sliders with typed channel values. -->
     <div v-else class="flex flex-col gap-2.5 py-1">
+      <div class="flex items-center gap-1.5 px-2 py-1 bg-surface-raised rounded-md">
+        <span class="text-xs text-content-tertiary">#</span>
+        <input
+          v-model="hexInput"
+          maxlength="6"
+          spellcheck="false"
+          aria-label="Hex color"
+          class="w-full bg-transparent text-xs tabular-nums uppercase text-content
+                 focus:outline-none"
+          @change="handleHexChange"
+          @keyup.enter="handleHexChange"
+        />
+      </div>
       <div v-for="channel in CHANNELS" :key="channel.id" class="flex items-center gap-2">
         <span class="w-3 text-[11px] text-content-tertiary">{{ channel.label }}</span>
         <div
@@ -514,9 +530,15 @@ const TABS = [
             :style="{ left: `${(editColor[channel.id] / 255) * 100}%` }"
           />
         </div>
-        <span class="w-7 text-right text-[11px] tabular-nums text-content-secondary">
-          {{ editColor[channel.id] }}
-        </span>
+        <input
+          :value="editColor[channel.id]"
+          type="number" min="0" max="255"
+          :aria-label="`${channel.label} channel`"
+          class="w-10 px-1 py-0.5 bg-surface-raised rounded text-right text-[11px] tabular-nums
+                 text-content-secondary focus:outline-none focus-visible:ring-2 ring-accent/60
+                 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+          @change="handleChannelEntry(channel.id, ($event.target as HTMLInputElement).value)"
+        />
       </div>
     </div>
 

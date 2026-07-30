@@ -23,11 +23,18 @@ const props = defineProps<{
   params: Record<string, any>
   histogram?: ToneCurveHistogram
   disabled?: boolean
+  /** Point color only: the canvas eyedropper is currently armed. */
+  picking?: boolean
+  clipShadows?: boolean
+  clipHighlights?: boolean
 }>()
 
 const emit = defineEmits<{
   change: [Record<string, any>, string]
   commit: []
+  /** Point color asks the host view to arm the canvas eyedropper. */
+  pick: []
+  clip: [{ shadows: boolean; highlights: boolean }]
 }>()
 
 function valueOf(control: AdjustSliderControl) {
@@ -128,9 +135,15 @@ const openSection = ref<string>('levels')
         :values="params"
         :histogram="histogram"
         :disabled="disabled"
+        :presentation="levelEdit.presentation"
+        :picking="picking"
+        :clip-shadows="clipShadows"
+        :clip-highlights="clipHighlights"
         coalesce-prefix="adjust"
         @change="setPhotoValue"
         @commit="emit('commit')"
+        @pick="emit('pick')"
+        @clip="emit('clip', $event)"
       />
     </section>
 
