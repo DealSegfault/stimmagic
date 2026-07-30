@@ -608,6 +608,7 @@ export class LiveAdjustPreview {
   readonly canvas = document.createElement('canvas')
   private gl: WebGLRenderingContext | null = null
   private program: WebGLProgram | null = null
+  private positionBuffer: WebGLBuffer | null = null
   private sourceTexture: WebGLTexture | null = null
   private maskTexture: WebGLTexture | null = null
   private base: AdjustmentValues = {}
@@ -630,44 +631,58 @@ export class LiveAdjustPreview {
     const scale = Math.min(1, Math.sqrt(maxPixels / (requestedWidth * requestedHeight)))
     const width = Math.max(1, Math.round(requestedWidth * scale))
     const height = Math.max(1, Math.round(requestedHeight * scale))
-    this.canvas.width = width
-    this.canvas.height = height
+    if (this.canvas.width !== width) this.canvas.width = width
+    if (this.canvas.height !== height) this.canvas.height = height
     this.base = { ...base }
     this.masked = !!options.mask
 
-    const gl = this.canvas.getContext('webgl', {
-      alpha: false,
-      antialias: false,
-      premultipliedAlpha: false,
-      preserveDrawingBuffer: true,
-    })
-    if (!gl) return false
-    this.gl = gl
+    let gl = this.gl
+    if (!gl) {
+      gl = this.canvas.getContext('webgl', {
+        alpha: false,
+        antialias: false,
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: true,
+      })
+      if (!gl) return false
+      this.gl = gl
+    }
 
     try {
-      const program = gl.createProgram()
-      if (!program) return false
-      gl.attachShader(program, compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER))
-      gl.attachShader(program, compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER))
-      gl.linkProgram(program)
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        throw new Error(gl.getProgramInfoLog(program) || 'Could not link adjustment preview shader.')
+      let program = this.program
+      if (!program) {
+        program = gl.createProgram()
+        if (!program) return false
+        this.program = program
+        const vertexShader = compile(gl, gl.VERTEX_SHADER, VERTEX_SHADER)
+        const fragmentShader = compile(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER)
+        gl.attachShader(program, vertexShader)
+        gl.attachShader(program, fragmentShader)
+        gl.linkProgram(program)
+        gl.deleteShader(vertexShader)
+        gl.deleteShader(fragmentShader)
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || 'Could not link adjustment preview shader.')
+        }
+
+        const buffer = gl.createBuffer()
+        if (!buffer) throw new Error('Could not allocate adjustment preview vertex buffer.')
+        this.positionBuffer = buffer
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+        gl.bufferData(
+          gl.ARRAY_BUFFER,
+          new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
+          gl.STATIC_DRAW,
+        )
+        const position = gl.getAttribLocation(program, 'a_position')
+        gl.enableVertexAttribArray(position)
+        gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0)
       }
-      this.program = program
       gl.useProgram(program)
 
-      const buffer = gl.createBuffer()
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]),
-        gl.STATIC_DRAW,
-      )
-      const position = gl.getAttribLocation(program, 'a_position')
-      gl.enableVertexAttribArray(position)
-      gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0)
-
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1)
+      if (this.sourceTexture) gl.deleteTexture(this.sourceTexture)
+      if (this.maskTexture) gl.deleteTexture(this.maskTexture)
       this.sourceTexture = this.uploadTexture(source, 0, width, height)
       const white = document.createElement('canvas')
       white.width = 1
@@ -786,10 +801,12 @@ export class LiveAdjustPreview {
     if (gl) {
       if (this.sourceTexture) gl.deleteTexture(this.sourceTexture)
       if (this.maskTexture) gl.deleteTexture(this.maskTexture)
+      if (this.positionBuffer) gl.deleteBuffer(this.positionBuffer)
       if (this.program) gl.deleteProgram(this.program)
     }
     this.gl = null
     this.program = null
+    this.positionBuffer = null
     this.sourceTexture = null
     this.maskTexture = null
   }

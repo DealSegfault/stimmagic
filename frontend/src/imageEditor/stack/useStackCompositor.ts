@@ -270,6 +270,11 @@ function seedFrom(id: string): number {
   return hash >>> 0
 }
 
+/** Compact deterministic cache key for an internal stage. */
+function contentHash(value: string): string {
+  return seedFrom(value).toString(16).padStart(8, '0')
+}
+
 export class StackCompositor {
   private cache = new Map<string, HTMLCanvasElement>()
   /** Ops that could not be applied on the last render, for the UI to report. */
@@ -282,6 +287,7 @@ export class StackCompositor {
 
   clear() {
     this.cache.clear()
+    this.gradientRaster.clear()
   }
 
   /**
@@ -308,12 +314,23 @@ export class StackCompositor {
   }
 
   private remember(key: string, canvas: HTMLCanvasElement) {
-    // Map preserves insertion order, so the first key is the oldest.
+    // Refreshing an existing key must not evict an unrelated entry.
+    this.cache.delete(key)
+    // Map preserves insertion order, so the first key is the least recently used.
     if (this.cache.size >= this.maxEntries) {
       const oldest = this.cache.keys().next().value
       if (oldest !== undefined) this.cache.delete(oldest)
     }
     this.cache.set(key, canvas)
+  }
+
+  private cached(key: string): HTMLCanvasElement | null {
+    const canvas = this.cache.get(key)
+    if (!canvas) return null
+    // A get refreshes recency, keeping the stages nearest active edits hot.
+    this.cache.delete(key)
+    this.cache.set(key, canvas)
+    return canvas
   }
 
   /**
@@ -327,7 +344,7 @@ export class StackCompositor {
 
   async render(doc: StackDocument): Promise<HTMLCanvasElement> {
     const { inputs, head } = stackHashes(doc)
-    const cachedHead = this.cache.get(head)
+    const cachedHead = this.cached(head)
     if (cachedHead) return cachedHead
     this.failedOpIds.clear()
 
@@ -338,7 +355,7 @@ export class StackCompositor {
     let startIndex = 0
     let current: HTMLCanvasElement | null = null
     for (let i = doc.edits.length - 1; i >= 0; i--) {
-      const cached = this.cache.get(inputs[i])
+      const cached = this.cached(inputs[i])
       if (cached) {
         current = cached
         startIndex = i
@@ -362,7 +379,15 @@ export class StackCompositor {
       // failing the render: one unreadable mask must not blank the canvas and
       // hide every other step's work.
       try {
-        current = await this.applyOp(current, op, current.width, current.height, doc, i)
+        current = await this.applyOp(
+          current,
+          op,
+          current.width,
+          current.height,
+          doc,
+          i,
+          inputs[i],
+        )
       } catch (error) {
         this.failedOpIds.add(op.id)
         console.warn(`[imageStack] step "${op.label}" could not be applied`, error)
@@ -520,7 +545,8 @@ export class StackCompositor {
     width: number,
     height: number,
     doc: StackDocument,
-    index: number
+    index: number,
+    inputHash: string,
   ): Promise<HTMLCanvasElement> {
     if (!op.enabled) return input
 
@@ -564,8 +590,17 @@ export class StackCompositor {
       }
       if (kind === 'retouch-regions') {
         let output = input
+        let regionStageHash = `retouch:${inputHash}:${op.id}:${width}x${height}`
         for (const region of anyOp.regions ?? []) {
           if (!region.enabled) continue
+          regionStageHash = `retouch:${contentHash(
+            `${regionStageHash}|${JSON.stringify(region)}`,
+          )}`
+          const cachedRegion = this.cached(regionStageHash)
+          if (cachedRegion) {
+            output = cachedRegion
+            continue
+          }
           const mask = await this.loadRegionMask(region, doc, index, width, height)
           // A region with no coverage yet — no payload, or a gradient dragged
           // to nothing — contributes nothing rather than covering everything.
@@ -602,6 +637,7 @@ export class StackCompositor {
                 opacity: settings.opacity ?? 1,
               },
             )
+            this.remember(regionStageHash, output)
             continue
           }
           if (!region.result_ref) continue
@@ -624,6 +660,7 @@ export class StackCompositor {
               opacity: region.settings?.opacity ?? 1,
             },
           )
+          this.remember(regionStageHash, output)
         }
         return output
       }

@@ -102,6 +102,7 @@ import {
   transformGradientMask,
   withGradientSlider,
 } from '../imageEditor/stack/regionMask'
+import { combineAfterSelectionChange } from '../imageEditor/stack/selectionLifecycle'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
 } from '../imageEditor/stack/adjustSections'
@@ -114,6 +115,7 @@ import { useSelection } from '../imageEditor/ported/useSelection'
 import type {
   GenerativeOp,
   GradientMask,
+  ModelReferenceImage,
   RetouchRegion,
   RetouchRegionKind,
   RetouchRegionSettings,
@@ -139,6 +141,7 @@ import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices'
 import { applyEffects } from '../imageEditor/ported/effects'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
 import {
+  modelReferenceLimits,
   modelToolDefaults,
   sanitizeModelToolParams,
 } from '../imageEditor/stack/modelToolParams'
@@ -187,6 +190,9 @@ const family = ref<FamilyId | null>(null)
 const sub = ref<string | null>(null)
 const repaintPrompt = ref(initialToolPrefs.repaintPrompt ?? '')
 const expandPrompt = ref(initialToolPrefs.expandPrompt ?? '')
+/** Content-specific drafts; references never leak into Remove or across verbs. */
+const repaintReferenceImages = ref<ModelReferenceImage[]>([])
+const expandReferenceImages = ref<ModelReferenceImage[]>([])
 const recentRepaintPrompts = ref([
   ...(initialToolPrefs.recentRepaintPrompts ?? []),
 ])
@@ -202,6 +208,21 @@ const prompt = computed({
     } else {
       expandPrompt.value = value
       writeToolPrefs({ expandPrompt: value })
+    }
+  },
+})
+const referenceImages = computed<ModelReferenceImage[]>({
+  get: () =>
+    family.value === 'retouch' && sub.value === 'repaint'
+      ? repaintReferenceImages.value
+      : family.value === 'generate' && sub.value === 'expand'
+        ? expandReferenceImages.value
+        : [],
+  set: value => {
+    if (family.value === 'retouch' && sub.value === 'repaint') {
+      repaintReferenceImages.value = value
+    } else if (family.value === 'generate' && sub.value === 'expand') {
+      expandReferenceImages.value = value
     }
   },
 })
@@ -241,6 +262,11 @@ const activeTool = computed(() =>
 const activeToolLabel = computed(() => activeTool.value?.name ?? null)
 const activeToolParamValues = computed(() =>
   activeToolId.value ? modelToolParams.value[activeToolId.value] ?? {} : {}
+)
+const activeReferenceLimits = computed(() =>
+  family.value === 'retouch' && sub.value === 'remove'
+    ? { totalMin: 1, totalMax: 1, min: 0, max: 0 }
+    : modelReferenceLimits(activeTool.value)
 )
 
 function ensureModelToolParams(tool: any) {
@@ -354,33 +380,24 @@ const retouchBrush = ref<BrushSettings>(
   paintEngineSettings('heal', { brush: initialToolPrefs.retouchBrush }).brush
 )
 
-/**
- * Selection chrome and Retouch location feedback are transient aids, not a
- * global display mode. They can be dismissed without clearing the selection
- * or the selected Retouch child.
- */
-const selectionFeedbackVisible = ref(true)
+/** Retouch location feedback may be dismissed; a live selection may not. */
 const selectedRetouchFeedbackVisible = ref(false)
 const hasDismissibleCanvasFeedback = computed(() =>
-  (selectionFeedbackVisible.value && (!!armedSelectTool.value || !!selection.value))
-  || selectedRetouchFeedbackVisible.value
+  !!armedSelectTool.value || selectedRetouchFeedbackVisible.value
 )
 
-function showSelectionFeedback() {
-  selectionFeedbackVisible.value = true
-}
-
-function hideCanvasFeedback() {
-  selectionFeedbackVisible.value = false
+function dismissCanvasFeedback() {
   selectedRetouchFeedbackVisible.value = false
-  // An invisible selection tool must never keep owning the pointer.
-  armedSelectTool.value = null
+  disarmSelect()
 }
 
 function onViewportMatteClick(event: MouseEvent) {
   if (event.button !== 0) return
   if (annotateRef.value?.consumeCompletedGestureClick()) return
-  hideCanvasFeedback()
+  // The matte releases active canvas tools and object handles. A pixel
+  // selection is durable workspace state, so its ants remain visible until
+  // the person explicitly deselects it or a consumer uses it up.
+  dismissCanvasFeedback()
   annotateRef.value?.clearSelection()
 }
 
@@ -627,6 +644,10 @@ const compositor = new StackCompositor({
     // stage render with the annotate overlay's shapes held out would file
     // previews that are missing them.
     if (!emitPreviews) return
+    if (bufferedStepPreviews) {
+      bufferedStepPreviews[opId] = preview
+      return
+    }
     stepPreviews.value = { ...stepPreviews.value, [opId]: preview }
   },
 })
@@ -657,7 +678,6 @@ function cancelLiveAdjustPreview() {
     cancelAnimationFrame(liveAdjustFrame)
     liveAdjustFrame = null
   }
-  liveAdjustPreview.dispose()
   liveAdjustOwner = null
   liveAdjustBase = {}
   liveAdjustCurrent = {}
@@ -767,6 +787,97 @@ function scheduleHeadCache(documentSnapshot: any, canvas: HTMLCanvasElement) {
 
 /** Set only while rendering the full document — see onStepPreview. */
 let emitPreviews = true
+/** One reactive update per replay, not one per recomputed stack stage. */
+let bufferedStepPreviews: Record<string, string> | null = null
+
+type RenderOptions = {
+  /**
+   * Debounce destructive bursts while the rows update optimistically. Normal
+   * renders use the next animation frame.
+   */
+  settleMs?: number
+}
+
+const RENDER_BURST_SETTLE_MS = 140
+let renderRequested = false
+let renderRunning = false
+let renderRequestRevision = 0
+let renderFrame: number | null = null
+let renderTimer: ReturnType<typeof setTimeout> | null = null
+let renderCycle: Promise<void> | null = null
+let resolveRenderCycle: (() => void) | null = null
+
+function ensureRenderCycle(): Promise<void> {
+  if (!renderCycle) {
+    renderCycle = new Promise(resolve => {
+      resolveRenderCycle = resolve
+    })
+  }
+  return renderCycle
+}
+
+function clearRenderSchedule() {
+  if (renderFrame !== null) {
+    cancelAnimationFrame(renderFrame)
+    renderFrame = null
+  }
+  if (renderTimer) {
+    clearTimeout(renderTimer)
+    renderTimer = null
+  }
+}
+
+function abandonScheduledRender() {
+  clearRenderSchedule()
+  renderRequested = false
+  if (renderRunning) return
+  const resolve = resolveRenderCycle
+  resolveRenderCycle = null
+  renderCycle = null
+  resolve?.()
+}
+
+function scheduleRenderDrain(settleMs: number) {
+  if (renderRunning) return
+
+  if (settleMs > 0) {
+    // An already scheduled animation-frame render is more urgent; do not turn
+    // it into a delayed one. Repeated settled requests reset only each other.
+    if (renderFrame !== null) return
+    if (renderTimer) clearTimeout(renderTimer)
+    renderTimer = setTimeout(() => {
+      renderTimer = null
+      void drainRenderQueue()
+    }, settleMs)
+    return
+  }
+
+  if (renderTimer) {
+    clearTimeout(renderTimer)
+    renderTimer = null
+  }
+  if (renderFrame !== null) return
+  renderFrame = requestAnimationFrame(() => {
+    renderFrame = null
+    void drainRenderQueue()
+  })
+}
+
+/**
+ * The one doorway into full document rendering.
+ *
+ * Requests are coalesced, compositor work is serialized, and a render that
+ * became stale while awaiting payloads may warm caches but cannot repaint the
+ * UI over a newer document. Callers awaiting render wait until the queue has
+ * reached the latest requested state.
+ */
+function render(options: RenderOptions = {}): Promise<void> {
+  renderRequested = true
+  renderRequestRevision++
+  const cycle = ensureRenderCycle()
+  scheduleRenderDrain(options.settleMs ?? 0)
+  return cycle
+}
 
 /**
  * What the STAGE composites: the document, minus whatever a live overlay is
@@ -798,20 +909,27 @@ function prunePreviews() {
   stepPreviews.value = kept
 }
 
-async function render() {
-  // The ops watcher fires the moment open() populates the document, which is
-  // before the base is assigned — without this the first render asks for the
-  // base revision's media id and finds nothing.
+async function renderSnapshot(requestRevision: number) {
+  // Mutations can request a render before open() has assigned the base. The
+  // later open path requests again once both halves are ready.
   if (!stack.doc.value || !baseInfo.value) return
-  const doc = displayDoc.value!
-  const whole = doc === stack.doc.value
-  rendering.value = true
+  const liveDoc = displayDoc.value!
+  const whole = liveDoc === stack.doc.value
+  // The compositor awaits payloads. Snapshot the plain recipe so a mutation
+  // arriving during that await cannot change the array underneath its loop.
+  const doc = JSON.parse(JSON.stringify(liveDoc))
+  bufferedStepPreviews = whole ? {} : null
   try {
     emitPreviews = whole
-    composite.value = await compositor.render(doc)
+    const rendered = await compositor.render(doc)
+    if (requestRevision !== renderRequestRevision) return
+    composite.value = rendered
+    if (whole && bufferedStepPreviews) {
+      stepPreviews.value = { ...stepPreviews.value, ...bufferedStepPreviews }
+    }
     if (whole) prunePreviews()
     if (whole && !compositor.failedOpIds.size) {
-      scheduleHeadCache(doc, composite.value)
+      scheduleHeadCache(doc, rendered)
     }
     // The selection lives at the head, so whatever this render did to the
     // geometry under it (crop edits, toggles, an expand's new frame) is
@@ -823,8 +941,35 @@ async function render() {
   } catch (err: any) {
     error.value = err?.message || 'Could not render the composite.'
   } finally {
+    bufferedStepPreviews = null
     emitPreviews = true
+  }
+}
+
+async function drainRenderQueue() {
+  if (renderRunning) return
+  clearRenderSchedule()
+  renderRunning = true
+  rendering.value = true
+  try {
+    while (renderRequested) {
+      renderRequested = false
+      const requestRevision = renderRequestRevision
+      await renderSnapshot(requestRevision)
+    }
+  } finally {
+    renderRunning = false
     rendering.value = false
+    const resolve = resolveRenderCycle
+    resolveRenderCycle = null
+    renderCycle = null
+    resolve?.()
+    // A request cannot normally interleave with the synchronous cleanup above,
+    // but keep the invariant explicit for future awaited teardown work.
+    if (renderRequested) {
+      ensureRenderCycle()
+      scheduleRenderDrain(0)
+    }
   }
 }
 
@@ -968,8 +1113,13 @@ function paint() {
   const target = displayCanvas.value
   const source = composite.value
   if (!target || !source) return
-  target.width = source.width
-  target.height = source.height
+  // Assigning either canvas dimension reallocates and clears its full backing
+  // store. Most renders keep the same geometry, so only resize when a crop or
+  // expand actually changed it.
+  if (target.width !== source.width || target.height !== source.height) {
+    target.width = source.width
+    target.height = source.height
+  }
   const ctx = target.getContext('2d')!
   ctx.clearRect(0, 0, target.width, target.height)
   ctx.drawImage(source, 0, 0, target.width, target.height)
@@ -1270,7 +1420,9 @@ async function removeOpWithGeometry(opId: string) {
   stack.removeOp(opId)
   if (opId === cropOpId.value) cropOpId.value = null
   await afterGeometryChange(before)
-  void render()
+  // The row disappears synchronously. Let a quick run of trash clicks settle
+  // before touching full-resolution pixels so the burst becomes one replay.
+  void render({ settleMs: RENDER_BURST_SETTLE_MS })
 }
 
 async function setEnabledWithGeometry(opId: string, enabled: boolean) {
@@ -1284,15 +1436,18 @@ async function setEnabledWithGeometry(opId: string, enabled: boolean) {
 
 const canRun = computed(() => {
   if (!composite.value || busy.value) return false
+  const referencesValid =
+    referenceImages.value.length >= activeReferenceLimits.value.min
+    && referenceImages.value.length <= activeReferenceLimits.value.max
   if (
     family.value === 'retouch'
     && (sub.value === 'remove' || sub.value === 'repaint')
   ) {
-    return !!selection.value && !!activeToolId.value
+    return !!selection.value && !!activeToolId.value && referencesValid
   }
   // Expand auto-masks the border it adds, so it has nothing to wait for
   // beyond a tool.
-  if (mode.value === 'expand') return !!expandToolId.value
+  if (mode.value === 'expand') return !!expandToolId.value && referencesValid
   return false
 })
 
@@ -1344,7 +1499,6 @@ function selectFamily(id: FamilyId) {
     id === 'retouch'
     && (sub.value === 'remove' || sub.value === 'repaint')
   ) {
-    showSelectionFeedback()
     if (!selection.value) armSelectTool('brush', true)
   }
   // Entering an adjustment family starts fresh. Without this the panel kept
@@ -1384,7 +1538,6 @@ function selectSub(id: string) {
     && (id === 'remove' || id === 'repaint')
   ) {
     selectedRetouchRegionId.value = null
-    showSelectionFeedback()
     if (!selection.value) armSelectTool('brush', true)
   }
 }
@@ -1399,9 +1552,7 @@ function beginMaskedAdjustment(kind: Exclude<MaskedAdjustmentKind, 'adjust'>) {
   hoveredRetouchRegionId.value = null
   maskedAdjustRegionId = null
   maskedAdjustmentKind = kind
-  showSelectionFeedback()
   void refreshRetouchFeedback()
-  selectCombine.value = selection.value ? 'add' : 'new'
   if (selection.value) queueMaskedAdjustmentMask(selection.value)
   else armSelectTool('brush', true)
 }
@@ -1427,6 +1578,9 @@ const subbarState = computed(() => ({
   activeTool: activeTool.value,
   toolParams: activeToolParamValues.value,
   recentRepaintPrompts: recentRepaintPrompts.value,
+  referenceImages: referenceImages.value,
+  referenceMin: activeReferenceLimits.value.min,
+  referenceMax: activeReferenceLimits.value.max,
   textStyle: textStyle.value,
   annotatePaint: annotatePaint.value,
   annotateStrokeWidth: annotateStrokeWidth.value,
@@ -1451,13 +1605,14 @@ const subbarState = computed(() => ({
  */
 const SUBBAR_KEEPS_SELECT = new Set([
   'prompt', 'candidateCount', 'maskExpandPercent', 'expandFactor', 'toolParamPatch',
-  'removeRecentPrompt',
+  'removeRecentPrompt', 'referenceImages',
 ])
 
-function onSubbarSet(patch: Record<string, any>) {
+function onSubbarSet(patch: Record<string, any>, continuous = false) {
   if (Object.keys(patch).some(key => !SUBBAR_KEEPS_SELECT.has(key))) disarmSelect()
   if ('prompt' in patch) prompt.value = patch.prompt
   if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
+  if ('referenceImages' in patch) referenceImages.value = patch.referenceImages
   if ('maskExpandPercent' in patch) {
     maskExpandPercent.value = patch.maskExpandPercent
     writeToolPrefs({ maskExpandPercent: patch.maskExpandPercent })
@@ -1538,7 +1693,9 @@ function onSubbarSet(patch: Record<string, any>) {
   }
   if ('annotateOpacity' in patch) {
     annotateOpacity.value = patch.annotateOpacity
-    if (selectedShape.value) onShapeChange({ opacity: patch.annotateOpacity })
+    if (selectedShape.value) {
+      onShapeChange({ opacity: patch.annotateOpacity }, continuous)
+    }
   }
   if ('deleteShape' in patch) annotateRef.value?.deleteSelected()
   if ('auto' in patch) runAuto(patch.auto)
@@ -1546,7 +1703,13 @@ function onSubbarSet(patch: Record<string, any>) {
   if ('addLevel' in patch) void addLevelEdit(patch.addLevel)
   if ('cropAspect' in patch) chooseAspect(patch.cropAspect)
   // Straighten and the lollipop are the same control: the crop window's tilt.
-  if ('rotation' in patch) void applyCropChange({ cropRotation: patch.rotation })
+  if ('rotation' in patch) {
+    void applyCropChange(
+      { cropRotation: patch.rotation },
+      cropGestureKey.value,
+      continuous,
+    )
+  }
   if ('rotateQuarter' in patch) rotateQuarter()
   if ('flipX' in patch) void applyCropChange({ flipX: patch.flipX })
   if ('flipY' in patch) void applyCropChange({ flipY: patch.flipY })
@@ -1590,6 +1753,9 @@ async function run() {
     }
     const taskType = removeRoute?.taskType ?? 'inpaint-image'
     const submittedPrompt = removeRoute?.prompt ?? prompt.value
+    const submittedReferences = action === 'remove'
+      ? []
+      : structuredClone(referenceImages.value)
 
     // The op's input is the current head composite: Phase 1 appends on top,
     // so its input hash is the head hash.
@@ -1642,6 +1808,7 @@ async function run() {
         ...toolParams,
         ...(submittedPrompt ? { prompt: submittedPrompt } : {}),
       },
+      reference_images: submittedReferences,
       mask_ref: maskPayloadRef,
       // The mask, and the candidates generated for it, are anchored to the
       // frame they were made in.
@@ -1674,6 +1841,7 @@ async function run() {
       prompt: submittedPrompt,
       count: candidateCount.value,
       params: toolParams,
+      referenceImages: submittedReferences,
       sampledInputHash: head,
     })
     if (action === 'repaint') {
@@ -1692,7 +1860,6 @@ async function run() {
     if (action !== 'expand') {
       clearSelection()
       disarmSelect()
-      selectionFeedbackVisible.value = false
     }
     if (action === 'expand') mode.value = 'expand'
   } catch (err: any) {
@@ -1732,6 +1899,15 @@ async function resample(opId: string) {
     error.value = 'That tool is no longer in the catalog.'
     return
   }
+  const referenceLimits = modelReferenceLimits(tool)
+  const referenceCount = op.reference_images?.length ?? 0
+  if (
+    referenceCount < referenceLimits.min
+    || referenceCount > referenceLimits.max
+  ) {
+    error.value = `That tool accepts ${referenceLimits.min}–${referenceLimits.max} reference images.`
+    return
+  }
   const maskRef = (op as any).mask_ref
   if (!maskRef) {
     error.value = 'That step has no mask to resample through.'
@@ -1761,6 +1937,7 @@ async function resample(opId: string) {
       prompt: (op.params as any)?.prompt || '',
       count: candidateCount.value,
       params: sanitizeModelToolParams(tool, op.params),
+      referenceImages: op.reference_images ?? [],
       sampledInputHash: inputHash,
     })
     if (
@@ -1885,6 +2062,11 @@ function setSelectedModelParams(patch: Record<string, any>) {
   stack.setParams(selectedModelOp.value.id, patch)
 }
 
+function setSelectedModelReferences(images: ModelReferenceImage[]) {
+  if (!selectedModelOp.value) return
+  stack.setReferenceImages(selectedModelOp.value.id, images)
+}
+
 function setSelectedModelBlend(blend: Record<string, number>) {
   if (!selectedModelOp.value) return
   stack.setBlend(
@@ -1892,7 +2074,11 @@ function setSelectedModelBlend(blend: Record<string, number>) {
     blend,
     `model-blend:${selectedModelOp.value.id}:${Object.keys(blend)[0] ?? 'value'}`,
   )
-  void render()
+  scheduleRetouchSettingsPreview()
+}
+
+function commitSelectedModelBlend() {
+  void commitRetouchSettingsRender()
 }
 
 /**
@@ -2068,7 +2254,7 @@ function onAdjustInspectorChange(patch: Record<string, any>, coalesceKey: string
   const op = selectedAdjustOp.value as any
   if (!op) return
   const before = { ...(op.params || {}) }
-  hideCanvasFeedback()
+  dismissCanvasFeedback()
   // Touching a step's properties is the substantive change that makes it
   // stick: the next strip or Adjust click stacks rather than replaces.
   pristineSnapshots.delete(op.id)
@@ -2141,7 +2327,10 @@ async function applyCropChange(
   } else {
     stack.setParams(cropOpId.value, patch, coalesceKey)
   }
-  if (live) { void render(); return }
+  // StackCropCanvas already draws the moving crop directly from cropInput.
+  // Replaying the document here is both invisible in Crop mode and expensive:
+  // every pointer move invalidates the crop and everything above it.
+  if (live) return
   // A geometry change moves every payload above it into a new space. `before`
   // is the document as it stood when the GESTURE started, so a drag rewrites
   // payloads once, from where they were, rather than in accumulating steps.
@@ -2216,16 +2405,16 @@ const selectedAnnotationShapes = computed<Shape[]>(() => {
   return selectedShape.value ? [selectedShape.value] : []
 })
 
-function onShapeChange(patch: Record<string, any>) {
+function onShapeChange(patch: Record<string, any>, continuous = false) {
   const id = selectedShapeId.value
   if (!id) return
   onAnnotationsChange(
     annotateShapes.value.map(s => (s.id === id ? { ...s, ...patch } as Shape : s))
   )
-  annotateGesture.value += 1
+  if (!continuous) annotateGesture.value += 1
 }
 
-function onSelectedShapesChange(patch: Record<string, any>) {
+function onSelectedShapesChange(patch: Record<string, any>, continuous = false) {
   const selectedIds = new Set(selectedAnnotationShapes.value.map(shape => shape.id))
   if (!selectedIds.size) return
   onAnnotationsChange(
@@ -2233,7 +2422,16 @@ function onSelectedShapesChange(patch: Record<string, any>) {
       selectedIds.has(shape.id) ? { ...shape, ...patch } as Shape : shape
     )
   )
+  if (!continuous) annotateGesture.value += 1
+}
+
+function commitSelectedShapesChange() {
   annotateGesture.value += 1
+}
+
+function onSubbarCommit(kind: 'crop' | 'annotation') {
+  if (kind === 'crop') onCropCommit()
+  else annotateGesture.value += 1
 }
 
 // -- the selected annotation AS an object ------------------------------------
@@ -3103,12 +3301,27 @@ function rememberGradientDefaults(mask: GradientMask) {
 function onInspectorGradient(mask: GradientMask) {
   const into = selectedGradientRegionId()
   if (!into) return
-  persistGradientRegion(mask, { into, space: 'authored' })
+  persistGradientRegion(mask, {
+    into,
+    space: 'authored',
+    render: false,
+    coalesceKey: `retouch-gradient:${into}`,
+  })
+  scheduleRetouchSettingsPreview()
+}
+
+function commitInspectorGradient() {
+  void commitRetouchSettingsRender()
 }
 
 function persistGradientRegion(
   mask: GradientMask,
-  options: { into: string | null; space?: 'composite' | 'authored' },
+  options: {
+    into: string | null
+    space?: 'composite' | 'authored'
+    render?: boolean
+    coalesceKey?: string
+  },
 ) {
   rememberGradientDefaults(mask)
   const existingId = options.into
@@ -3133,7 +3346,7 @@ function persistGradientRegion(
   if (existingId) {
     stack.setRegions(opId, regions.map(region =>
       region.id === existingId ? { ...region, mask: authored } : region
-    ))
+    ), options.coalesceKey)
   } else {
     const regionId = newOpId()
     maskedAdjustRegionId = regionId
@@ -3168,8 +3381,10 @@ function persistGradientRegion(
   // The ramp is the mask now, so the tool lets the canvas go. Its guides remain
   // visible to confirm where the adjustment landed; explicit canvas dismissal or
   // another editing action can hide them.
-  armedSelectTool.value = null
-  void render().then(refreshRetouchInput)
+  if (options.render !== false) {
+    armedSelectTool.value = null
+    void render().then(refreshRetouchInput)
+  }
 }
 
 /** Composite-space geometry back into the region's authored frame. */
@@ -3396,7 +3611,7 @@ function resetRetouchSession() {
 }
 
 /**
- * Repair-region blend drags render the document at fitted display resolution.
+ * Blend and mask drags render the document at fitted display resolution.
  * Masked photographic adjustments use the GPU delta preview above instead;
  * expensive source pixels are touched only once on pointer-up.
  */
@@ -3410,10 +3625,10 @@ function scaledRetouchPreviewDocument(): any | null {
   const doc = displayDoc.value
   const source = composite.value
   if (!doc || !source || !displayBox.value.width || !displayBox.value.height) return null
-  // Clarity/Blur/Sharpen are several full pixel passes. Three quarters of a
+  // Clarity/Blur/Sharpen are several full pixel passes. Half a
   // megapixel is enough for a faithful fitted preview and keeps those passes
   // interactive on the main thread.
-  const pixelBudgetScale = Math.sqrt(750_000 / Math.max(1, source.width * source.height))
+  const pixelBudgetScale = Math.sqrt(500_000 / Math.max(1, source.width * source.height))
   const scale = Math.min(
     1,
     pixelBudgetScale,
@@ -3427,6 +3642,9 @@ function scaledRetouchPreviewDocument(): any | null {
   }
   preview._preview_scale = scale
   for (const op of preview.edits ?? []) {
+    if (op.class === 'patch' && op.blend?.feather_px) {
+      op.blend.feather_px *= scale
+    }
     if (op.exec?.kind !== 'retouch-regions') continue
     for (const region of op.regions ?? []) {
       if (!region.settings) continue
@@ -3509,7 +3727,7 @@ function setRetouchRegionSettings(
   // Once a property moves, the person is judging the photograph rather than
   // constructing the region. Keep the mask intact but get its wash and ants
   // off the pixels immediately.
-  hideCanvasFeedback()
+  dismissCanvasFeedback()
   stack.setRegions(
     location.op.id,
     location.op.regions.map((region: RetouchRegion) =>
@@ -3520,7 +3738,8 @@ function setRetouchRegionSettings(
     coalesceKey,
   )
   const updated = retouchRegionLocation(location.region.id)?.region.settings
-  if (updated && isMaskedAdjustmentKind(location.region.kind)) {
+  const changesMaskBlend = 'opacity' in patch || 'feather_px' in patch
+  if (updated && isMaskedAdjustmentKind(location.region.kind) && !changesMaskBlend) {
     void previewAdjustment(
       `retouch:${location.region.id}`,
       before,
@@ -3568,7 +3787,9 @@ function removeRetouchRegion(opId: string, regionId: string) {
   }
   if (maskedAdjustRegionId === regionId) maskedAdjustRegionId = null
   void refreshRetouchFeedback()
-  void render().then(refreshRetouchInput)
+  // Region rows disappear immediately; coalesce a rapid trash run into one
+  // full-resolution replay of the surviving regions.
+  void render({ settleMs: RENDER_BURST_SETTLE_MS }).then(refreshRetouchInput)
 }
 
 /**
@@ -3811,7 +4032,6 @@ function armSelectTool(id: SelectToolId, force = false) {
     disarmSelect()
     return
   }
-  showSelectionFeedback()
   armedSelectTool.value = id
   lastSelectTool.value = id
   writeToolPrefs({ selectTool: id })
@@ -3868,10 +4088,12 @@ function clearSelection() {
   selectionMaster = null
   selectionMasterFrame = null
   selectionAppliedKey = null
+  // Combine modes describe how a gesture meets an existing selection. Once
+  // there is no existing selection, the next gesture starts a new one.
+  selectCombine.value = combineAfterSelectionChange(selectCombine.value, false)
 }
 
 function invertSelection() {
-  showSelectionFeedback()
   selectRef.value?.invert()
 }
 
@@ -3966,7 +4188,6 @@ async function runAiSelect(
   if (!src || !selectRef.value) return
   aiSelectBusy.value = true
   aiSelectError.value = null
-  showSelectionFeedback()
   try {
     const sent = aiSelectCanvas(src)
     const { data } = await axios.post('/api/mask/select', {
@@ -4017,9 +4238,10 @@ function objectCycleRadius(src: HTMLCanvasElement): number {
   return Math.max(8, Math.max(src.width, src.height) * 0.01)
 }
 
-/** The Object tool's click: segment under the point; modifiers override the
- *  combine mode for this one gesture (shift adds, alt subtracts). */
-function onObjectPick(pick: { x: number; y: number; shiftKey: boolean; altKey: boolean }) {
+/** The Object tool's click uses the same explicit combine control as every
+ *  other selection tool. Shift remains the geometry constraint for rectangle
+ *  and ellipse rather than meaning something different only for Object. */
+function onObjectPick(pick: { x: number; y: number }) {
   const src = composite.value
   if (!src) return
   const cycle = objectPickState
@@ -4033,8 +4255,10 @@ function onObjectPick(pick: { x: number; y: number; shiftKey: boolean; altKey: b
     applyAiMask(cycle.masks[cycle.index], cycle.mode)
     return
   }
-  const mode: SelectionMode = pick.shiftKey ? 'add' : pick.altKey ? 'subtract' : selectCombine.value
-  void runAiSelect({ point: { x: pick.x / src.width, y: pick.y / src.height } }, mode)
+  void runAiSelect(
+    { point: { x: pick.x / src.width, y: pick.y / src.height } },
+    selectCombine.value,
+  )
 }
 
 /**
@@ -4081,8 +4305,10 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
     selectionMaster = null
     selectionMasterFrame = null
     selectionAppliedKey = null
+    selectCombine.value = combineAfterSelectionChange(selectCombine.value, false)
     return
   }
+  selectCombine.value = combineAfterSelectionChange(selectCombine.value, true)
   selectionMaster = selModel.toSnapshot()
   const head = payloadFrame()
   const adjust = head && composite.value
@@ -4103,10 +4329,9 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
     && family.value === 'retouch'
     && isMaskedAdjustmentSub(sub.value)
   ) {
-    // The first brush gesture starts a new mask; every later gesture adds to
-    // the same child unless the person explicitly chooses another combine
-    // mode in the palette.
-    if (selectCombine.value === 'new') selectCombine.value = 'add'
+    // The combine control is explicit. A later gesture replaces, adds,
+    // subtracts or intersects exactly as the island currently says; landing
+    // the first mask must not silently rewrite the next gesture to Add.
     queueMaskedAdjustmentMask(mask)
     // Hand the pointer back after the gesture, but keep the ants visible. This
     // is especially important for asynchronous AI selection: hiding feedback
@@ -4546,11 +4771,11 @@ function onKeydown(event: KeyboardEvent) {
   if (annotateRef.value?.isEditingText()) return
   if (event.key === 'Escape') {
     event.preventDefault()
-    // First Esc is always non-destructive: it releases the pointer and gives
-    // the clean image back. The next Esc may leave the family; only at rest
-    // does another Esc preserve the historical deselect behavior.
+    // First Esc releases whichever canvas tool or Retouch diagnostic owns the
+    // interaction. A live pixel selection stays visible; at idle, Esc
+    // explicitly deselects it.
     if (hasDismissibleCanvasFeedback.value) {
-      hideCanvasFeedback()
+      dismissCanvasFeedback()
     } else if (family.value || mode.value) {
       leaveMode()
     } else if (selectedShapeId.value) {
@@ -4797,9 +5022,11 @@ watch(viewport, element => {
 onBeforeUnmount(() => {
   if (savedNoteTimer) clearTimeout(savedNoteTimer)
   if (headCacheTimer) clearTimeout(headCacheTimer)
+  abandonScheduledRender()
   if (paintPrefsTimer) persistPaintSettings()
   if (retouchPreviewFrame !== null) cancelAnimationFrame(retouchPreviewFrame)
   cancelLiveAdjustPreview()
+  liveAdjustPreview.dispose()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('keyup', onKeyup)
   window.removeEventListener('blur', clearViewportGestureState)
@@ -4810,7 +5037,6 @@ onBeforeUnmount(() => {
   void stack.flush().catch(() => {})
 })
 
-watch(() => stack.ops.value.length, () => { void render() })
 // Mounting or unmounting the annotation overlay hands its pixels between the
 // overlay and the composite, so the stage is rebuilt in both directions.
 // Keyed on the boolean, not on displayDoc: the filtered document is a fresh
@@ -4820,7 +5046,9 @@ watch(annotationOverlayActive, () => { void render() })
 // The composite is usually ready BEFORE the canvas exists (rendering happens
 // while `loading` still hides it), so repaint on either changing rather than
 // only on the composite.
-watch([composite, displayCanvas, displayBox], () => nextTick(paint), { flush: 'post' })
+// renderSnapshot paints composite changes itself. This watcher only covers the
+// canvas appearing after initial loading and geometry-driven display sizing.
+watch([displayCanvas, displayBox], () => nextTick(paint), { flush: 'post' })
 watch([displayBox, () => family.value], () => nextTick(clampViewPan), { flush: 'post' })
 
 // -- clipping overlays -------------------------------------------------------
@@ -5005,6 +5233,7 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
           :hint="subbarHint"
           @sub="selectSub"
           @set="onSubbarSet"
+          @commit="onSubbarCommit"
           @run="run"
           @open-tool-picker="onOpenToolPicker"
         />
@@ -5182,7 +5411,6 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
             :model="selModel"
             :armed="armedSelectTool"
             :busy="aiSelectBusy"
-            :visible="selectionFeedbackVisible"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
             :combine="selectCombine"
@@ -5408,6 +5636,7 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
               :shapes="selectedAnnotationShapes"
               :palette="imagePalette"
               @change="onSelectedShapesChange"
+              @commit="commitSelectedShapesChange"
               @remove="annotateRef?.deleteSelected()"
             />
           </div>
@@ -5438,6 +5667,7 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
               @pick="armPointColorPick"
               @clip="setClipIndicators"
               @gradient="onInspectorGradient"
+              @gradient-commit="commitInspectorGradient"
             />
           </div>
         </div>
@@ -5461,7 +5691,9 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
               :tool="selectedModelTool"
               :running="runningOpIds.has(selectedModelOp.id)"
               @params="setSelectedModelParams"
+              @references="setSelectedModelReferences"
               @blend="setSelectedModelBlend"
+              @blend-commit="commitSelectedModelBlend"
               @run="resample(selectedModelOp.id)"
             />
           </div>

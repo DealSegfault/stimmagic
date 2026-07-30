@@ -63,7 +63,10 @@ const emit = defineEmits<{
   aiSelect: [string]
 }>()
 
-const combineEnabled = computed(() => props.armed !== null)
+/** Combine describes how the next gesture meets the visible selection, so its
+ * state remains visible/editable after a one-shot workflow disarms the tool. */
+const combineEnabled = computed(() => props.armed !== null || props.hasSelection)
+const toolSettingsEnabled = computed(() => props.armed !== null)
 
 /**
  * The Object tool's popup: arming the tool raises a small panel above the
@@ -244,8 +247,9 @@ function sliderClass(enabled: boolean) {
       <button
         type="button"
         class="p-1.5 rounded-md transition-colors"
-        :class="buttonClass(combineEnabled && combine === option.id, combineEnabled)"
+        :class="buttonClass(combine === option.id, combineEnabled)"
         :aria-label="option.label"
+        :aria-pressed="combine === option.id"
         :disabled="!combineEnabled"
         @click="emit('set', { combine: option.id })"
       >
@@ -257,14 +261,14 @@ function sliderClass(enabled: boolean) {
 
     <label
       class="flex items-center gap-2 text-xs text-content-tertiary"
-      :class="sliderClass(combineEnabled)"
+      :class="sliderClass(toolSettingsEnabled)"
     >
       <span class="w-14 text-right">{{ slot.label }}</span>
       <input
         type="range" class="w-24"
         :min="slot.min" :max="slot.max"
         :value="slotValue"
-        :disabled="!combineEnabled"
+        :disabled="!toolSettingsEnabled"
         @input="onSliderInput(Number(($event.target as HTMLInputElement).value))"
       />
       <span class="tabular-nums w-10 text-content-secondary">{{ slotReadout }}{{ slot.unit }}</span>

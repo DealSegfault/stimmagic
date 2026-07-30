@@ -85,9 +85,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   change: [HTMLCanvasElement | null]
   /** Object tool click, in source pixels; the host runs segmentation and
-   *  lands the result through applyMask. Modifiers override the combine
-   *  mode for the one gesture: shift adds, alt subtracts. */
-  objectPick: [{ x: number; y: number; shiftKey: boolean; altKey: boolean }]
+   *  lands the result through applyMask using the island's explicit mode. */
+  objectPick: [{ x: number; y: number }]
   /**
    * A NEW ramp, dragged out with a gradient tool armed, in source pixels.
    *
@@ -170,10 +169,7 @@ function onPointerDown(event: PointerEvent) {
   // Object select is a click, not a drag: hand the point to the host and let
   // the async mask land through applyMask when segmentation returns.
   if (props.armed === 'object') {
-    emit('objectPick', {
-      x: point.x, y: point.y,
-      shiftKey: event.shiftKey, altKey: event.altKey,
-    })
+    emit('objectPick', { x: point.x, y: point.y })
     return
   }
 

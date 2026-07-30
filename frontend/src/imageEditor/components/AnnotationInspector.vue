@@ -29,7 +29,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  change: [Record<string, any>]
+  change: [Record<string, any>, continuous?: boolean]
+  commit: []
   remove: []
 }>()
 
@@ -79,7 +80,7 @@ function setTextScale(scale: number) {
   if (isMultiple.value) return
   const shape = any.value
   if (!shape?.baseHeight) return
-  emit('change', { width: shape.baseWidth * scale, height: shape.baseHeight * scale })
+  emit('change', { width: shape.baseWidth * scale, height: shape.baseHeight * scale }, true)
 }
 
 /** Which controls this kind of shape actually has. */
@@ -204,8 +205,12 @@ const glowOn = computed(() =>
 )
 
 function setGlowIntensity(value: number) {
-  if (isText.value) emit('change', { glowIntensity: value })
-  else emit('change', { style: { ...(any.value?.style || {}), effect: 'neon', glowIntensity: value } })
+  if (isText.value) emit('change', { glowIntensity: value }, true)
+  else emit(
+    'change',
+    { style: { ...(any.value?.style || {}), effect: 'neon', glowIntensity: value } },
+    true,
+  )
 }
 
 const glowIntensity = computed(() =>
@@ -241,7 +246,8 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
         class="w-full px-2 py-1.5 text-sm rounded-md bg-surface-raised text-content resize-none focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
         rows="2"
         :value="any.text"
-        @input="emit('change', { text: ($event.target as HTMLTextAreaElement).value })"
+        @input="emit('change', { text: ($event.target as HTMLTextAreaElement).value }, true)"
+        @change="emit('commit')"
       />
       <select
         class="w-full px-2 py-1.5 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
@@ -307,6 +313,7 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
           type="range" min="0.2" max="4" step="0.05" class="flex-1"
           :value="textScale"
           @input="setTextScale(Number(($event.target as HTMLInputElement).value))"
+          @change="emit('commit')"
         />
         <span class="w-8 text-right tabular-nums">{{ textScale.toFixed(1) }}×</span>
       </label>
@@ -335,7 +342,12 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
         <input
           type="range" min="1" max="60" class="flex-1"
           :value="any.strokeWidth ?? 8"
-          @input="emit('change', { strokeWidth: Number(($event.target as HTMLInputElement).value) })"
+          @input="emit(
+            'change',
+            { strokeWidth: Number(($event.target as HTMLInputElement).value) },
+            true,
+          )"
+          @change="emit('commit')"
         />
         <span class="w-10 text-right tabular-nums">
           {{ fieldMixed('strokeWidth') ? 'Mixed' : Math.round(any.strokeWidth ?? 8) }}
@@ -356,7 +368,12 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
           class="flex-1"
           :min="control.min" :max="control.max" :step="control.step"
           :value="numberOr(control.key, control.fallback)"
-          @input="emit('change', { [control.key]: Number(($event.target as HTMLInputElement).value) })"
+          @input="emit(
+            'change',
+            { [control.key]: Number(($event.target as HTMLInputElement).value) },
+            true,
+          )"
+          @change="emit('commit')"
         />
         <span class="w-10 text-right tabular-nums">
           {{ fieldMixed(control.key) ? 'Mixed' : numberOr(control.key, control.fallback) }}
@@ -395,7 +412,12 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
         <input
           type="range" min="0" max="80" step="1" class="flex-1"
           :value="numberOr('cornerRadius', 0)"
-          @input="emit('change', { cornerRadius: Number(($event.target as HTMLInputElement).value) })"
+          @input="emit(
+            'change',
+            { cornerRadius: Number(($event.target as HTMLInputElement).value) },
+            true,
+          )"
+          @change="emit('commit')"
         />
         <span class="w-10 text-right tabular-nums">
           {{ fieldMixed('cornerRadius') ? 'Mixed' : numberOr('cornerRadius', 0) }}
@@ -466,6 +488,7 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
           type="range" min="0" max="100" class="flex-1"
           :value="glowIntensity"
           @input="setGlowIntensity(Number(($event.target as HTMLInputElement).value))"
+          @change="emit('commit')"
         />
         <span class="w-10 text-right tabular-nums">
           {{ glowIntensityMixed ? 'Mixed' : glowIntensity }}
@@ -476,7 +499,12 @@ const opacityMixed = computed(() => fieldMixed('opacity'))
         <input
           type="range" min="0" max="1" step="0.05" class="flex-1"
           :value="any.opacity ?? 1"
-          @input="emit('change', { opacity: Number(($event.target as HTMLInputElement).value) })"
+          @input="emit(
+            'change',
+            { opacity: Number(($event.target as HTMLInputElement).value) },
+            true,
+          )"
+          @change="emit('commit')"
         />
         <span v-if="opacityMixed" class="w-10 text-right tabular-nums">Mixed</span>
       </label>

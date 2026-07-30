@@ -79,7 +79,7 @@
           </svg>
           Browse Files…
         </button>
-        <span class="ml-auto text-[11px] text-content-muted">or drop a file</span>
+        <span v-if="showDropHint" class="ml-auto text-[11px] text-content-muted">or drop a file</span>
       </div>
     </div>
   </Teleport>
@@ -112,10 +112,16 @@ interface Props {
   anchorEl: HTMLElement | null
   /** mediaIds already in the picker's slots — hidden from the feeds. */
   excludeIds?: number[]
+  /** Image pickers normally accept a video frame too; strict image consumers can opt out. */
+  allowVideoFrames?: boolean
+  /** Parent actually exposes a drop target alongside this popover. */
+  showDropHint?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  excludeIds: () => []
+  excludeIds: () => [],
+  allowVideoFrames: true,
+  showDropHint: true,
 })
 
 const emit = defineEmits<{
@@ -168,7 +174,9 @@ const projectId = computed<number | null>(() => {
 // Image slots accept videos too (a frame is grabbed on pick) — mirror the
 // drop-zone rule so the feeds show everything the slot can take.
 const acceptedKinds = computed<RecentInputKind[]>(() =>
-  props.accept === 'image' ? ['image', 'video'] : [props.accept]
+  props.accept === 'image'
+    ? (props.allowVideoFrames ? ['image', 'video'] : ['image'])
+    : [props.accept]
 )
 
 // One key for all pickers: the popover remembers the last tab globally.
@@ -189,7 +197,9 @@ const activeTabDef = computed(() => TABS.find(t => t.key === activeTab.value)!)
 const tiles = ref<Record<TabKey, Tile[] | null>>({ recents: null, recent: null, generated: null, added: null, marked: null })
 const loading = ref<Record<TabKey, boolean>>({ recents: false, recent: false, generated: false, added: false, marked: false })
 const mediaTypesParam = computed(() =>
-  props.accept === 'image' ? 'images,videos' : props.accept === 'video' ? 'videos' : 'audio'
+  props.accept === 'image'
+    ? (props.allowVideoFrames ? 'images,videos' : 'images')
+    : props.accept === 'video' ? 'videos' : 'audio'
 )
 
 const visibleTiles = computed(() => {

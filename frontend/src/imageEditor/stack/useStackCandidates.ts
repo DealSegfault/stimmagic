@@ -35,7 +35,7 @@ import {
 } from './useStackCompositor'
 import { convertMaskPixels } from '../../utils/maskFormat'
 import type { MaskFormat } from '../../composables/useToolSchemaFeatures'
-import type { Candidate } from './types'
+import type { Candidate, ModelReferenceImage } from './types'
 
 const API_BASE = '/api'
 
@@ -89,6 +89,8 @@ export interface SubmitRequest {
   prompt: string
   count: number
   params?: Record<string, any>
+  /** Ordered images appended after the edited target in input_images. */
+  referenceImages?: ModelReferenceImage[]
   /** Content hash of the input composite, stamped onto every candidate. */
   sampledInputHash: string
 }
@@ -181,6 +183,7 @@ export function useStackCandidates(deps: {
     inputCanvas: HTMLCanvasElement
     prompt: string
     params?: Record<string, any>
+    referenceImages?: ModelReferenceImage[]
     maskCanvas?: HTMLCanvasElement | null
     lockResolution: boolean
     finalResolution?: number
@@ -211,6 +214,11 @@ export function useStackCandidates(deps: {
         negative_prompt: '',
         folder_path: '',
         inputImages: [{ path: inputPath }],
+        inpaintRefImages: (options.referenceImages ?? []).map(reference => ({
+          // Digit-only media ids are resolved to managed paths by the backend.
+          path: String(reference.media_id),
+          mediaId: reference.media_id,
+        })),
         inputVideos: [],
         inputAudios: [],
       },
@@ -284,6 +292,7 @@ export function useStackCandidates(deps: {
         inputCanvas: request.inputCanvas,
         prompt: request.prompt,
         params: request.params,
+        referenceImages: request.referenceImages,
         maskCanvas: request.maskCanvas,
         lockResolution: true,
       })

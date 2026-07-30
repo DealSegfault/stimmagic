@@ -14,6 +14,45 @@ export const HOST_MANAGED_MODEL_PARAMS = new Set([
   'height',
 ])
 
+export interface ModelReferenceLimits {
+  /** Total image capacity declared by the tool, including the edited target. */
+  totalMin: number
+  totalMax: number
+  /** Additional reference-image requirements after reserving the target slot. */
+  min: number
+  max: number
+}
+
+/**
+ * Return the reference-image capacity for an editor model tool.
+ *
+ * STP schemas in the wild use both standard JSON Schema keys and legacy x-*
+ * hints. The edited composite always occupies input_images[0], so the editor
+ * exposes only the remaining slots as references.
+ */
+export function modelReferenceLimits(tool: any): ModelReferenceLimits {
+  const schema = tool?.parameter_schema?.properties?.input_images
+  if (!schema || schema.type !== 'array') {
+    return { totalMin: 1, totalMax: 1, min: 0, max: 0 }
+  }
+
+  const rawMin = schema.minItems ?? schema['x-min-items'] ?? 1
+  const rawMax = schema.maxItems ?? schema['x-max-items'] ?? 1
+  const totalMin = Number.isFinite(Number(rawMin))
+    ? Math.max(1, Math.trunc(Number(rawMin)))
+    : 1
+  const totalMax = Number.isFinite(Number(rawMax))
+    ? Math.max(totalMin, Math.trunc(Number(rawMax)))
+    : 1
+
+  return {
+    totalMin,
+    totalMax,
+    min: Math.max(0, totalMin - 1),
+    max: Math.max(0, totalMax - 1),
+  }
+}
+
 export function editableModelParamNames(tool: any): string[] {
   const properties = tool?.parameter_schema?.properties ?? {}
   return Object.entries(properties)

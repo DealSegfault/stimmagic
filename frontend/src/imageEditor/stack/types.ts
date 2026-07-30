@@ -46,6 +46,16 @@ export interface Candidate {
   sampled_input_hash: string
 }
 
+/**
+ * A durable library-backed image supplied after the edited target image.
+ * Order is meaningful: prompts can refer to "reference 1", "reference 2", etc.
+ */
+export interface ModelReferenceImage {
+  media_id: number
+  file_hash: string
+  filename?: string
+}
+
 export interface BaseOp {
   id: string
   class: OpClass
@@ -79,6 +89,8 @@ export interface GenerativeOp extends BaseOp {
   operation?: 'remove' | 'repaint' | 'expand' | 'erase'
   /** STP parameters as submitted, minus the inputs. */
   params: Record<string, any>
+  /** Ordered auxiliary images submitted after the edited target image. */
+  reference_images?: ModelReferenceImage[]
   /** The mask this patch was sampled through. */
   mask_ref?: string
   blend?: OpBlend

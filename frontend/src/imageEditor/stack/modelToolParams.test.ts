@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   editableModelParamNames,
+  modelReferenceLimits,
   modelToolDefaults,
   sanitizeModelToolParams,
 } from './modelToolParams.ts'
@@ -48,4 +49,50 @@ test('parameter sanitization cannot override host-managed or undeclared fields',
     }),
     { strength: 0.5, adapters: ['one'] },
   )
+})
+
+test('reference limits reserve the first input image for the edited target', () => {
+  assert.deepEqual(modelReferenceLimits({
+    parameter_schema: {
+      properties: {
+        input_images: { type: 'array', minItems: 2, maxItems: 4 },
+      },
+    },
+  }), {
+    totalMin: 2,
+    totalMax: 4,
+    min: 1,
+    max: 3,
+  })
+})
+
+test('reference limits support legacy x-* constraints', () => {
+  assert.deepEqual(modelReferenceLimits({
+    parameter_schema: {
+      properties: {
+        input_images: { type: 'array', 'x-min-items': 1, 'x-max-items': 8 },
+      },
+    },
+  }), {
+    totalMin: 1,
+    totalMax: 8,
+    min: 0,
+    max: 7,
+  })
+})
+
+test('tools without explicit multi-image capacity expose no reference slots', () => {
+  assert.deepEqual(modelReferenceLimits({
+    parameter_schema: {
+      properties: {
+        input_images: { type: 'array' },
+      },
+    },
+  }), {
+    totalMin: 1,
+    totalMax: 1,
+    min: 0,
+    max: 0,
+  })
+  assert.equal(modelReferenceLimits(null).max, 0)
 })

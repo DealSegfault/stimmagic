@@ -8,9 +8,13 @@
  */
 import { computed } from 'vue'
 import Button from '../../components/ui/Button.vue'
+import ReferenceImageStrip from './ReferenceImageStrip.vue'
 import ToolAdvancedParams from './ToolAdvancedParams.vue'
-import type { GenerativeOp, OpBlend } from '../stack/types'
-import { sanitizeModelToolParams } from '../stack/modelToolParams'
+import type { GenerativeOp, ModelReferenceImage, OpBlend } from '../stack/types'
+import {
+  modelReferenceLimits,
+  sanitizeModelToolParams,
+} from '../stack/modelToolParams'
 import {
   FEATHER_SLIDER_MAX,
   MAX_FEATHER_PX,
@@ -26,7 +30,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   params: [Record<string, any>]
+  references: [ModelReferenceImage[]]
   blend: [Partial<OpBlend>]
+  blendCommit: []
   run: []
 }>()
 
@@ -41,6 +47,14 @@ const blend = computed(() => ({
 const toolParams = computed(() =>
   sanitizeModelToolParams(props.tool, props.op.params)
 )
+const supportsReferences = computed(() =>
+  props.op.operation === 'repaint' || props.op.operation === 'expand'
+)
+const referenceLimits = computed(() => modelReferenceLimits(props.tool))
+const referencesValid = computed(() => {
+  const count = props.op.reference_images?.length ?? 0
+  return count >= referenceLimits.value.min && count <= referenceLimits.value.max
+})
 
 </script>
 
@@ -61,6 +75,18 @@ const toolParams = computed(() =>
       />
     </section>
 
+    <section
+      v-if="supportsReferences && (referenceLimits.max > 0 || op.reference_images?.length)"
+    >
+      <ReferenceImageStrip
+        :model-value="op.reference_images || []"
+        :min-items="referenceLimits.min"
+        :max-items="referenceLimits.max"
+        :disabled="running"
+        @update:model-value="emit('references', $event)"
+      />
+    </section>
+
     <section class="space-y-2">
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
@@ -75,7 +101,7 @@ const toolParams = computed(() =>
           class="shrink-0 whitespace-nowrap"
           size="sm"
           :loading="running"
-          :disabled="!tool"
+          :disabled="!tool || !referencesValid"
           @click="emit('run')"
         >
           Run again
@@ -103,6 +129,7 @@ const toolParams = computed(() =>
           @input="emit('blend', {
             opacity: Number(($event.target as HTMLInputElement).value) / 100,
           })"
+          @change="emit('blendCommit')"
         />
         <span class="text-right font-mono tabular-nums text-content-secondary">
           {{ Math.round(blend.opacity * 100) }}%
@@ -121,6 +148,7 @@ const toolParams = computed(() =>
               Number(($event.target as HTMLInputElement).value),
             ),
           })"
+          @change="emit('blendCommit')"
         />
         <input
           type="number"
@@ -140,7 +168,7 @@ const toolParams = computed(() =>
                 Number(($event.target as HTMLInputElement).value),
               ),
             ),
-          })"
+          }); emit('blendCommit')"
         />
       </label>
     </section>

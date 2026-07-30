@@ -16,7 +16,13 @@ import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
 import { getCurrentProfileId } from '../../composables/useProfile'
 import { newOpId } from './opId'
-import type { JournalEntry, Op, OutputStage, StackDocument } from './types'
+import type {
+  JournalEntry,
+  ModelReferenceImage,
+  Op,
+  OutputStage,
+  StackDocument,
+} from './types'
 import { DEFAULT_OUTPUT, DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
 import { migrateShapePaints } from './migrateShapePaints'
 import {
@@ -394,6 +400,20 @@ export function useStackDocument() {
     )
   }
 
+  function setReferenceImages(opId: string, images: ModelReferenceImage[]) {
+    const op = opById(opId) as any
+    if (!op || op.class !== 'patch') return
+    const was = JSON.parse(JSON.stringify(op.reference_images || []))
+    const next = JSON.parse(JSON.stringify(images))
+    if (JSON.stringify(was) === JSON.stringify(next)) return
+    record(
+      'set_reference_images',
+      { op_id: opId, images: next },
+      { op_id: opId, images: was },
+      () => { op.reference_images = next },
+    )
+  }
+
   /**
    * Replace the child list of the one hierarchical container.
    *
@@ -573,6 +593,11 @@ export function useStackDocument() {
         if (op) op.params = inv.params
         break
       }
+      case 'set_reference_images': {
+        const op = d.edits.find(o => o.id === inv.op_id) as any
+        if (op) op.reference_images = inv.images
+        break
+      }
       case 'replace_params': {
         const op = d.edits.find(o => o.id === inv.op_id) as any
         if (op) op.params = inv.params
@@ -643,6 +668,11 @@ export function useStackDocument() {
       case 'set_params': {
         const op = d.edits.find(o => o.id === fwd.op_id) as any
         if (op) op.params = { ...(op.params || {}), ...fwd.params }
+        break
+      }
+      case 'set_reference_images': {
+        const op = d.edits.find(o => o.id === fwd.op_id) as any
+        if (op) op.reference_images = fwd.images
         break
       }
       case 'replace_params': {
@@ -743,6 +773,7 @@ export function useStackDocument() {
             })),
           }
         : null),
+      reference_images: op.reference_images ?? undefined,
       // Provenance of the pixels that actually landed, not every candidate.
       job_id: (op.candidates || []).find((c: any) => c.id === op.picked)?.job_id ?? null,
     }))
@@ -793,6 +824,7 @@ export function useStackDocument() {
     replaceEdits,
     setEnabled,
     setParams,
+    setReferenceImages,
     setRegions,
     setLabel,
     annotateLabel,

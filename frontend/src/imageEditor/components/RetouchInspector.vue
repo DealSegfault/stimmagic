@@ -35,6 +35,7 @@ const emit = defineEmits<{
   clip: [{ shadows: boolean; highlights: boolean }]
   /** New geometry for this region's gradient mask. */
   gradient: [GradientMask]
+  gradientCommit: []
 }>()
 
 /**
@@ -62,6 +63,7 @@ function setGradientInvert(invert: boolean) {
   const mask = gradient.value
   if (mask?.kind !== 'radial') return
   emit('gradient', { ...mask, invert })
+  emit('gradientCommit')
 }
 
 function setFeather(region: RetouchRegion, pixels: number) {
@@ -121,7 +123,7 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
           step="1"
           :value="gradientSlider.value"
           @input="setGradientSlider(Number(($event.target as HTMLInputElement).value))"
-          @change="emit('settingsCommit')"
+          @change="emit('gradientCommit')"
         />
         <span class="font-mono tabular-nums text-right text-content-secondary">
           {{ Math.round(gradientSlider.value) }}

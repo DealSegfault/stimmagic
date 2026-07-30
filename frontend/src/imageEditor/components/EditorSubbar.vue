@@ -16,6 +16,7 @@ import ToolIcon from './ToolIcon.vue'
 import BrushPicker from '../ported/BrushPicker.vue'
 import ColorPicker from '../ported/ColorPicker.vue'
 import PaintPicker from './PaintPicker.vue'
+import ReferenceImageStrip from './ReferenceImageStrip.vue'
 import ToolAdvancedParams from './ToolAdvancedParams.vue'
 import {
   CROP_ASPECTS,
@@ -42,7 +43,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   sub: [string]
-  set: [Record<string, any>]
+  set: [Record<string, any>, continuous?: boolean]
+  commit: ['crop' | 'annotation']
   run: []
   openToolPicker: [MouseEvent]
 }>()
@@ -220,6 +222,14 @@ function chipClass(active: boolean, pending = false) {
           @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
           @keydown.enter.meta="emit('run')"
         />
+        <ReferenceImageStrip
+          v-if="sub === 'expand' && (state.referenceMax > 0 || state.referenceImages?.length)"
+          :model-value="state.referenceImages || []"
+          :min-items="state.referenceMin || 0"
+          :max-items="state.referenceMax || 0"
+          :disabled="busy"
+          @update:model-value="emit('set', { referenceImages: $event })"
+        />
       </div>
     </template>
 
@@ -245,7 +255,12 @@ function chipClass(active: boolean, pending = false) {
         <input
           type="range" min="-0.7854" max="0.7854" step="0.002" class="w-28"
           :value="-(state.rotation ?? 0)"
-          @input="emit('set', { rotation: -Number(($event.target as HTMLInputElement).value) })"
+          @input="emit(
+            'set',
+            { rotation: -Number(($event.target as HTMLInputElement).value) },
+            true,
+          )"
+          @change="emit('commit', 'crop')"
         />
         <span class="tabular-nums w-10">{{ (-(state.rotation ?? 0) * 180 / Math.PI).toFixed(1) }}°</span>
       </label>
@@ -301,7 +316,15 @@ function chipClass(active: boolean, pending = false) {
             @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
             @keydown.enter.meta="emit('run')"
           />
-          <p v-else class="px-3 py-2.5 text-sm text-content-muted">
+          <ReferenceImageStrip
+            v-if="sub === 'repaint' && (state.referenceMax > 0 || state.referenceImages?.length)"
+            :model-value="state.referenceImages || []"
+            :min-items="state.referenceMin || 0"
+            :max-items="state.referenceMax || 0"
+            :disabled="busy"
+            @update:model-value="emit('set', { referenceImages: $event })"
+          />
+          <p v-if="sub !== 'repaint'" class="px-3 py-2.5 text-sm text-content-muted">
             Select the area to remove, then Run.
           </p>
 
@@ -816,7 +839,12 @@ function chipClass(active: boolean, pending = false) {
         <input
           type="range" min="10" max="100" class="w-20"
           :value="Math.round((state.annotateOpacity ?? 1) * 100)"
-          @input="emit('set', { annotateOpacity: Number(($event.target as HTMLInputElement).value) / 100 })"
+            @input="emit(
+              'set',
+              { annotateOpacity: Number(($event.target as HTMLInputElement).value) / 100 },
+              true,
+            )"
+            @change="emit('commit', 'annotation')"
         />
       </label>
     </template>
