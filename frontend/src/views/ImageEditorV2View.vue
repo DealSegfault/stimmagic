@@ -93,6 +93,15 @@ import {
   geometryBelow, coTransform, isIdentity, intersectsFrame, rewritePayload,
   transformShapes, multiply, applyToPoint, invert as invertMatrix,
 } from '../imageEditor/stack/geometryTransform'
+import type { Affine } from '../imageEditor/stack/geometryTransform'
+import {
+  DEFAULT_LINEAR_SOFTNESS,
+  DEFAULT_RADIAL_FEATHER,
+  gradientMaskCanvas,
+  isGradientMask,
+  transformGradientMask,
+  withGradientSlider,
+} from '../imageEditor/stack/regionMask'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
 } from '../imageEditor/stack/adjustSections'
@@ -104,6 +113,7 @@ import type { FamilyId, SelectionMode, SelectToolId } from '../imageEditor/stack
 import { useSelection } from '../imageEditor/ported/useSelection'
 import type {
   GenerativeOp,
+  GradientMask,
   RetouchRegion,
   RetouchRegionKind,
   RetouchRegionSettings,
@@ -292,6 +302,13 @@ const selectGrow = ref(0)
 const selectAntialias = ref(true)
 const selectBrushSize = ref(80)
 /**
+ * Falloff a NEW gradient starts with. Once one exists, the island slider edits
+ * that gradient rather than this default — the ramp on the canvas is the thing
+ * being tuned, and a slider that silently stopped affecting it would be a lie.
+ */
+const selectGradientSoftness = ref(DEFAULT_LINEAR_SOFTNESS)
+const selectGradientFeather = ref(DEFAULT_RADIAL_FEATHER)
+/**
  * The selection as created, plus the geometry frame it was authored in.
  * When the geometry below the head changes (crop added/removed/edited), the
  * live selection is re-derived from THIS master through `M_new ∘ M_authored⁻¹`
@@ -305,6 +322,19 @@ let selectionMasterFrame: { matrix: number[]; frameAdjust: number[] } | null = n
 let selectionAppliedKey: string | null = null
 /** Loading a saved mask into the palette must not immediately rewrite it. */
 let suppressMaskedAdjustmentSync = false
+/**
+ * One-shot: a gradient gesture has just persisted its geometry, so the raster
+ * mask the same gesture publishes is redundant and must not be committed as a
+ * second, frozen mask for the region. Consumed by `onSelectionChange`.
+ */
+let gradientGestureLanding = false
+/**
+ * The region a gradient drag is currently shaping. The first frame past the
+ * too-small threshold creates it and every later frame re-aims THAT region, so
+ * one gesture makes one region instead of one per pointer move. Cleared on
+ * release, and the region is removed outright if the gesture ends too small.
+ */
+let gradientDraftRegionId: string | null = null
 
 // Retouch
 const retouchRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
@@ -3005,6 +3035,186 @@ const selectedRetouchRegion = computed<RetouchRegion | null>(
   () => retouchRegionLocation(selectedRetouchRegionId.value)?.region ?? null,
 )
 
+/**
+ * The selected region's gradient, mapped into the CURRENT composite frame so
+ * its handles land on the pixels they describe. Geometry is authored in the
+ * region's own frame, exactly like a payload, so a crop underneath moves the
+ * handles with the image instead of leaving them behind.
+ */
+const selectedGradient = computed<GradientMask | null>(() => {
+  const location = retouchRegionLocation(selectedRetouchRegionId.value)
+  const mask = location?.region.mask
+  if (!location || !isGradientMask(mask)) return null
+  const doc = stack.doc.value
+  if (!doc) return mask
+  const created = location.region.payload_frame
+  if (!created) return mask
+  const now = geometryBelow(doc, location.index)
+  const carry = coTransform(created.matrix as Affine, now.matrix as Affine)
+  return carry ? transformGradientMask(mask, carry) : mask
+})
+
+/**
+ * A gradient region keeps GEOMETRY, not pixels: nothing is uploaded, and the
+ * compositor rasterises the ramp on every render. That is what keeps the
+ * handles live for the life of the document.
+ *
+ * `committed` is false for every frame of a drag. Both cases write straight to
+ * the stack — the render cache already keys on the region, so a moved handle
+ * invalidates exactly this op and nothing below it — but only a committed one
+ * closes the undo step.
+ */
+function onGradientChange(mask: GradientMask, committed: boolean) {
+  if (!isMaskedAdjustmentSub(sub.value)) {
+    // Not a masked adjustment: the ramp is only a selection (Repaint, Remove,
+    // an inpaint mask), which the canvas already applied. Remember the shape
+    // it was drawn with so the island slider still means something.
+    rememberGradientDefaults(mask)
+    return
+  }
+  // The ramp is landing as geometry, so the rasterised copy the canvas is about
+  // to publish must not ALSO become a frozen mask on this region. The canvas
+  // emits the geometry first and publishes second, both synchronously, so this
+  // is armed here and consumed by the change handler.
+  gradientGestureLanding = true
+  // A fresh drag makes its OWN region — even with one selected, so the second
+  // ramp never silently eats the first — but only one for the whole gesture.
+  persistGradientRegion(mask, committed, { into: gradientDraftRegionId })
+  if (committed) gradientDraftRegionId = null
+}
+
+/**
+ * The gesture ended without a ramp worth keeping. If it had already grown big
+ * enough to make a region, that region goes with it: a drag the person backed
+ * out of must leave nothing behind.
+ */
+function onGradientCancel() {
+  const draftId = gradientDraftRegionId
+  gradientDraftRegionId = null
+  // No publish is coming for this gesture, so the one-shot must not survive to
+  // swallow the next gesture's mask.
+  gradientGestureLanding = false
+  if (!draftId) return
+  const location = retouchRegionLocation(draftId)
+  if (location) removeRetouchRegion(location.op.id, draftId)
+}
+
+/** A handle drag re-aims the region the handles belong to, and only that one. */
+function onGradientEdit(mask: GradientMask, committed: boolean) {
+  const into = selectedGradientRegionId()
+  if (!into) return
+  persistGradientRegion(mask, committed, { into })
+}
+
+/** The selected region, but only when it is a gradient we can edit in place. */
+function selectedGradientRegionId(): string | null {
+  const region = selectedRetouchRegion.value
+  return region && isGradientMask(region.mask) ? region.id : null
+}
+
+function rememberGradientDefaults(mask: GradientMask) {
+  if (mask.kind === 'linear') selectGradientSoftness.value = mask.softness
+  else selectGradientFeather.value = mask.feather
+}
+
+/**
+ * The inspector edits the region's own stored geometry, so its values are
+ * already in the authored frame. The canvas hands back composite-space handles.
+ * Saying which avoids transforming twice — invisible until a crop exists, and
+ * then badly wrong.
+ */
+function onInspectorGradient(mask: GradientMask) {
+  const into = selectedGradientRegionId()
+  if (!into) return
+  persistGradientRegion(mask, true, { into, space: 'authored' })
+}
+
+function persistGradientRegion(
+  mask: GradientMask,
+  committed: boolean,
+  options: { into: string | null; space?: 'composite' | 'authored' },
+) {
+  rememberGradientDefaults(mask)
+  const existingId = options.into
+  const opId = retouchOpId.value || newOpId()
+  retouchOpId.value = opId
+  const existingOp = stack.opById(opId) as any
+  const opIndex = stack.doc.value?.edits.findIndex(op => op.id === opId) ?? -1
+  const regions = (existingOp?.regions ?? []) as RetouchRegion[]
+  const existing = existingId ? regions.find(region => region.id === existingId) : null
+  // An edit maps back into the frame THAT REGION was authored in, which is not
+  // necessarily the frame a new region would get: regions outlive crops.
+  const frame = existing?.payload_frame
+    ?? payloadFrame(opIndex >= 0 ? opIndex : undefined)
+
+  // Handles are dragged in composite space; the region stores them in its own
+  // authored frame, so the inverse of the carry goes back the way it came.
+  const authored = options.space === 'authored'
+    ? mask
+    : authoredGradient(mask, frame, opIndex)
+  if (!authored) return
+
+  if (existingId) {
+    stack.setRegions(opId, regions.map(region =>
+      region.id === existingId ? { ...region, mask: authored } : region
+    ))
+  } else {
+    const regionId = newOpId()
+    maskedAdjustRegionId = regionId
+    const region: RetouchRegion = {
+      id: regionId,
+      kind: maskedAdjustmentKind,
+      enabled: true,
+      mask: authored,
+      payload_frame: frame,
+      sampled_input_hash: null,
+      settings: { ...DEFAULT_RETOUCH_REGION_SETTINGS },
+    }
+    if (!existingOp) {
+      stack.addOp({
+        id: opId,
+        class: 'container',
+        enabled: true,
+        label: 'Retouch',
+        exec: { kind: 'retouch-regions', version: 1 },
+        defaults: { ...DEFAULT_RETOUCH_REGION_SETTINGS },
+        regions: [region],
+      } as any)
+    } else {
+      stack.setRegions(opId, [...(existingOp.regions ?? []), region])
+    }
+    // Every later frame of this drag re-aims the region just made.
+    gradientDraftRegionId = regionId
+    selectedOpId.value = opId
+    selectedRetouchRegionId.value = regionId
+    // A ramp needs no boundary readout; the guides already say where it is.
+    selectedRetouchFeedbackVisible.value = false
+  }
+
+  if (committed) {
+    // The ramp is the mask now, so the tool lets the canvas go — the next
+    // gesture is tuning the adjustment, not drawing another region.
+    armedSelectTool.value = null
+    selectionFeedbackVisible.value = false
+  }
+  void render().then(refreshRetouchInput)
+}
+
+/** Composite-space geometry back into the region's authored frame. */
+function authoredGradient(
+  mask: GradientMask,
+  frame: { matrix: number[]; width: number; height: number } | undefined,
+  opIndex: number,
+): GradientMask | null {
+  const doc = stack.doc.value
+  if (!doc || !frame) return mask
+  const now = geometryBelow(doc, opIndex >= 0 ? opIndex : doc.edits.length)
+  const carry = coTransform(frame.matrix as Affine, now.matrix as Affine)
+  if (!carry) return mask
+  const back = invertMatrix(carry)
+  return back ? transformGradientMask(mask, back) : mask
+}
+
 /** Expand a compact retained mask and carry it into the region's current frame. */
 async function retouchFeedbackMask(regionId: string | null): Promise<HTMLCanvasElement | null> {
   const location = retouchRegionLocation(regionId)
@@ -3016,17 +3226,26 @@ async function retouchFeedbackMask(regionId: string | null): Promise<HTMLCanvasE
   const authored = document.createElement('canvas')
   authored.width = created?.width ?? now.width
   authored.height = created?.height ?? now.height
-  const key = `${region.mask_ref}@0`
-  let payload = payloadCache.get(key)
-  if (!payload) {
-    try {
-      payload = await loadImage(stack.payloadUrl(region.mask_ref, 0))
-    } catch {
-      return null
+  // A gradient region owns no payload; its coverage comes from the same
+  // rasteriser the compositor uses, so feedback and render agree by construction.
+  if (isGradientMask(region.mask)) {
+    authored.getContext('2d')!.drawImage(
+      gradientMaskCanvas(region.mask, authored.width, authored.height), 0, 0,
+    )
+  } else {
+    if (!region.mask_ref) return null
+    const key = `${region.mask_ref}@0`
+    let payload = payloadCache.get(key)
+    if (!payload) {
+      try {
+        payload = await loadImage(stack.payloadUrl(region.mask_ref, 0))
+      } catch {
+        return null
+      }
     }
+    const [x, y] = region.payload_origin ?? [0, 0]
+    authored.getContext('2d')!.drawImage(payload, x, y)
   }
-  const [x, y] = region.payload_origin ?? [0, 0]
-  authored.getContext('2d')!.drawImage(payload, x, y)
   if (!created) return authored
   const matrix = coTransform(created.matrix as any, now.matrix)
   return matrix && !isIdentity(matrix)
@@ -3645,6 +3864,23 @@ function onSelectionSet(patch: Record<string, any>) {
   if ('growPx' in patch) selectGrow.value = patch.growPx
   if ('antialias' in patch) selectAntialias.value = patch.antialias
   if ('selectBrushSize' in patch) selectBrushSize.value = patch.selectBrushSize
+  // The gradient sliders edit the ramp on the canvas when there is one, and the
+  // default for the next ramp when there is not. Same control, and the mask
+  // thumbnail plus the guides make which one is happening obvious.
+  if ('gradientSoftness' in patch) {
+    selectGradientSoftness.value = patch.gradientSoftness
+    retuneSelectedGradient(patch.gradientSoftness, 'linear')
+  }
+  if ('gradientFeather' in patch) {
+    selectGradientFeather.value = patch.gradientFeather
+    retuneSelectedGradient(patch.gradientFeather, 'radial')
+  }
+}
+
+function retuneSelectedGradient(value: number, kind: 'linear' | 'radial') {
+  const current = selectedGradient.value
+  if (!current || current.kind !== kind) return
+  onGradientEdit(withGradientSlider(current, value), true)
 }
 
 function clearSelection() {
@@ -3861,8 +4097,13 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
   if (composite.value) {
     selectionAppliedKey = appliedKeyFor(head, composite.value.width, composite.value.height)
   }
+  // A gradient gesture already persisted its geometry; its rasterised copy is
+  // for the selection's other consumers, not a mask to freeze onto the region.
+  const landedAsGradient = gradientGestureLanding
+  gradientGestureLanding = false
   if (
     !suppressMaskedAdjustmentSync
+    && !landedAsGradient
     && family.value === 'retouch'
     && isMaskedAdjustmentSub(sub.value)
   ) {
@@ -4954,8 +5195,14 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
             :wand-grow-px="selectGrow"
             :wand-antialias="selectAntialias"
             :brush-size="selectBrushSize"
+            :gradient="selectedGradient"
+            :gradient-softness="selectGradientSoftness"
+            :gradient-feather="selectGradientFeather"
             @change="onSelectionChange"
             @object-pick="onObjectPick"
+            @gradient="onGradientChange"
+            @gradient-edit="onGradientEdit"
+            @gradient-cancel="onGradientCancel"
           />
           <!-- The selected annotation's own verbs, over the shape they act
                on. Inside the display box so it shares the shapes' coordinate
@@ -5002,6 +5249,10 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
           :grow-px="selectGrow"
           :antialias="selectAntialias"
           :brush-size="selectBrushSize"
+          :gradient-softness="selectedGradient?.kind === 'linear'
+            ? selectedGradient.softness : selectGradientSoftness"
+          :gradient-feather="selectedGradient?.kind === 'radial'
+            ? selectedGradient.feather : selectGradientFeather"
           :ai-busy="aiSelectBusy"
           :ai-error="aiSelectError"
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-chrome"
@@ -5190,6 +5441,7 @@ watch([inspectorKind, selectedOpId], () => { pointPickTarget.value = null })
               @settings-commit="commitRetouchSettingsRender"
               @pick="armPointColorPick"
               @clip="setClipIndicators"
+              @gradient="onInspectorGradient"
             />
           </div>
         </div>

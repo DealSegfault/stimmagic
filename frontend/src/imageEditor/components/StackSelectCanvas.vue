@@ -23,6 +23,14 @@ import type { useSelection } from '../ported/useSelection'
 import { useMagneticLasso } from '../ported/useMagneticLasso'
 import type { Point, SelectionMode } from '../ported/geometry'
 import type { SelectToolId } from '../stack/toolFamilies'
+import {
+  MIN_GRADIENT_EXTENT,
+  gradientMaskCanvas,
+  isDegenerate,
+  linearMaskFromDrag,
+  radialMaskFromDrag,
+} from '../stack/regionMask'
+import type { GradientMask } from '../stack/types'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
@@ -48,6 +56,15 @@ const props = withDefaults(defineProps<{
   visible?: boolean
   /** An objectPick is being segmented; the cursor says so. */
   busy?: boolean
+  /**
+   * The selected region's gradient, in source pixels. Present means its
+   * handles are on the canvas and draggable — a ramp that cannot be re-dragged
+   * after you have seen the grade is not the feature.
+   */
+  gradient?: GradientMask | null
+  /** Falloff a newly dragged ramp starts with, from the island's slider. */
+  gradientSoftness?: number
+  gradientFeather?: number
 }>(), {
   armed: null,
   combine: 'new',
@@ -58,6 +75,9 @@ const props = withDefaults(defineProps<{
   wandAntialias: true,
   brushSize: 80,
   visible: true,
+  gradient: null,
+  gradientSoftness: DEFAULT_LINEAR_SOFTNESS,
+  gradientFeather: DEFAULT_RADIAL_FEATHER,
 })
 
 const emit = defineEmits<{
@@ -66,6 +86,21 @@ const emit = defineEmits<{
    *  lands the result through applyMask. Modifiers override the combine
    *  mode for the one gesture: shift adds, alt subtracts. */
   objectPick: [{ x: number; y: number; shiftKey: boolean; altKey: boolean }]
+  /**
+   * A NEW ramp, dragged out with a gradient tool armed, in source pixels.
+   * `committed` is false for every frame of the drag and true on release, so
+   * the host can preview freely and persist once.
+   */
+  gradient: [mask: GradientMask, committed: boolean]
+  /**
+   * An EXISTING ramp re-aimed by its handles. Deliberately a different event:
+   * dragging a handle must edit the region it belongs to, while dragging out a
+   * fresh ramp must make a new one, and one event for both cannot tell them
+   * apart.
+   */
+  gradientEdit: [mask: GradientMask, committed: boolean]
+  /** The gradient gesture ended with nothing worth keeping. */
+  gradientCancel: []
 }>()
 
 const overlay = ref<HTMLCanvasElement | null>(null)
@@ -80,6 +115,18 @@ let brushGesture: Point[] = []
 let brushFeedback: HTMLCanvasElement | null = null
 const cursor = ref<{ x: number; y: number } | null>(null)
 let antsTimer: ReturnType<typeof setInterval> | null = null
+
+/** The gradient being dragged out right now, before it is anything persistent. */
+const draftGradient = ref<GradientMask | null>(null)
+let gradientStart: Point | null = null
+/** Which handle of an existing gradient the pointer owns. */
+type HandleId = 'lin1' | 'lin2' | 'radc' | 'radx' | 'rady'
+let handleDrag: HandleId | null = null
+
+/** The gradient the canvas should be drawing: a live draft outranks the saved one. */
+const shownGradient = computed<GradientMask | null>(
+  () => draftGradient.value ?? props.gradient
+)
 
 const scale = computed(() =>
   props.source ? props.source.width / Math.max(1, props.displayWidth) : 1
@@ -118,6 +165,17 @@ function onPointerDown(event: PointerEvent) {
       x: point.x, y: point.y,
       shiftKey: event.shiftKey, altKey: event.altKey,
     })
+    return
+  }
+
+  // A gradient is dragged out: press where the effect is strongest, release
+  // where it has died away entirely.
+  if (props.armed === 'linear' || props.armed === 'radial') {
+    drawing = true
+    overlay.value?.setPointerCapture(event.pointerId)
+    gradientStart = point
+    draftGradient.value = gradientFrom(point, point)
+    draw()
     return
   }
 
@@ -174,6 +232,16 @@ function onPointerMove(event: PointerEvent) {
   }
   if (!drawing || !props.source || !props.armed) return
   const point = pointFrom(event)
+  if (props.armed === 'linear' || props.armed === 'radial') {
+    if (!gradientStart) return
+    const next = gradientFrom(gradientStart, point)
+    draftGradient.value = next
+    // Nothing is persisted until the ramp is big enough to mean something, so
+    // a click or a twitch never leaves a region behind.
+    if (gradientWorthKeeping(next)) emit('gradient', next, false)
+    draw()
+    return
+  }
   if (props.armed === 'brush') brushTo(point)
   else if (props.armed === 'magnetic') magnetic.updatePreview(point)
   else if (props.armed === 'rect') selection.updateRectSelection(point, props.combine, event.shiftKey)
@@ -189,6 +257,22 @@ function onPointerUp(event: PointerEvent) {
 
   // A magnetic lasso closes on its own anchors, not on pointer-up.
   if (props.armed === 'magnetic') { draw(); return }
+  if (props.armed === 'linear' || props.armed === 'radial') {
+    drawing = false
+    const mask = gradientStart ? gradientFrom(gradientStart, point) : null
+    gradientStart = null
+    draftGradient.value = null
+    // A tap, or a ramp too short to read as one, is a miss rather than an
+    // invisible region: leave the selection exactly as it was, and let the host
+    // drop anything the drag created before it shrank back.
+    if (!mask || !gradientWorthKeeping(mask)) {
+      emit('gradientCancel')
+      draw()
+      return
+    }
+    commitGradient(mask)
+    return
+  }
   drawing = false
   if (props.armed === 'brush') {
     lastBrushPoint = null
@@ -201,6 +285,117 @@ function onPointerUp(event: PointerEvent) {
   else selection.finishLassoSelection(props.combine)
   stopAnts()
   publish()
+}
+
+// -- gradients --------------------------------------------------------------
+
+function gradientFrom(from: Point, to: Point): GradientMask {
+  return props.armed === 'radial'
+    ? radialMaskFromDrag(from, to, { feather: props.gradientFeather })
+    : linearMaskFromDrag(from, to, props.gradientSoftness)
+}
+
+/** How big the gradient is on the shorter axis, for the too-small check. */
+function gradientExtent(mask: GradientMask): number {
+  return mask.kind === 'linear'
+    ? Math.hypot(mask.x2 - mask.x1, mask.y2 - mask.y1)
+    : Math.min(mask.rx, mask.ry)
+}
+
+function gradientWorthKeeping(mask: GradientMask): boolean {
+  return !isDegenerate(mask) && gradientExtent(mask) >= MIN_GRADIENT_EXTENT * scale.value
+}
+
+/**
+ * A gradient lands in TWO places, and both matter.
+ *
+ * The selection buffer gets a rasterised copy, so every existing consumer —
+ * Repaint, Remove, inpaint, a paint clip — takes a soft ramp without knowing
+ * gradients exist. The host separately gets the geometry, which is what a
+ * masked-adjustment region persists so its handles stay live.
+ */
+function commitGradient(mask: GradientMask) {
+  if (props.source) {
+    selection.applyMaskCanvas(
+      gradientMaskCanvas(mask, props.source.width, props.source.height),
+      props.combine,
+    )
+  }
+  emit('gradient', mask, true)
+  // The ramp IS the edge treatment; feathering it again only blurs a blur.
+  publish(false)
+}
+
+function gradientHandles(mask: GradientMask): Array<{ id: HandleId; x: number; y: number }> {
+  if (mask.kind === 'linear') {
+    return [
+      { id: 'lin1', x: mask.x1, y: mask.y1 },
+      { id: 'lin2', x: mask.x2, y: mask.y2 },
+    ]
+  }
+  return [
+    { id: 'radc', x: mask.cx, y: mask.cy },
+    { id: 'radx', x: mask.cx + mask.rx, y: mask.cy },
+    { id: 'rady', x: mask.cx, y: mask.cy + mask.ry },
+  ]
+}
+
+/** Handle positions in DISPLAY pixels, for the DOM grab targets. */
+const handlePoints = computed(() => {
+  const mask = shownGradient.value
+  if (!mask || !props.visible) return []
+  return gradientHandles(mask).map(handle => ({
+    id: handle.id,
+    left: handle.x / scale.value,
+    top: handle.y / scale.value,
+    // Only the ellipse's centre moves the whole mask. A linear ramp has no
+    // centre — dragging either end re-aims it — so neither end claims to.
+    move: handle.id === 'radc',
+  }))
+})
+
+function moveGradientHandle(id: HandleId, point: Point): GradientMask | null {
+  const mask = props.gradient
+  if (!mask) return null
+  if (mask.kind === 'linear') {
+    return id === 'lin1'
+      ? { ...mask, x1: point.x, y1: point.y }
+      : { ...mask, x2: point.x, y2: point.y }
+  }
+  if (id === 'radc') return { ...mask, cx: point.x, cy: point.y }
+  if (id === 'radx') return { ...mask, rx: Math.max(1, Math.abs(point.x - mask.cx)) }
+  return { ...mask, ry: Math.max(1, Math.abs(point.y - mask.cy)) }
+}
+
+function onHandleDown(id: HandleId, event: PointerEvent) {
+  if (!props.gradient) return
+  event.stopPropagation()
+  event.preventDefault()
+  handleDrag = id
+  ;(event.target as HTMLElement).setPointerCapture(event.pointerId)
+}
+
+function onHandleMove(event: PointerEvent) {
+  if (!handleDrag || !props.source) return
+  const next = moveGradientHandle(handleDrag, pointFromClient(event))
+  if (next) emit('gradientEdit', next, false)
+}
+
+function onHandleUp(event: PointerEvent) {
+  if (!handleDrag) return
+  const next = moveGradientHandle(handleDrag, pointFromClient(event))
+  handleDrag = null
+  if (!next || isDegenerate(next)) return
+  emit('gradientEdit', next, true)
+}
+
+/** Handle drags land on a DOM node, so the overlay rect is the shared frame. */
+function pointFromClient(event: PointerEvent): Point {
+  const rect = overlay.value!.getBoundingClientRect()
+  return {
+    x: (event.clientX - rect.left) * scale.value,
+    y: (event.clientY - rect.top) * scale.value,
+  }
 }
 
 function brushTo(point: Point) {
@@ -319,6 +514,69 @@ function draw() {
     }
   }
   ctx.restore()
+
+  drawGradientGuides(ctx)
+}
+
+/**
+ * A gradient has no ants to march: its whole point is that there is no edge.
+ * The guides ARE the boundary readout — where full strength ends and where the
+ * ramp has died — so they are drawn in the accent rather than as a dashed
+ * selection, and they stop at the frame the way the image does.
+ */
+function drawGradientGuides(ctx: CanvasRenderingContext2D) {
+  const mask = shownGradient.value
+  if (!mask || !props.visible) return
+  const canvas = ctx.canvas
+  const line = Math.max(1, scale.value)
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, canvas.width, canvas.height)
+  ctx.clip()
+  // Teal accent. Canvas takes no design tokens, so this matches --accent the
+  // way the ants above match plain white.
+  ctx.strokeStyle = '#2dd4bf'
+  ctx.lineWidth = line
+
+  if (mask.kind === 'linear') {
+    const dx = mask.x2 - mask.x1
+    const dy = mask.y2 - mask.y1
+    const length = Math.hypot(dx, dy) || 1
+    // Perpendicular, long enough to cross any frame at any angle.
+    const span = (canvas.width + canvas.height) * 1.5
+    const px = (-dy / length) * span
+    const py = (dx / length) * span
+    const rail = (x: number, y: number, dashed: boolean) => {
+      ctx.setLineDash(dashed ? [7 * line, 5 * line] : [])
+      ctx.beginPath()
+      ctx.moveTo(x + px, y + py)
+      ctx.lineTo(x - px, y - py)
+      ctx.stroke()
+    }
+    // Solid where the effect is at full strength, dashed where it has ended.
+    rail(mask.x1, mask.y1, false)
+    rail(mask.x2, mask.y2, true)
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.55
+    ctx.beginPath()
+    ctx.moveTo(mask.x1, mask.y1)
+    ctx.lineTo(mask.x2, mask.y2)
+    ctx.stroke()
+  } else {
+    ctx.setLineDash([7 * line, 5 * line])
+    ctx.beginPath()
+    ctx.ellipse(mask.cx, mask.cy, mask.rx, mask.ry, 0, 0, Math.PI * 2)
+    ctx.stroke()
+    // The inner ring is where the feather starts, so the falloff is legible.
+    const inner = 1 - Math.max(0.02, Math.min(1, mask.feather / 100))
+    ctx.setLineDash([])
+    ctx.globalAlpha = 0.45
+    ctx.beginPath()
+    ctx.ellipse(mask.cx, mask.cy, mask.rx * inner, mask.ry * inner, 0, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.restore()
 }
 
 function startAnts() {
@@ -379,8 +637,13 @@ watch(() => props.armed, armed => {
     drawing = false
     cursor.value = null
   }
+  draftGradient.value = null
+  gradientStart = null
   draw()
 })
+// The saved gradient is the host's value; its guides must follow it whether it
+// moved by handle, by slider, or by undo.
+watch(() => props.gradient, draw, { deep: true })
 watch(() => props.visible, draw)
 // Marching ants animate whenever there IS a selection, not only while drawing.
 watch([() => selection.marchingAntsPaths.value.length, () => props.visible], ([length, visible]) => {
@@ -406,6 +669,33 @@ onBeforeUnmount(stopAnts)
       @pointerup="onPointerUp"
       @pointerleave="cursor = null"
       @dblclick="onDoubleClick"
+    />
+    <!--
+      Gradient handles. DOM nodes rather than canvas hit-testing so they can be
+      grabbed while NO tool is armed — re-dragging a saved ramp must not require
+      re-arming its tool — without the overlay swallowing clicks meant for the
+      family canvas underneath.
+    -->
+    <button
+      v-for="handle in handlePoints"
+      :key="handle.id"
+      type="button"
+      class="pointer-events-auto absolute rounded-full border-2 transition-colors
+             focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+      :class="[
+        handle.move
+          ? 'bg-accent border-base w-3.5 h-3.5 cursor-move'
+          : 'bg-base border-accent w-3 h-3 cursor-grab active:cursor-grabbing',
+      ]"
+      :style="{
+        left: handle.left + 'px',
+        top: handle.top + 'px',
+        transform: 'translate(-50%, -50%)',
+      }"
+      :aria-label="handle.move ? 'Move the gradient' : 'Re-aim the gradient'"
+      @pointerdown="onHandleDown(handle.id, $event)"
+      @pointermove="onHandleMove"
+      @pointerup="onHandleUp"
     />
     <!-- Brush outline: the only reliable size feedback while painting. -->
     <div

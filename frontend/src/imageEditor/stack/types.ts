@@ -189,6 +189,53 @@ export interface RetouchRegionSettings {
 }
 
 /**
+ * A mask whose strength ramps along a direction, rather than one drawn as
+ * pixels. `x1,y1` is where the effect is at full strength and `x2,y2` where it
+ * reaches zero, both in the region's authored frame — so the ramp survives a
+ * later crop the same way a payload does, and stays re-draggable forever.
+ */
+export interface LinearGradientMask {
+  kind: 'linear'
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  /** 0 = a straight ramp, 100 = a long eased one. */
+  softness: number
+}
+
+/** An elliptical ramp: full strength at the centre, zero at the edge. */
+export interface RadialGradientMask {
+  kind: 'radial'
+  cx: number
+  cy: number
+  rx: number
+  ry: number
+  /** Share of the radius spent fading out, 2..100. */
+  feather: number
+  /** Affect OUTSIDE the ellipse instead — the edge-burn case. */
+  invert: boolean
+}
+
+/** Drawn pixels; the alpha lives in the region's `mask_ref` payload. */
+export interface RasterMask {
+  kind: 'raster'
+}
+
+/**
+ * How a region knows which pixels it covers.
+ *
+ * Raster masks are baked by a gesture and uploaded. Gradient masks are
+ * PARAMETERS, rasterised on demand at render time, which is the whole point:
+ * a ramp you cannot re-drag after the fact is not the feature. Absent on a
+ * region means raster — every document written before this existed.
+ */
+export type RegionMask = RasterMask | LinearGradientMask | RadialGradientMask
+
+/** The gradient kinds, which carry geometry and own no payload. */
+export type GradientMask = LinearGradientMask | RadialGradientMask
+
+/**
  * One editable repair inside a Retouch row. A brush gesture may define its
  * mask, but the region—not any individual dab—is the persistent child.
  */
@@ -197,7 +244,13 @@ export interface RetouchRegion {
   kind: RetouchRegionKind
   enabled: boolean
   label?: string
-  mask_ref: string
+  /**
+   * Absent when `mask` is a gradient: those regions store geometry, not
+   * pixels, and have no payload to reference.
+   */
+  mask_ref?: string
+  /** Absent means `{kind:'raster'}` — see RegionMask. */
+  mask?: RegionMask
   /** This region's own authored frame; later regions may be added after crops move. */
   payload_frame?: { matrix: number[]; width: number; height: number }
   /** Heal/Clone/Patch donor anchor in the parent's authored pixel frame. */

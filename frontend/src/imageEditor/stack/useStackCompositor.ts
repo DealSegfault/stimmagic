@@ -36,6 +36,7 @@ import {
   adjustIsIdentity,
 } from './opExecutors'
 import { featherAlpha } from './featherAlpha'
+import { gradientMaskCanvas, isGradientMask } from './regionMask'
 import { retouchRegionAlpha } from './retouchRegionAlpha'
 import { maskedRetouchAdjustmentParams } from './adjustSections'
 
@@ -418,6 +419,48 @@ export class StackCompositor {
     height: number,
   ): Promise<CanvasImageSource> {
     const payload = await this.deps.loadPayload(ref, 0)
+    return this.positionRetouchPayload(payload, region, doc, index, width, height)
+  }
+
+  /**
+   * A region's coverage, whatever it is made of.
+   *
+   * Drawn regions load their payload. Gradient regions have no payload: their
+   * geometry is rasterised in the authored frame right here, and then travels
+   * the identical positioning path, so a ramp co-transforms with a later crop
+   * exactly the way a brushed mask does.
+   */
+  private async loadRegionMask(
+    region: any,
+    doc: StackDocument,
+    index: number,
+    width: number,
+    height: number,
+  ): Promise<CanvasImageSource | null> {
+    const mask = region.mask
+    if (isGradientMask(mask)) {
+      const previewScale = Number((doc as any)._preview_scale ?? 1) || 1
+      const frame = region.payload_frame
+      const authoredWidth = Math.max(1, Math.round(frame?.width ?? width / previewScale))
+      const authoredHeight = Math.max(1, Math.round(frame?.height ?? height / previewScale))
+      const rasterised = gradientMaskCanvas(mask, authoredWidth, authoredHeight)
+      // Rasterised full-frame, so it has no compact origin of its own.
+      return this.positionRetouchPayload(
+        rasterised, { ...region, payload_origin: [0, 0] }, doc, index, width, height,
+      )
+    }
+    if (!region.mask_ref) return null
+    return this.loadRetouchPayload(region.mask_ref, region, doc, index, width, height)
+  }
+
+  private positionRetouchPayload(
+    payload: CanvasImageSource,
+    region: any,
+    doc: StackDocument,
+    index: number,
+    width: number,
+    height: number,
+  ): CanvasImageSource {
     const created = region.payload_frame
     const [x, y] = region.payload_origin ?? [0, 0]
     const placePayload: Affine = [1, 0, 0, 1, x, y]
@@ -493,15 +536,11 @@ export class StackCompositor {
       if (kind === 'retouch-regions') {
         let output = input
         for (const region of anyOp.regions ?? []) {
-          if (!region.enabled || !region.mask_ref) continue
-          const mask = await this.loadRetouchPayload(
-            region.mask_ref,
-            region,
-            doc,
-            index,
-            width,
-            height,
-          )
+          if (!region.enabled) continue
+          const mask = await this.loadRegionMask(region, doc, index, width, height)
+          // A region with no coverage yet — no payload, or a gradient dragged
+          // to nothing — contributes nothing rather than covering everything.
+          if (!mask) continue
           // A local adjustment is parametric: it derives fresh pixels from
           // the composite beneath it on every render, then the retained mask
           // limits those pixels to the authored region. Unlike Heal/Clone it

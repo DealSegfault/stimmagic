@@ -39,6 +39,10 @@ const props = defineProps<{
   growPx: number
   antialias: boolean
   brushSize: number
+  /** Ease on a fresh linear ramp, 0-100. */
+  gradientSoftness: number
+  /** Falloff share on a fresh ellipse, 2-100. */
+  gradientFeather: number
   /**
    * The pointer — object select — is the workspace's IDLE state, not an armed
    * tool: this is true when no family is open and no region tool is armed.
@@ -94,17 +98,26 @@ const SLIDER_SLOTS = {
   feather: { label: 'Feather', key: 'featherPx', min: 0, max: FEATHER_SLIDER_MAX, unit: 'px' },
   tolerance: { label: 'Threshold', key: 'tolerance', min: 1, max: 100, unit: '' },
   brush: { label: 'Brush', key: 'selectBrushSize', min: 8, max: 300, unit: 'px' },
+  // A ramp's ease and an ellipse's falloff are the same idea and deliberately
+  // not the same number: 100% softness on a ramp has no edge left, while 100%
+  // feather on an ellipse still ends somewhere.
+  softness: { label: 'Softness', key: 'gradientSoftness', min: 0, max: 100, unit: '' },
+  falloff: { label: 'Feather', key: 'gradientFeather', min: 2, max: 100, unit: '' },
 } as const
 
 const slot = computed(() => {
   if (props.armed === 'wand') return SLIDER_SLOTS.tolerance
   if (props.armed === 'brush') return SLIDER_SLOTS.brush
+  if (props.armed === 'linear') return SLIDER_SLOTS.softness
+  if (props.armed === 'radial') return SLIDER_SLOTS.falloff
   return SLIDER_SLOTS.feather
 })
 
 const slotValue = computed(() => {
   if (props.armed === 'wand') return props.tolerance
   if (props.armed === 'brush') return props.brushSize
+  if (props.armed === 'linear') return props.gradientSoftness
+  if (props.armed === 'radial') return props.gradientFeather
   return featherSliderFromPx(props.featherPx)
 })
 
@@ -208,7 +221,11 @@ function sliderClass(enabled: boolean) {
     </Tooltip>
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 
-    <Tooltip v-for="tool in SELECT_TOOLS" :key="tool.id" :text="`Select — ${tool.label}`">
+    <Tooltip
+      v-for="tool in SELECT_TOOLS"
+      :key="tool.id"
+      :text="tool.hint ?? `Select — ${tool.label}`"
+    >
       <button
         type="button"
         class="p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"

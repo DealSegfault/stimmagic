@@ -225,9 +225,17 @@ export const PAINT_SWATCHES = [
  * belongs to the selection until it is disarmed, and the family's session, step
  * and controls all survive underneath.
  */
-export type SelectToolId = 'object' | 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
+export type SelectToolId =
+  | 'object' | 'rect' | 'ellipse' | 'lasso' | 'magnetic' | 'wand' | 'brush'
+  | 'linear' | 'radial'
 
-export const SELECT_TOOLS: Array<{ id: SelectToolId; label: string; icon: IconName }> = [
+export const SELECT_TOOLS: Array<{
+  id: SelectToolId
+  label: string
+  icon: IconName
+  /** Extra interaction help; the gradients need it because they are drags. */
+  hint?: string
+}> = [
   { id: 'rect', label: 'Rectangle', icon: 'squareDashed' },
   { id: 'ellipse', label: 'Ellipse', icon: 'circleDashed' },
   { id: 'lasso', label: 'Lasso', icon: 'lasso' },
@@ -240,6 +248,23 @@ export const SELECT_TOOLS: Array<{ id: SelectToolId; label: string; icon: IconNa
   // over the island adds select-by-name. Last on the rail — the manual tools
   // read as one geometric group, and this one arms extra UI.
   { id: 'object', label: 'Object', icon: 'sparkles' },
+  // Gradient masks: coverage that RAMPS instead of ending at a boundary, which
+  // is the one thing none of the tools above can express — a graduated
+  // darkening, an off-centre edge burn, a lit side. They sit on this rail
+  // rather than in a panel of their own because they are mask authoring like
+  // everything else here, so they inherit the combine modes for free.
+  {
+    id: 'linear',
+    label: 'Linear gradient',
+    icon: 'gradientLinear',
+    hint: 'Linear gradient — drag from full strength to nothing',
+  },
+  {
+    id: 'radial',
+    label: 'Radial gradient',
+    icon: 'gradientRadial',
+    hint: 'Radial gradient — drag out from the centre of the effect',
+  },
 ]
 
 /** Combine modes for Select — how a new selection meets the existing one. */

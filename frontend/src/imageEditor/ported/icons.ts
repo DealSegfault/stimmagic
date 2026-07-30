@@ -137,6 +137,13 @@ export const icons = {
 
   circleDashed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.1 2.18a9.93 9.93 0 0 1 3.8 0"/><path d="M17.6 3.71a9.95 9.95 0 0 1 2.69 2.7"/><path d="M21.82 10.1a9.93 9.93 0 0 1 0 3.8"/><path d="M20.29 17.6a9.95 9.95 0 0 1-2.7 2.69"/><path d="M13.9 21.82a9.94 9.94 0 0 1-3.8 0"/><path d="M6.4 20.29a9.95 9.95 0 0 1-2.69-2.7"/><path d="M2.18 13.9a9.93 9.93 0 0 1 0-3.8"/><path d="M3.71 6.4a9.95 9.95 0 0 1 2.7-2.69"/></svg>`,
 
+  // Gradient masks. A ramp inside the frame plus the two rails that mark where
+  // full strength ends and where it has died — the same readout the canvas
+  // guides give, so the glyph and the gesture teach each other.
+  gradientLinear: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="grad-linear-icon" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".85"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="2" fill="url(#grad-linear-icon)" stroke="none"/><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 8.5h18"/><path d="M3 15h18" stroke-dasharray="3 2.5"/></svg>`,
+
+  gradientRadial: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><defs><radialGradient id="grad-radial-icon"><stop offset="0" stop-color="currentColor" stop-opacity=".85"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></radialGradient></defs><rect x="3" y="3" width="18" height="18" rx="2" fill="url(#grad-radial-icon)" stroke="none"/><rect x="3" y="3" width="18" height="18" rx="2"/><ellipse cx="12" cy="12" rx="7" ry="5.5" stroke-dasharray="3 2.5"/></svg>`,
+
   // Lucide `lasso`: the rope loop with its cinch ring.
   lasso: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-5-1"/><circle cx="5" cy="18" r="3"/></svg>`,
 

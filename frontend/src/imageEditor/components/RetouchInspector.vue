@@ -6,8 +6,9 @@
  * They belong to the region, never the parent Retouch row.
  */
 import { computed } from 'vue'
-import type { RetouchRegion, RetouchRegionSettings } from '../stack/types'
+import type { GradientMask, RetouchRegion, RetouchRegionSettings } from '../stack/types'
 import { photoAdjustmentGroup } from '../stack/adjustSections'
+import { gradientSliderOf, isGradientMask, withGradientSlider } from '../stack/regionMask'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
 import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
 import {
@@ -32,7 +33,36 @@ const emit = defineEmits<{
   /** Point color asks the host view to arm the canvas eyedropper. */
   pick: []
   clip: [{ shadows: boolean; highlights: boolean }]
+  /** New geometry for this region's gradient mask. */
+  gradient: [GradientMask]
 }>()
+
+/**
+ * A gradient region's shape is editable HERE as well as on the canvas: the
+ * handles set where the ramp runs, and this sets how abruptly it gets there.
+ * Drawn regions have no equivalent — their shape is the pixels they were
+ * painted with — so the section only exists for gradients.
+ */
+const gradient = computed<GradientMask | null>(
+  () => isGradientMask(props.region.mask) ? props.region.mask : null
+)
+const gradientSlider = computed(
+  () => gradient.value ? gradientSliderOf(gradient.value) : null
+)
+const gradientLabel = computed(() =>
+  gradient.value?.kind === 'linear' ? 'Linear gradient' : 'Radial gradient'
+)
+
+function setGradientSlider(value: number) {
+  if (!gradient.value) return
+  emit('gradient', withGradientSlider(gradient.value, Math.round(value)))
+}
+
+function setGradientInvert(invert: boolean) {
+  const mask = gradient.value
+  if (mask?.kind !== 'radial') return
+  emit('gradient', { ...mask, invert })
+}
 
 function setFeather(region: RetouchRegion, pixels: number) {
   emit('settings', {
@@ -76,7 +106,42 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
       />
     </section>
 
-    <section class="space-y-3" :class="isAdjustment && 'mt-5'">
+    <!-- Mask: only gradients have a shape that outlives the gesture. -->
+    <section v-if="gradient && gradientSlider" class="space-y-3" :class="isAdjustment && 'mt-5'">
+      <h3 class="text-xs font-semibold text-content-secondary">Mask</h3>
+      <p class="text-xs text-content-tertiary">
+        {{ gradientLabel }} — drag its handles on the canvas to re-aim it.
+      </p>
+      <label class="grid grid-cols-[64px_1fr_38px] items-center gap-2 text-xs">
+        <span class="text-content-tertiary">{{ gradientSlider.label }}</span>
+        <input
+          type="range"
+          :min="gradient.kind === 'radial' ? 2 : 0"
+          max="100"
+          step="1"
+          :value="gradientSlider.value"
+          @input="setGradientSlider(Number(($event.target as HTMLInputElement).value))"
+          @change="emit('settingsCommit')"
+        />
+        <span class="font-mono tabular-nums text-right text-content-secondary">
+          {{ Math.round(gradientSlider.value) }}
+        </span>
+      </label>
+      <label
+        v-if="gradient.kind === 'radial'"
+        class="flex items-center gap-2 text-xs text-content-tertiary"
+      >
+        <input
+          type="checkbox"
+          class="accent-accent"
+          :checked="gradient.invert"
+          @change="setGradientInvert(($event.target as HTMLInputElement).checked)"
+        >
+        Affect outside the ellipse
+      </label>
+    </section>
+
+    <section class="space-y-3" :class="(isAdjustment || gradient) && 'mt-5'">
       <h3 class="text-xs font-semibold text-content-secondary">Blend</h3>
       <label class="grid grid-cols-[64px_1fr_38px] items-center gap-2 text-xs">
         <span class="text-content-tertiary">Opacity</span>
