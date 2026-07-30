@@ -23,7 +23,7 @@ import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
 import { canonicalOp, stackHashes } from './stackHashes'
 import {
-  coTransform, geometryBelow, isIdentity, rewritePayload,
+  coTransform, geometryBelow, isIdentity, multiply, rewritePayload,
 } from './geometryTransform'
 import type { Affine } from './geometryTransform'
 export { canonicalOp, stackHashes }
@@ -36,6 +36,8 @@ import {
   adjustIsIdentity,
 } from './opExecutors'
 import { featherAlpha } from './featherAlpha'
+import { retouchRegionAlpha } from './retouchRegionAlpha'
+import { maskedRetouchAdjustmentParams } from './adjustSections'
 
 export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
@@ -97,6 +99,58 @@ export function compositePatch(
   ctx.drawImage(patchCanvas, 0, 0)
   ctx.globalAlpha = 1
   return out
+}
+
+/**
+ * Composite a cached Retouch result through its independently editable mask.
+ *
+ * Old documents stored identical alpha in both payloads, so `min` preserves
+ * their pixels exactly at Feather 0. Newer results may be opaque under the
+ * mask; in that case the mask alone supplies the region shape.
+ */
+export function compositeRetouchRegion(
+  input: CanvasImageSource,
+  result: CanvasImageSource,
+  mask: CanvasImageSource,
+  width: number,
+  height: number,
+  options: { featherPx?: number; opacity?: number } = {},
+): HTMLCanvasElement {
+  const { featherPx = 0, opacity = 1 } = options
+  const resultCanvas = makeCanvas(width, height)
+  const resultCtx = resultCanvas.getContext('2d', { willReadFrequently: true })!
+  resultCtx.drawImage(result, 0, 0, width, height)
+  const resultData = resultCtx.getImageData(0, 0, width, height)
+
+  const maskCanvas = makeCanvas(width, height)
+  const maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true })!
+  maskCtx.drawImage(mask, 0, 0, width, height)
+  const maskData = maskCtx.getImageData(0, 0, width, height)
+  const maskAlpha = new Uint8ClampedArray(width * height)
+  const resultAlpha = new Uint8ClampedArray(width * height)
+  for (let i = 3, pixel = 0; i < maskData.data.length; i += 4, pixel++) {
+    maskAlpha[pixel] = maskData.data[i]
+    resultAlpha[pixel] = resultData.data[i]
+  }
+  const compositingAlpha = retouchRegionAlpha(
+    resultAlpha,
+    maskAlpha,
+    width,
+    height,
+    featherPx,
+  )
+  for (let i = 3, pixel = 0; i < resultData.data.length; i += 4, pixel++) {
+    resultData.data[i] = compositingAlpha[pixel]
+  }
+  resultCtx.putImageData(resultData, 0, 0)
+
+  const output = makeCanvas(width, height)
+  const outputCtx = output.getContext('2d')!
+  outputCtx.drawImage(input, 0, 0, width, height)
+  outputCtx.globalAlpha = opacity
+  outputCtx.drawImage(resultCanvas, 0, 0)
+  outputCtx.globalAlpha = 1
+  return output
 }
 
 /**
@@ -228,6 +282,24 @@ export class StackCompositor {
     this.cache.clear()
   }
 
+  /**
+   * Seed an exact materialized stage, typically the persisted cold-open head.
+   *
+   * Restoring the head deliberately avoids replaying every source-resolution
+   * edit, so its intermediate composites do not exist yet. Use the head's
+   * real image as an immediate fallback for those rows instead of leaving a
+   * column of empty thumbnail wells. Any later replay replaces the fallback
+   * with that step's exact preview through the normal callback.
+   */
+  prime(hash: string, canvas: HTMLCanvasElement, fallbackPreviewOpIds: string[] = []) {
+    this.remember(hash, canvas)
+    if (!fallbackPreviewOpIds.length) return
+    const preview = squarePreview(canvas)
+    for (const opId of fallbackPreviewOpIds) {
+      this.deps.onStepPreview?.(opId, preview)
+    }
+  }
+
   /** Drop cached composites at and above a given input hash. */
   invalidateFrom(hash: string) {
     this.cache.delete(hash)
@@ -336,6 +408,40 @@ export class StackCompositor {
     return rewritePayload(payload, matrix, width, height)
   }
 
+  /** Rebuild one compact Retouch payload in its full authored frame, then anchor it. */
+  private async loadRetouchPayload(
+    ref: string,
+    region: any,
+    doc: StackDocument,
+    index: number,
+    width: number,
+    height: number,
+  ): Promise<CanvasImageSource> {
+    const payload = await this.deps.loadPayload(ref, 0)
+    const created = region.payload_frame
+    const [x, y] = region.payload_origin ?? [0, 0]
+    const placePayload: Affine = [1, 0, 0, 1, x, y]
+    const previewScale = Number((doc as any)._preview_scale ?? 1)
+    const baseScale: Affine = [previewScale, 0, 0, previewScale, 0, 0]
+    if (!created) {
+      const positioned = multiply(baseScale, placePayload)
+      return isIdentity(positioned)
+        ? payload
+        : rewritePayload(payload, positioned, width, height)
+    }
+
+    const now = geometryBelow(doc, index)
+    // Preview documents keep authored payload coordinates but render against
+    // a smaller base. Include that base-space scale in the new transform.
+    const nowFromAuthoredBase = multiply(now.matrix, baseScale)
+    const carry = coTransform(created.matrix as Affine, nowFromAuthoredBase)
+    if (!carry) return payload
+    const positioned = multiply(carry, placePayload)
+    return isIdentity(positioned)
+      ? payload
+      : rewritePayload(payload, positioned, width, height)
+  }
+
   private async applyOp(
     input: HTMLCanvasElement,
     op: Op,
@@ -383,6 +489,72 @@ export class StackCompositor {
       const kind = anyOp.exec?.kind
       if (kind === 'annotate') {
         return applyAnnotations(input, width, height, anyOp.params?.shapes || [], input)
+      }
+      if (kind === 'retouch-regions') {
+        let output = input
+        for (const region of anyOp.regions ?? []) {
+          if (!region.enabled || !region.mask_ref) continue
+          const mask = await this.loadRetouchPayload(
+            region.mask_ref,
+            region,
+            doc,
+            index,
+            width,
+            height,
+          )
+          // A local adjustment is parametric: it derives fresh pixels from
+          // the composite beneath it on every render, then the retained mask
+          // limits those pixels to the authored region. Unlike Heal/Clone it
+          // never bakes a result cache or becomes stale.
+          if (
+            region.kind === 'adjust'
+            || region.kind === 'light'
+            || region.kind === 'color'
+            || region.kind === 'detail'
+          ) {
+            const settings = region.settings ?? {}
+            const adjusted = applyAdjust(
+              output,
+              width,
+              height,
+              maskedRetouchAdjustmentParams(settings),
+              seedFrom(region.id),
+            )
+            output = compositeRetouchRegion(
+              output,
+              adjusted,
+              mask,
+              width,
+              height,
+              {
+                featherPx: settings.feather_px ?? 0,
+                opacity: settings.opacity ?? 1,
+              },
+            )
+            continue
+          }
+          if (!region.result_ref) continue
+          const result = await this.loadRetouchPayload(
+            region.result_ref,
+            region,
+            doc,
+            index,
+            width,
+            height,
+          )
+          output = compositeRetouchRegion(
+            output,
+            result,
+            mask,
+            width,
+            height,
+            {
+              featherPx: region.settings?.feather_px ?? 0,
+              opacity: region.settings?.opacity ?? 1,
+            },
+          )
+        }
+        return output
       }
       if (!anyOp.raster_ref) return input
       const layer = await this.loadAnchored(anyOp.raster_ref, doc, index, width, height)

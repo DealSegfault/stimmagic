@@ -1927,9 +1927,9 @@ onMounted(async () => {
 
   // Check for URL query parameters and apply them to browse filters only
   if (!useExternalFilters && route.name === 'browse' && hasBrowseFilterQuery(route.query)) {
-    console.log('[BrowseGridView] Found URL query params:', route.query)
+    console.log('[BrowseGridView] Found URL query params', { queryKeys: Object.keys(route.query) })
     await applyUrlFiltersFromQuery(route.query)
-    console.log('[BrowseGridView] Decoded filters from URL:', JSON.stringify(filters))
+    console.log('[BrowseGridView] Decoded filters from URL', { filterCount: Object.keys(filters).length })
   }
 
   // Handle slideshowMedia query param (e.g., after image editor save)

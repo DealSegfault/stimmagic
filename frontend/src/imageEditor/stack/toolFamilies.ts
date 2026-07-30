@@ -1,10 +1,10 @@
 /**
- * The six tool families and their sub-tools — the MVP toolset, a superset of
+ * The tool families and their sub-tools — the MVP toolset, a superset of
  * the snapshot editor's plugins.
  *
  * Clicking a family enters a MODE and opens its sub-toolbar. It never edits the
  * stack: the step is created on the first real gesture — a paint stroke, a
- * Levels slider, placed text, an explicit Run. Empty steps cannot exist, and
+ * Adjust slider, placed text, an explicit Run. Empty steps cannot exist, and
  * Esc leaves a mode with nothing to undo.
  *
  * Icons are inner-SVG fragments in the same shape `taskTypeIcons` uses, so they
@@ -15,7 +15,7 @@
 import type { IconName } from '../ported/icons'
 
 export type FamilyId =
-  | 'generate' | 'crop' | 'paint'
+  | 'generate' | 'crop' | 'retouch' | 'paint'
   | 'levels' | 'filters'
   | 'annotate'
 
@@ -24,6 +24,8 @@ export interface SubTool {
   label: string
   /** A glyph from the ported registry; the label becomes its tooltip. */
   icon?: IconName
+  /** Optional interaction help shown only in the tooltip. */
+  hint?: string
   /** Not yet implemented; shown so the shape of the family is honest. */
   pending?: boolean
 }
@@ -48,10 +50,13 @@ export const FAMILY_ICONS: Record<FamilyId | 'select', string> = {
     '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/>',
   select:
     '<rect x="4" y="4" width="16" height="16" rx="2" stroke-dasharray="4 3"/>',
+  retouch:
+    '<path d="m8.4 4.2 11.4 11.4a3 3 0 0 1-4.2 4.2L4.2 8.4a3 3 0 0 1 4.2-4.2Z"/>'
+    + '<path d="m9 9 6 6"/><path d="m12 6-6 6"/><path d="m18 12-6 6"/>',
   paint:
     '<path d="M9.1 11.9l8.1-8.1a2.85 2.85 0 1 1 4 4l-8.1 8.1"/>'
     + '<path d="M7.1 14.9c-1.7 0-3 1.4-3 3 0 1.3-1.5 2-2 2 1.1 1.1 2.5 2 4 2 2.2 0 4-1.8 4-4a3 3 0 0 0-3-3z"/>',
-  // Sliders for Levels, a stack of frames for Filters — the two doorways read
+  // Sliders for Adjust, a stack of frames for Filters — the two doorways read
   // as two different jobs at a glance.
   levels:
     '<line x1="4" y1="7" x2="20" y2="7"/><circle cx="14" cy="7" r="2.2"/>'
@@ -70,14 +75,10 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     label: 'Generate',
     key: 'g',
     icon: FAMILY_ICONS.generate,
-    // Both sub-tools are masked patches, and that is the whole family: a
-    // generative step that replaced the entire composite would occlude the
-    // stack below it, which makes it a new base rather than a step. Whole
-    // image is gone; Upscale moved to the output stage, which produces a saved
-    // version instead of a row.
-    defaultSub: 'inpaint',
+    // Masked replacement moved to Retouch as Repaint. Expand remains here
+    // until canvas generation gets its own durable home.
+    defaultSub: 'expand',
     subTools: [
-      { id: 'inpaint', label: 'Inpaint' },
       { id: 'expand', label: 'Expand' },
     ],
   },
@@ -90,21 +91,40 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     subTools: [],
   },
   {
-    id: 'paint',
+    id: 'retouch',
     label: 'Retouch',
+    key: 'r',
+    icon: FAMILY_ICONS.retouch,
+    defaultSub: 'heal',
+    subTools: [
+      { id: 'heal', label: 'Heal', icon: 'bandage' },
+      { id: 'clone', label: 'Clone', icon: 'stamp', hint: 'Clone — alt-click a source, then brush' },
+      { id: 'patch', label: 'Patch', icon: 'patch', hint: 'Patch — select an area, then drag to its source' },
+      // Model-backed region edits deliberately use text: unlike the manual
+      // repair glyphs, their names communicate the semantic job and cost.
+      { id: 'remove', label: 'Remove', hint: 'Remove an object or distraction' },
+      { id: 'repaint', label: 'Repaint', hint: 'Repaint — replace the selected content from a prompt' },
+      { id: 'light', label: 'Light', icon: 'sun', hint: 'Light — select a region, then tune its light' },
+      { id: 'color', label: 'Color', icon: 'palette', hint: 'Color — select a region, then tune its color' },
+      { id: 'detail', label: 'Detail', icon: 'focus', hint: 'Detail — select a region, then tune its detail' },
+    ],
+  },
+  {
+    id: 'paint',
+    label: 'Paint',
     key: 'p',
     icon: FAMILY_ICONS.paint,
     defaultSub: null,
     subTools: [],
   },
-  // Levels and Filters are two doorways into the same adjust pipeline. Levels
-  // offers the dial edits (Tone, Detail, Tint, the Autos); Filters offers the
+  // Adjust and Filters are two doorways into the same adjust pipeline. Adjust
+  // offers the dial edits (Light, Color, Detail, the Autos); Filters offers the
   // strip of picked-by-eye looks, including the pixel looks that used to be a
   // separate Effects family. Every entry in both is an ADD: click, get a
   // focused step, edit it in Properties.
   {
     id: 'levels',
-    label: 'Levels',
+    label: 'Adjust',
     key: 'l',
     icon: FAMILY_ICONS.levels,
     defaultSub: null,
@@ -145,9 +165,10 @@ export function familyById(id: FamilyId): ToolFamily {
 }
 
 /**
- * Paint engines as chips, Krita-style. Heal, Clone, Dodge, Burn and Blur are
- * ENGINES, not separate tools — the thing the user picks is a brush, and what
- * differs is how it lays down pixels.
+ * Raster Paint engines as chips, Krita-style. Some of the inherited engines
+ * read pixels, but they still bake their result into the active Paint layer.
+ * Retouch owns editable repair regions; nothing in this Paint catalog creates
+ * one of those regions.
  *
  * The pixel-reading engines (heal, clone, dodge, burn, blur) sample the
  * composite below, which is why their layers carry an advisory hash like
@@ -224,7 +245,7 @@ export type SelectionMode = typeof SELECTION_MODES[number]['id']
  * stand for — the toolbar and the inspector both need that mapping, and a bare
  * list of labels here let the two drift apart.
  */
-export { TEXT_STYLES } from './textStyles'
+export { TEXT_STYLES } from './textStyles.ts'
 
 export const SHAPE_KINDS = [
   { id: 'rectangle', label: 'Rectangle', icon: 'square' },

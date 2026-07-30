@@ -20,6 +20,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useAnnotation } from '../ported/useAnnotation'
 import type { AnnotationState } from '../ported/useAnnotation'
 import { renderShapes, drawSelectionHandles, getShapeBounds, getShapeCenter } from '../ported/shapes'
+import { rotatedBounds } from '../ported/annotationSelection'
 import type { Shape, AnnotateTool, Paint } from '../ported/shapeTypes'
 import type { Color, ViewTransform } from '../ported/geometry'
 import { textStyleAnnotationState } from '../stack/textStyles'
@@ -68,6 +69,7 @@ const overlay = ref<HTMLCanvasElement | null>(null)
 // -- the state the ported composable reads and writes -----------------------
 
 const selectedShapeId = ref<string | null>(null)
+const selectedShapeIds = ref<string[]>([])
 
 /**
  * The live shape list.
@@ -84,6 +86,15 @@ watch(() => props.shapes, incoming => {
   // Only adopt a list this component did not just produce, so a stale prop
   // arriving a tick late cannot roll a gesture back.
   if (incoming !== shapes.value) shapes.value = incoming
+  const live = new Set(incoming.map(shape => shape.id))
+  const selected = selectedShapeIds.value.filter(id => live.has(id))
+  if (selected.length !== selectedShapeIds.value.length) {
+    selectedShapeIds.value = selected
+    if (selectedShapeId.value && !live.has(selectedShapeId.value)) {
+      selectedShapeId.value = selected.at(-1) ?? null
+      emit('select', selectedShapeId.value)
+    }
+  }
 }, { immediate: true })
 
 /**
@@ -114,6 +125,7 @@ function getState(): AnnotationState {
     activeTool: props.tool,
     annotations: shapes.value,
     selectedShapeId: selectedShapeId.value,
+    selectedShapeIds: selectedShapeIds.value,
     annotateStrokeColor: props.strokeColor,
     annotateFillColor: props.fillColor,
     annotateStrokeWidth: props.strokeWidth,
@@ -137,8 +149,15 @@ function getState(): AnnotationState {
  * only the shapes are.
  */
 function updateState(partial: Partial<AnnotationState>, options?: { quiet?: boolean }) {
-  if ('selectedShapeId' in partial) {
+  if ('selectedShapeIds' in partial) {
+    selectedShapeIds.value = [...(partial.selectedShapeIds ?? [])]
+    selectedShapeId.value = partial.selectedShapeId
+      ?? selectedShapeIds.value.at(-1)
+      ?? null
+    emit('select', selectedShapeId.value)
+  } else if ('selectedShapeId' in partial) {
     selectedShapeId.value = partial.selectedShapeId ?? null
+    selectedShapeIds.value = selectedShapeId.value ? [selectedShapeId.value] : []
     emit('select', selectedShapeId.value)
   }
   if (partial.annotations) {
@@ -205,6 +224,11 @@ const gestureActive = computed(() => {
   return type !== 'idle' && type !== 'pending'
 })
 
+const selectionCount = computed(() => selectedShapeIds.value.length)
+const selectedShapes = computed(() =>
+  shapes.value.filter(shape => selectedShapeIds.value.includes(shape.id))
+)
+
 // -- painting ---------------------------------------------------------------
 
 function draw() {
@@ -223,19 +247,103 @@ function draw() {
   // covers rather than painting a flat block over them.
   renderShapes(ctx, shapes.value, size, props.source ?? undefined, annotation.textEditState.value)
 
-  const selected = shapes.value.find(s => s.id === selectedShapeId.value)
-  if (selected && !editingText.value) {
+  const selected = selectedShapes.value
+  if (selected.length === 1 && !editingText.value) {
+    const shape = selected[0]
     drawSelectionHandles(
       ctx,
-      getShapeBounds(selected, size),
+      getShapeBounds(shape, size),
       size,
-      selected.rotation,
-      getShapeCenter(selected),
+      shape.rotation,
+      getShapeCenter(shape),
       // Handles are drawn in image pixels but read at display size, so they
       // are scaled back down to stay a constant size on screen.
       imageSize.value ? size.width / Math.max(1, props.displayWidth) : 1
     )
+  } else if (selected.length > 1 && !editingText.value) {
+    drawGroupSelection(ctx, selected, size)
   }
+
+  const marquee = annotation.marqueeBounds.value
+  if (marquee) {
+    const scale = size.width / Math.max(1, props.displayWidth)
+    const selectionColor =
+      getComputedStyle(canvas).getPropertyValue('--color-selection').trim()
+      || 'rgb(129, 140, 248)'
+    ctx.save()
+    ctx.strokeStyle = selectionColor
+    ctx.fillStyle = selectionColor
+    ctx.globalAlpha = 0.12
+    ctx.fillRect(
+      marquee.x * size.width,
+      marquee.y * size.height,
+      marquee.width * size.width,
+      marquee.height * size.height
+    )
+    ctx.globalAlpha = 1
+    ctx.lineWidth = 1 / scale
+    ctx.setLineDash([4 / scale, 3 / scale])
+    ctx.strokeRect(
+      marquee.x * size.width,
+      marquee.y * size.height,
+      marquee.width * size.width,
+      marquee.height * size.height
+    )
+    ctx.restore()
+  }
+}
+
+function drawGroupSelection(
+  ctx: CanvasRenderingContext2D,
+  selected: Shape[],
+  size: { width: number; height: number }
+) {
+  const scale = size.width / Math.max(1, props.displayWidth)
+  const selectionColor =
+    getComputedStyle(overlay.value!).getPropertyValue('--color-selection').trim()
+    || 'rgb(129, 140, 248)'
+
+  ctx.save()
+  ctx.strokeStyle = selectionColor
+  ctx.lineWidth = 1 / scale
+
+  // Outline every member in its own rotation so the group reads as a set of
+  // objects, not one newly-created rectangle.
+  for (const shape of selected) {
+    const bounds = getShapeBounds(shape, size)
+    const center = getShapeCenter(shape)
+    const x = bounds.x * size.width
+    const y = bounds.y * size.height
+    const width = bounds.width * size.width
+    const height = bounds.height * size.height
+    ctx.save()
+    ctx.translate(center.x * size.width, center.y * size.height)
+    ctx.rotate(shape.rotation || 0)
+    ctx.translate(-center.x * size.width, -center.y * size.height)
+    ctx.strokeRect(x, y, width, height)
+    ctx.restore()
+  }
+
+  // A dashed union box is the shared drag target and stays axis-aligned.
+  const bounds = selected.map(shape => rotatedBounds(
+    getShapeBounds(shape, size),
+    getShapeCenter(shape),
+    shape.rotation || 0,
+    size
+  ))
+  const minX = Math.min(...bounds.map(item => item.x))
+  const minY = Math.min(...bounds.map(item => item.y))
+  const maxX = Math.max(...bounds.map(item => item.x + item.width))
+  const maxY = Math.max(...bounds.map(item => item.y + item.height))
+  ctx.lineWidth = 2 / scale
+  ctx.setLineDash([6 / scale, 4 / scale])
+  ctx.strokeRect(
+    minX * size.width,
+    minY * size.height,
+    (maxX - minX) * size.width,
+    (maxY - minY) * size.height
+  )
+  ctx.restore()
 }
 
 function resize() {
@@ -259,6 +367,8 @@ defineExpose({
   /** The same fact, watchable: chrome over the canvas hides during a session. */
   editingText,
   gestureActive,
+  selectionCount,
+  selectedShapes,
   /**
    * Put the caret in a text shape without a double-click. Text editing lives
    * in the composable's interaction model, so it cannot be driven from the
@@ -269,19 +379,32 @@ defineExpose({
   },
   /** Delete is a document verb, so the bottom bar can reach it. */
   deleteSelected() {
-    if (!selectedShapeId.value) return
-    shapes.value = shapes.value.filter(s => s.id !== selectedShapeId.value)
-    commitChanges('Delete annotation')
-    selectedShapeId.value = null
-    emit('select', null)
+    annotation.deleteSelectedShapes()
+  },
+  duplicateSelected() {
+    annotation.duplicateSelectedShapes()
   },
   clearSelection() {
     selectedShapeId.value = null
+    selectedShapeIds.value = []
     emit('select', null)
+  },
+  /**
+   * Let Object Select begin on the surrounding matte. The composable converts
+   * the screen point through this canvas even when it lies outside its rect,
+   * so the marquee naturally enters and leaves the image without clamping.
+   */
+  startMarqueeSelection(event: MouseEvent) {
+    annotation.startMarqueeSelection(event)
+  },
+  consumeCompletedGestureClick() {
+    return annotation.consumeCompletedGestureClick()
   },
   /** External selection push (a row click); no emit, or it would echo. */
   setSelected(id: string | null) {
-    if (selectedShapeId.value !== id) selectedShapeId.value = id
+    if (selectedShapeId.value === id) return
+    selectedShapeId.value = id
+    selectedShapeIds.value = id ? [id] : []
   },
 })
 
@@ -297,7 +420,13 @@ function scheduleDraw() {
 }
 
 watch(
-  () => [shapes.value, selectedShapeId.value, annotation.textEditState.value] as const,
+  () => [
+    shapes.value,
+    selectedShapeId.value,
+    selectedShapeIds.value,
+    annotation.textEditState.value,
+    annotation.marqueeBounds.value,
+  ] as const,
   () => nextTick(scheduleDraw),
   { deep: true }
 )

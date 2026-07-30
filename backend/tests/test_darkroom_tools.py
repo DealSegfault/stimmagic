@@ -138,7 +138,9 @@ def test_layout_sections(tool):
 def test_all_tools_declare_attribution_description():
     for tool in DARKROOM_TOOLS:
         assert "Louvaert" in tool.description
-        assert tool.name.startswith("Darkroom: ")
+        # Names are unprefixed; "Darkroom" is the editor surface, not a
+        # tool-name namespace. Search still finds them via the credit line.
+        assert not tool.name.startswith("Darkroom")
 
 
 # ---------------------------------------------------------------------------

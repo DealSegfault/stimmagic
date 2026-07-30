@@ -15,7 +15,7 @@
           <path d="M21.731 2.269a2.625 2.625 0 00-3.712 0l-1.157 1.157 3.712 3.712 1.157-1.157a2.625 2.625 0 000-3.712zM19.513 8.199l-3.712-3.712-8.4 8.4a5.25 5.25 0 00-1.32 2.214l-.8 2.685a.75.75 0 00.933.933l2.685-.8a5.25 5.25 0 002.214-1.32l8.4-8.4z" />
           <path d="M5.25 5.25a3 3 0 00-3 3v10.5a3 3 0 003 3h10.5a3 3 0 003-3V13.5a.75.75 0 00-1.5 0v5.25a1.5 1.5 0 01-1.5 1.5H5.25a1.5 1.5 0 01-1.5-1.5V8.25a1.5 1.5 0 011.5-1.5h5.25a.75.75 0 000-1.5H5.25z" />
         </svg>
-        <h2 class="text-xl font-semibold text-content font-brand mb-3">Edit Image</h2>
+        <h2 class="text-xl font-semibold text-content font-brand mb-3">Darkroom</h2>
         <p class="text-content-tertiary mb-6 leading-relaxed">
           A powerful non-destructive editor for your images. Crop, adjust colors, apply filters, add annotations, and retouch photos.
         </p>
@@ -24,13 +24,13 @@
             <svg class="w-4 h-4 text-content-muted" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672L13.684 16.6m0 0l-2.51 2.225.569-9.47 5.227 7.917-3.286-.672zM12 2.25V4.5m5.834.166l-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243l-1.59-1.59" />
             </svg>
-            <span>{{ isDragOver ? 'Drop to edit' : 'Drag an image to Edit Image in the sidebar' }}</span>
+            <span>{{ isDragOver ? 'Drop to edit' : 'Drag an image to the Darkroom in the sidebar' }}</span>
           </div>
           <div class="flex items-center gap-3 justify-center">
             <svg class="w-4 h-4 text-content-muted" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
             </svg>
-            <span>Or right-click any image and select "Edit Image"</span>
+            <span>Or right-click any image and select "Send to Darkroom"</span>
           </div>
         </div>
       </div>

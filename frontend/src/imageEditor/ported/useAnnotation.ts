@@ -30,6 +30,11 @@ import {
   measureTextBase,
 } from './shapes';
 import type { TextEditState } from './shapes';
+import {
+  boundsBetween,
+  moveShapesFromSnapshots,
+  shapeIdsInMarquee,
+} from './annotationSelection';
 import { useTextEditing } from './useTextEditing';
 
 /**
@@ -73,6 +78,8 @@ export interface AnnotationState {
   activeTool: AnnotateTool | null;
   annotations: Shape[];
   selectedShapeId: string | null;
+  /** All selected shapes; selectedShapeId remains the primary inspector target. */
+  selectedShapeIds: string[];
   annotateStrokeColor: Paint;
   annotateFillColor: Paint | null;
   annotateStrokeWidth: number;
@@ -111,7 +118,21 @@ export interface AnnotationState {
 
 type InteractionMode =
   | { type: 'idle' }
-  | { type: 'pending'; startPoint: Point; screenStart: Point; shapeUnderCursor: Shape | null }
+  | {
+      type: 'pending';
+      startPoint: Point;
+      screenStart: Point;
+      shapeUnderCursor: Shape | null;
+      additiveSelection: boolean;
+      initialSelectionIds: string[];
+    }
+  | {
+      type: 'selecting-shapes';
+      startPoint: Point;
+      currentPoint: Point;
+      additiveSelection: boolean;
+      initialSelectionIds: string[];
+    }
   | { type: 'drawing-path'; shape: PathShape }
   | { type: 'drawing-line'; shape: LineShape; startPoint: Point }
   | { type: 'drawing-curved-arrow'; shape: CurvedArrowShape; lastSampledPoint: Point }
@@ -122,15 +143,16 @@ type InteractionMode =
   | { type: 'drawing-star'; shape: StarShape; startPoint: Point }
   | { type: 'drawing-polygon'; shape: PolygonShape; startPoint: Point }
   | {
-      type: 'moving-shape';
-      /** The shape the cursor is actually dragging — the copy while Option is held. */
-      shapeId: string;
+      type: 'moving-shapes';
+      /** The live shapes under the cursor — copies while Option is held. */
+      activeIds: string[];
       startPoint: Point;
-      originalShape: Shape;
-      /** The shape the gesture grabbed, parked at `originalShape` while a copy drags. */
-      sourceId: string;
-      /** The copy Option made mid-drag; unpublished until mouse-up. */
-      duplicateId: string | null;
+      /** Immutable gesture-start snapshots keyed by the original IDs. */
+      originalShapes: Record<string, Shape>;
+      /** The selected originals, parked while copies drag. */
+      sourceIds: string[];
+      /** Copies made by Option, unpublished until mouse-up. */
+      duplicateIds: string[];
     }
   | { type: 'resizing-shape'; shapeId: string; handle: ResizeHandle; startPoint: Point; originalShape: Shape }
   | { type: 'rotating-shape'; shapeId: string; startAngle: number; originalRotation: number; centerPoint: Point }
@@ -153,6 +175,8 @@ export function useAnnotation(
   const cursorStyle = ref<string>('default');
   /** Text shapes not yet published to the host document. */
   const newTextShapeIds = new Set<string>();
+  /** A cross-element drag may synthesize its click on the shared viewport. */
+  let completedGestureAt = 0;
 
   /**
    * A move stays inside this composable until the mouse comes up.
@@ -166,8 +190,32 @@ export function useAnnotation(
    * them can change WHICH shape they are editing halfway through.)
    */
   function movesAreQuiet(): boolean {
-    return interactionMode.value.type === 'moving-shape';
+    return interactionMode.value.type === 'moving-shapes';
   }
+
+  function liveSelectedIds(state = getState()): string[] {
+    const live = new Set(state.annotations.map(shape => shape.id));
+    const selected = state.selectedShapeIds.filter(id => live.has(id));
+    if (selected.length) return selected;
+    return state.selectedShapeId && live.has(state.selectedShapeId)
+      ? [state.selectedShapeId]
+      : [];
+  }
+
+  function selectShapes(ids: string[]) {
+    const unique = [...new Set(ids)];
+    updateState({
+      selectedShapeIds: unique,
+      selectedShapeId: unique.at(-1) ?? null,
+    });
+  }
+
+  const marqueeBounds = computed(() => {
+    const mode = interactionMode.value;
+    return mode.type === 'selecting-shapes'
+      ? boundsBetween(mode.startPoint, mode.currentPoint)
+      : null;
+  });
 
   /** The last place the pointer was, so a keystroke can act without one. */
   let lastImagePoint: Point | null = null;
@@ -674,11 +722,42 @@ export function useAnnotation(
         break;
       }
 
-      case 'moving-shape': {
+      case 'selecting-shapes': {
+        mode.currentPoint = imagePoint;
+        const size = imageSize.value;
+        if (!size) break;
+        const hitIds = shapeIdsInMarquee(
+          getState().annotations,
+          mode.startPoint,
+          imagePoint,
+          size,
+          shape => getShapeBounds(shape, size),
+          getShapeCenter
+        );
+        selectShapes(mode.additiveSelection
+          ? [...mode.initialSelectionIds, ...hitIds]
+          : hitIds);
+        break;
+      }
+
+      case 'moving-shapes': {
         const dx = imagePoint.x - mode.startPoint.x;
         const dy = imagePoint.y - mode.startPoint.y;
-        const updates = moveShape(mode.originalShape, dx, dy);
-        updateShape(mode.shapeId, updates);
+        const snapshotsByActiveId: Record<string, Shape> = {};
+        for (let index = 0; index < mode.activeIds.length; index++) {
+          const sourceId = mode.sourceIds[index];
+          const original = mode.originalShapes[sourceId];
+          if (original) snapshotsByActiveId[mode.activeIds[index]] = original;
+        }
+        updateState({
+          annotations: moveShapesFromSnapshots(
+            getState().annotations,
+            snapshotsByActiveId,
+            dx,
+            dy,
+            moveShape
+          ),
+        }, { quiet: true });
         break;
       }
 
@@ -820,6 +899,7 @@ export function useAnnotation(
 
     // Don't finish if we're editing text - text editing manages its own lifecycle
     if (mode.type === 'editing-text-canvas') return;
+    completedGestureAt = Date.now();
 
     // Push history based on action
     switch (mode.type) {
@@ -921,10 +1001,16 @@ export function useAnnotation(
           });
         }
         break;
-      case 'moving-shape':
+      case 'moving-shapes':
         // The whole move has been local to this composable; the commit is
         // where the document finally hears about it, as one step.
-        pushHistory(mode.duplicateId ? 'Duplicate shape' : 'Move shape');
+        pushHistory(
+          mode.duplicateIds.length
+            ? (mode.duplicateIds.length === 1 ? 'Duplicate shape' : 'Duplicate annotations')
+            : (mode.sourceIds.length === 1 ? 'Move shape' : 'Move annotations')
+        );
+        break;
+      case 'selecting-shapes':
         break;
       case 'resizing-shape':
         pushHistory('Resize shape');
@@ -994,8 +1080,10 @@ export function useAnnotation(
       // Don't return - continue with normal click handling below
     }
 
-    // Check if clicking on a resize/rotate handle of selected shape
-    if (state.selectedShapeId) {
+    // A group has move semantics only. Resize and rotate remain single-object
+    // operations because there is no group transform model in the document.
+    const selectedIds = liveSelectedIds(state);
+    if (state.selectedShapeId && selectedIds.length === 1) {
       const selectedShape = state.annotations.find(s => s.id === state.selectedShapeId);
       if (selectedShape) {
         const bounds = getShapeBounds(selectedShape, imageSize.value ?? undefined);
@@ -1055,7 +1143,44 @@ export function useAnnotation(
       startPoint: imagePoint,
       screenStart: screenPoint,
       shapeUnderCursor,
+      additiveSelection: event.shiftKey,
+      initialSelectionIds: selectedIds,
     };
+  }
+
+  /**
+   * Begin Object Select from outside the image.
+   *
+   * toImagePoint intentionally does not clamp, so a matte coordinate can be
+   * negative or greater than one. That is exactly what a cross-image marquee
+   * needs: shape hit-testing remains in image space while the gesture surface
+   * extends across the surrounding workspace.
+   */
+  function startMarqueeSelection(event: MouseEvent) {
+    if (event.button !== 0 || getState().activeTool !== 'select') return;
+    const screenPoint = { x: event.clientX, y: event.clientY };
+    const imagePoint = toImagePoint(screenPoint);
+    if (!imagePoint) return;
+    const selectedIds = liveSelectedIds();
+    interactionMode.value = {
+      type: 'pending',
+      startPoint: imagePoint,
+      screenStart: screenPoint,
+      shapeUnderCursor: null,
+      additiveSelection: event.shiftKey,
+      initialSelectionIds: selectedIds,
+    };
+  }
+
+  /**
+   * Consume the click browsers synthesize after a drag whose endpoints have
+   * different DOM targets. It belongs to the completed gesture, not to the
+   * matte's click-to-deselect behavior.
+   */
+  function consumeCompletedGestureClick(): boolean {
+    const recent = Date.now() - completedGestureAt < 250;
+    completedGestureAt = 0;
+    return recent;
   }
 
   /**
@@ -1087,26 +1212,48 @@ export function useAnnotation(
    */
   function setDuplicateDrag(active: boolean) {
     const mode = interactionMode.value;
-    if (mode.type !== 'moving-shape') return;
-    if (active === (mode.duplicateId !== null)) return;
+    if (mode.type !== 'moving-shapes') return;
+    if (active === (mode.duplicateIds.length > 0)) return;
 
     const state = getState();
 
     if (active) {
-      // The original goes back to the pose it was grabbed at: the drag is the
-      // copy's now.
+      // Every original goes back to the pose it was grabbed at: the drag
+      // belongs to a detached copy of the whole selection now.
       const parked = state.annotations.map(s =>
-        s.id === mode.sourceId ? mode.originalShape : s
+        mode.originalShapes[s.id] ?? s
       );
-      const copy = cloneShape(mode.originalShape);
-      copy.id = generateShapeId();
-      interactionMode.value = { ...mode, shapeId: copy.id, duplicateId: copy.id };
-      // Appended, so the copy sits above what it was copied from.
-      updateState({ annotations: [...parked, copy], selectedShapeId: copy.id }, { quiet: true });
+      const copies = mode.sourceIds.map(sourceId => {
+        const copy = cloneShape(mode.originalShapes[sourceId]);
+        copy.id = generateShapeId();
+        return copy;
+      });
+      const duplicateIds = copies.map(copy => copy.id);
+      interactionMode.value = {
+        ...mode,
+        activeIds: duplicateIds,
+        duplicateIds,
+      };
+      // Appended in source order, so the copied group stays together above
+      // the originals without reversing its internal z-order.
+      updateState({
+        annotations: [...parked, ...copies],
+        selectedShapeIds: duplicateIds,
+        selectedShapeId: duplicateIds.at(-1) ?? null,
+      }, { quiet: true });
     } else {
-      const withoutCopy = state.annotations.filter(s => s.id !== mode.duplicateId);
-      interactionMode.value = { ...mode, shapeId: mode.sourceId, duplicateId: null };
-      updateState({ annotations: withoutCopy, selectedShapeId: mode.sourceId }, { quiet: true });
+      const duplicateIds = new Set(mode.duplicateIds);
+      const withoutCopies = state.annotations.filter(s => !duplicateIds.has(s.id));
+      interactionMode.value = {
+        ...mode,
+        activeIds: mode.sourceIds,
+        duplicateIds: [],
+      };
+      updateState({
+        annotations: withoutCopies,
+        selectedShapeIds: mode.sourceIds,
+        selectedShapeId: mode.sourceIds.at(-1) ?? null,
+      }, { quiet: true });
     }
 
     // Option is a keystroke, so there may be no pointer event coming to put the
@@ -1130,7 +1277,7 @@ export function useAnnotation(
     // Option can also be found held on a move — the key may have gone down
     // while another window had focus, so the keyboard is not the only source
     // of truth for it.
-    if (mode.type === 'moving-shape') setDuplicateDrag(event.altKey);
+    if (mode.type === 'moving-shapes') setDuplicateDrag(event.altKey);
 
     // Update cursor based on hover state
     if (mode.type === 'idle') {
@@ -1139,7 +1286,7 @@ export function useAnnotation(
       const aspectRatio = imageSize.value ? imageSize.value.width / imageSize.value.height : 1;
 
       // Check resize handles if shape is selected
-      if (state.selectedShapeId) {
+      if (state.selectedShapeId && liveSelectedIds(state).length === 1) {
         const selectedShape = state.annotations.find(s => s.id === state.selectedShapeId);
         if (selectedShape && !selectedShape.disableResize) {
           const bounds = getShapeBounds(selectedShape, imageSize.value ?? undefined);
@@ -1168,34 +1315,60 @@ export function useAnnotation(
       const dx = screenPoint.x - mode.screenStart.x;
       const dy = screenPoint.y - mode.screenStart.y;
       const distance = Math.sqrt(dx * dx + dy * dy);
+      const state = getState();
 
       if (distance > DRAG_THRESHOLD) {
         // Exceeded threshold - start drawing or moving
         if (mode.shapeUnderCursor && !mode.shapeUnderCursor.disableMove) {
           const source = mode.shapeUnderCursor;
+          const selected = mode.initialSelectionIds.includes(source.id)
+            ? mode.initialSelectionIds
+            : [source.id];
+          const sourceIds = selected.filter(id => {
+            const shape = state.annotations.find(candidate => candidate.id === id);
+            return !!shape && !shape.disableMove;
+          });
+          const originalShapes: Record<string, Shape> = {};
+          for (const id of sourceIds) {
+            const shape = state.annotations.find(candidate => candidate.id === id);
+            if (shape) originalShapes[id] = cloneShape(shape);
+          }
 
           // Start moving the shape and switch to its tool
           const tool = shapeToTool(source);
-          const updates: Partial<AnnotationState> = { selectedShapeId: source.id };
+          const updates: Partial<AnnotationState> = {
+            selectedShapeIds: sourceIds,
+            selectedShapeId: sourceIds.includes(source.id)
+              ? source.id
+              : sourceIds.at(-1) ?? null,
+          };
           if (tool) {
             updates.activeTool = tool;
           }
           updateState(updates);
           interactionMode.value = {
-            type: 'moving-shape',
-            shapeId: source.id,
+            type: 'moving-shapes',
+            activeIds: sourceIds,
             startPoint: mode.startPoint,
-            // Deep, not a spread: this snapshot is both what every move is
-            // measured from and what an Option copy is cut from, and a shallow
-            // copy would share the live shape's point arrays.
-            originalShape: cloneShape(source),
-            sourceId: source.id,
-            duplicateId: null,
+            // Deep snapshots are both what every move is measured from and
+            // what Option copies are cut from.
+            originalShapes,
+            sourceIds,
+            duplicateIds: [],
           };
           // Option already held when the drag began is the same gesture as
           // Option pressed during it — one code path, so releasing it works
           // either way.
           if (event.altKey) setDuplicateDrag(true);
+        } else if (state.activeTool === 'select') {
+          interactionMode.value = {
+            type: 'selecting-shapes',
+            startPoint: mode.startPoint,
+            currentPoint: imagePoint,
+            additiveSelection: mode.additiveSelection,
+            initialSelectionIds: mode.initialSelectionIds,
+          };
+          continueInteraction(imagePoint, event.shiftKey);
         } else {
           // Start drawing with current tool
           startDrawing(mode.startPoint);
@@ -1221,7 +1394,14 @@ export function useAnnotation(
         // ADAPTED: selecting no longer switches the active tool. It only ever
         // fires under the Select tool now, and jumping out of Select the
         // moment you select something makes the tool unusable.
-        updateState({ selectedShapeId: mode.shapeUnderCursor.id });
+        if (mode.additiveSelection) {
+          const selected = new Set(mode.initialSelectionIds);
+          if (selected.has(mode.shapeUnderCursor.id)) selected.delete(mode.shapeUnderCursor.id);
+          else selected.add(mode.shapeUnderCursor.id);
+          selectShapes([...selected]);
+        } else {
+          selectShapes([mode.shapeUnderCursor.id]);
+        }
         interactionMode.value = { type: 'idle' };
         return;
       }
@@ -1234,7 +1414,7 @@ export function useAnnotation(
       }
 
       // Click on empty space: deselect
-      updateState({ selectedShapeId: null });
+      if (!mode.additiveSelection) selectShapes([]);
       interactionMode.value = { type: 'idle' };
       return;
     }
@@ -1387,6 +1567,54 @@ export function useAnnotation(
     return false;
   }
 
+  function deleteSelectedShapes(): boolean {
+    const state = getState();
+    const selectedIds = liveSelectedIds(state);
+    if (!selectedIds.length) return false;
+
+    const selected = new Set(selectedIds);
+    const removable = new Set(
+      state.annotations
+        .filter(shape => selected.has(shape.id) && !shape.disableRemove)
+        .map(shape => shape.id)
+    );
+    if (!removable.size) return true;
+
+    const remainingSelection = selectedIds.filter(id => !removable.has(id));
+    updateState({
+      annotations: state.annotations.filter(shape => !removable.has(shape.id)),
+      selectedShapeIds: remainingSelection,
+      selectedShapeId: remainingSelection.at(-1) ?? null,
+    }, { quiet: true });
+    pushHistory(removable.size === 1 ? 'Delete annotation' : 'Delete annotations');
+    return true;
+  }
+
+  function duplicateSelectedShapes(offset = 0.02): boolean {
+    const state = getState();
+    const selectedIds = liveSelectedIds(state);
+    if (!selectedIds.length) return false;
+
+    const selected = new Set(selectedIds);
+    const copies = state.annotations
+      .filter(shape => selected.has(shape.id))
+      .map(shape => {
+        const copy = cloneShape(shape);
+        copy.id = generateShapeId();
+        return { ...copy, ...moveShape(shape, offset, offset) } as Shape;
+      });
+    if (!copies.length) return false;
+
+    const copyIds = copies.map(shape => shape.id);
+    updateState({
+      annotations: [...state.annotations, ...copies],
+      selectedShapeIds: copyIds,
+      selectedShapeId: copyIds.at(-1) ?? null,
+    }, { quiet: true });
+    pushHistory(copies.length === 1 ? 'Duplicate shape' : 'Duplicate annotations');
+    return true;
+  }
+
   /**
    * Start editing a text shape (for external calls like context menu)
    * @param selectAll - whether to select all text when entering edit mode (default true)
@@ -1421,6 +1649,7 @@ export function useAnnotation(
   return {
     interactionMode,
     cursorStyle,
+    marqueeBounds,
     setupListeners,
     cleanupListeners,
     getSelectedShape,
@@ -1432,6 +1661,10 @@ export function useAnnotation(
     // Canvas-based text editing
     textEditState,
     handleKeyDown,
+    deleteSelectedShapes,
+    duplicateSelectedShapes,
+    startMarqueeSelection,
+    consumeCompletedGestureClick,
     startTextEditing,
     isEditingTextOnCanvas,
   };

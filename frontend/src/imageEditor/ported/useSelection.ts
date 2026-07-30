@@ -10,6 +10,8 @@
 import { ref, shallowRef, markRaw } from 'vue';
 import type { Size, Point, Color } from './geometry';
 import type { SelectionMode } from './geometry';
+import type { WandMaskOptions } from '../stack/wandMask';
+import { applySelectionBrushSegment } from '../stack/selectionBrush';
 import {
   createSelectionMask,
   fillRectSelection,
@@ -558,7 +560,7 @@ export function useSelection() {
   function magicWandSelect(
     sourceCtx: CanvasRenderingContext2D,
     point: Point,
-    tolerance: number,
+    options: WandMaskOptions,
     mode: SelectionMode
   ): void {
     if (!selectionCtx.value) return;
@@ -575,7 +577,7 @@ export function useSelection() {
       sourceCtx,
       point.x,
       point.y,
-      tolerance,
+      options,
       mode
     );
 
@@ -637,11 +639,12 @@ export function useSelection() {
   /**
    * Brush a stroke into the selection mask directly.
    *
-   * Stamps a radial-gradient tip along the segment so a fast drag stays
-   * continuous, matching the inpaint brush this replaces. `subtract` erases;
-   * every other combine mode lays selection down — a brush has no meaningful
-   * `intersect`. Produces a pixel selection, so the marching ants come from
-   * tracing; call `updateMarchingAnts` once at stroke end, not per stamp.
+   * Applies a soft capsule along the segment so a fast drag stays continuous.
+   * Coverage combines by maximum rather than normal alpha compositing, keeping
+   * repeated passes uniform. `subtract` removes coverage idempotently; every
+   * other mode lays selection down — a brush has no meaningful `intersect`.
+   * Produces a pixel selection, so the marching ants come from tracing; call
+   * `updateMarchingAnts` once at stroke end, not per segment.
    */
   function brushStroke(
     from: Point | null,
@@ -653,31 +656,27 @@ export function useSelection() {
     const ctx = selectionCtx.value;
     if (!ctx || radius <= 0) return;
 
-    ctx.save();
-    ctx.globalCompositeOperation = mode === 'subtract' ? 'destination-out' : 'source-over';
+    const start = from ?? to;
+    const minX = Math.max(0, Math.floor(Math.min(start.x, to.x) - radius));
+    const minY = Math.max(0, Math.floor(Math.min(start.y, to.y) - radius));
+    const maxX = Math.min(ctx.canvas.width, Math.ceil(Math.max(start.x, to.x) + radius));
+    const maxY = Math.min(ctx.canvas.height, Math.ceil(Math.max(start.y, to.y) + radius));
+    const width = maxX - minX;
+    const height = maxY - minY;
+    if (width <= 0 || height <= 0) return;
 
-    const stamp = (x: number, y: number) => {
-      const gradient = ctx.createRadialGradient(x, y, radius * hardness, x, y, radius);
-      gradient.addColorStop(0, 'rgba(255,255,255,1)');
-      gradient.addColorStop(1, 'rgba(255,255,255,0)');
-      ctx.fillStyle = gradient;
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
-    };
-
-    if (from) {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
-      const distance = Math.hypot(dx, dy);
-      const step = Math.max(1, radius / 3);
-      for (let travelled = 0; travelled < distance; travelled += step) {
-        const t = travelled / distance;
-        stamp(from.x + dx * t, from.y + dy * t);
-      }
-    }
-    stamp(to.x, to.y);
-    ctx.restore();
+    const region = ctx.getImageData(minX, minY, width, height);
+    applySelectionBrushSegment(
+      region.data,
+      width,
+      height,
+      from ? { x: from.x - minX, y: from.y - minY } : null,
+      { x: to.x - minX, y: to.y - minY },
+      radius,
+      hardness,
+      mode === 'subtract' ? 'subtract' : 'add',
+    );
+    ctx.putImageData(region, minX, minY);
 
     selectionShapes.value = [{ type: 'pixels' }];
     isInverted.value = false;

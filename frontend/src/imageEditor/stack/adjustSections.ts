@@ -1,10 +1,10 @@
 /**
- * The control surface for the parametric adjustment families: Levels and
+ * The control surface for the parametric adjustment families: Adjust and
  * Filters.
  *
  * One rule everywhere: the sub-toolbar offers what you can ADD, clicking it
  * creates a focused step, and the step's controls live in its Properties.
- * Levels offers small single-purpose edits — Tone, Detail, Tint, the Autos —
+ * Adjust offers small single-purpose edits — Light, Color, Detail, the Autos —
  * each its own step with its own controls. Filters offers the preset strip,
  * which also carries the discrete pixel looks (VHS, Glow, Vignette…) that
  * used to hide behind an Effects dropdown: they are picked-by-eye things with
@@ -14,10 +14,23 @@
  * pixel pipeline; a step simply carries only the params its doorway set.
  */
 
+import {
+  DEFAULT_TONE_CURVE,
+  toneCurveValueOf,
+  type ToneCurve,
+} from './toneCurve.ts'
+
+export {
+  DEFAULT_TONE_CURVE,
+  toneCurveValueOf,
+  type ToneCurve,
+} from './toneCurve.ts'
+
 /** Which family a group belongs to — the doorway that shows it. */
 export type AdjustFamily = 'levels' | 'filters'
 
-export interface AdjustControl {
+export interface AdjustSliderControl {
+  kind?: 'slider'
   key: string
   label: string
   min: number
@@ -28,10 +41,143 @@ export interface AdjustControl {
   primary?: boolean
 }
 
+export interface AdjustCurveControl {
+  kind: 'curve'
+  key: string
+  label: string
+  default: ToneCurve
+}
+
+export type AdjustControl = AdjustSliderControl | AdjustCurveControl
+
+export function isAdjustSlider(control: AdjustControl): control is AdjustSliderControl {
+  return control.kind !== 'curve'
+}
+
+export type PhotoAdjustmentGroupId = 'light' | 'color' | 'detail'
+
+export interface PhotoAdjustmentGroup {
+  id: PhotoAdjustmentGroupId
+  /** Stable document marker used by existing whole-image adjustment steps. */
+  section: 'tone' | 'tint' | 'detail'
+  label: string
+  icon: 'sun' | 'palette' | 'focus'
+  controls: AdjustControl[]
+}
+
+/**
+ * The photographic adjustment surface.
+ *
+ * This is deliberately shared by whole-image Adjust and masked Retouch. A
+ * control must not exist in one inspector with a different name, range, or
+ * default in the other.
+ */
+export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
+  {
+    id: 'light',
+    section: 'tone',
+    label: 'Light',
+    icon: 'sun',
+    controls: [
+      { key: 'exposure', label: 'Exposure', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'contrast', label: 'Contrast', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'highlights', label: 'Highlights', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'shadows', label: 'Shadows', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'whites', label: 'Whites', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'blacks', label: 'Blacks', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'gamma', label: 'Gamma', min: 0.1, max: 3, step: 0.05, default: 1 },
+      { kind: 'curve', key: 'curve', label: 'Curve', default: DEFAULT_TONE_CURVE },
+    ],
+  },
+  {
+    id: 'color',
+    section: 'tint',
+    label: 'Color',
+    icon: 'palette',
+    controls: [
+      { key: 'temperature', label: 'Temperature', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'tint', label: 'Tint', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'hue', label: 'Hue', min: -180, max: 180, step: 1, default: 0 },
+      { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'vibrance', label: 'Vibrance', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'colorizeHue', label: 'Colorize hue', min: 0, max: 360, step: 1, default: 0 },
+      { key: 'colorizeAmount', label: 'Colorize', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'defringe', label: 'Defringe', min: 0, max: 100, step: 1, default: 0 },
+    ],
+  },
+  {
+    id: 'detail',
+    section: 'detail',
+    label: 'Detail',
+    icon: 'focus',
+    controls: [
+      { key: 'texture', label: 'Texture', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'clarity', label: 'Clarity', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'dehaze', label: 'Dehaze', min: -100, max: 100, step: 1, default: 0 },
+      { key: 'moire', label: 'Moiré', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'sharpen', label: 'Sharpening', min: 0, max: 150, step: 1, default: 0 },
+      { key: 'sharpenRadius', label: 'Sharpen radius', min: 0.5, max: 3, step: 0.1, default: 1 },
+      { key: 'sharpenDetail', label: 'Sharpen detail', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'sharpenMasking', label: 'Sharpen masking', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'noiseReduction', label: 'Noise reduction', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'noiseReductionDetail', label: 'Luminance detail', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'noiseReductionContrast', label: 'Luminance contrast', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'colorNoiseReduction', label: 'Color noise', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'colorNoiseReductionDetail', label: 'Color detail', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'colorNoiseReductionSmoothness', label: 'Color smoothness', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'noise', label: 'Grain', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'grainSize', label: 'Grain size', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'grainRoughness', label: 'Grain roughness', min: 0, max: 100, step: 1, default: 50 },
+      { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
+    ],
+  },
+]
+
+export function photoAdjustmentGroup(id: string): PhotoAdjustmentGroup | undefined {
+  return PHOTO_ADJUSTMENT_GROUPS.find(group => group.id === id || group.section === id)
+}
+
+export const PHOTO_ADJUSTMENT_CONTROLS = PHOTO_ADJUSTMENT_GROUPS.flatMap(
+  group => group.controls,
+)
+
+export const PHOTO_ADJUSTMENT_KEYS = PHOTO_ADJUSTMENT_CONTROLS.map(
+  control => control.key,
+)
+
+/**
+ * Project a document/settings object onto the photographic render schema.
+ *
+ * Whole-image and masked Retouch rendering both call this exact function.
+ * Missing fields receive schema defaults, so old documents remain valid while
+ * newly added supporting parameters behave identically on both surfaces.
+ */
+export function photoAdjustmentRenderParams(
+  source: Record<string, any> | null | undefined,
+): Record<string, any> {
+  return Object.fromEntries(PHOTO_ADJUSTMENT_CONTROLS.map(control => {
+    const candidate = source?.[control.key]
+    if (control.kind === 'curve') {
+      return [control.key, toneCurveValueOf(candidate)]
+    }
+    return [
+      control.key,
+      typeof candidate === 'number' && Number.isFinite(candidate)
+        ? candidate
+        : control.default,
+    ]
+  }))
+}
+
+/** Named entry points make renderer parity explicit without duplicating it. */
+export const wholeImageAdjustmentParams = photoAdjustmentRenderParams
+export const maskedRetouchAdjustmentParams = photoAdjustmentRenderParams
+
 export interface AdjustSection {
   id: string
   label: string
-  controls: AdjustControl[]
+  controls: AdjustSliderControl[]
   /** Fields that switch the section on; absent means the sliders speak for it. */
   toggle?: { key: string; label: string }
 }
@@ -46,7 +192,7 @@ export interface AdjustSection {
 export const ADJUST_SECTIONS: AdjustSection[] = [
   {
     id: 'levels',
-    label: 'Levels',
+    label: 'Adjust',
     controls: [
       { key: 'exposure', label: 'Exposure', min: -100, max: 100, step: 1, default: 0, primary: true },
       { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
@@ -90,58 +236,30 @@ const CONTROLS_BY_KEY = new Map(
   ADJUST_SECTIONS.flatMap(section => section.controls.map(control => [control.key, control]))
 )
 
-export function adjustControl(key: string): AdjustControl | undefined {
+export function adjustControl(key: string): AdjustSliderControl | undefined {
   return CONTROLS_BY_KEY.get(key)
 }
 
 /**
- * The Levels family's addable edits. Each is its own step with its own small
- * control set — a user thinks "I did a tone adjustment", not "I opened section
+ * The Adjust family's addable edits. Each is its own step with its own small
+ * control set — a user thinks "I adjusted the light", not "I opened section
  * two of the levels blob", and the row should read the same way.
  */
 export interface LevelEdit {
   id: 'tone' | 'detail' | 'tint'
   label: string
+  icon: 'sun' | 'palette' | 'focus'
   controls: AdjustControl[]
   /** Params set at creation, beyond the marker — what makes the edit DO its thing. */
   seed?: Record<string, any>
 }
 
-export const LEVEL_EDITS: LevelEdit[] = [
-  {
-    id: 'tone',
-    label: 'Tone',
-    controls: [
-      { key: 'exposure', label: 'Exposure', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'brightness', label: 'Brightness', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'contrast', label: 'Contrast', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'temperature', label: 'Temperature', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'gamma', label: 'Gamma', min: 0.1, max: 3, step: 0.05, default: 1 },
-    ],
-  },
-  {
-    id: 'detail',
-    label: 'Detail',
-    controls: [
-      { key: 'clarity', label: 'Clarity', min: -100, max: 100, step: 1, default: 0 },
-      { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
-      { key: 'sharpen', label: 'Sharpen', min: 0, max: 100, step: 1, default: 0 },
-    ],
-  },
-  {
-    id: 'tint',
-    label: 'Tint',
-    seed: { splitToningEnabled: true },
-    controls: [
-      { key: 'splitToningShadowHue', label: 'Shadow hue', min: 0, max: 360, step: 1, default: 30 },
-      { key: 'splitToningShadowSat', label: 'Shadow strength', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'splitToningHighlightHue', label: 'Highlight hue', min: 0, max: 360, step: 1, default: 200 },
-      { key: 'splitToningHighlightSat', label: 'Highlight strength', min: 0, max: 100, step: 1, default: 0 },
-      { key: 'splitToningBalance', label: 'Balance', min: -100, max: 100, step: 1, default: 0 },
-    ],
-  },
-]
+export const LEVEL_EDITS: LevelEdit[] = PHOTO_ADJUSTMENT_GROUPS.map(group => ({
+  id: group.section,
+  label: group.label,
+  icon: group.icon,
+  controls: group.controls,
+}))
 
 export function levelEditById(id: string): LevelEdit | undefined {
   return LEVEL_EDITS.find(edit => edit.id === id)
@@ -149,7 +267,7 @@ export function levelEditById(id: string): LevelEdit | undefined {
 
 /**
  * The Autos, as addable edits: each computes slider values from the histogram
- * and lands as a normal Tone step seeded with them — inspectable, adjustable
+ * and lands as a normal Light step seeded with them — inspectable, adjustable
  * and deletable like anything else, not a fire-and-forget action.
  */
 export const AUTO_EDITS = [
@@ -262,14 +380,14 @@ export function touchedSections(params: Record<string, any>): string[] {
 /**
  * The row's name. An adjustment step is named for what it does, not for the
  * doorway it was opened through — a step with only a filter reads `Filters`,
- * one with sliders reads `Levels`, one with both names both.
+ * one with sliders reads `Adjust`, one with both names both.
  */
 /**
  * The row's name: what this step DOES.
  *
  * Effects name themselves individually — a step is 'Halftone', or
  * 'Halftone · Grain' once there are two — because the effect is the thing the
- * user picked. Levels are a group and read as one, since nobody thinks of
+ * user picked. Adjust controls are a group and read as one, since nobody thinks of
  * 'raised the contrast' as a separate edit from 'raised the exposure' when
  * they moved both in one sitting.
  */

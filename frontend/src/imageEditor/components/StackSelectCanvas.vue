@@ -34,16 +34,28 @@ const props = withDefaults(defineProps<{
   armed?: SelectToolId | null
   combine?: SelectionMode
   featherPx?: number
-  /** Magic wand color tolerance, 0-255. */
+  /** Magic wand color-and-opacity threshold, 0-100. */
   tolerance?: number
+  /** Fully opaque extent within the wand threshold, 0-100. */
+  wandSpread?: number
+  /** Wand mask growth (positive) or shrinkage (negative), in source pixels. */
+  wandGrowPx?: number
+  /** Smooth hard wand boundaries when feathering is zero. */
+  wandAntialias?: boolean
   /** Selection brush diameter in display pixels, like the paint brush. */
   brushSize?: number
+  /** Visual chrome only; the selection model remains intact while hidden. */
+  visible?: boolean
 }>(), {
   armed: null,
   combine: 'new',
   featherPx: 0,
-  tolerance: 32,
+  tolerance: 8,
+  wandSpread: 100,
+  wandGrowPx: 0,
+  wandAntialias: true,
   brushSize: 80,
+  visible: true,
 })
 
 const emit = defineEmits<{ change: [HTMLCanvasElement | null] }>()
@@ -56,6 +68,8 @@ let drawing = false
 let lastBrushPoint: Point | null = null
 /** This gesture's brush path, for live feedback until the ants take over. */
 let brushGesture: Point[] = []
+/** Opaque intermediate prevents translucent feedback from accumulating where a path overlaps itself. */
+let brushFeedback: HTMLCanvasElement | null = null
 const cursor = ref<{ x: number; y: number } | null>(null)
 let antsTimer: ReturnType<typeof setInterval> | null = null
 
@@ -93,9 +107,19 @@ function onPointerDown(event: PointerEvent) {
 
   if (props.armed === 'wand') {
     const ctx = props.source.getContext('2d', { willReadFrequently: true })
-    if (ctx) selection.magicWandSelect(ctx, point, props.tolerance, props.combine)
+    if (ctx) {
+      selection.magicWandSelect(ctx, point, {
+        threshold: props.tolerance,
+        spread: props.wandSpread,
+        growPx: props.wandGrowPx,
+        featherPx: props.featherPx,
+        antialias: props.wandAntialias,
+      }, props.combine)
+    }
     drawing = false
-    publish()
+    // The wand refines its temporary mask before combining it. Publishing
+    // must not feather the accumulated selection a second time.
+    publish(false)
     return
   }
   if (props.armed === 'brush') {
@@ -189,24 +213,36 @@ function draw() {
   if (!canvas) return
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
+  if (!props.visible) return
 
-  // Live feedback for a brush gesture: a translucent stroke along the path,
-  // until the ants take over at pointer-up. Neutral, not tinted — tracing the
-  // real mask every frame is too slow, and a color wash overstates it.
+  // Live feedback for a brush gesture: rasterize the path opaquely first, then
+  // apply one translucent wash. Stroking with the translucent color directly
+  // makes self-overlaps visibly darker even though they are one selection.
   if (drawing && props.armed === 'brush' && brushGesture.length) {
-    ctx.save()
-    ctx.strokeStyle = props.combine === 'subtract'
-      ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'
-    ctx.lineWidth = props.brushSize * scale.value
-    ctx.lineCap = 'round'
-    ctx.lineJoin = 'round'
-    ctx.beginPath()
-    ctx.moveTo(brushGesture[0].x, brushGesture[0].y)
+    if (!brushFeedback) brushFeedback = document.createElement('canvas')
+    if (brushFeedback.width !== canvas.width) brushFeedback.width = canvas.width
+    if (brushFeedback.height !== canvas.height) brushFeedback.height = canvas.height
+    const feedbackCtx = brushFeedback.getContext('2d')!
+    feedbackCtx.clearRect(0, 0, brushFeedback.width, brushFeedback.height)
+    feedbackCtx.save()
+    feedbackCtx.strokeStyle = '#fff'
+    feedbackCtx.lineWidth = props.brushSize * scale.value
+    feedbackCtx.lineCap = 'round'
+    feedbackCtx.lineJoin = 'round'
+    feedbackCtx.beginPath()
+    feedbackCtx.moveTo(brushGesture[0].x, brushGesture[0].y)
     // A tap has one point; the lineTo-self plus round caps makes it a dot.
-    if (brushGesture.length === 1) ctx.lineTo(brushGesture[0].x, brushGesture[0].y)
-    for (const point of brushGesture.slice(1)) ctx.lineTo(point.x, point.y)
-    ctx.stroke()
-    ctx.restore()
+    if (brushGesture.length === 1) {
+      feedbackCtx.lineTo(brushGesture[0].x, brushGesture[0].y)
+    }
+    for (const point of brushGesture.slice(1)) feedbackCtx.lineTo(point.x, point.y)
+    feedbackCtx.stroke()
+    feedbackCtx.globalCompositeOperation = 'source-in'
+    feedbackCtx.fillStyle = props.combine === 'subtract'
+      ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'
+    feedbackCtx.fillRect(0, 0, brushFeedback.width, brushFeedback.height)
+    feedbackCtx.restore()
+    ctx.drawImage(brushFeedback, 0, 0)
   }
 
   ctx.save()
@@ -316,9 +352,10 @@ watch(() => props.armed, armed => {
   }
   draw()
 })
+watch(() => props.visible, draw)
 // Marching ants animate whenever there IS a selection, not only while drawing.
-watch(() => selection.marchingAntsPaths.value.length, length => {
-  if (length) startAnts()
+watch([() => selection.marchingAntsPaths.value.length, () => props.visible], ([length, visible]) => {
+  if (length && visible) startAnts()
   else stopAnts()
 }, { immediate: true })
 onMounted(resize)
@@ -326,11 +363,14 @@ onBeforeUnmount(stopAnts)
 </script>
 
 <template>
-  <div class="absolute inset-0" :class="armed ? '' : 'pointer-events-none'">
+  <div
+    class="absolute inset-0"
+    :class="armed && visible ? '' : 'pointer-events-none'"
+  >
     <canvas
       ref="overlay"
       class="w-full h-full touch-none"
-      :class="armed ? 'cursor-crosshair' : ''"
+      :class="armed && visible ? 'cursor-crosshair' : ''"
       :style="{ width: displayWidth + 'px', height: displayHeight + 'px' }"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
@@ -340,7 +380,7 @@ onBeforeUnmount(stopAnts)
     />
     <!-- Brush outline: the only reliable size feedback while painting. -->
     <div
-      v-if="cursor && armed === 'brush'"
+      v-if="visible && cursor && armed === 'brush'"
       class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
       :style="{
         left: cursor.x - brushSize / 2 + 'px',

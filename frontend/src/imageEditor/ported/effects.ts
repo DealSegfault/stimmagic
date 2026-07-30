@@ -41,7 +41,7 @@ import { createCanvas, getContext } from './canvasTransform';
  * Pure-pixel Gaussian blur.
  *
  * Replaces `ctx.filter = 'blur(Npx)'`, which the app's macOS WKWebView renders
- * as a no-op for canvas sources — so Blur, Sharpen and Clarity (the Levels
+ * as a no-op for canvas sources — so Blur, Sharpen and Clarity (the Adjust
  * "Detail" edits, the only effects that lean on canvas blur) had no visible
  * effect while every pure-pixel adjustment worked. This runs the same math on
  * the ImageData directly, so it behaves identically on every engine.
@@ -131,7 +131,21 @@ export interface EffectsState {
   motionBlur: number;
   motionBlurAngle: number;
   vignette: number;
+  texture: number;
   clarity: number;
+  noiseReduction: number;
+  sharpenRadius: number;
+  sharpenDetail: number;
+  sharpenMasking: number;
+  noiseReductionDetail: number;
+  noiseReductionContrast: number;
+  colorNoiseReduction: number;
+  colorNoiseReductionDetail: number;
+  colorNoiseReductionSmoothness: number;
+  grainSize: number;
+  grainRoughness: number;
+  moire: number;
+  defringe: number;
   // Creative effects
   halftone: number;
   halftoneAngle: number;
@@ -155,7 +169,12 @@ export function hasEffects(state: Partial<EffectsState>): boolean {
     (state.chromaticAberration ?? 0) > 0 ||
     (state.motionBlur ?? 0) > 0 ||
     (state.vignette ?? 0) > 0 ||
+    (state.texture ?? 0) !== 0 ||
     (state.clarity ?? 0) !== 0 ||
+    (state.noiseReduction ?? 0) > 0 ||
+    (state.colorNoiseReduction ?? 0) > 0 ||
+    (state.moire ?? 0) > 0 ||
+    (state.defringe ?? 0) > 0 ||
     (state.halftone ?? 0) > 0 ||
     (state.vhs ?? 0) > 0 ||
     (state.glitch ?? 0) > 0 ||
@@ -184,9 +203,48 @@ export function applyEffects(
     currentCanvas = applyClarity(currentCanvas, state.clarity!);
   }
 
-  // 3. Sharpen (before blur so they can be combined)
+  // 3. Texture works at a smaller radius than Clarity.
+  if ((state.texture ?? 0) !== 0) {
+    currentCanvas = applyTexture(currentCanvas, state.texture!);
+  }
+
+  // 4. Moiré/defringe and noise reduction precede sharpening so restored
+  // edges remain crisp and chroma artifacts are not sharpened.
+  if ((state.moire ?? 0) > 0) {
+    currentCanvas = applyMoireReduction(currentCanvas, state.moire!);
+  }
+
+  if ((state.defringe ?? 0) > 0) {
+    currentCanvas = applyDefringe(currentCanvas, state.defringe!);
+  }
+
+  if ((state.noiseReduction ?? 0) > 0) {
+    currentCanvas = applyNoiseReduction(
+      currentCanvas,
+      state.noiseReduction!,
+      state.noiseReductionDetail ?? 0,
+      state.noiseReductionContrast ?? 0,
+    );
+  }
+
+  if ((state.colorNoiseReduction ?? 0) > 0) {
+    currentCanvas = applyColorNoiseReduction(
+      currentCanvas,
+      state.colorNoiseReduction!,
+      state.colorNoiseReductionDetail ?? 0,
+      state.colorNoiseReductionSmoothness ?? 0,
+    );
+  }
+
+  // 5. Sharpen (before blur so they can be combined)
   if ((state.sharpen ?? 0) > 0) {
-    currentCanvas = applySharpen(currentCanvas, state.sharpen!);
+    currentCanvas = applySharpen(
+      currentCanvas,
+      state.sharpen!,
+      state.sharpenRadius ?? 1,
+      state.sharpenDetail ?? 0,
+      state.sharpenMasking ?? 0,
+    );
   }
 
   // 4. Blur effects
@@ -210,7 +268,12 @@ export function applyEffects(
 
   // 7. Noise (late - should be on top)
   if ((state.noise ?? 0) > 0) {
-    currentCanvas = applyNoise(currentCanvas, state.noise!);
+    currentCanvas = applyNoise(
+      currentCanvas,
+      state.noise!,
+      state.grainSize ?? 0,
+      state.grainRoughness ?? 50,
+    );
   }
 
   // 8. Vignette (last - frames the image)
@@ -251,7 +314,13 @@ export function applyBlur(canvas: HTMLCanvasElement, amount: number): HTMLCanvas
 /**
  * Apply sharpening using unsharp mask technique
  */
-export function applySharpen(canvas: HTMLCanvasElement, amount: number): HTMLCanvasElement {
+export function applySharpen(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  radius = 1,
+  detail = 0,
+  masking = 0,
+): HTMLCanvasElement {
   const width = canvas.width;
   const height = canvas.height;
   const result = createCanvas(width, height);
@@ -261,21 +330,48 @@ export function applySharpen(canvas: HTMLCanvasElement, amount: number): HTMLCan
   ctx.drawImage(canvas, 0, 0);
 
   // Create blurred version (pure-pixel blur; see blurredCanvas)
-  const blurred = blurredCanvas(canvas, 1);
+  const blurred = blurredCanvas(canvas, Math.max(0.5, radius));
   const blurCtx = getContext(blurred);
+  const detailCanvas = detail > 0
+    ? blurredCanvas(canvas, Math.max(0.5, radius * 0.4))
+    : null;
 
   // Get image data
   const originalData = ctx.getImageData(0, 0, width, height);
   const blurredData = blurCtx.getImageData(0, 0, width, height);
+  const detailData = detailCanvas
+    ? getContext(detailCanvas).getImageData(0, 0, width, height)
+    : null;
   const resultData = ctx.getImageData(0, 0, width, height);
 
   const strength = amount / 50; // Normalize to reasonable range
+  const detailMix = Math.max(0, Math.min(1, detail / 100));
+  const edgeThreshold = Math.max(0, masking / 100) * 48;
 
   for (let i = 0; i < originalData.data.length; i += 4) {
+    const luminance =
+      originalData.data[i] * 0.2126 +
+      originalData.data[i + 1] * 0.7152 +
+      originalData.data[i + 2] * 0.0722;
+    const softLuminance =
+      blurredData.data[i] * 0.2126 +
+      blurredData.data[i + 1] * 0.7152 +
+      blurredData.data[i + 2] * 0.0722;
+    const edge = Math.abs(luminance - softLuminance);
+    const edgeMask = edgeThreshold <= 0
+      ? 1
+      : Math.max(0, Math.min(1, (edge - edgeThreshold) / 24));
     // Unsharp mask: original + (original - blurred) * amount
     for (let c = 0; c < 3; c++) {
-      const diff = originalData.data[i + c] - blurredData.data[i + c];
-      resultData.data[i + c] = Math.max(0, Math.min(255, originalData.data[i + c] + diff * strength));
+      const broad = originalData.data[i + c] - blurredData.data[i + c];
+      const fine = detailData
+        ? originalData.data[i + c] - detailData.data[i + c]
+        : broad;
+      const diff = broad * (1 - detailMix) + fine * detailMix;
+      resultData.data[i + c] = Math.max(
+        0,
+        Math.min(255, originalData.data[i + c] + diff * strength * edgeMask),
+      );
     }
   }
 
@@ -283,10 +379,182 @@ export function applySharpen(canvas: HTMLCanvasElement, amount: number): HTMLCan
   return result;
 }
 
+function applyLocalContrast(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  radius: number,
+): HTMLCanvasElement {
+  const width = canvas.width
+  const height = canvas.height
+  const result = createCanvas(width, height)
+  const ctx = getContext(result)
+  ctx.drawImage(canvas, 0, 0)
+  const blurred = blurredCanvas(canvas, radius)
+  const originalData = ctx.getImageData(0, 0, width, height)
+  const blurredData = getContext(blurred).getImageData(0, 0, width, height)
+  const strength = amount / 100
+  for (let i = 0; i < originalData.data.length; i += 4) {
+    for (let channel = 0; channel < 3; channel++) {
+      const highPass = originalData.data[i + channel] - blurredData.data[i + channel]
+      originalData.data[i + channel] = Math.max(
+        0,
+        Math.min(255, originalData.data[i + channel] + highPass * strength),
+      )
+    }
+  }
+  ctx.putImageData(originalData, 0, 0)
+  return result
+}
+
+/** Fine-scale local contrast that leaves broader tonal transitions alone. */
+export function applyTexture(canvas: HTMLCanvasElement, amount: number): HTMLCanvasElement {
+  return applyLocalContrast(canvas, amount, 3)
+}
+
+/** Luminance-friendly smoothing; intentionally conservative at 100. */
+export function applyNoiseReduction(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  detail = 0,
+  contrast = 0,
+): HTMLCanvasElement {
+  const width = canvas.width
+  const height = canvas.height
+  const result = createCanvas(width, height)
+  const ctx = getContext(result)
+  ctx.drawImage(canvas, 0, 0)
+  const blurred = blurredCanvas(canvas, 1 + (amount / 100) * 2)
+  // Exact legacy path: documents saved before the supporting controls existed
+  // retain their original output.
+  if (detail === 0 && contrast === 0) {
+    ctx.globalAlpha = Math.min(0.85, amount / 120)
+    ctx.drawImage(blurred, 0, 0)
+    ctx.globalAlpha = 1
+    return result
+  }
+
+  const original = ctx.getImageData(0, 0, width, height)
+  const soft = getContext(blurred).getImageData(0, 0, width, height)
+  const mix = Math.min(0.85, amount / 120)
+  const protection = Math.max(0, Math.min(1, detail / 100))
+  const restore = Math.max(0, Math.min(1, contrast / 100))
+  for (let i = 0; i < original.data.length; i += 4) {
+    const originalLuma =
+      original.data[i] * 0.2126 + original.data[i + 1] * 0.7152 + original.data[i + 2] * 0.0722
+    const softLuma =
+      soft.data[i] * 0.2126 + soft.data[i + 1] * 0.7152 + soft.data[i + 2] * 0.0722
+    const edge = Math.min(1, Math.abs(originalLuma - softLuma) / 32)
+    const localMix = mix * (1 - protection * edge)
+    const targetLuma = originalLuma + (softLuma - originalLuma) * localMix
+    const restoredLuma = targetLuma + (originalLuma - softLuma) * restore * 0.35
+    const scale = originalLuma > 1e-3 ? restoredLuma / originalLuma : 1
+    original.data[i] = Math.max(0, Math.min(255, original.data[i] * scale))
+    original.data[i + 1] = Math.max(0, Math.min(255, original.data[i + 1] * scale))
+    original.data[i + 2] = Math.max(0, Math.min(255, original.data[i + 2] * scale))
+  }
+  ctx.putImageData(original, 0, 0)
+  return result
+}
+
+function applyChromaSmoothing(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  radius: number,
+  edgeProtection: number,
+): HTMLCanvasElement {
+  const width = canvas.width
+  const height = canvas.height
+  const result = createCanvas(width, height)
+  const ctx = getContext(result)
+  ctx.drawImage(canvas, 0, 0)
+  const original = ctx.getImageData(0, 0, width, height)
+  const softCanvas = blurredCanvas(canvas, radius)
+  const soft = getContext(softCanvas).getImageData(0, 0, width, height)
+  const strength = Math.max(0, Math.min(1, amount / 100))
+  for (let i = 0; i < original.data.length; i += 4) {
+    const luma =
+      original.data[i] * 0.2126 + original.data[i + 1] * 0.7152 + original.data[i + 2] * 0.0722
+    const softLuma =
+      soft.data[i] * 0.2126 + soft.data[i + 1] * 0.7152 + soft.data[i + 2] * 0.0722
+    const edge = Math.min(1, Math.abs(luma - softLuma) / 28)
+    const mix = strength * (1 - edge * edgeProtection)
+    for (let channel = 0; channel < 3; channel++) {
+      const chroma = original.data[i + channel] - luma
+      const softChroma = soft.data[i + channel] - softLuma
+      original.data[i + channel] = Math.max(
+        0,
+        Math.min(255, luma + chroma + (softChroma - chroma) * mix),
+      )
+    }
+  }
+  ctx.putImageData(original, 0, 0)
+  return result
+}
+
+export function applyColorNoiseReduction(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  detail = 0,
+  smoothness = 0,
+): HTMLCanvasElement {
+  const radius = 1 + Math.max(0, smoothness / 100) * 3
+  return applyChromaSmoothing(
+    canvas,
+    amount,
+    radius,
+    Math.max(0, Math.min(1, detail / 100)),
+  )
+}
+
+export function applyMoireReduction(
+  canvas: HTMLCanvasElement,
+  amount: number,
+): HTMLCanvasElement {
+  return applyChromaSmoothing(canvas, amount, 2.5, 0.85)
+}
+
+export function applyDefringe(
+  canvas: HTMLCanvasElement,
+  amount: number,
+): HTMLCanvasElement {
+  const width = canvas.width
+  const height = canvas.height
+  const result = createCanvas(width, height)
+  const ctx = getContext(result)
+  ctx.drawImage(canvas, 0, 0)
+  const data = ctx.getImageData(0, 0, width, height)
+  const strength = Math.max(0, Math.min(1, amount / 100))
+  for (let i = 0; i < data.data.length; i += 4) {
+    const r = data.data[i]
+    const g = data.data[i + 1]
+    const b = data.data[i + 2]
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const saturation = max <= 0 ? 0 : (max - min) / max
+    const purple = Math.max(0, (r + b) * 0.5 - g) / 128
+    const green = Math.max(0, g - (r + b) * 0.5) / 128
+    const fringe = Math.max(0, Math.min(1, Math.max(purple, green) * saturation))
+    if (fringe <= 0) continue
+    const luma = r * 0.2126 + g * 0.7152 + b * 0.0722
+    const mix = strength * fringe
+    data.data[i] = r + (luma - r) * mix
+    data.data[i + 1] = g + (luma - g) * mix
+    data.data[i + 2] = b + (luma - b) * mix
+  }
+  ctx.putImageData(data, 0, 0)
+  return result
+}
+
 /**
- * Apply film grain/noise effect
+ * Apply film grain. `size = 0` is the legacy one-pixel grain path so saved
+ * documents retain their exact seeded pattern.
  */
-export function applyNoise(canvas: HTMLCanvasElement, amount: number): HTMLCanvasElement {
+export function applyNoise(
+  canvas: HTMLCanvasElement,
+  amount: number,
+  size = 0,
+  roughness = 50,
+): HTMLCanvasElement {
   const width = canvas.width;
   const height = canvas.height;
   const result = createCanvas(width, height);
@@ -296,14 +564,32 @@ export function applyNoise(canvas: HTMLCanvasElement, amount: number): HTMLCanva
 
   const imageData = ctx.getImageData(0, 0, width, height);
   const data = imageData.data;
+  const intensity = amount * 2.55;
 
-  const intensity = amount * 2.55; // Scale to 0-255 range
-
-  for (let i = 0; i < data.length; i += 4) {
-    const noise = (random() - 0.5) * intensity;
-    data[i] = Math.max(0, Math.min(255, data[i] + noise));
-    data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
-    data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
+  if (size <= 0) {
+    for (let i = 0; i < data.length; i += 4) {
+      const noise = (random() - 0.5) * intensity;
+      data[i] = Math.max(0, Math.min(255, data[i] + noise));
+      data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
+      data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
+    }
+  } else {
+    const cell = 1 + Math.round(size / 12)
+    const gridWidth = Math.ceil(width / cell)
+    const gridHeight = Math.ceil(height / cell)
+    const coarse = new Float32Array(gridWidth * gridHeight)
+    for (let i = 0; i < coarse.length; i++) coarse[i] = random() - 0.5
+    const fineMix = Math.max(0, Math.min(1, roughness / 100))
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4
+        const coarseNoise = coarse[Math.floor(y / cell) * gridWidth + Math.floor(x / cell)]
+        const noise = (coarseNoise * (1 - fineMix) + (random() - 0.5) * fineMix) * intensity
+        data[i] = Math.max(0, Math.min(255, data[i] + noise))
+        data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise))
+        data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise))
+      }
+    }
   }
 
   ctx.putImageData(imageData, 0, 0);

@@ -32,8 +32,23 @@ export interface ToolPrefs {
   paintEngineId?: string
   /** Brush and engine controls, remembered independently for each Paint engine. */
   paintEngines?: Record<string, Partial<PaintEngineSettings>>
-  /** Catalog tool the Generate family runs. */
+  /** Brush used to author region-based Retouch repairs. */
+  retouchBrush?: Partial<PaintEngineSettings['brush']>
+  /** @deprecated Read only as a migration fallback for Expand/Repaint. */
   inpaintToolId?: string
+  /** Catalog tool used to fill an expanded canvas border. */
+  expandToolId?: string
+  /** Catalog tool used by Retouch → Repaint (`inpaint-image`). */
+  repaintToolId?: string
+  /** @deprecated Read only as a migration fallback for Remove. */
+  eraseToolId?: string
+  /** Catalog tool used by Retouch → Remove (`erase-image` or inpaint fallback). */
+  removeToolId?: string
+  /** Sticky model prompts, separate because Expand and Repaint are different jobs. */
+  expandPrompt?: string
+  repaintPrompt?: string
+  /** Most recently submitted Repaint prompts, newest first. */
+  recentRepaintPrompts?: string[]
   /** Last real sub-tool pick per family, keyed by family id. */
   sub?: Record<string, string>
 }
@@ -81,7 +96,8 @@ export function rememberSubTool(familyId: string, subId: string | null): void {
 }
 
 export function rememberedSubTool(familyId: string): string | undefined {
-  return readToolPrefs().sub?.[familyId]
+  const value = readToolPrefs().sub?.[familyId]
+  return familyId === 'retouch' && value === 'erase' ? 'remove' : value
 }
 
 /**

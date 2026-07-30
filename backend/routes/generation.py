@@ -1620,7 +1620,11 @@ async def submit_batch_jobs(
 
         # Generate smart title upfront if user didn't provide one
         output_title = request.output_set_title
-        log.info(f"BATCH TITLE DEBUG: output_set_title={request.output_set_title}, input_set_ids={input_set_ids}")
+        log.info(
+            "BATCH TITLE DEBUG: batch title state",
+            has_output_set_title=bool(request.output_set_title),
+            input_set_ids=input_set_ids,
+        )
         if not output_title and input_set_ids:
             from structured_media import generate_smart_batch_title
             tool_name = _model_name_for_tool(request.tool_id)
@@ -1632,11 +1636,17 @@ async def submit_batch_jobs(
                     task_type=request.task_type or "unknown",
                     input_set_ids=input_set_ids,
                 )
-                log.info(f"BATCH TITLE DEBUG: generate_smart_batch_title returned: {output_title}")
+                log.info(
+                    "BATCH TITLE DEBUG: generate_smart_batch_title returned",
+                    output_title_chars=len(output_title or ""),
+                )
             except Exception as e:
                 log.error(f"BATCH TITLE DEBUG: generate_smart_batch_title failed: {e}", exc_info=True)
             if output_title:
-                log.info(f"Generated smart batch title upfront: '{output_title}'")
+                log.info(
+                    "Generated smart batch title upfront",
+                    output_title_chars=len(output_title or ""),
+                )
 
         # Prepare every child before queueing any of them. Prompt enhancement
         # failures are pre-queue failures; they should not leave a partial batch

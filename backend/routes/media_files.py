@@ -1194,6 +1194,24 @@ UI_THUMB_OK = "ok"
 UI_THUMB_TRANSIENT = "transient"
 UI_THUMB_FAILED = "failed"
 
+# Bump when the vector-thumbnail grounding below changes. Scoped to SVG in the
+# cache key so it does not invalidate the rest of the library.
+SVG_GROUND_VERSION = 1
+
+# Grounds for a vector thumbnail whose ink tone is known. A near-black rather
+# than pure black, so a white mark reads as artwork sitting on a surface instead
+# of a hole punched in the tile.
+_SVG_GROUND_FOR_INK = {"dark": (255, 255, 255), "light": (20, 20, 20)}
+
+
+def _svg_ink_tone(file_path: str) -> str:
+    """Ink tone of an SVG on disk, or 'mixed' when it cannot be determined."""
+    try:
+        from utils.svg_doc import ink_tone, parse_svg, read_svg_file
+        return ink_tone(parse_svg(read_svg_file(Path(file_path))))
+    except Exception:
+        return "mixed"
+
 
 async def _generate_ui_rendered_thumbnail_to_cache(
     file_path: str, file_format: str, cache_path: Path, size: int, palette=None,
@@ -1209,6 +1227,12 @@ async def _generate_ui_rendered_thumbnail_to_cache(
     Layouts flatten to JPEG (they always paint a full opaque canvas). SVGs save
     as PNG so alpha survives — an icon on a transparent ground is the norm, and
     the tile's checkerboard treatment depends on it.
+
+    A single-tone vector is the exception: it gets its legible ground baked in
+    here. Transparency is only useful if something behind it makes the mark
+    visible, and a black icon lands on dark app chrome everywhere it appears —
+    chips, grids, boards. Deciding it once, where the thumbnail is made, is what
+    keeps every one of those surfaces from having to solve it separately.
     """
     from utils.ui_render import LayoutRenderBusy, LayoutRenderUnavailable
 
@@ -1238,6 +1262,12 @@ async def _generate_ui_rendered_thumbnail_to_cache(
     if is_svg:
         if img.mode != 'RGBA':
             img = img.convert('RGBA')
+        ground = _SVG_GROUND_FOR_INK.get(_svg_ink_tone(file_path))
+        if ground:
+            # Composited rather than drawn behind, so the alpha edges of the
+            # mark blend against the ground they will actually be seen on.
+            backdrop = Image.new('RGBA', img.size, ground + (255,))
+            img = Image.alpha_composite(backdrop, img)
         _atomic_save(img, cache_path, 'PNG', optimize=True)
     else:
         if img.mode not in ('RGB',):
@@ -2135,6 +2165,10 @@ async def get_thumbnail(
             mtime_suffix = f"_mtime{mtime_path.stat().st_mtime}"
         except OSError:
             pass
+    if fmt_lower == 'svg':
+        # Scoped to SVG so changing how vector thumbnails are grounded does not
+        # invalidate every raster thumbnail in the library.
+        mtime_suffix += f"_ground{SVG_GROUND_VERSION}"
 
     # Include theme in cache key only for synthetic thumbnail types
     theme_suffix = f"_theme{theme}" if fmt_lower in THEMED_FORMATS else ""
@@ -2735,6 +2769,10 @@ async def get_thumbnail_by_db_guid(
             mtime_suffix = f"_mtime{mtime_path.stat().st_mtime}"
         except OSError:
             pass
+    if fmt_lower == 'svg':
+        # Scoped to SVG so changing how vector thumbnails are grounded does not
+        # invalidate every raster thumbnail in the library.
+        mtime_suffix += f"_ground{SVG_GROUND_VERSION}"
 
     # Include theme in cache key only for synthetic thumbnail types
     theme_suffix = f"_theme{theme}" if fmt_lower in THEMED_FORMATS else ""
@@ -3078,6 +3116,10 @@ async def get_thumbnail_path_by_media_id(
             mtime_suffix = f"_mtime{mtime_path.stat().st_mtime}"
         except OSError:
             pass
+    if fmt_lower == 'svg':
+        # Scoped to SVG so changing how vector thumbnails are grounded does not
+        # invalidate every raster thumbnail in the library.
+        mtime_suffix += f"_ground{SVG_GROUND_VERSION}"
 
     # Include theme in cache key only for synthetic thumbnail types
     theme_suffix = f"_theme{theme}" if fmt_lower in THEMED_FORMATS else ""

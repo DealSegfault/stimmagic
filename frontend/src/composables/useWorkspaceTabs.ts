@@ -662,7 +662,7 @@ export function useWorkspaceTabs() {
       entityId: editorId,
       pinned: false,
       displayOrder: nextDisplayOrder++,
-      displayName: 'Edit Image',
+      displayName: 'Darkroom',
       editorMediaId: mediaId
     }
     tabs.value = [...tabs.value, tab]
@@ -698,7 +698,7 @@ export function useWorkspaceTabs() {
       entityId,
       pinned: false,
       displayOrder: nextDisplayOrder++,
-      displayName: opts?.name || 'Edit Image',
+      displayName: opts?.name || 'Darkroom',
       editorMediaId: opts?.mediaId
     }
     tabs.value = [...tabs.value, tab]

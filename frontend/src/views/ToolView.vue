@@ -6431,7 +6431,7 @@ async function handleProfileChanged() {
 }
 
 onMounted(async () => {
-  console.log('[ToolView onMounted] Starting, route.query:', JSON.stringify(route.query))
+  console.log('[ToolView onMounted] Starting', { queryKeys: Object.keys(route.query) })
   await loadTool()
   console.log('[ToolView onMounted] loadTool completed')
 
@@ -6498,7 +6498,7 @@ onMounted(async () => {
 
 // Use onActivated/onDeactivated for keyboard handler since this component is in KeepAlive
 onActivated(() => {
-  console.log('[ToolView onActivated] Component reactivated, route.query:', JSON.stringify(route.query))
+  console.log('[ToolView onActivated] Component reactivated', { queryKeys: Object.keys(route.query) })
   stageViewActive.value = true
   window.addEventListener('keydown', handleKeyDown)
   syncStageVideoPlayback()

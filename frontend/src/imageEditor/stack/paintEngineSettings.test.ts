@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { paintEngineSettings } from './paintEngineSettings.ts'
 
-test('retouch engines start with subtle, soft defaults', () => {
+test('pixel-reading paint engines start with subtle, soft defaults', () => {
   assert.equal(paintEngineSettings('dodge').exposure, 10)
   assert.equal(paintEngineSettings('burn').exposure, 10)
   assert.equal(paintEngineSettings('sponge').strength, 20)
@@ -64,4 +64,3 @@ test('persisted engine settings are clamped and corrupt fields fall back', () =>
   assert.equal(restored.range, 'midtones')
   assert.equal(restored.strength, 1)
 })
-

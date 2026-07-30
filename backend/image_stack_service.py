@@ -6,20 +6,20 @@ different ``editor_type``):
 
     <state_locator>/
       document.json      the current stack — small, atomically rewritten
-      journal.jsonl      append-only record of every document edit
+      journal.jsonl      recent undo history, append-mostly and bounded
       payloads/          masks, patches, stroke json, raster layers
       cache/             composite intermediates; reconstructible, deletable
 
-Deliberately pack-ratty. Deleting a step removes it from ``document.json``
-only — its payloads stay, and the deletion is journaled with its inverse, so
-any prior state is recoverable by replay. ``cache/`` is the only subtree that
-may be discarded, because it is a pure function of document + payloads + base.
+Payload storage is deliberately pack-ratty, but undo history is not. Deleting
+a step removes it from ``document.json`` only; its payloads stay, while the
+journal retains a bounded window of recent actions and their inverses.
+``cache/`` is reconstructible from document + payloads + base.
 
 There is exactly one writer (the editor screen for that asset), no concurrent
-access and no indexed queries, which is why this is JSON and an append-only log
-rather than SQLite. The journal's ``(seq, ts, action, inverse)`` row shape is
-chosen to match the NLE's op-log so that migration stays mechanical if stacks
-ever outgrow this.
+access and no indexed queries, which is why this is JSON and an append-mostly
+log rather than SQLite. The journal's ``(seq, ts, action, inverse)`` row shape
+is chosen to match the NLE's op-log so that migration stays mechanical if
+stacks ever outgrow this.
 """
 
 from __future__ import annotations
@@ -46,11 +46,14 @@ DOCUMENT_VERSION = 1
 # no separators, no dots beyond the extension, so nothing can escape the
 # document directory.
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}\.(png|json|webp)$")
+_HEAD_CACHE_NAME = re.compile(r"^head-[0-9a-f]{8}\.png$")
 
-# Journal entries are appended forever, so replay cost is bounded by writing a
-# full-document checkpoint line once the log passes this many entries since the
-# last one. Replay starts at the last checkpoint.
-JOURNAL_CHECKPOINT_INTERVAL = 500
+# The current document is authoritative. The journal exists only to restore a
+# useful recent undo window after reopening, so reads are capped exactly at this
+# size. Writes stay cheap and append-only until a little slack accumulates, then
+# atomically compact back to the cap.
+JOURNAL_MAX_ENTRIES = 500
+JOURNAL_COMPACT_AT = 600
 
 
 class ImageStackError(Exception):
@@ -161,13 +164,29 @@ def _append_lines(path: Path, lines: Iterable[str]) -> None:
         os.fsync(handle.fileno())
 
 
+def _write_jsonl_atomic(path: Path, entries: Iterable[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temp.open("x", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(json.dumps(entry, separators=(",", ":")))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 async def append_journal(directory: Path, entries: list[dict]) -> int:
-    """Append entries verbatim and return the count now in the log.
+    """Append entries and return the retained on-disk count.
 
     Entries are shaped ``{seq, ts, action, inverse}``. The client owns ``seq``
     because the undo cursor is a client-side position in this log; the server is
     deliberately dumb storage. Undos are themselves appended rather than
-    truncating, so nothing is ever removed.
+    truncating. Once enough slack accumulates, the journal is atomically
+    compacted to the newest ``JOURNAL_MAX_ENTRIES`` entries.
     """
     for entry in entries:
         if not isinstance(entry, dict):
@@ -179,7 +198,10 @@ async def append_journal(directory: Path, entries: list[dict]) -> int:
     path = directory / "journal.jsonl"
     lines = [json.dumps(entry, separators=(",", ":")) for entry in entries]
     await asyncio.to_thread(_append_lines, path, lines)
-    return await journal_length(directory)
+    length = await journal_length(directory)
+    if length >= JOURNAL_COMPACT_AT:
+        return await asyncio.to_thread(_compact_journal, path)
+    return length
 
 
 def _count_lines(path: Path) -> int:
@@ -216,23 +238,26 @@ def _read_journal_tail(path: Path) -> list[dict]:
     return entries
 
 
+def _compact_journal(path: Path) -> int:
+    entries = _read_journal_tail(path)[-JOURNAL_MAX_ENTRIES:]
+    _write_jsonl_atomic(path, entries)
+    return len(entries)
+
+
+def _read_bounded_journal(path: Path) -> list[dict]:
+    entries = _read_journal_tail(path)
+    retained = entries[-JOURNAL_MAX_ENTRIES:]
+    # Cull journals created before bounded retention on their first deferred
+    # history read. This is intentionally outside the document-open path.
+    if _count_lines(path) >= JOURNAL_COMPACT_AT:
+        _write_jsonl_atomic(path, retained)
+    return retained
+
+
 async def read_journal(directory: Path) -> list[dict]:
-    return await asyncio.to_thread(_read_journal_tail, directory / "journal.jsonl")
-
-
-async def maybe_checkpoint(directory: Path, document: dict) -> bool:
-    """Write a full-document checkpoint line when the log has grown enough."""
-    entries = await read_journal(directory)
-    if len(entries) < JOURNAL_CHECKPOINT_INTERVAL:
-        return False
-    last_seq = max((e.get("seq") or 0) for e in entries) if entries else 0
-    await append_journal(directory, [{
-        "seq": last_seq + 1,
-        "action": "checkpoint",
-        "document": document,
-        "inverse": None,
-    }])
-    return True
+    return await asyncio.to_thread(
+        _read_bounded_journal, directory / "journal.jsonl"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +292,26 @@ async def write_payload(
 
     await asyncio.to_thread(_write)
     return path
+
+
+async def prune_head_caches(directory: Path, keep: str) -> None:
+    """Keep only the newest hash-addressed materialized stack head.
+
+    Other cache residents (selection derivatives and future intermediates) are
+    unrelated and deliberately untouched.
+    """
+    if not _HEAD_CACHE_NAME.match(keep):
+        return
+
+    def _prune() -> None:
+        cache = directory / "cache"
+        if not cache.exists():
+            return
+        for path in cache.glob("head-*.png"):
+            if path.name != keep and _HEAD_CACHE_NAME.match(path.name):
+                path.unlink(missing_ok=True)
+
+    await asyncio.to_thread(_prune)
 
 
 async def clear_cache(directory: Path) -> None:

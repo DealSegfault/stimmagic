@@ -9,13 +9,15 @@
         </div>
       </div>
 
-      <div class="ml-auto flex items-center gap-1.5 flex-shrink-0">
-        <!-- Version dropdown -->
+      <div class="ml-auto flex items-center gap-0.5 flex-shrink-0">
+        <!-- Version dropdown. Trigger-ghost per §7: no border, no fill; the
+             off-latest state earns the accent because it is a real state, not
+             decoration. -->
         <div class="relative" ref="versionMenuRef">
           <button
             type="button"
-            class="flex items-center gap-1 h-6 px-2 rounded border text-[11px] font-medium transition-colors"
-            :class="onNewest ? 'border-edge bg-overlay-subtle text-content-secondary hover:bg-overlay-hover' : 'border-accent/50 bg-accent/10 text-content'"
+            class="flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium transition-colors hover:bg-overlay-subtle disabled:opacity-50"
+            :class="onNewest ? 'text-content-secondary hover:text-content' : 'text-accent'"
             :disabled="!revisions.length"
             @click="showVersionMenu = !showVersionMenu"
           >
@@ -24,20 +26,19 @@
           </button>
           <div
             v-if="showVersionMenu"
-            class="absolute right-0 mt-1 w-56 max-h-72 overflow-y-auto bg-surface border border-edge-subtle rounded-lg shadow-xl z-menu py-1 custom-scrollbar"
+            class="absolute right-0 mt-1 w-60 max-h-72 overflow-y-auto bg-surface border border-edge-subtle rounded-lg shadow-lg z-menu py-1 custom-scrollbar"
           >
             <button
               v-for="rev in reversedRevisions"
               :key="rev.id"
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 text-left text-[11.5px] rounded-md mx-1 transition-colors"
-              :class="rev.id === viewedRevisionId ? 'bg-accent/10 text-content' : 'text-content-secondary hover:bg-overlay-hover'"
-              style="width: calc(100% - 8px)"
+              class="w-full flex items-center gap-2 px-3 py-2 text-left text-xs transition-colors"
+              :class="rev.id === viewedRevisionId ? 'text-content bg-overlay-subtle' : 'text-content hover:bg-overlay-subtle'"
               @click="selectVersion(rev.id)"
             >
               <span class="font-semibold w-6 flex-shrink-0">v{{ rev.revision_number }}</span>
               <span class="flex-1 min-w-0 truncate text-content-muted">{{ rev.note || '—' }}</span>
-              <span v-if="rev.id === latestRevisionId" class="text-[9px] text-accent flex-shrink-0">latest</span>
+              <span v-if="rev.id === latestRevisionId" class="text-[10px] text-content-tertiary flex-shrink-0">latest</span>
             </button>
           </div>
         </div>
@@ -45,43 +46,25 @@
         <button
           v-if="!onNewest"
           type="button"
-          class="h-6 px-2.5 rounded border border-edge text-[11px] font-medium text-content-secondary bg-overlay-subtle hover:bg-overlay-hover hover:text-content transition-colors disabled:opacity-50"
+          class="h-7 px-2 rounded-md text-[11px] font-medium text-content-secondary hover:text-content hover:bg-overlay-subtle transition-colors disabled:opacity-50"
           :disabled="loading"
           @click="$emit('set-latest')"
         >
           {{ loading ? 'Setting…' : 'Set as latest' }}
         </button>
 
-        <!-- Overflow menu -->
-        <div class="relative" ref="overflowMenuRef">
-          <button
-            type="button"
-            class="w-6 h-6 flex items-center justify-center rounded border border-edge text-content-muted hover:text-content hover:bg-overlay-hover transition-colors"
-            title="More options"
-            @click="showOverflowMenu = !showOverflowMenu"
-          >
+        <!-- The kebab is the same menu the artwork's right-click gives, anchored
+             under the button. A second, smaller menu of its own would just be a
+             place for actions to go missing. -->
+        <div ref="overflowButtonRef" class="flex">
+          <IconButton title="Actions" @click="onOverflowClick">
             <EllipsisHorizontalIcon class="w-4 h-4" />
-          </button>
-          <div
-            v-if="showOverflowMenu"
-            class="absolute right-0 mt-1 w-44 bg-surface border border-edge-subtle rounded-lg shadow-xl z-menu py-1"
-          >
-            <button
-              type="button"
-              class="w-full px-3 py-1.5 text-left text-xs text-content-secondary hover:bg-surface-raised transition-colors"
-              @click="handleOpenInLibrary"
-            >Open in library</button>
-          </div>
+          </IconButton>
         </div>
 
-        <button
-          type="button"
-          class="w-6 h-6 flex items-center justify-center rounded border border-edge text-content-muted hover:text-content hover:bg-overlay-hover transition-colors"
-          title="Close stage"
-          @click="$emit('close')"
-        >
+        <IconButton title="Close stage" @click="$emit('close')">
           <XMarkIcon class="w-4 h-4" />
-        </button>
+        </IconButton>
       </div>
     </div>
 
@@ -155,6 +138,7 @@ import {
   ArrowUpIcon,
 } from '@heroicons/vue/24/outline'
 import { MediaImage } from '../media'
+import IconButton from '../ui/IconButton.vue'
 import LayoutViewer from '../viewers/LayoutViewer.vue'
 import SvgViewer from '../viewers/SvgViewer.vue'
 import { useMediaApi } from '../../composables/useMediaApi'
@@ -178,7 +162,6 @@ const emit = defineEmits<{
   'jump-newest': []
   'set-latest': []
   'open-slideshow': [mediaId: number]
-  'open-library': [assetId: number]
 }>()
 
 const { getThumbnailUrl, getMediaFileUrl } = useMediaApi()
@@ -186,14 +169,12 @@ const { getThumbnailUrl, getMediaFileUrl } = useMediaApi()
 const contextMenu = useMediaContextMenu()
 
 const showVersionMenu = ref(false)
-const showOverflowMenu = ref(false)
 const versionMenuRef = ref<HTMLElement | null>(null)
-const overflowMenuRef = ref<HTMLElement | null>(null)
+const overflowButtonRef = ref<HTMLElement | null>(null)
 
 function onDocumentClick(e: MouseEvent) {
   const target = e.target as Node
   if (versionMenuRef.value && !versionMenuRef.value.contains(target)) showVersionMenu.value = false
-  if (overflowMenuRef.value && !overflowMenuRef.value.contains(target)) showOverflowMenu.value = false
 }
 document.addEventListener('click', onDocumentClick)
 onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
@@ -209,15 +190,31 @@ const showDimensionChip = computed(() =>
   heroKind.value !== 'vector' && !!props.viewedRevision?.width && !!props.viewedRevision?.height
 )
 
-function onHeroContextMenu(event: MouseEvent) {
+function contextMenuTarget() {
   const mediaId = props.viewedRevision?.media_id
-  if (!mediaId) return
-  contextMenu.show({
-    event,
+  if (!mediaId) return null
+  return {
     mediaId,
     mediaIds: [mediaId],
     assetId: props.asset?.id,
     assetIds: props.asset?.id ? [props.asset.id] : [],
+  }
+}
+
+function onHeroContextMenu(event: MouseEvent) {
+  const target = contextMenuTarget()
+  if (!target) return
+  contextMenu.show({ event, ...target })
+}
+
+function onOverflowClick() {
+  const target = contextMenuTarget()
+  if (!target) return
+  const rect = overflowButtonRef.value?.getBoundingClientRect()
+  contextMenu.showAt({
+    x: rect ? rect.right : 0,
+    y: rect ? rect.bottom + 4 : 0,
+    ...target,
   })
 }
 
@@ -236,10 +233,5 @@ const versionSubline = computed(() => {
 function selectVersion(revisionId: number) {
   showVersionMenu.value = false
   emit('select-revision', revisionId)
-}
-
-function handleOpenInLibrary() {
-  showOverflowMenu.value = false
-  if (props.asset) emit('open-library', props.asset.id)
 }
 </script>

@@ -27,9 +27,10 @@
  *
  * Reordering is drag, and only drag.
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   EyeIcon, EyeSlashIcon, TrashIcon, ArrowPathIcon,
+  ChevronDownIcon, ChevronRightIcon,
 } from '@heroicons/vue/24/outline'
 import DragGrip from '../../components/ui/DragGrip.vue'
 import IconButton from '../../components/ui/IconButton.vue'
@@ -39,6 +40,10 @@ import { sanitizeSvg } from '../../utils/sanitizeHtml'
 import { ROW_SQUARE, ROW_COLUMN, ROW_COLUMN_INLINE } from './rowLayout'
 import type { Op } from '../stack/types'
 import type { Staleness } from '../stack/stackState'
+import {
+  adjacentCandidateIndex,
+  candidateNavigationDelta,
+} from '../stack/candidateNavigation'
 
 const props = defineProps<{
   op: Op
@@ -52,14 +57,14 @@ const props = defineProps<{
   previewStaleness?: Staleness | null
   /** Its spatial payload no longer intersects the frame. */
   outOfFrame?: boolean
-  /** Display name of the tool that produced this step's pixels. */
-  toolName?: string
   resampling?: boolean
   draggable?: boolean
   /** This row is the one being dragged — it reads as lifted out of the list. */
   dragging?: boolean
   /** The image as of this step — the row's square. Absent until first render. */
   preview?: string
+  /** Selected child in the one hierarchical Retouch row. */
+  selectedRegionId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -70,6 +75,12 @@ const emit = defineEmits<{
   pick: [string]
   remove: []
   resample: []
+  toggleRegion: [string, boolean]
+  removeRegion: [string]
+  selectRegion: [string]
+  hoverRegion: [string | null]
+  /** Hovering a Retouch parent previews every child location. */
+  hoverRetouch: [boolean]
   /** Hovering a gesture affordance — drives the blast-radius tint. */
   intentHover: [boolean]
   dragStart: [DragEvent]
@@ -79,17 +90,74 @@ const emit = defineEmits<{
 const anyOp = computed(() => props.op as any)
 
 
-/**
- * The sampling tool, so a row never hides what produced its pixels — by its
- * display name. A slug is an internal identifier and putting one in the UI
- * asks the user to read our routing table.
- */
-const subtitle = computed(() => (props.op.class === 'patch' ? props.toolName || '' : ''))
-
 const candidates = computed(() => props.candidateThumbs || [])
 const picked = computed(() => anyOp.value.picked || null)
+/** A chosen patch is still useful identity while an exact composite preview is unavailable. */
+const displayPreview = computed(() =>
+  props.preview
+  || candidates.value.find(candidate => candidate.id === picked.value)?.url
+  || candidates.value[0]?.url
+  || ''
+)
 const staged = computed(() => candidates.value.length > 0 && !picked.value)
 const isGenerative = computed(() => props.op.class === 'patch')
+const retouchRegions = computed(() =>
+  anyOp.value.exec?.kind === 'retouch-regions' ? anyOp.value.regions ?? [] : []
+)
+const hasSpatialFeedback = computed(() =>
+  retouchRegions.value.length > 0
+  || (props.op.class === 'patch' && !!anyOp.value.mask_ref)
+)
+const regionsExpanded = ref(false)
+watch(
+  () => props.selectedRegionId,
+  id => {
+    if (id && retouchRegions.value.some((region: any) => region.id === id)) {
+      regionsExpanded.value = true
+    }
+  },
+)
+
+function regionLabel(region: any): string {
+  if (region.label) return region.label
+  const kind = String(region.kind || 'region')
+  return `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`
+}
+
+function onRowMouseEnter() {
+  if (hasSpatialFeedback.value) emit('hoverRetouch', true)
+}
+
+function onRowMouseLeave() {
+  if (hasSpatialFeedback.value) emit('hoverRetouch', false)
+}
+
+function onCandidateClick(event: MouseEvent, candidateId: string) {
+  // WebKit on macOS does not consistently focus a button when it is clicked.
+  // The indigo picked ring was therefore visible while A/D and the arrow keys
+  // still went to the parent row. Make the candidate the real focus owner.
+  const button = event.currentTarget as HTMLButtonElement
+  button.focus({ preventScroll: true })
+  emit('select')
+  emit('pick', candidateId)
+}
+
+function onCandidateKeydown(event: KeyboardEvent, index: number) {
+  const delta = candidateNavigationDelta(event.key)
+  if (delta === null) return
+
+  event.preventDefault()
+  event.stopPropagation()
+  const next = adjacentCandidateIndex(candidates.value.length, index, delta)
+  if (next < 0 || next === index) return
+  const strip = (event.currentTarget as HTMLElement).parentElement
+  const nextButton = strip?.querySelector(
+    `[data-candidate-index="${next}"]`,
+  ) as HTMLElement | null
+  nextButton?.focus({ preventScroll: true })
+  emit('select')
+  emit('pick', candidates.value[next].id)
+}
 
 const advisory = computed(() => props.staleness === 'advisory')
 const previewTint = computed(() =>
@@ -115,6 +183,8 @@ const previewTint = computed(() =>
     @dblclick="emit('reenter')"
     @dragstart="emit('dragStart', $event)"
     @dragend="emit('dragEnd')"
+    @mouseenter="onRowMouseEnter"
+    @mouseleave="onRowMouseLeave"
   >
     <!-- Drag grip. Hovering it previews what the move would disturb. -->
     <span
@@ -133,8 +203,12 @@ const previewTint = computed(() =>
          like without it, dimmed — the eye is no longer beside the label, so
          the square carries the disabled state. -->
     <div :class="[ROW_SQUARE, !op.enabled && 'opacity-40']">
-      <img v-if="preview" :src="preview" class="w-full h-full object-cover" alt="" />
-      <div v-else class="w-full h-full bg-surface-raised animate-pulse" />
+      <img v-if="displayPreview" :src="displayPreview" class="w-full h-full object-cover" alt="" />
+      <div
+        v-else
+        class="w-full h-full bg-surface-raised"
+        :class="(pendingCount || resampling) && 'animate-pulse'"
+      />
     </div>
 
     <div :class="['min-w-0 flex-1', ROW_COLUMN]">
@@ -147,21 +221,84 @@ const previewTint = computed(() =>
           <span class="w-1.5 h-1.5 rounded-full bg-amber-400/80 shrink-0" />
         </Tooltip>
       </div>
-      <!-- The sampling tool gets its own line: sharing the label's baseline
-           squeezes both to ellipses in a 320px panel. -->
-      <p v-if="subtitle" class="text-xs text-content-tertiary truncate">{{ subtitle }}</p>
+      <!-- No sampling-tool line. Which model made the pixels is provenance,
+           not identity: it is the same for a whole session's worth of rows, so
+           it earns none of a 320px panel and says nothing about the step. The
+           step's name says what it did; the receipt lives in the metadata. -->
+
+      <!-- Retouch is the stack's one hierarchy level. Gestures are folded
+           into editable regions inside one top-level edit, never promoted to
+           peer rows beside Crop, Adjust, Paint, and the base image. -->
+      <template v-if="retouchRegions.length">
+        <button
+          type="button"
+          class="mt-1 -ml-0.5 inline-flex items-center gap-1 text-xs text-content-tertiary
+                 hover:text-content-secondary rounded-sm focus-visible:outline-none
+                 focus-visible:ring-2 ring-accent/60"
+          :aria-expanded="regionsExpanded"
+          @click.stop="regionsExpanded = !regionsExpanded"
+        >
+          <ChevronDownIcon v-if="regionsExpanded" class="w-3 h-3" />
+          <ChevronRightIcon v-else class="w-3 h-3" />
+          {{ retouchRegions.length }} {{ retouchRegions.length === 1 ? 'region' : 'regions' }}
+        </button>
+        <!-- Extend through the parent's trailing control columns so nested
+             eye/trash buttons land on the exact same vertical rails. -->
+        <div v-if="regionsExpanded" class="mt-1 -mr-[62px] flex flex-col">
+          <div
+            v-for="region in retouchRegions"
+            :key="region.id"
+            class="group/region min-w-0 flex items-center gap-1 py-0.5 pl-1 text-xs
+                   text-content-secondary rounded-md cursor-default"
+            :class="[
+              !region.enabled && 'opacity-45',
+              selectedRegionId === region.id ? 'bg-selection/15' : 'hover:bg-overlay-subtle',
+            ]"
+            @click.stop="emit('selectRegion', region.id)"
+            @mouseenter="emit('hoverRegion', region.id)"
+            @mouseleave="emit('hoverRegion', null)"
+          >
+            <span
+              class="w-1.5 h-1.5 rounded-full shrink-0"
+              :class="region.enabled ? 'bg-selection' : 'bg-content-tertiary'"
+            />
+            <span class="min-w-0 flex-1 truncate">{{ regionLabel(region) }}</span>
+            <Tooltip :text="region.enabled ? 'Hide this region' : 'Show this region'">
+              <IconButton
+                @click.stop="emit('toggleRegion', region.id, !region.enabled)"
+              >
+                <EyeIcon v-if="region.enabled" class="w-3.5 h-3.5" />
+                <EyeSlashIcon v-else class="w-3.5 h-3.5" />
+              </IconButton>
+            </Tooltip>
+            <Tooltip text="Remove this region">
+              <IconButton
+                variant="danger"
+                @click.stop="emit('removeRegion', region.id)"
+              >
+                <TrashIcon class="w-3.5 h-3.5" />
+              </IconButton>
+            </Tooltip>
+          </div>
+        </div>
+      </template>
 
       <p v-if="outOfFrame" class="mt-1 text-xs text-content-tertiary">Out of frame</p>
 
       <!-- Candidate strip. Switching picks is free, so it lives on the row. -->
       <div v-if="candidates.length || pendingCount" class="flex items-center gap-1.5 mt-1.5">
         <button
-          v-for="candidate in candidates"
+          v-for="(candidate, index) in candidates"
           :key="candidate.id"
           type="button"
+          :data-candidate-index="index"
+          :aria-label="`Candidate ${index + 1} of ${candidates.length}`"
+          :aria-pressed="candidate.id === picked"
           class="relative w-10 h-10 rounded-media overflow-hidden bg-matte transition-shadow focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
           :class="candidate.id === picked ? 'ring-2 ring-selection' : 'opacity-70 hover:opacity-100'"
-          @click.stop="emit('pick', candidate.id)"
+          @click.stop="onCandidateClick($event, candidate.id)"
+          @focus="emit('select')"
+          @keydown="onCandidateKeydown($event, index)"
         >
           <img :src="candidate.url" class="w-full h-full object-cover" alt="" />
           <span

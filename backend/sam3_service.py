@@ -290,7 +290,10 @@ class SAM3Service:
             from utils.image_ops import open_oriented
             image = open_oriented(image_path).convert("RGB")
             original_width, original_height = image.size
-            log.info(f"SAM3: Segmenting image {original_width}x{original_height} with prompt '{prompt}'")
+            log.info(
+                f"SAM3: Segmenting image {original_width}x{original_height}",
+                prompt_chars=len(prompt),
+            )
 
             # Run image encoder
             log.debug("SAM3: Running image encoder...")
@@ -424,7 +427,7 @@ class SAM3Service:
 
         # Acquire semaphore to ensure one inference at a time
         async with self._inference_semaphore:
-            log.info(f"SAM3: Starting segmentation for '{prompt}'")
+            log.info("SAM3: Starting segmentation", prompt_chars=len(prompt))
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 _executor,

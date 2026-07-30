@@ -18,9 +18,15 @@
  * advisory hash like a generative patch.
  */
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
-import { useRetouchLayer } from '../ported/useRetouchLayer'
+import { useRasterPaintLayer } from '../ported/useRasterPaintLayer'
 import { getSelectionBounds } from '../ported/selection'
 import type { BrushSettings, Point } from '../ported/geometry'
+
+interface RasterGestureMetadata {
+  tool: string
+  source?: Point
+  target?: Point
+}
 
 /** Engines whose output depends on the pixels below them. */
 const PIXEL_READING = new Set([
@@ -34,6 +40,11 @@ const props = withDefaults(defineProps<{
   initialLayer?: HTMLCanvasElement | null
   /** Restrict strokes to the active selection. */
   selectionMask?: HTMLCanvasElement | null
+  /**
+   * Paint accumulates gestures into one raster layer. Retouch disables this so
+   * every completed gesture is emitted as one independent child region.
+   */
+  accumulate?: boolean
   displayWidth: number
   displayHeight: number
   engineId?: string
@@ -48,6 +59,7 @@ const props = withDefaults(defineProps<{
   saturate?: boolean
 }>(), {
   engineId: 'paint',
+  accumulate: true,
   exposure: 10,
   range: 'midtones',
   strength: 20,
@@ -59,16 +71,16 @@ const emit = defineEmits<{
    * A stroke finished: an immutable layer snapshot, whether pixels below were
    * read, and the local revision that snapshot represents.
    */
-  stroke: [HTMLCanvasElement, boolean, number]
+  stroke: [HTMLCanvasElement, boolean, number, RasterGestureMetadata]
   /** A patch landed: the selection it consumed should clear. */
   patchApplied: []
 }>()
 
 const overlay = ref<HTMLCanvasElement | null>(null)
 /** The complete layer that is snapshotted and persisted after each stroke. */
-const layer = useRetouchLayer()
+const layer = useRasterPaintLayer()
 /** Only the stroke currently under the pointer; never contains older strokes. */
-const liveStroke = useRetouchLayer()
+const liveStroke = useRasterPaintLayer()
 
 const cursor = ref<{ x: number; y: number } | null>(null)
 /**
@@ -81,6 +93,8 @@ const cursor = ref<{ x: number; y: number } | null>(null)
 let pendingPreviews: Array<{ revision: number; canvas: HTMLCanvasElement }> = []
 /** Frozen visual input for the current stroke, including any pending previews. */
 let strokeSource: HTMLCanvasElement | null = null
+/** First destination point, retained for source/destination repair feedback. */
+let strokeStart: Point | null = null
 /** Where clone samples from, set by alt-click and kept across strokes. */
 const cloneAnchor = ref<Point | null>(null)
 let drawing = false
@@ -204,21 +218,25 @@ function stamp(point: Point) {
   drawOverlay()
 }
 
-function finishStroke(readsPixels: boolean): boolean {
+function finishStroke(
+  readsPixels: boolean,
+  metadata: RasterGestureMetadata = { tool: props.engineId },
+): boolean {
   liveStroke.endStroke()
   const preview = liveStroke.toSnapshot()
   if (!preview) return false
 
-  // Canvas source-over is associative: merging the delta into the persisted
-  // layer produces the same pixels the user just saw over the stage.
-  layer.retouchCtx.value?.drawImage(preview, 0, 0)
+  // Paint merges the delta into its persistent layer. Retouch emits the delta
+  // itself, making one gesture one independently editable region.
+  if (props.accumulate) layer.layerCtx.value?.drawImage(preview, 0, 0)
   pendingPreviews.push({ revision: layerRevision, canvas: preview })
 
-  const snapshot = layer.toSnapshot()
+  const snapshot = props.accumulate ? layer.toSnapshot() : preview
   liveStroke.clearLayer()
   strokeSource = null
   drawOverlay()
-  if (snapshot) emit('stroke', snapshot, readsPixels, layerRevision)
+  if (snapshot) emit('stroke', snapshot, readsPixels, layerRevision, metadata)
+  strokeStart = null
   return !!snapshot
 }
 
@@ -228,8 +246,8 @@ function drawOverlay() {
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   for (const pending of pendingPreviews) ctx.drawImage(pending.canvas, 0, 0)
-  if (drawing && liveStroke.retouchCanvas.value) {
-    ctx.drawImage(liveStroke.retouchCanvas.value, 0, 0)
+  if (drawing && liveStroke.layerCanvas.value) {
+    ctx.drawImage(liveStroke.layerCanvas.value, 0, 0)
   }
 
   // Patch drag: preview the donor pixels IN the destination — what will land,
@@ -290,6 +308,7 @@ function onPointerDown(event: PointerEvent) {
   if (props.engineId === 'clone' && !cloneAnchor.value) return
   layerRevision += 1
   prepareStroke()
+  strokeStart = point
   if (props.engineId === 'clone') {
     liveStroke.setCloneSource(strokeSource ?? props.source, cloneAnchor.value, point)
   }
@@ -336,7 +355,17 @@ function onPointerUp(event: PointerEvent) {
       // the selection onto itself.
       if (strokeSource && Math.hypot(offset.x, offset.y) > 2) {
         liveStroke.applyPatchTool(strokeSource, offset, bounds, PATCH_BLEND_WIDTH)
-        finishStroke(true)
+        finishStroke(true, {
+          tool: 'patch',
+          source: {
+            x: bounds.x + bounds.width / 2 + offset.x,
+            y: bounds.y + bounds.height / 2 + offset.y,
+          },
+          target: {
+            x: bounds.x + bounds.width / 2,
+            y: bounds.y + bounds.height / 2,
+          },
+        })
         // The patch consumed the selection; ants over fixed pixels would lie.
         emit('patchApplied')
       } else {
@@ -353,7 +382,12 @@ function onPointerUp(event: PointerEvent) {
 
   if (!drawing) return
   drawing = false
-  finishStroke(PIXEL_READING.has(props.engineId))
+  finishStroke(PIXEL_READING.has(props.engineId), {
+    tool: props.engineId,
+    ...(props.engineId === 'clone' && cloneAnchor.value && strokeStart
+      ? { source: cloneAnchor.value, target: strokeStart }
+      : {}),
+  })
 }
 
 /**
@@ -383,6 +417,7 @@ function onPointerCancel(event: PointerEvent) {
   liveStroke.endStroke()
   liveStroke.clearLayer()
   strokeSource = null
+  strokeStart = null
   drawOverlay()
 }
 
@@ -396,6 +431,7 @@ function reset() {
   loadedInitialLayer = null
   pendingPreviews = []
   strokeSource = null
+  strokeStart = null
   liveStroke.clearLayer()
   layer.clearLayer()
   drawOverlay()

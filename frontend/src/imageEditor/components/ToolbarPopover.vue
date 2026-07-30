@@ -15,7 +15,19 @@
  */
 import { ref, nextTick, onMounted, onBeforeUnmount, watch } from 'vue'
 
-const props = withDefaults(defineProps<{ label: string; width?: number }>(), { width: 248 })
+const props = withDefaults(defineProps<{
+  label: string
+  width?: number
+  disabled?: boolean
+  ariaLabel?: string
+  /** Close when a descendant marked data-close-popover is activated. */
+  closeOnSelect?: boolean
+}>(), {
+  width: 248,
+  disabled: false,
+  ariaLabel: undefined,
+  closeOnSelect: false,
+})
 
 const open = ref(false)
 const root = ref<HTMLElement | null>(null)
@@ -92,6 +104,9 @@ watch(open, async isOpen => {
   await nextTick()
   place()
 })
+watch(() => props.disabled, disabled => {
+  if (disabled) open.value = false
+})
 
 function onDocumentPointerDown(event: PointerEvent) {
   if (!open.value) return
@@ -102,6 +117,15 @@ function onDocumentPointerDown(event: PointerEvent) {
 
 function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') open.value = false
+}
+
+function onPanelClick(event: MouseEvent) {
+  if (
+    props.closeOnSelect
+    && (event.target as Element).closest('[data-close-popover]')
+  ) {
+    open.value = false
+  }
 }
 
 /** Anything that moves the trigger moves the panel with it. */
@@ -128,9 +152,13 @@ onBeforeUnmount(() => {
     <button
       type="button"
       class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
-      :class="open
-        ? 'bg-selection/15 text-content'
-        : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+      :class="disabled
+        ? 'text-content-tertiary/50 cursor-default'
+        : open
+          ? 'bg-selection/15 text-content'
+          : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+      :disabled="disabled"
+      :aria-label="ariaLabel"
       :aria-expanded="open"
       @click="open = !open"
     >
@@ -147,6 +175,7 @@ onBeforeUnmount(() => {
         class="popover-panel z-menu overflow-y-auto rounded-lg
                border border-edge-subtle bg-surface shadow-xl p-3"
         :style="style"
+        @click="onPanelClick"
       >
         <slot />
       </div>

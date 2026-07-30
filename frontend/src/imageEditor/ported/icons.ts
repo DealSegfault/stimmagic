@@ -104,13 +104,13 @@ export const icons = {
 
   neon: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><defs><filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><circle cx="12" cy="12" r="5" fill="currentColor" filter="url(#glow)"/></svg>`,
 
-  // Retouch tool icons
+  // Raster brush and repair tool icons
   stamp: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21h14a2 2 0 0 0 2-2v-1H3v1a2 2 0 0 0 2 2z"/><path d="M10 14v-3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1v3"/><path d="M18 14v-3a1 1 0 0 0-1-1h-2a1 1 0 0 0-1 1v3"/><path d="M12 3a4 4 0 0 1 4 4v3H8V7a4 4 0 0 1 4-4z"/><rect x="3" y="14" width="18" height="4"/></svg>`,
 
   bandage: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18.9 5.1a8 8 0 0 0-11.3 0L3 9.7a4 4 0 0 0 0 5.7l5.7 5.7a4 4 0 0 0 5.7 0l4.6-4.6a8 8 0 0 0 0-11.4Z"/><path d="m9.5 14.5 5-5"/><circle cx="10" cy="10" r="0.5" fill="currentColor"/><circle cx="14" cy="14" r="0.5" fill="currentColor"/><circle cx="12" cy="12" r="0.5" fill="currentColor"/></svg>`,
 
-  // A fabric patch: rounded diamond with a stitched inner seam.
-  patch: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 3.4 3.4 10.6a2 2 0 0 0 0 2.8l7.2 7.2a2 2 0 0 0 2.8 0l7.2-7.2a2 2 0 0 0 0-2.8l-7.2-7.2a2 2 0 0 0-2.8 0Z"/><path d="M12 7.5 16.5 12 12 16.5 7.5 12z" stroke-dasharray="1.8 1.8" stroke-width="1.2"/></svg>`,
+  // Fabric patch: a square with stitch threads poking out on every side.
+  patch: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 1v5M12 1v5M15 1v5"/><path d="M9 18v5M12 18v5M15 18v5"/><path d="M1 9h5M1 12h5M1 15h5"/><path d="M18 9h5M18 12h5M18 15h5"/></svg>`,
 
   sun: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`,
 

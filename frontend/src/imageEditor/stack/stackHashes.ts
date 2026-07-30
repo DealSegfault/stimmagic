@@ -35,6 +35,10 @@ export function canonicalOp(op: Op): string {
     op.class,
     anyOp.exec,
     anyOp.params ?? null,
+    // Retouch is the one container with editable children. Child order is
+    // render order, so it is deliberately part of the parent's pixel identity.
+    anyOp.regions ?? null,
+    anyOp.defaults ?? null,
     anyOp.mask_ref ?? null,
     anyOp.raster_ref ?? null,
     // Bumped when a payload is rewritten under the same ref, so a stroke added

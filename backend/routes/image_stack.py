@@ -225,9 +225,94 @@ async def get_stack_journal(
     document_id: int,
     session: AsyncSession = Depends(get_db_session),
 ):
-    """The replayable suffix of the log — everything since the last checkpoint."""
+    """The bounded recent undo window, loaded independently of the document."""
     _, directory = await _load_document(session, document_id)
     return {"entries": await stack.read_journal(directory)}
+
+
+class NameEditRequest(BaseModel):
+    """A generative step and the region it touched, to be named."""
+
+    operation: str
+    # Base64 JPEG of the region as it looked BEFORE the step ran.
+    image_b64: str
+    prompt: Optional[str] = None
+
+
+class NameEditResponse(BaseModel):
+    # Null whenever no usable name came back; the caller keeps its verb label.
+    label: Optional[str] = None
+
+
+def _clean_step_label(text: str) -> Optional[str]:
+    """Accept only what fits a 320px row: a few words, sentence case.
+
+    A model that answers with a sentence, a refusal or a paragraph gets dropped
+    rather than truncated — a label cut mid-word is worse than "Repaint".
+    """
+    label = " ".join((text or "").split())
+    label = label.strip().strip('".\'')
+    label = label.replace("->", "→").replace("  ", " ")
+    if not label or len(label) > 32:
+        return None
+    if len(label.split()) > 5:
+        return None
+    return label[0].upper() + label[1:]
+
+
+@router.post("/name-edit", response_model=NameEditResponse)
+async def name_edit(request: NameEditRequest):
+    """Name a Remove or Repaint step from what it actually did.
+
+    "Remove" and "Repaint" are the verbs; a column of them says nothing about
+    which one took the house out. The quick-task model looks at the region as it
+    was before the step and names the subject, so the stack reads as a history
+    of the picture rather than a history of button presses.
+
+    Advisory by construction: any failure returns no label, and the caller keeps
+    the verb. Never raises for a model or provider problem.
+    """
+    from llm import llm_complete_vision
+    from llm_resolver import get_effective_llm_config
+
+    target = " ".join((request.prompt or "").split())[:200]
+    if request.operation == "remove":
+        instruction = (
+            "This is a crop of a photo, centered on something that is about to "
+            "be erased. Name that subject in one to three lowercase words, as a "
+            "noun phrase. Reply with ONLY the name — no punctuation, no "
+            "sentence, no explanation."
+        )
+    elif request.operation == "repaint" and target:
+        instruction = (
+            "This is a crop of a photo, centered on content that is about to be "
+            "replaced. The replacement was requested as: "
+            f"\"{target}\"\n"
+            "Reply with ONLY \"X -> Y\", where X names in one or two lowercase "
+            "words what is there now and Y names in one or two lowercase words "
+            "what it becomes. No other text."
+        )
+    else:
+        return NameEditResponse()
+
+    try:
+        config = await get_effective_llm_config("quick_task")
+        if not config:
+            return NameEditResponse()
+        result, error = await llm_complete_vision(
+            config, instruction, request.image_b64, max_tokens=24, temperature=0.2
+        )
+        if error or not result:
+            return NameEditResponse()
+        label = _clean_step_label(result)
+        if not label:
+            return NameEditResponse()
+        if request.operation == "remove":
+            label = _clean_step_label(f"remove {label.lower()}")
+        return NameEditResponse(label=label)
+    except Exception as exc:
+        log.debug("step naming failed", error_type=type(exc).__name__)
+        return NameEditResponse()
 
 
 @router.post("/{document_id}/payloads")
@@ -243,6 +328,8 @@ async def upload_stack_payload(
     data = await file.read()
     try:
         await stack.write_payload(directory, name, data, subdir=subdir)
+        if subdir == "cache":
+            await stack.prune_head_caches(directory, keep=name)
     except stack.ImageStackError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"ref": f"{subdir}/{name}", "bytes": len(data)}

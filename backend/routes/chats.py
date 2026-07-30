@@ -293,10 +293,13 @@ async def auto_name_chat(
             # allow re-evaluation. Otherwise only auto-name if still Untitled.
             has_prior_auto_name = current_name and not is_auto_generated_name(current_name)
             if not has_prior_auto_name and not is_auto_generated_name(chat.name):
-                log.info(f"Chat {chat_id} already has custom name '{chat.name}', skipping auto-name")
+                log.info(f"Chat {chat_id} already has custom name, skipping auto-name")
                 return
 
-            log.info(f"Chat {chat_id} name='{chat.name}', proceeding with LLM call")
+            log.info(
+                f"Chat {chat_id} proceeding with auto-name LLM call",
+                current_name_chars=len(chat.name or ""),
+            )
 
             # Query for media context if media IDs were provided
             media_context = ""
@@ -372,7 +375,11 @@ Title:"""
 
             api_base = llm_config.get_api_base()
             log.info(f"Chat {chat_id}: Calling LLM with model={llm_config.get_model()}, api_base={api_base}")
-            log.info(f"Chat {chat_id}: Messages: {messages}")
+            log.info(
+                f"Chat {chat_id}: Auto-name request prepared",
+                message_count=len(messages),
+                input_chars=sum(len(str(message.get("content", ""))) for message in messages),
+            )
 
             with llm_correlation_context("title", chat_id=chat_id):
                 new_name = await llm_complete_text(
@@ -382,7 +389,10 @@ Title:"""
                     temperature=0.2,
                 )
 
-            log.info(f"Chat {chat_id}: Raw LLM response: '{new_name[:200] if new_name else '(empty)'}'")
+            log.info(
+                f"Chat {chat_id}: Auto-name response received",
+                output_chars=len(new_name or ""),
+            )
             # complete() already strips thinking tags
 
             # Clean up the name (remove quotes, limit length)
@@ -392,7 +402,10 @@ Title:"""
             if len(new_name) > 50:
                 new_name = new_name[:47] + "..."
 
-            log.info(f"Chat {chat_id}: LLM returned name '{new_name}'")
+            log.info(
+                f"Chat {chat_id}: LLM returned auto-name",
+                output_chars=len(new_name),
+            )
 
             if not new_name:
                 log.warning(f"Chat {chat_id}: LLM returned empty name, skipping update")
@@ -415,7 +428,10 @@ Title:"""
             ]
             name_lower = new_name.lower()
             if any(pattern in name_lower for pattern in generic_patterns):
-                log.info(f"Chat {chat_id}: Rejecting generic name '{new_name}', keeping Untitled")
+                log.info(
+                    f"Chat {chat_id}: Rejecting generic auto-name",
+                    output_chars=len(new_name),
+                )
                 return
 
             # Re-fetch chat to avoid stale data
@@ -426,13 +442,16 @@ Title:"""
             if can_update:
                 # Skip update if LLM returned the same name (no change needed)
                 if chat.name == new_name:
-                    log.info(f"Chat {chat_id}: LLM kept existing name '{new_name}', no update needed")
+                    log.info(f"Chat {chat_id}: LLM kept existing name, no update needed")
                 else:
                     chat.name = new_name
                     await session.commit()
                     await session.refresh(chat)  # Get latest generation_settings after commit
 
-                    log.info(f"Chat {chat_id}: Updated name to '{new_name}'")
+                    log.info(
+                        f"Chat {chat_id}: Updated auto-generated name",
+                        name_chars=len(new_name),
+                    )
 
                     # Broadcast the update (name change, not settings)
                     await ws_manager.broadcast("chat_updated", {
@@ -446,7 +465,10 @@ Title:"""
     except (LLMNotConfiguredError, LLMInsufficientBalanceError):
         log.info(f"Chat {chat_id}: No LLM available for auto-naming, skipping")
     except Exception as e:
-        log.error(f"Error auto-naming chat {chat_id}: {e}", exc_info=True)
+        log.error(
+            f"Error auto-naming chat {chat_id}",
+            error_type=type(e).__name__,
+        )
     finally:
         log.info(f"auto_name_chat finished for chat {chat_id}")
 
@@ -1144,7 +1166,11 @@ async def clone_chat(
         "chat": cloned_chat.to_dict()
     })
 
-    log.info(f"Cloned chat created: id={cloned_chat.id}, name={cloned_chat.name}")
+    log.info(
+        "Cloned chat created",
+        chat_id=cloned_chat.id,
+        name_chars=len(cloned_chat.name or ""),
+    )
     return ChatResponse(**cloned_chat.to_dict())
 
 
@@ -1244,7 +1270,14 @@ async def branch_chat(
         "chat": branched_chat.to_dict()
     })
 
-    log.info(f"Branched chat created: id={branched_chat.id}, name={branched_chat.name}, from chat={chat_id} item={from_chatitem_id}, items={len(source_items)}")
+    log.info(
+        "Branched chat created",
+        chat_id=branched_chat.id,
+        name_chars=len(branched_chat.name or ""),
+        source_chat_id=chat_id,
+        source_item_id=from_chatitem_id,
+        item_count=len(source_items),
+    )
     return ChatResponse(**branched_chat.to_dict())
 
 
@@ -1948,7 +1981,10 @@ async def submit_human_response(
     This endpoint is called when the user responds to an approval prompt,
     choice selection, feedback request, or question.
     """
-    log.info(f"human-response endpoint called for chat {chat_id}, request: {request}")
+    log.info(
+        f"human-response endpoint called for chat {chat_id}",
+        response_fields=sorted(request.model_fields_set),
+    )
 
     # Get the chat
     result = await session.execute(
@@ -2062,7 +2098,10 @@ async def submit_human_response(
             return {"success": True}
 
     # Resume agent with the response
-    log.debug(f"Calling resume_agent_after_hitl with response_data: {response_data}")
+    log.debug(
+        "Calling resume_agent_after_hitl",
+        response_fields=sorted(response_data),
+    )
     from agent import resume_agent_after_hitl
     await resume_agent_after_hitl(
         chat=chat,

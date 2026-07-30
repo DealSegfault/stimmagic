@@ -38,3 +38,21 @@ def test_non_project_chat_workspaces_migrate_from_cache(temp_appdata_dir):
         assert workspace.exists()
         assert (workspace / "notes.txt").read_text() == "persist me"
         assert not legacy_workspace.exists()
+
+
+def test_attachment_names_lose_unicode_whitespace():
+    """A macOS screenshot carries U+202F before AM/PM. The agent is told the
+    filename as text and then opens it as a path — and a model retyping that
+    name emits a plain space, so the open fails on a file that plainly exists.
+    Normalizing at copy time keeps the two in sync."""
+    from agent.v2.service import _workspace_safe_filename
+
+    assert (
+        _workspace_safe_filename("Screenshot 2026-07-29 at 12.51.16 PM.png")
+        == "Screenshot 2026-07-29 at 12.51.16 PM.png"
+    )
+    assert _workspace_safe_filename("a b　c.png") == "a b c.png"
+    assert _workspace_safe_filename("wide​name.png") == "widename.png"
+    assert _workspace_safe_filename("plain name.png") == "plain name.png"
+    # A name made entirely of exotic whitespace must not collapse to nothing.
+    assert _workspace_safe_filename(" ") == " "

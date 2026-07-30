@@ -617,7 +617,10 @@ IMPORTANT: The user's edits are INTENTIONAL. If they removed something, do NOT a
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt enhancement error: {e}", exc_info=True)
+            log.error(
+                "Prompt enhancement error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -773,7 +776,10 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt improve error: {e}", exc_info=True)
+            log.error(
+                "Prompt improve error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -835,7 +841,10 @@ async def translate_prompt(request: TranslatePromptRequest):
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt translate error: {e}", exc_info=True)
+            log.error(
+                "Prompt translate error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -958,7 +967,11 @@ async def prompt_to_ideogram_json(request: IdeogramJsonRequest):
             try:
                 json_prompt = _extract_json_object(raw)
             except json.JSONDecodeError as e:
-                log.error(f"Ideogram JSON parse failed: {e}; raw: {raw[:500]}")
+                log.error(
+                    "Ideogram JSON parse failed",
+                    error_type=type(e).__name__,
+                    output_chars=len(raw or ""),
+                )
                 raise HTTPException(
                     status_code=502,
                     detail="The model returned invalid JSON for Ideogram. Try again.",
@@ -976,7 +989,10 @@ async def prompt_to_ideogram_json(request: IdeogramJsonRequest):
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Ideogram JSON error: {e}", exc_info=True)
+            log.error(
+                "Ideogram JSON error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1031,7 +1047,10 @@ def _parse_categories_response(response_content: str) -> tuple[List[CategoryItem
 
     except json.JSONDecodeError as e:
         log.error(f"Failed to parse categories JSON: {e}")
-        log.error(f"Response content: {response_content[:500]}")
+        log.error(
+            "Categories response could not be parsed",
+            output_chars=len(response_content or ""),
+        )
         return [], None
 
 
@@ -1074,7 +1093,10 @@ def _parse_options_response(response_content: str) -> tuple[List[str], Optional[
                     options.append(item.strip())
 
     if not parsed_any:
-        log.error(f"Failed to parse options JSON. Response content: {response_content[:500]}")
+        log.error(
+            "Failed to parse options JSON",
+            output_chars=len(response_content or ""),
+        )
         return [], None
 
     return options, None
@@ -1156,7 +1178,10 @@ async def suggest_categories(request: SuggestCategoriesRequest):
                 )
 
                 if refusal:
-                    log.warning(f"Suggest-categories detected refusal: {refusal[:100]}")
+                    log.warning(
+                        "Suggest-categories detected refusal",
+                        refusal_chars=len(refusal),
+                    )
                     if debug_info:
                         debug_info["raw_response"] = response_content
                     return SuggestCategoriesResponse(categories=[], debug=debug_info, message=refusal)
@@ -1183,7 +1208,10 @@ async def suggest_categories(request: SuggestCategoriesRequest):
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Suggest-categories error: {e}", exc_info=True)
+        log.error(
+            "Suggest-categories error",
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1226,10 +1254,10 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
     for category, result in zip(request.categories, gathered):
         if isinstance(result, Exception):
             log.error(
-                "Suggest-options batch failed for %s: %s",
-                category.label,
-                result,
-                exc_info=result,
+                "Suggest-options batch failed",
+                category_chars=len(category.category or ""),
+                label_chars=len(category.label or ""),
+                error_type=type(result).__name__,
             )
             results.append(SuggestOptionsResponse(
                 category=category.category,
@@ -1286,7 +1314,12 @@ Category: {request.category.label} ({request.category.category})"""
         }
 
     try:
-        log.info(f"Suggest-options starting - category: {request.category.label}, exclude: {len(request.exclude)} items")
+        log.info(
+            "Suggest-options starting",
+            category_chars=len(request.category.category or ""),
+            label_chars=len(request.category.label or ""),
+            exclude_count=len(request.exclude),
+        )
 
         with llm_correlation_context("prompt-agent"):
             response_content = await llm_complete_text(
@@ -1303,7 +1336,11 @@ Category: {request.category.label} ({request.category.category})"""
         options, refusal = _parse_options_response(response_content)
 
         if refusal:
-            log.warning(f"Suggest-options detected refusal for {request.category.label}: {refusal[:100]}")
+            log.warning(
+                "Suggest-options detected refusal",
+                category_chars=len(request.category.category or ""),
+                refusal_chars=len(refusal),
+            )
             return SuggestOptionsResponse(
                 category=request.category.category,
                 label=request.category.label,
@@ -1313,7 +1350,11 @@ Category: {request.category.label} ({request.category.category})"""
                 message=refusal
             )
 
-        log.info(f"Suggest-options returning {len(options)} options for {request.category.label}")
+        log.info(
+            "Suggest-options returning",
+            option_count=len(options),
+            category_chars=len(request.category.category or ""),
+        )
         return SuggestOptionsResponse(
             category=request.category.category,
             label=request.category.label,
@@ -1323,12 +1364,19 @@ Category: {request.category.label} ({request.category.category})"""
         )
 
     except asyncio.TimeoutError:
-        log.error(f"Suggest-options request timed out for {request.category.label}")
+        log.error(
+            "Suggest-options request timed out",
+            category_chars=len(request.category.category or ""),
+        )
         raise HTTPException(status_code=504, detail="Request timed out")
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Suggest-options error for {request.category.label}: {e}", exc_info=True)
+        log.error(
+            "Suggest-options error",
+            category_chars=len(request.category.category or ""),
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1560,7 +1608,7 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=422, detail={"message": message, "debug": debug_info})
             raise HTTPException(status_code=422, detail=message)
         except QuotaExceededError as e:
-            log.warning(f"Prompt-agent step quota exceeded: {e}")
+            log.warning("Prompt-agent step quota exceeded")
             _track_step("failed", error_type="quota_exceeded")
             message = str(e) or "LLM quota exceeded. Check your plan or usage and try again."
             if debug_info:
@@ -1569,7 +1617,7 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=429, detail={"message": message, "debug": debug_info})
             raise HTTPException(status_code=429, detail=message)
         except EntitlementError as e:
-            log.warning(f"Prompt-agent step: no active subscription: {e}")
+            log.warning("Prompt-agent step: no active subscription")
             _track_step("failed", error_type="subscription_required")
             message = str(e) or "No active Stimma subscription."
             if debug_info:
@@ -1577,7 +1625,10 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=402, detail={"code": "subscription_required", "message": message, "debug": debug_info})
             raise HTTPException(status_code=402, detail={"code": "subscription_required", "message": message})
         except Exception as e:
-            log.error(f"Prompt-agent step error: {e}", exc_info=True)
+            log.error(
+                "Prompt-agent step error",
+                error_type=type(e).__name__,
+            )
             error_type = classify_agent_error(e)
             _track_step("failed", error_type=error_type)
             if debug_info:

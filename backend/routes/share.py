@@ -994,7 +994,12 @@ async def _vlm_generate_title(media_item) -> SuggestTitleResponse:
             max_tokens=30, temperature=0.5,
         )
         elapsed = _time.monotonic() - t0
-        log.info("share title VLM direct response", elapsed_s=round(elapsed, 2), result=result[:200] if result else None, error=error)
+        log.info(
+            "share title VLM direct response",
+            elapsed_s=round(elapsed, 2),
+            output_chars=len(result or ""),
+            has_error=bool(error),
+        )
 
         if result and not error:
             result = result.strip().strip('"\'').strip()
@@ -1002,7 +1007,10 @@ async def _vlm_generate_title(media_item) -> SuggestTitleResponse:
             if 1 <= len(words) <= 8 and len(result) <= 80:
                 return SuggestTitleResponse(title=result, source="vlm")
     except Exception as e:
-        log.debug("VLM direct title generation failed", error=str(e))
+        log.debug(
+            "VLM direct title generation failed",
+            error_type=type(e).__name__,
+        )
 
     return SuggestTitleResponse()
 
@@ -1043,11 +1051,19 @@ async def _llm_generate_title(context_parts: list[str]) -> SuggestTitleResponse:
             },
         ]
 
-        log.info("share title LLM request", model=config.get_model(), user_content=messages[1]["content"][:200])
+        log.info(
+            "share title LLM request",
+            model=config.get_model(),
+            input_chars=len(messages[1]["content"]),
+        )
         t0 = _time.monotonic()
         result = await llm_complete_text(config, messages, max_tokens=30, temperature=0.5)
         elapsed = _time.monotonic() - t0
-        log.info("share title LLM response", elapsed_s=round(elapsed, 2), raw_result=result[:200])
+        log.info(
+            "share title LLM response",
+            elapsed_s=round(elapsed, 2),
+            output_chars=len(result or ""),
+        )
 
         result = result.strip().strip('"\'').strip()
 
@@ -1057,7 +1073,10 @@ async def _llm_generate_title(context_parts: list[str]) -> SuggestTitleResponse:
             return SuggestTitleResponse(title=result, source="llm")
 
     except Exception as e:
-        log.warning("share title suggestion failed", error=str(e))
+        log.warning(
+            "share title suggestion failed",
+            error_type=type(e).__name__,
+        )
 
     return SuggestTitleResponse()
 

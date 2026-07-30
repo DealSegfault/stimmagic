@@ -1,15 +1,15 @@
 /**
  * The stack document: state, journal-cursor undo, and server persistence.
  *
- * Undo is a cursor into an append-only journal, not a stack of snapshots.
+ * Undo is a cursor into a journal of recent edits, not a stack of snapshots.
  * Every document edit (add, remove, reorder, toggle, param change, pick change)
  * is one journal entry carrying both directions. Undoing walks the cursor back
  * and applies inverses; it never truncates the log and never deletes a received
  * payload — undoing a pick just un-picks, and the candidates remain.
  *
  * Redo is linear: a new edit after undo starts a new run. The entries it
- * abandons stay in the journal (recorded as such) so any prior state is still
- * recoverable by replay, which is the whole point of the pack-rat rule.
+ * abandons remain in persisted history until they age out of the bounded
+ * survival window. Payload retention is independent and remains pack-ratty.
  */
 
 import { ref, computed, shallowRef } from 'vue'
@@ -19,6 +19,11 @@ import { newOpId } from './opId'
 import type { JournalEntry, Op, OutputStage, StackDocument } from './types'
 import { DEFAULT_OUTPUT, DOCUMENT_FORMAT, DOCUMENT_VERSION } from './types'
 import { migrateShapePaints } from './migrateShapePaints'
+import {
+  normalizeDocumentTerminology,
+  normalizeJournalTerminology,
+} from './documentTerminology'
+import { hasUncommittedChanges } from './commitState'
 
 // Re-exported so callers keep one import for the document surface.
 export { newOpId }
@@ -40,18 +45,24 @@ export function useStackDocument() {
   const journal = shallowRef<JournalEntry[]>([])
   /** Entries at index >= cursor are undone. */
   const cursor = ref(0)
+  /** History is secondary state: document.json is enough to show the editor. */
+  const historyLoading = ref(false)
+  const historyLoaded = ref(false)
+  /** Cursor position represented by persisted history when this session opened. */
+  const openedCursor = ref(0)
   const saving = ref(false)
   const loadError = ref<string | null>(null)
-  /** Set on every document edit, cleared by a successful Save. */
+  /** Set on every document edit, cleared only by committing the current state. */
   const dirtySinceSave = ref(false)
 
-  let nextSeq = 1
+  let nextSeq = -1
+  let historyPromise: Promise<void> | null = null
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   let pendingJournal: JournalEntry[] = []
 
   const ops = computed<Op[]>(() => doc.value?.edits || [])
-  const canUndo = computed(() => cursor.value > 0)
-  const canRedo = computed(() => cursor.value < journal.value.length)
+  const canUndo = computed(() => historyLoaded.value && cursor.value > 0)
+  const canRedo = computed(() => historyLoaded.value && cursor.value < journal.value.length)
 
   function opById(id: string): Op | undefined {
     return doc.value?.edits.find(o => o.id === id)
@@ -60,18 +71,13 @@ export function useStackDocument() {
   // -- persistence ---------------------------------------------------------
 
   /**
-   * A document written before a gradient was a color still says so in its
-   * annotate steps. Converting on the way in means the rest of the editor only
-   * ever sees paints — nothing downstream has to know there were two models.
+   * Normalize retired vocabulary and data shapes at the persistence boundary.
+   * The rest of the editor then sees current Paint labels and annotation
+   * paints, while legacy executor identity remains available for stable hashes.
    */
-  function migrateDocumentPaints(document: any) {
+  function migrateDocument(document: any) {
+    normalizeDocumentTerminology(document)
     for (const op of document?.edits ?? []) {
-      // `paint` remains a stable internal executor kind, but this editor is a
-      // photo retoucher rather than an illustration app. Normalize the old
-      // generated label without touching any genuinely custom row name.
-      if (op?.class === 'container' && op?.exec?.kind === 'paint' && op.label === 'Paint') {
-        op.label = 'Retouch'
-      }
       if (op?.exec?.kind === 'annotate' && op.params?.shapes) {
         op.params.shapes = migrateShapePaints(op.params.shapes)
       }
@@ -81,6 +87,14 @@ export function useStackDocument() {
 
   async function open(assetId: number, revisionId?: number) {
     loadError.value = null
+    historyPromise = null
+    historyLoading.value = false
+    historyLoaded.value = false
+    openedCursor.value = 0
+    journal.value = []
+    cursor.value = 0
+    nextSeq = -1
+    pendingJournal = []
     const { data } = await axios.post(`${API_BASE}/image-stack/open`, {
       asset_id: assetId,
       revision_id: revisionId ?? null,
@@ -88,7 +102,7 @@ export function useStackDocument() {
     documentId.value = data.document_id
 
     if (data.document) {
-      doc.value = migrateDocumentPaints(data.document)
+      doc.value = migrateDocument(data.document)
     } else {
       doc.value = {
         format: DOCUMENT_FORMAT,
@@ -107,15 +121,7 @@ export function useStackDocument() {
       }
     }
 
-    // The journal's replayable suffix. The cursor starts at the end: the
-    // document on disk already reflects every entry.
-    const journalResponse = await axios.get(
-      `${API_BASE}/image-stack/${data.document_id}/journal`
-    )
-    journal.value = journalResponse.data.entries || []
-    cursor.value = journal.value.length
-    nextSeq = journal.value.reduce((max, e) => Math.max(max, e.seq || 0), 0) + 1
-    dirtySinceSave.value = false
+    dirtySinceSave.value = hasUncommittedChanges(doc.value)
 
     return {
       documentId: data.document_id,
@@ -125,15 +131,88 @@ export function useStackDocument() {
     }
   }
 
+  /**
+   * Load Undo/Redo after the authoritative current document is already usable.
+   *
+   * Edits made during the short hydration window keep temporary negative
+   * sequence numbers. They are renumbered after the persisted maximum before
+   * any flush can append them, so opening pixels never has to wait for history
+   * and history never risks colliding sequence ids.
+   */
+  function hydrateHistory(): Promise<void> {
+    if (historyPromise) return historyPromise
+    const id = documentId.value
+    if (!id) return Promise.resolve()
+
+    historyLoading.value = true
+    historyPromise = (async () => {
+      try {
+        const journalResponse = await axios.get(`${API_BASE}/image-stack/${id}/journal`)
+        const persistedAll = normalizeJournalTerminology(journalResponse.data.entries || [])
+        // A checkpoint is the boundary before the undoable suffix, not an edit
+        // the Undo button should step onto.
+        const persisted = persistedAll.filter((entry: JournalEntry) => entry.action !== 'checkpoint')
+        const maxPersistedSeq = persistedAll.reduce(
+          (max: number, entry: JournalEntry) => Math.max(max, entry.seq || 0),
+          0,
+        )
+
+        const local = journal.value
+        const localCursor = cursor.value
+        let seq = maxPersistedSeq + 1
+        for (const entry of local) entry.seq = seq++
+
+        journal.value = [...persisted, ...local]
+        openedCursor.value = persisted.length
+        cursor.value = persisted.length + localCursor
+        nextSeq = seq
+        historyLoaded.value = true
+      } catch (error) {
+        loadError.value = 'Could not load undo history.'
+        historyPromise = null
+        throw error
+      } finally {
+        historyLoading.value = false
+      }
+    })()
+    return historyPromise
+  }
+
+  function allocateSeq(): number {
+    return historyLoaded.value ? nextSeq++ : nextSeq--
+  }
+
   function schedulePersist() {
     if (persistTimer) clearTimeout(persistTimer)
     persistTimer = setTimeout(() => { void flush() }, PERSIST_DEBOUNCE_MS)
+  }
+
+  function setUncommittedChanges(dirty: boolean) {
+    if (doc.value) doc.value.has_uncommitted_changes = dirty
+    dirtySinceSave.value = dirty
+  }
+
+  /**
+   * Record the durable boundary between working persistence and an Asset
+   * commit. Saving document.json or reloading the browser never calls this.
+   */
+  function markCommitted(assetId?: number, revisionId?: number) {
+    if (!doc.value) return
+    if (assetId !== undefined && revisionId !== undefined) {
+      doc.value.last_commit = { asset_id: assetId, revision_id: revisionId }
+    }
+    setUncommittedChanges(false)
+    schedulePersist()
   }
 
   /** Write document.json and drain queued journal entries. */
   async function flush() {
     if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
     if (!documentId.value || !doc.value) return
+    // History assigns the persisted sequence boundary. A fast edit made before
+    // hydration may mutate immediately, but it cannot be written before its
+    // temporary sequence id has been made durable and collision-free.
+    await hydrateHistory()
     const id = documentId.value
     const entries = pendingJournal
     pendingJournal = []
@@ -170,9 +249,9 @@ export function useStackDocument() {
   ) {
     apply()
 
-    // Anything undone is abandoned by this new edit. The entries are not
-    // removed — the journal only ever appends — but they stop being reachable
-    // by redo.
+    // Anything undone is abandoned by this new edit. It stops being reachable
+    // by redo; its persisted audit entry remains until the bounded history
+    // window ages it out.
     if (cursor.value < journal.value.length) {
       journal.value = journal.value.slice(0, cursor.value)
     }
@@ -191,7 +270,7 @@ export function useStackDocument() {
       pendingJournal.push(previous)
     } else {
       const entry: JournalEntry & { _coalesceKey?: string } = {
-        seq: nextSeq++,
+        seq: allocateSeq(),
         action,
         forward,
         inverse,
@@ -202,7 +281,7 @@ export function useStackDocument() {
     }
 
     cursor.value = journal.value.length
-    dirtySinceSave.value = true
+    setUncommittedChanges(true)
     schedulePersist()
   }
 
@@ -244,6 +323,52 @@ export function useStackDocument() {
     )
   }
 
+  /** Reorder several rows as one undoable gesture. */
+  function reorderOps(order: string[]) {
+    const d = doc.value
+    if (!d) return
+    const before = d.edits.map(op => op.id)
+    const known = new Set(before)
+    const requested = order.filter(id => known.has(id))
+    const requestedSet = new Set(requested)
+    const after = [...requested, ...before.filter(id => !requestedSet.has(id))]
+    if (before.length !== after.length || before.every((id, index) => id === after[index])) return
+
+    record(
+      'reorder_ops',
+      { order: after },
+      { order: before },
+      () => {
+        const byId = new Map(d.edits.map(op => [op.id, op]))
+        d.edits = after.flatMap(id => byId.get(id) ?? [])
+      }
+    )
+  }
+
+  /**
+   * Replace the edit list as one undoable transaction.
+   *
+   * Some canvas gestures reconcile several independently addressable rows at
+   * once (for example, moving or deleting a marquee selection). Recording one
+   * setParams/removeOp call per row makes one physical gesture take several
+   * Undo presses. The complete before/after lists are small plain document
+   * data, so journal the reconciliation at the same boundary the user felt.
+   */
+  function replaceEdits(edits: Op[], coalesceKey?: string) {
+    const d = doc.value
+    if (!d) return
+    const before = JSON.parse(JSON.stringify(d.edits)) as Op[]
+    const after = JSON.parse(JSON.stringify(edits)) as Op[]
+    if (JSON.stringify(before) === JSON.stringify(after)) return
+    record(
+      'replace_edits',
+      { edits: after },
+      { edits: before },
+      () => { d.edits = after },
+      { coalesceKey },
+    )
+  }
+
   function setEnabled(opId: string, enabled: boolean) {
     const op = opById(opId)
     if (!op || op.enabled === enabled) return
@@ -269,6 +394,28 @@ export function useStackDocument() {
     )
   }
 
+  /**
+   * Replace the child list of the one hierarchical container.
+   *
+   * A Retouch gesture is one region and one undo step. The whole small list is
+   * journaled so add, remove, and visibility changes replay without inventing
+   * a second nested journal protocol.
+   */
+  function setRegions(opId: string, regions: any[], coalesceKey?: string) {
+    const op = opById(opId) as any
+    if (!op || op.exec?.kind !== 'retouch-regions') return
+    const was = JSON.parse(JSON.stringify(op.regions || []))
+    const next = JSON.parse(JSON.stringify(regions))
+    if (JSON.stringify(was) === JSON.stringify(next)) return
+    record(
+      'set_regions',
+      { op_id: opId, regions: next },
+      { op_id: opId, regions: was },
+      () => { op.regions = next },
+      { coalesceKey },
+    )
+  }
+
   function setLabel(opId: string, label: string) {
     const op = opById(opId)
     if (!op || op.label === label) return
@@ -279,6 +426,21 @@ export function useStackDocument() {
       { op_id: opId, label: was },
       () => { op.label = label }
     )
+  }
+
+  /**
+   * Rename a step from something the app worked out on its own — the
+   * quick-task model naming a Remove or Repaint after its region.
+   *
+   * Not journaled, for the same reason candidates are not: the user did not do
+   * it, and undo reaching a name would spend the person's one undo on the
+   * label instead of on the edit they just made.
+   */
+  function annotateLabel(opId: string, label: string) {
+    const op = opById(opId)
+    if (!op || !label || op.label === label) return
+    op.label = label
+    schedulePersist()
   }
 
   function pickCandidate(opId: string, candidateId: string | null) {
@@ -305,6 +467,7 @@ export function useStackDocument() {
     const op = opById(opId) as any
     if (!op) return
     op._revision = (op._revision || 0) + 1
+    setUncommittedChanges(true)
     schedulePersist()
   }
 
@@ -392,6 +555,14 @@ export function useStackDocument() {
         }
         break
       }
+      case 'reorder_ops': {
+        const byId = new Map(d.edits.map(op => [op.id, op]))
+        d.edits = (inv.order ?? []).flatMap((id: string) => byId.get(id) ?? [])
+        break
+      }
+      case 'replace_edits':
+        d.edits = inv.edits ?? []
+        break
       case 'toggle_op': {
         const op = d.edits.find(o => o.id === inv.op_id)
         if (op) op.enabled = inv.enabled
@@ -400,6 +571,16 @@ export function useStackDocument() {
       case 'set_params': {
         const op = d.edits.find(o => o.id === inv.op_id) as any
         if (op) op.params = inv.params
+        break
+      }
+      case 'replace_params': {
+        const op = d.edits.find(o => o.id === inv.op_id) as any
+        if (op) op.params = inv.params
+        break
+      }
+      case 'set_regions': {
+        const op = d.edits.find(o => o.id === inv.op_id) as any
+        if (op) op.regions = inv.regions
         break
       }
       case 'set_label': {
@@ -446,6 +627,14 @@ export function useStackDocument() {
         }
         break
       }
+      case 'reorder_ops': {
+        const byId = new Map(d.edits.map(op => [op.id, op]))
+        d.edits = (fwd.order ?? []).flatMap((id: string) => byId.get(id) ?? [])
+        break
+      }
+      case 'replace_edits':
+        d.edits = fwd.edits ?? []
+        break
       case 'toggle_op': {
         const op = d.edits.find(o => o.id === fwd.op_id)
         if (op) op.enabled = fwd.enabled
@@ -454,6 +643,16 @@ export function useStackDocument() {
       case 'set_params': {
         const op = d.edits.find(o => o.id === fwd.op_id) as any
         if (op) op.params = { ...(op.params || {}), ...fwd.params }
+        break
+      }
+      case 'replace_params': {
+        const op = d.edits.find(o => o.id === fwd.op_id) as any
+        if (op) op.params = fwd.params
+        break
+      }
+      case 'set_regions': {
+        const op = d.edits.find(o => o.id === fwd.op_id) as any
+        if (op) op.regions = fwd.regions
         break
       }
       case 'set_label': {
@@ -484,8 +683,8 @@ export function useStackDocument() {
     cursor.value -= 1
     // The undo is itself journaled: the log is a record of what happened, and
     // a truncating undo would make prior states unrecoverable.
-    pendingJournal.push({ seq: nextSeq++, action: 'undo', forward: { undid: entry.seq } })
-    dirtySinceSave.value = true
+    pendingJournal.push({ seq: allocateSeq(), action: 'undo', forward: { undid: entry.seq } })
+    setUncommittedChanges(true)
     schedulePersist()
   }
 
@@ -494,8 +693,8 @@ export function useStackDocument() {
     const entry = journal.value[cursor.value]
     applyForward(entry)
     cursor.value += 1
-    pendingJournal.push({ seq: nextSeq++, action: 'redo', forward: { redid: entry.seq } })
-    dirtySinceSave.value = true
+    pendingJournal.push({ seq: allocateSeq(), action: 'redo', forward: { redid: entry.seq } })
+    setUncommittedChanges(true)
     schedulePersist()
   }
 
@@ -506,7 +705,7 @@ export function useStackDocument() {
    * the profile middleware requires — so the profile rides the query string,
    * the same fallback the media file routes use.
    */
-  function payloadUrl(ref: string, revision?: number): string {
+  function payloadUrl(ref: string, revision?: number | string): string {
     const [subdir, name] = ref.split('/')
     return `${API_BASE}/image-stack/${documentId.value}/payloads/${name}`
       + `?subdir=${subdir}&profile=${getCurrentProfileId()}`
@@ -536,7 +735,14 @@ export function useStackDocument() {
       class: op.class,
       label: op.label,
       exec: op.exec,
-      params: op.params ?? null,
+      params: op.params ?? (op.exec?.kind === 'retouch-regions'
+        ? {
+            regions: (op.regions ?? []).filter((region: any) => region.enabled).map((region: any) => ({
+              kind: region.kind,
+              settings: region.settings,
+            })),
+          }
+        : null),
       // Provenance of the pixels that actually landed, not every candidate.
       job_id: (op.candidates || []).find((c: any) => c.id === op.picked)?.job_id ?? null,
     }))
@@ -567,20 +773,29 @@ export function useStackDocument() {
     ops,
     journal,
     cursor,
+    historyLoading,
+    historyLoaded,
+    openedCursor,
     saving,
     loadError,
     dirtySinceSave,
     canUndo,
     canRedo,
     open,
+    hydrateHistory,
     flush,
+    markCommitted,
     opById,
     addOp,
     removeOp,
     moveOp,
+    reorderOps,
+    replaceEdits,
     setEnabled,
     setParams,
+    setRegions,
     setLabel,
+    annotateLabel,
     setBlend,
     setOutput,
     replaceDocument,

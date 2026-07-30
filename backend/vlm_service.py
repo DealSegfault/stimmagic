@@ -100,7 +100,10 @@ class VLMService:
                 )
 
                 if error:
-                    log.error(f"VLM ANALYSIS: {error} for {image_desc}")
+                    log.error(
+                        f"VLM ANALYSIS: request failed for {image_desc}",
+                        error_chars=len(error),
+                    )
                     return None, None, error
 
                 # Check for empty response
@@ -137,12 +140,19 @@ class VLMService:
                     # Normalize keywords: lowercase, strip, limit to 15
                     keywords = [str(kw).strip().lower() for kw in keywords if kw][:15]
 
-                    log.debug(f"VLM ANALYSIS: ✓ {image_desc} - caption: '{caption[:80]}...' - {len(keywords)} keywords")
+                    log.debug(
+                        f"VLM ANALYSIS: completed for {image_desc}",
+                        caption_chars=len(caption),
+                        keyword_count=len(keywords),
+                    )
                     return caption, keywords, None
 
                 except json.JSONDecodeError as e:
                     log.warning(f"VLM ANALYSIS: JSON parse error for {image_desc}: {e}")
-                    log.warning(f"VLM ANALYSIS: Raw response: {response[:500]}")
+                    log.warning(
+                        "VLM ANALYSIS: Response was not valid structured output",
+                        output_chars=len(response or ""),
+                    )
 
                     # Fallback: treat the entire response as a caption with no keywords
                     # This handles models that don't follow JSON instructions

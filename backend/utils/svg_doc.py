@@ -285,6 +285,164 @@ def lint(root: ET.Element) -> list[str]:
     return issues
 
 
+# Ink tone ────────────────────────────────────────────────────────────────────
+
+# Shapes that actually put paint on the canvas. Containers (<g>, <defs>) only
+# pass paint down, and anything inside <defs>/<clipPath>/<mask> never paints
+# directly.
+_PAINTING_TAGS = {
+    "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+    "text", "tspan", "use", "image",
+}
+_NON_PAINTING_CONTAINERS = {"defs", "clipPath", "mask", "symbol", "marker", "pattern"}
+
+# The subset of CSS named colors worth resolving: the ones people actually type
+# into an icon. Anything else falls through to "unknown", which lands the
+# document in "mixed" — a checkerboard, which is never wrong.
+_NAMED_COLORS = {
+    "black": (0, 0, 0), "white": (255, 255, 255), "red": (255, 0, 0),
+    "green": (0, 128, 0), "blue": (0, 0, 255), "yellow": (255, 255, 0),
+    "orange": (255, 165, 0), "purple": (128, 0, 128), "gray": (128, 128, 128),
+    "grey": (128, 128, 128), "silver": (192, 192, 192), "navy": (0, 0, 128),
+    "teal": (0, 128, 128), "cyan": (0, 255, 255), "aqua": (0, 255, 255),
+    "magenta": (255, 0, 255), "fuchsia": (255, 0, 255), "lime": (0, 255, 0),
+    "maroon": (128, 0, 0), "olive": (128, 128, 0), "pink": (255, 192, 203),
+    "brown": (165, 42, 42), "gold": (255, 215, 0), "indigo": (75, 0, 130),
+}
+
+_RGB_FUNC_RE = re.compile(
+    r"^rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)", re.IGNORECASE
+)
+
+
+def _parse_color(value: Optional[str]) -> tuple[int, int, int] | None | str:
+    """Resolve a paint value to RGB.
+
+    Returns an (r, g, b) tuple, ``None`` when the value paints nothing, or the
+    string ``"unknown"`` when it paints something this function cannot reduce to
+    a single color (a gradient, a pattern, a CSS variable).
+
+    ``currentColor`` resolves to black: the viewer renders through ``<img>``,
+    where the document has no inherited ``color`` and CSS's initial value —
+    black — is what the renderer uses. This is not an approximation; it is
+    exactly what the person sees.
+    """
+    if value is None:
+        return "unknown"
+    v = value.strip().lower()
+    if not v or v in ("none", "transparent"):
+        return None
+    if v in ("currentcolor", "inherit", "initial", "unset"):
+        return (0, 0, 0)
+    if v.startswith("url(") or v.startswith("var("):
+        return "unknown"
+    if v.startswith("#"):
+        h = v[1:]
+        if len(h) in (3, 4):
+            h = "".join(c * 2 for c in h[:3])
+        if len(h) in (6, 8):
+            try:
+                return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+            except ValueError:
+                return "unknown"
+        return "unknown"
+    m = _RGB_FUNC_RE.match(v)
+    if m:
+        channels = []
+        for part in m.groups():
+            try:
+                channels.append(
+                    int(float(part[:-1]) * 255 / 100) if part.endswith("%") else int(float(part))
+                )
+            except ValueError:
+                return "unknown"
+        r, g, b = (max(0, min(255, c)) for c in channels)
+        return (r, g, b)
+    if v in _NAMED_COLORS:
+        return _NAMED_COLORS[v]
+    return "unknown"
+
+
+def _style_declarations(el: ET.Element) -> dict[str, str]:
+    style = el.get("style") or ""
+    out: dict[str, str] = {}
+    for decl in style.split(";"):
+        if ":" in decl:
+            name, _, val = decl.partition(":")
+            out[name.strip().lower()] = val.strip()
+    return out
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    def channel(c: int) -> float:
+        s = c / 255
+        return s / 12.92 if s <= 0.04045 else ((s + 0.055) / 1.055) ** 2.4
+
+    r, g, b = rgb
+    return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+
+
+def ink_tone(root: ET.Element) -> str:
+    """Classify the document's paint as ``dark``, ``light``, or ``mixed``.
+
+    This is what lets a viewer pick a ground without asking: a black mark needs
+    a light backdrop and a white mark needs a dark one, and getting it wrong
+    means showing the person an empty rectangle.
+
+    It reads the declared paint rather than rasterizing — an icon or a logo
+    states its colors in a handful of attributes, and a parse costs nothing next
+    to a browser round trip. Anything it cannot reduce to flat colors (a
+    gradient, a stylesheet rule, an embedded raster) is reported as ``mixed``,
+    which draws the checkerboard.
+    """
+    luminances: list[float] = []
+    unknown = False
+
+    def walk(el: ET.Element, fill: Optional[str], stroke: Optional[str]) -> None:
+        nonlocal unknown
+        tag = _localname(el.tag)
+        if tag in _NON_PAINTING_CONTAINERS:
+            return
+
+        decls = _style_declarations(el)
+        own_fill = decls.get("fill", el.get("fill"))
+        own_stroke = decls.get("stroke", el.get("stroke"))
+        eff_fill = own_fill if own_fill is not None else fill
+        eff_stroke = own_stroke if own_stroke is not None else stroke
+
+        if tag in _PAINTING_TAGS:
+            if tag == "image":
+                # An embedded raster can be anything at all.
+                unknown = True
+            for paint, is_fill in ((eff_fill, True), (eff_stroke, False)):
+                # An unspecified fill paints black (the SVG initial value); an
+                # unspecified stroke paints nothing.
+                if paint is None:
+                    if is_fill:
+                        luminances.append(0.0)
+                    continue
+                color = _parse_color(paint)
+                if color is None:
+                    continue
+                if color == "unknown":
+                    unknown = True
+                    continue
+                luminances.append(_relative_luminance(color))
+
+        for child in el:
+            walk(child, eff_fill, eff_stroke)
+
+    walk(root, None, None)
+
+    if unknown or not luminances:
+        return "mixed"
+    if max(luminances) < 0.4:
+        return "dark"
+    if min(luminances) > 0.6:
+        return "light"
+    return "mixed"
+
+
 def serialize(root: ET.Element) -> str:
     """Serialize back to SVG text with clean namespace prefixes.
 

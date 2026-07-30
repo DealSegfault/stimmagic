@@ -384,7 +384,7 @@ function blurAlphaMask(
  * Optimized to minimize getImageData calls (expensive GPU→CPU sync).
  *
  * @param baseCtx - Context of the base processed image
- * @param destCtx - Context of the destination (retouch layer)
+ * @param destCtx - Context of the destination raster Paint layer
  * @param selectionCtx - Context of the selection mask (alpha = blend strength)
  * @param offset - Offset from destination to source (source = dest + offset)
  * @param bounds - Bounding box of the selection in image coordinates
@@ -448,44 +448,44 @@ export function applyPatch(
   // === BATCH getImageData calls (4 total instead of 6) ===
   // Get all needed data in one batch to minimize GPU→CPU syncs
   const baseSourceData = baseCtx.getImageData(clampedSrcX, clampedSrcY, actualWidth, actualHeight);
-  const retouchSourceData = destCtx.getImageData(clampedSrcX, clampedSrcY, actualWidth, actualHeight);
+  const layerSourceData = destCtx.getImageData(clampedSrcX, clampedSrcY, actualWidth, actualHeight);
   const baseDestData = baseCtx.getImageData(destRegionX, destRegionY, actualWidth, actualHeight);
   const selectionData = selectionCtx.getImageData(destRegionX, destRegionY, actualWidth, actualHeight);
 
   const sourcePixels = baseSourceData.data;
-  const retouchSrcPixels = retouchSourceData.data;
+  const layerSrcPixels = layerSourceData.data;
   const baseDestPixels = baseDestData.data;
 
-  // Composite retouch over base in-place for source sampling
+  // Composite the current Paint layer over the base for source sampling
   // Also composite for destination in the same loop (saves a pass)
-  const retouchDestData = destCtx.getImageData(destRegionX, destRegionY, actualWidth, actualHeight);
-  const retouchDestPixels = retouchDestData.data;
+  const layerDestData = destCtx.getImageData(destRegionX, destRegionY, actualWidth, actualHeight);
+  const layerDestPixels = layerDestData.data;
 
   for (let i = 0; i < sourcePixels.length; i += 4) {
     // Composite source region
-    const retouchSrcA = retouchSrcPixels[i + 3] / 255;
-    if (retouchSrcA > 0) {
+    const layerSrcA = layerSrcPixels[i + 3] / 255;
+    if (layerSrcA > 0) {
       const baseSrcA = sourcePixels[i + 3] / 255;
-      const outSrcA = retouchSrcA + baseSrcA * (1 - retouchSrcA);
+      const outSrcA = layerSrcA + baseSrcA * (1 - layerSrcA);
       if (outSrcA > 0) {
-        const invRetouchSrcA = 1 - retouchSrcA;
-        sourcePixels[i] = (retouchSrcPixels[i] * retouchSrcA + sourcePixels[i] * baseSrcA * invRetouchSrcA) / outSrcA;
-        sourcePixels[i + 1] = (retouchSrcPixels[i + 1] * retouchSrcA + sourcePixels[i + 1] * baseSrcA * invRetouchSrcA) / outSrcA;
-        sourcePixels[i + 2] = (retouchSrcPixels[i + 2] * retouchSrcA + sourcePixels[i + 2] * baseSrcA * invRetouchSrcA) / outSrcA;
+        const invLayerSrcA = 1 - layerSrcA;
+        sourcePixels[i] = (layerSrcPixels[i] * layerSrcA + sourcePixels[i] * baseSrcA * invLayerSrcA) / outSrcA;
+        sourcePixels[i + 1] = (layerSrcPixels[i + 1] * layerSrcA + sourcePixels[i + 1] * baseSrcA * invLayerSrcA) / outSrcA;
+        sourcePixels[i + 2] = (layerSrcPixels[i + 2] * layerSrcA + sourcePixels[i + 2] * baseSrcA * invLayerSrcA) / outSrcA;
         sourcePixels[i + 3] = outSrcA * 255;
       }
     }
 
     // Composite destination region
-    const retouchDstA = retouchDestPixels[i + 3] / 255;
-    if (retouchDstA > 0) {
+    const layerDstA = layerDestPixels[i + 3] / 255;
+    if (layerDstA > 0) {
       const baseDstA = baseDestPixels[i + 3] / 255;
-      const outDstA = retouchDstA + baseDstA * (1 - retouchDstA);
+      const outDstA = layerDstA + baseDstA * (1 - layerDstA);
       if (outDstA > 0) {
-        const invRetouchDstA = 1 - retouchDstA;
-        baseDestPixels[i] = (retouchDestPixels[i] * retouchDstA + baseDestPixels[i] * baseDstA * invRetouchDstA) / outDstA;
-        baseDestPixels[i + 1] = (retouchDestPixels[i + 1] * retouchDstA + baseDestPixels[i + 1] * baseDstA * invRetouchDstA) / outDstA;
-        baseDestPixels[i + 2] = (retouchDestPixels[i + 2] * retouchDstA + baseDestPixels[i + 2] * baseDstA * invRetouchDstA) / outDstA;
+        const invLayerDstA = 1 - layerDstA;
+        baseDestPixels[i] = (layerDestPixels[i] * layerDstA + baseDestPixels[i] * baseDstA * invLayerDstA) / outDstA;
+        baseDestPixels[i + 1] = (layerDestPixels[i + 1] * layerDstA + baseDestPixels[i + 1] * baseDstA * invLayerDstA) / outDstA;
+        baseDestPixels[i + 2] = (layerDestPixels[i + 2] * layerDstA + baseDestPixels[i + 2] * baseDstA * invLayerDstA) / outDstA;
         baseDestPixels[i + 3] = outDstA * 255;
       }
     }
@@ -499,8 +499,8 @@ export function applyPatch(
     blendWidth
   );
 
-  // Reuse retouchDestData as destination output (already allocated)
-  const destPixels = retouchDestData.data;
+  // Reuse layerDestData as destination output (already allocated)
+  const destPixels = layerDestData.data;
 
   // Calculate edge color difference for color matching
   // Sample colors at the boundary of the selection to compute average offset
@@ -540,7 +540,7 @@ export function applyPatch(
     const srcB = Math.max(0, Math.min(255, sourcePixels[i + 2] + edgeBDiff * colorMatchStrength));
     const srcA = sourcePixels[i + 3] / 255;
 
-    // Destination pixel (use base image for blending, will composite onto retouch layer)
+    // Destination pixel (use base image for blending, then composite onto Paint)
     const dstR = baseDestPixels[i];
     const dstG = baseDestPixels[i + 1];
     const dstB = baseDestPixels[i + 2];
@@ -565,7 +565,7 @@ export function applyPatch(
     }
   }
 
-  destCtx.putImageData(retouchDestData, destRegionX, destRegionY);
+  destCtx.putImageData(layerDestData, destRegionX, destRegionY);
 }
 
 /**

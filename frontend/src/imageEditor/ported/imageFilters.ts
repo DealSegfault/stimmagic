@@ -1,5 +1,5 @@
 /**
- * Local blur and sharpen kernels used by the retouch brushes.
+ * Local blur and sharpen kernels used by the pixel-reading Paint brushes.
  *
  * COPIED from packages/image-editor/src/plugins/retouch/utils/imageFilters.ts (2026-07-27), imports
  * repointed at this directory. The snapshot editor is frozen; this copy lets

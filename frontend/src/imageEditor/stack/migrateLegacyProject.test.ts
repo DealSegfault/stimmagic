@@ -34,7 +34,7 @@ test('a default crop rect is not imported as a Crop step', () => {
   assert.deepEqual(ops.map(o => (o as any).exec.kind), ['adjust'])
 })
 
-test('crop, retouch, adjust and annotate land bottom-to-top in render order', () => {
+test('crop, legacy retouch pixels, adjust and annotate land bottom-to-top in render order', () => {
   const { ops, rasters } = migrateLegacyProject(untouched({
     crop: { x: 0.5, y: 0.5, width: 0.8, height: 0.8 },
     retouchLayerData: 'data:image/png;base64,iVBORw0KGgo=',
@@ -46,6 +46,7 @@ test('crop, retouch, adjust and annotate land bottom-to-top in render order', ()
   assert.deepEqual(ops.map(o => (o as any).exec.kind), ['crop', 'paint', 'adjust', 'annotate'])
   assert.equal(rasters.length, 1)
   assert.equal(rasters[0].opId, ops[1].id)
+  assert.equal(ops[1].label, 'Paint')
   assert.equal((ops[1] as any).raster_ref, `payloads/${ops[1].id}-layer.png`)
 })
 

@@ -536,7 +536,7 @@
                        when the head is behind the stack. -->
                   <StatusDot
                     v-if="hasUnsavedEdits(tab)"
-                    bucket="awaiting"
+                    bucket="warning"
                     class="self-center"
                     title="Unsaved edits"
                   />
@@ -860,7 +860,7 @@
                        when the head is behind the stack. -->
                   <StatusDot
                     v-if="hasUnsavedEdits(tab)"
-                    bucket="awaiting"
+                    bucket="warning"
                     class="self-center"
                     title="Unsaved edits"
                   />

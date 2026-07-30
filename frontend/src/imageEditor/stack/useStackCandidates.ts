@@ -80,6 +80,8 @@ export interface PendingSubmission {
 export interface SubmitRequest {
   opId: string
   tool: PayloadBuilderConfig['tool']
+  /** The editor verb's canonical task when a tool advertises several. */
+  taskType?: string
   /** The op's input composite, already rendered. */
   inputCanvas: HTMLCanvasElement
   /** White-on-black mask. Required: every candidate is a patch. */
@@ -118,6 +120,7 @@ export function useStackCandidates(deps: {
   const { on: onWebSocketEvent } = useWebSocket()
   const pending = shallowRef<PendingSubmission[]>([])
   const lastError = ref<string | null>(null)
+  let placeholderSequence = -1
 
   /** Jobs this editor instance owns, and what to do with their outputs. */
   const jobIntents = new Map<number, {
@@ -131,8 +134,11 @@ export function useStackCandidates(deps: {
     resolve: (image: HTMLImageElement) => void
     reject: (error: Error) => void
   }>()
+  /** A WebSocket event and a status poll may discover the same result. */
+  const ingestingJobIds = new Set<number>()
 
   let unsubscribe: Array<() => void> = []
+  let reconciliationTimer: ReturnType<typeof setInterval> | null = null
 
   function generatorInstanceId(): string {
     return `image-stack-${deps.documentId() ?? 'none'}`
@@ -171,6 +177,7 @@ export function useStackCandidates(deps: {
    */
   async function buildBody(options: {
     tool: PayloadBuilderConfig['tool']
+    taskType?: string
     inputCanvas: HTMLCanvasElement
     prompt: string
     params?: Record<string, any>
@@ -234,7 +241,18 @@ export function useStackCandidates(deps: {
 
     return {
       ...base,
-      parameters: captured.parameters,
+      // ToolView can infer image-to-image from its inputs. Masked editor verbs
+      // cannot: one provider may advertise image-to-image, inpaint-image and
+      // erase-image together, while the selected toolbar verb is unambiguous.
+      ...(options.taskType ? { task_type: options.taskType } : {}),
+      parameters: {
+        ...captured.parameters,
+        // Editor-hosted schema values are already keyed by exact STP property
+        // name. Overlay them last so even fields with ToolView-specific
+        // extractors (negative_prompt, loras, future dedicated controls) pass
+        // through instead of being replaced by an empty host UI state.
+        ...(options.params || {}),
+      },
       prompt_options: captured.promptOptions,
       output_disposition: 'context',
       output_context_kind: 'working_document',
@@ -245,38 +263,62 @@ export function useStackCandidates(deps: {
   async function submit(request: SubmitRequest): Promise<number[]> {
     lastError.value = null
     const maskSnapshot = snapshot(request.maskCanvas)
-
-    const body = await buildBody({
-      tool: request.tool,
-      inputCanvas: request.inputCanvas,
-      prompt: request.prompt,
-      params: request.params,
-      maskCanvas: request.maskCanvas,
-      lockResolution: true,
-    })
+    const count = Math.max(1, Math.min(8, Math.floor(request.count) || 1))
+    // The strip describes the requested work, not the speed of several HTTP
+    // round trips. Reserve every slot before the first job is submitted.
+    const placeholderIds = Array.from({ length: count }, () => placeholderSequence--)
+    pending.value = [
+      ...pending.value,
+      ...placeholderIds.map(jobId => ({
+        opId: request.opId,
+        jobId,
+        status: 'queued' as const,
+      })),
+    ]
 
     const jobIds: number[] = []
-    for (let i = 0; i < request.count; i++) {
-      const { data } = await axios.post(`${API_BASE}/generate/submit`, {
-        ...body,
-        parameters: {
-          ...body.parameters,
-          // Distinct seeds, or every candidate is the same image.
-          ...(request.params?.seed === undefined
-            ? { seed: Math.floor(Math.random() * 2 ** 31) }
-            : {}),
-        },
+    try {
+      const body = await buildBody({
+        tool: request.tool,
+        taskType: request.taskType,
+        inputCanvas: request.inputCanvas,
+        prompt: request.prompt,
+        params: request.params,
+        maskCanvas: request.maskCanvas,
+        lockResolution: true,
       })
-      const jobId = Number(data.job_id)
-      jobIds.push(jobId)
-      jobIntents.set(jobId, {
-        opId: request.opId,
-        maskCanvas: maskSnapshot,
-        sampledInputHash: request.sampledInputHash,
-      })
-      pending.value = [...pending.value, { opId: request.opId, jobId, status: 'queued' }]
+
+      for (let i = 0; i < count; i++) {
+        const { data } = await axios.post(`${API_BASE}/generate/submit`, {
+          ...body,
+          parameters: {
+            ...body.parameters,
+            // Distinct seeds, or every candidate is the same image.
+            ...(request.params?.seed === undefined
+              ? { seed: Math.floor(Math.random() * 2 ** 31) }
+              : {}),
+          },
+        })
+        const jobId = Number(data.job_id)
+        jobIds.push(jobId)
+        jobIntents.set(jobId, {
+          opId: request.opId,
+          maskCanvas: maskSnapshot,
+          sampledInputHash: request.sampledInputHash,
+        })
+        pending.value = pending.value.map(item =>
+          item.jobId === placeholderIds[i] ? { ...item, jobId } : item
+        )
+      }
+      // Completion events are an optimization, not the source of truth. A
+      // reconnect or a very fast provider can make an event unobservable.
+      void reconcilePendingJobs()
+      return jobIds
+    } catch (error) {
+      const unused = new Set(placeholderIds.slice(jobIds.length))
+      pending.value = pending.value.filter(item => !unused.has(item.jobId))
+      throw error
     }
-    return jobIds
   }
 
   /**
@@ -322,66 +364,109 @@ export function useStackCandidates(deps: {
 
   async function ingestOutput(jobId: number, mediaId: number) {
     const intent = jobIntents.get(jobId)
-    if (!intent) return
+    if (!intent || ingestingJobIds.has(jobId)) return
+    ingestingJobIds.add(jobId)
 
-    // Trust the media record, not the job: the job says an output exists, the
-    // media record says what it actually is.
-    const { data: media } = await axios.get(`${API_BASE}/media/${mediaId}`)
-    const output = await loadImage(deps.mediaFileUrl(mediaId))
+    try {
+      // Trust the media record, not the job: the job says an output exists, the
+      // media record says what it actually is.
+      const { data: media } = await axios.get(`${API_BASE}/media/${mediaId}`)
+      const output = await loadImage(deps.mediaFileUrl(mediaId))
 
-    const candidateId = `cand-${jobId}`
-    const width = intent.maskCanvas.width
-    const height = intent.maskCanvas.height
-    if (output.naturalWidth !== width || output.naturalHeight !== height) {
-      // A tool that does not return the input's dimensions cannot be
-      // patch-composited: the crop would land somewhere other than where it
-      // was sampled from. Say so rather than silently resampling.
-      lastError.value =
-        `This tool returned ${output.naturalWidth}×${output.naturalHeight} for a ` +
-        `${width}×${height} input. Its results cannot be applied as a patch.`
-      pending.value = pending.value.map(p =>
-        p.jobId === jobId ? { ...p, status: 'failed' as const, error: lastError.value! } : p
+      const candidateId = `cand-${jobId}`
+      const width = intent.maskCanvas.width
+      const height = intent.maskCanvas.height
+      if (output.naturalWidth !== width || output.naturalHeight !== height) {
+        // A tool that does not return the input's dimensions cannot be
+        // patch-composited: the crop would land somewhere other than where it
+        // was sampled from. Say so rather than silently resampling.
+        failJob(
+          jobId,
+          `This tool returned ${output.naturalWidth}×${output.naturalHeight} for a ` +
+          `${width}×${height} input. Its results cannot be applied as a patch.`,
+        )
+        return
+      }
+
+      const bounds = maskBounds(intent.maskCanvas, width, height, PATCH_MARGIN_PX)
+      if (!bounds) {
+        failJob(jobId, 'The mask is empty.')
+        return
+      }
+      const patchCanvas = extractPatch(output, bounds)
+      const ref = await deps.uploadPayload(
+        `${candidateId}-patch.png`,
+        await canvasToBlob(patchCanvas)
       )
-      return
-    }
+      const candidate: Candidate = {
+        id: candidateId,
+        patch_ref: ref,
+        patch_origin: [bounds.x, bounds.y],
+        media_id: mediaId,
+        file_hash: media.file_hash,
+        job_id: String(jobId),
+        sampled_input_hash: intent.sampledInputHash,
+      }
 
-    const bounds = maskBounds(intent.maskCanvas, width, height, PATCH_MARGIN_PX)
-    if (!bounds) {
-      lastError.value = 'The mask is empty.'
-      return
+      deps.attachCandidates(intent.opId, [candidate])
+      deps.onFirstCandidate?.(intent.opId, candidate)
+      pending.value = pending.value.filter(p => p.jobId !== jobId)
+      jobIntents.delete(jobId)
+    } finally {
+      ingestingJobIds.delete(jobId)
     }
-    const patchCanvas = extractPatch(output, bounds)
-    const ref = await deps.uploadPayload(
-      `${candidateId}-patch.png`,
-      await canvasToBlob(patchCanvas)
-    )
-    const candidate: Candidate = {
-      id: candidateId,
-      patch_ref: ref,
-      patch_origin: [bounds.x, bounds.y],
-      media_id: mediaId,
-      file_hash: media.file_hash,
-      job_id: String(jobId),
-      sampled_input_hash: intent.sampledInputHash,
-    }
+  }
 
-    deps.attachCandidates(intent.opId, [candidate])
-    deps.onFirstCandidate?.(intent.opId, candidate)
-    pending.value = pending.value.filter(p => p.jobId !== jobId)
+  function failJob(jobId: number, message: string) {
+    lastError.value = message
+    pending.value = pending.value.filter(item => item.jobId !== jobId)
     jobIntents.delete(jobId)
+  }
+
+  async function reconcilePendingJobs() {
+    const jobIds = [...jobIntents.keys()].filter(id => !ingestingJobIds.has(id))
+    if (!jobIds.length) return
+    try {
+      const { data } = await axios.get(`${API_BASE}/generate/jobs/status`, {
+        params: { ids: jobIds.join(',') },
+      })
+      for (const job of Array.isArray(data) ? data : []) {
+        const jobId = Number(job.id)
+        if (!jobIntents.has(jobId)) continue
+        if (job.status === 'completed') {
+          if (job.result_media_id) {
+            void ingestOutput(jobId, Number(job.result_media_id)).catch((error: any) => {
+              failJob(jobId, error?.message || 'Failed to read the result.')
+            })
+          } else {
+            failJob(jobId, 'The run completed without an image.')
+          }
+        } else if (['failed', 'cancelled'].includes(job.status)) {
+          failJob(jobId, job.error || 'Generation failed.')
+        } else if (job.status === 'processing') {
+          pending.value = pending.value.map(item =>
+            item.jobId === jobId ? { ...item, status: 'processing' as const } : item
+          )
+        }
+      }
+    } catch {
+      // The WebSocket can still deliver while this best-effort safety net is
+      // temporarily unavailable. Keep the placeholders and try again.
+    }
   }
 
   function start() {
     stop()
     unsubscribe = [
       onWebSocketEvent('generation_job_started', (data: any) => {
-        if (!jobIntents.has(data.job?.id)) return
+        const jobId = Number(data.job?.id)
+        if (!jobIntents.has(jobId)) return
         pending.value = pending.value.map(p =>
-          p.jobId === data.job.id ? { ...p, status: 'processing' as const } : p
+          p.jobId === jobId ? { ...p, status: 'processing' as const } : p
         )
       }),
       onWebSocketEvent('generation_job_completed', async (data: any) => {
-        const jobId = data.job?.id
+        const jobId = Number(data.job?.id)
         const oneShot = oneShotIntents.get(jobId)
         if (oneShot) {
           oneShotIntents.delete(jobId)
@@ -398,21 +483,17 @@ export function useStackCandidates(deps: {
         }
         if (!jobIntents.has(jobId)) return
         if (!data.job.result_media_id) {
-          pending.value = pending.value.filter(p => p.jobId !== jobId)
-          jobIntents.delete(jobId)
+          failJob(jobId, 'The run completed without an image.')
           return
         }
         try {
-          await ingestOutput(jobId, data.job.result_media_id)
+          await ingestOutput(jobId, Number(data.job.result_media_id))
         } catch (err: any) {
-          lastError.value = err?.message || 'Failed to read the result.'
-          pending.value = pending.value.map(p =>
-            p.jobId === jobId ? { ...p, status: 'failed' as const, error: lastError.value! } : p
-          )
+          failJob(jobId, err?.message || 'Failed to read the result.')
         }
       }),
       onWebSocketEvent('generation_job_failed', (data: any) => {
-        const jobId = data.job?.id
+        const jobId = Number(data.job?.id)
         const oneShot = oneShotIntents.get(jobId)
         if (oneShot) {
           oneShotIntents.delete(jobId)
@@ -420,19 +501,19 @@ export function useStackCandidates(deps: {
           return
         }
         if (!jobIntents.has(jobId)) return
-        pending.value = pending.value.map(p =>
-          p.jobId === jobId
-            ? { ...p, status: 'failed' as const, error: data.job.error || 'Generation failed.' }
-            : p
-        )
-        jobIntents.delete(jobId)
+        failJob(jobId, data.job.error || 'Generation failed.')
       }),
     ]
+    reconciliationTimer = setInterval(() => {
+      void reconcilePendingJobs()
+    }, 1500)
   }
 
   function stop() {
     unsubscribe.forEach(fn => fn())
     unsubscribe = []
+    if (reconciliationTimer) clearInterval(reconciliationTimer)
+    reconciliationTimer = null
     // Nothing will ever resolve these once the socket handlers are gone, and a
     // save awaiting one would hang with a spinner instead of reporting.
     for (const intent of oneShotIntents.values()) {

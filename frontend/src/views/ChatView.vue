@@ -34,7 +34,6 @@
           @jump-newest="artifactStage.jumpToNewest"
           @set-latest="artifactStage.setAsLatest"
           @open-slideshow="(mediaId) => openSlideshow(mediaId, 0)"
-          @open-library="openArtifactInLibrary"
         />
         <div
           v-if="artifactStage.stageOpen.value"
@@ -3970,10 +3969,6 @@ function parseMarkdownSegments(text) {
 }
 
 // Open slideshow at a specific media ID
-function openArtifactInLibrary(assetId) {
-  router.push({ name: 'browse', query: { slideshowAsset: assetId } })
-}
-
 function openSlideshow(mediaId, indexInGrid) {
   if (liveChatMediaIds.value.length === 0) return
 

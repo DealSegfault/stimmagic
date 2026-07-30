@@ -89,8 +89,8 @@ function sampledHash(op: Op): string | null {
     return pickedCandidate(op)?.sampled_input_hash ?? null
   }
   if (op.class === 'container') {
-    // Retouch engines that READ pixels (heal, clone) bake against their input
-    // and carry an advisory hash like patches do. Pure paint does not.
+    // Paint engines that READ pixels (heal, clone) bake against their input
+    // and carry an advisory hash like patches do. Pure color paint does not.
     return (op as any).sampled_input_hash ?? null
   }
   return null

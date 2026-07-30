@@ -2,9 +2,8 @@
  * Which open op-stack documents have edits that aren't in the version chain.
  *
  * The editor saves explicitly, so the head can lag the stack; the sidebar entry
- * carries the indicator that says so. Live session state only — a stack with
- * unsaved edits is persisted server-side, but nothing recomputes this at
- * startup, so the dot appears once the document is open in this session.
+ * carries the indicator that says so. The open editor restores this value from
+ * its persisted commit boundary, so reloading does not redefine "unsaved."
  */
 import { ref, computed } from 'vue'
 

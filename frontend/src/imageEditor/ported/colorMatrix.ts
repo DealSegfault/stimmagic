@@ -153,6 +153,24 @@ export function temperatureMatrix(value: number): number[] {
 }
 
 /**
+ * Tint: -100 (green) to +100 (magenta).
+ *
+ * This is deliberately the orthogonal partner to Temperature rather than a
+ * creative color overlay: it corrects the green/magenta axis of local light.
+ */
+export function tintMatrix(value: number): number[] {
+  const t = value / 100
+  const magenta = t > 0 ? t * 24 : 0
+  const green = t < 0 ? -t * 24 : 0
+  return [
+    1, 0, 0, 0, magenta,
+    0, 1, 0, 0, green,
+    0, 0, 1, 0, magenta,
+    0, 0, 0, 1, 0,
+  ]
+}
+
+/**
  * Gamma correction: 0.2 to 2.2
  * Note: Gamma cannot be done with a simple matrix, this is an approximation
  */
@@ -223,6 +241,7 @@ export function combineAdjustments(adjustments: {
   saturation?: number;
   exposure?: number;
   temperature?: number;
+  tint?: number;
   gamma?: number;
 }): number[] {
   let matrix = identityMatrix();
@@ -245,6 +264,10 @@ export function combineAdjustments(adjustments: {
 
   if (adjustments.temperature !== undefined && adjustments.temperature !== 0) {
     matrix = multiplyColorMatrices(matrix, temperatureMatrix(adjustments.temperature));
+  }
+
+  if (adjustments.tint !== undefined && adjustments.tint !== 0) {
+    matrix = multiplyColorMatrices(matrix, tintMatrix(adjustments.tint));
   }
 
   if (adjustments.gamma !== undefined && adjustments.gamma !== 1) {

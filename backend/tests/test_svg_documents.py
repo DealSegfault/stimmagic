@@ -91,6 +91,61 @@ class TestSizing:
         assert 'viewBox="0 0 40 20"' in clean
 
 
+class TestInkTone:
+    """The viewer's Auto ground rides on this: get it wrong and the person is
+    shown an empty rectangle where their icon should be."""
+
+    @pytest.mark.parametrize("body,expected", [
+        # The common icon shape: strokes inheriting currentColor, which renders
+        # black through <img>.
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+         'stroke="currentColor"><rect x="4" y="4" width="16" height="16"/></svg>', "dark"),
+        # No paint stated at all — SVG's initial fill is black.
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+         '<circle cx="12" cy="12" r="8"/></svg>', "dark"),
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+         '<rect width="24" height="24" fill="#ffffff"/></svg>', "light"),
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+         '<rect width="24" height="24" style="fill:#f5f5f5"/></svg>', "light"),
+        # Two tones cannot both be legible on one ground.
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+         '<rect width="10" height="10" fill="#111"/>'
+         '<rect x="12" width="10" height="10" fill="#eee"/></svg>', "mixed"),
+        # Paint this cannot reduce to a flat color.
+        ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+         '<rect width="24" height="24" fill="url(#g)"/></svg>', "mixed"),
+    ])
+    def test_classifies_paint(self, body, expected):
+        assert svg_doc.ink_tone(svg_doc.parse_svg(body)) == expected
+
+    def test_defs_do_not_count_as_paint(self):
+        """A template inside <defs> never lands on the canvas, so its color must
+        not drag the whole document to 'mixed'."""
+        text = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+            '<defs><rect id="t" width="4" height="4" fill="#ffffff"/></defs>'
+            '<circle cx="12" cy="12" r="8" fill="#000000"/></svg>'
+        )
+        assert svg_doc.ink_tone(svg_doc.parse_svg(text)) == "dark"
+
+    def test_thumbnail_grounding_reads_the_file(self, tmp_path):
+        """Vector thumbnails bake their ground in, so every surface that shows
+        one — chips, grids, boards — inherits the right answer."""
+        from routes.media_files import _SVG_GROUND_FOR_INK, _svg_ink_tone
+
+        icon = tmp_path / "icon.svg"
+        icon.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+            'stroke="currentColor"><rect x="4" y="4" width="16" height="16"/></svg>'
+        )
+        assert _SVG_GROUND_FOR_INK[_svg_ink_tone(str(icon))] == (255, 255, 255)
+
+        # Unreadable or unparseable falls back to 'mixed', which grounds nothing
+        # and leaves the thumbnail transparent.
+        assert _svg_ink_tone(str(tmp_path / "absent.svg")) == "mixed"
+        assert "mixed" not in _SVG_GROUND_FOR_INK
+
+
 class TestSanitize:
     @pytest.mark.parametrize("hostile,gone", [
         ('<script>alert(1)</script>', 'script'),
@@ -366,6 +421,7 @@ class TestServing:
         data = (await client.get(f"/api/media/{item.id}/svg-info")).json()
         assert (data["width"], data["height"]) == (200, 40)
         assert data["node_count"] == 2
+        assert data["ink"] == "dark"
         assert any("font" in w for w in data["warnings"])
 
     async def test_serves_by_db_guid_without_a_profile_header(
@@ -450,6 +506,42 @@ class TestExport:
         )
         assert response.status_code == 200
         assert expected in response.text
+
+    @pytest.mark.parametrize("options", [
+        {"format": "svg"},
+        {"format": "html", "variant": "inline"},
+    ])
+    async def test_svg_exports_are_always_optimized(
+        self, client: AsyncClient, db_session, tmp_path, options
+    ):
+        svg_file = tmp_path / "editable.svg"
+        svg_file.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" '
+            'xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+            'width="24" height="24">\n'
+            '  <g inkscape:label="Editor layer">\n'
+            '    <circle cx="12" cy="12" r="10"/>\n'
+            "  </g>\n"
+            "</svg>"
+        )
+        async with db_session() as session:
+            item = await create_media_item(
+                session,
+                materialize_asset=True,
+                file_path=svg_file,
+                file_format="svg",
+            )
+            await session.commit()
+
+        response = await client.post(
+            f"/api/media/{item.id}/svg-export",
+            json=options,
+        )
+
+        assert response.status_code == 200
+        assert "Editor layer" not in response.text
+        assert ">\n<" not in response.text
+        assert "<circle" in response.text
 
     async def test_pdf_export(self, client: AsyncClient, db_session, tmp_path):
         svg_file = tmp_path / "mark.svg"

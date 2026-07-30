@@ -22,6 +22,8 @@ import { paintCss } from '../stack/paints'
 
 const props = defineProps<{
   shape: Shape | null
+  /** Full canvas object selection; shape remains the primary/fallback. */
+  shapes?: Shape[]
   /** Colors sampled from the image, offered alongside the fixed swatches. */
   palette?: RgbaColor[]
 }>()
@@ -31,7 +33,26 @@ const emit = defineEmits<{
   remove: []
 }>()
 
-const any = computed(() => props.shape as any)
+const selection = computed<Shape[]>(() =>
+  props.shapes?.length ? props.shapes : (props.shape ? [props.shape] : [])
+)
+const primary = computed<Shape | null>(() => props.shape ?? selection.value[0] ?? null)
+const any = computed(() => primary.value as any)
+const isMultiple = computed(() => selection.value.length > 1)
+
+function equalValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+function isMixedValue(read: (shape: any) => unknown): boolean {
+  if (selection.value.length < 2) return false
+  const first = read(selection.value[0] as any)
+  return selection.value.slice(1).some(shape => !equalValue(read(shape as any), first))
+}
+
+function fieldMixed(key: string): boolean {
+  return isMixedValue(shape => shape[key])
+}
 
 /** The families every OS ships, so nothing here depends on a webfont. */
 const FONTS = [
@@ -55,24 +76,51 @@ const textScale = computed(() => {
 })
 
 function setTextScale(scale: number) {
+  if (isMultiple.value) return
   const shape = any.value
   if (!shape?.baseHeight) return
   emit('change', { width: shape.baseWidth * scale, height: shape.baseHeight * scale })
 }
 
 /** Which controls this kind of shape actually has. */
+const STROKE_TYPES = new Set(['rectangle', 'ellipse', 'line', 'curved-arrow', 'path'])
+const isText = computed(() =>
+  !!selection.value.length && selection.value.every(shape => shape.type === 'text')
+)
+const hasShapeEffect = computed(() =>
+  !!selection.value.length && selection.value.every(shape => shape.type !== 'text')
+)
 const hasStroke = computed(() =>
-  !!props.shape && ['rectangle', 'ellipse', 'line', 'curved-arrow', 'path', 'text'].includes(props.shape.type)
+  isText.value ||
+  (!!selection.value.length && selection.value.every(shape => STROKE_TYPES.has(shape.type)))
+)
+const hasStrokeWeight = computed(() =>
+  !!selection.value.length && selection.value.every(shape => STROKE_TYPES.has(shape.type))
 )
 const hasFill = computed(() =>
-  !!props.shape && ['rectangle', 'ellipse'].includes(props.shape.type)
+  !!selection.value.length &&
+  selection.value.every(shape => shape.type === 'rectangle' || shape.type === 'ellipse')
 )
-const isText = computed(() => props.shape?.type === 'text')
-const isPath = computed(() => props.shape?.type === 'path')
+const isPath = computed(() =>
+  !!selection.value.length && selection.value.every(shape => shape.type === 'path')
+)
 const isLine = computed(() =>
-  props.shape?.type === 'line' || props.shape?.type === 'curved-arrow'
+  !!selection.value.length &&
+  selection.value.every(shape => shape.type === 'line' || shape.type === 'curved-arrow')
 )
-const isRect = computed(() => props.shape?.type === 'rectangle')
+const isRect = computed(() =>
+  !!selection.value.length && selection.value.every(shape => shape.type === 'rectangle')
+)
+const selectionTitle = computed(() => {
+  if (isMultiple.value) return `${selection.value.length} annotations`
+  return primary.value?.type.replace('-', ' ') ?? 'Annotation'
+})
+const strokeKey = computed(() => isText.value ? 'textColor' : 'strokeColor')
+const strokeMixed = computed(() => isMixedValue(shape => shape[strokeKey.value]))
+const fillMixed = computed(() => fieldMixed('backgroundColor'))
+const allowStrokeGradient = computed(() =>
+  selection.value.every(shape => shape.type !== 'path')
+)
 
 /**
  * How the stroke is laid down, as opposed to what color it is.
@@ -121,12 +169,18 @@ const SHAPE_EFFECTS: { id: 'none' | 'neon'; label: string }[] = [
 ]
 
 const textStyle = computed<TextStyleId>(() => textStyleOfShape(any.value))
+const textStyleMixed = computed(() =>
+  isMixedValue(shape => textStyleOfShape(shape))
+)
 
 function setTextStyle(style: TextStyleId) {
   emit('change', textStylePatch(style, { glowIntensity: any.value?.glowIntensity }))
 }
 
 const shapeEffect = computed<'none' | 'neon'>(() => any.value?.style?.effect ?? 'none')
+const shapeEffectMixed = computed(() =>
+  isMixedValue(shape => shape.style?.effect ?? 'none')
+)
 
 function setShapeEffect(effect: 'none' | 'neon') {
   if (effect === 'none') {
@@ -144,7 +198,9 @@ function setShapeEffect(effect: 'none' | 'neon') {
 
 /** Whether a glow slider is live, in either vocabulary. */
 const glowOn = computed(() =>
-  isText.value ? textStyle.value === 'neon' : shapeEffect.value === 'neon'
+  isText.value
+    ? selection.value.every(shape => textStyleOfShape(shape as any) === 'neon')
+    : selection.value.every(shape => (shape as any).style?.effect === 'neon')
 )
 
 function setGlowIntensity(value: number) {
@@ -155,18 +211,24 @@ function setGlowIntensity(value: number) {
 const glowIntensity = computed(() =>
   (isText.value ? any.value?.glowIntensity : any.value?.style?.glowIntensity) ?? 60
 )
+const glowIntensityMixed = computed(() =>
+  isMixedValue(shape =>
+    isText.value ? shape.glowIntensity : shape.style?.glowIntensity
+  )
+)
+const opacityMixed = computed(() => fieldMixed('opacity'))
 </script>
 
 <template>
-  <div v-if="shape" class="divide-y divide-edge-subtle">
+  <div v-if="primary" class="divide-y divide-edge-subtle">
     <header class="px-3 py-2 flex items-center gap-2">
-      <h3 class="text-sm text-content flex-1 capitalize">
-        {{ shape.type.replace('-', ' ') }}
+      <h3 class="text-sm text-content flex-1" :class="{ capitalize: !isMultiple }">
+        {{ selectionTitle }}
       </h3>
       <button
         type="button"
         class="p-1 rounded-md text-content-tertiary hover:text-red-400 hover:bg-overlay-subtle"
-        aria-label="Delete annotation"
+        :aria-label="isMultiple ? `Delete ${selection.length} annotations` : 'Delete annotation'"
         @click="emit('remove')"
       >
         <ToolIcon name="trash" />
@@ -175,6 +237,7 @@ const glowIntensity = computed(() =>
 
     <section v-if="isText" class="px-3 py-2 space-y-2">
       <textarea
+        v-if="!isMultiple"
         class="w-full px-2 py-1.5 text-sm rounded-md bg-surface-raised text-content resize-none focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
         rows="2"
         :value="any.text"
@@ -182,9 +245,10 @@ const glowIntensity = computed(() =>
       />
       <select
         class="w-full px-2 py-1.5 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-        :value="any.fontFamily"
+        :value="fieldMixed('fontFamily') ? '' : any.fontFamily"
         @change="emit('change', { fontFamily: ($event.target as HTMLSelectElement).value })"
       >
+        <option v-if="fieldMixed('fontFamily')" value="" disabled>Mixed</option>
         <option v-for="font in FONTS" :key="font.id" :value="font.id" :style="{ fontFamily: font.id }">
           {{ font.label }}
         </option>
@@ -194,22 +258,26 @@ const glowIntensity = computed(() =>
         <button
           type="button"
           class="px-2 py-1 text-[11px] rounded-md font-bold"
-          :class="any.fontWeight === 'bold'
+          :class="!fieldMixed('fontWeight') && any.fontWeight === 'bold'
             ? 'bg-selection/20 text-content'
             : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
           aria-label="Bold"
-          @click="emit('change', { fontWeight: any.fontWeight === 'bold' ? 'normal' : 'bold' })"
+          @click="emit('change', {
+            fontWeight: fieldMixed('fontWeight') || any.fontWeight !== 'bold' ? 'bold' : 'normal'
+          })"
         >
           <ToolIcon name="bold" />
         </button>
         <button
           type="button"
           class="px-2 py-1 text-[11px] rounded-md"
-          :class="any.fontStyle === 'italic'
+          :class="!fieldMixed('fontStyle') && any.fontStyle === 'italic'
             ? 'bg-selection/20 text-content'
             : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
           aria-label="Italic"
-          @click="emit('change', { fontStyle: any.fontStyle === 'italic' ? 'normal' : 'italic' })"
+          @click="emit('change', {
+            fontStyle: fieldMixed('fontStyle') || any.fontStyle !== 'italic' ? 'italic' : 'normal'
+          })"
         >
           <ToolIcon name="italic" />
         </button>
@@ -223,7 +291,7 @@ const glowIntensity = computed(() =>
           :key="align.id"
           type="button"
           class="px-2 py-1 rounded-md"
-          :class="any.textAlign === align.id
+          :class="!fieldMixed('textAlign') && any.textAlign === align.id
             ? 'bg-selection/20 text-content'
             : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
           :aria-label="align.id"
@@ -233,7 +301,7 @@ const glowIntensity = computed(() =>
         </button>
       </div>
 
-      <label class="flex items-center gap-2 text-xs text-content-tertiary">
+      <label v-if="!isMultiple" class="flex items-center gap-2 text-xs text-content-tertiary">
         Size
         <input
           type="range" min="0.2" max="4" step="0.05" class="flex-1"
@@ -247,6 +315,7 @@ const glowIntensity = computed(() =>
     <section v-if="hasStroke" class="px-3 py-2 space-y-2">
       <div class="flex items-center gap-2">
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Text' : 'Stroke' }}</span>
+        <span v-if="strokeMixed" class="text-[11px] text-content-muted">Mixed</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
             <span class="color-well">
@@ -256,19 +325,21 @@ const glowIntensity = computed(() =>
           <PaintPicker
             :model-value="isText ? any.textColor : any.strokeColor"
             :image-palette="palette"
-            :allow-gradient="!isPath"
+            :allow-gradient="allowStrokeGradient"
             @update:model-value="emit('change', isText ? { textColor: $event } : { strokeColor: $event })"
           />
         </ToolbarPopover>
       </div>
-      <label v-if="!isText" class="flex items-center gap-2 text-xs text-content-tertiary">
+      <label v-if="hasStrokeWeight" class="flex items-center gap-2 text-xs text-content-tertiary">
         Weight
         <input
           type="range" min="1" max="60" class="flex-1"
           :value="any.strokeWidth ?? 8"
           @input="emit('change', { strokeWidth: Number(($event.target as HTMLInputElement).value) })"
         />
-        <span class="w-8 text-right tabular-nums">{{ Math.round(any.strokeWidth ?? 8) }}</span>
+        <span class="w-10 text-right tabular-nums">
+          {{ fieldMixed('strokeWidth') ? 'Mixed' : Math.round(any.strokeWidth ?? 8) }}
+        </span>
       </label>
     </section>
 
@@ -287,7 +358,9 @@ const glowIntensity = computed(() =>
           :value="numberOr(control.key, control.fallback)"
           @input="emit('change', { [control.key]: Number(($event.target as HTMLInputElement).value) })"
         />
-        <span class="w-8 text-right tabular-nums">{{ numberOr(control.key, control.fallback) }}</span>
+        <span class="w-10 text-right tabular-nums">
+          {{ fieldMixed(control.key) ? 'Mixed' : numberOr(control.key, control.fallback) }}
+        </span>
       </label>
     </section>
 
@@ -296,9 +369,10 @@ const glowIntensity = computed(() =>
         <span class="w-16 shrink-0">Start</span>
         <select
           class="flex-1 px-2 py-1 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          :value="any.lineStart ?? 'none'"
+          :value="fieldMixed('lineStart') ? '' : (any.lineStart ?? 'none')"
           @change="emit('change', { lineStart: ($event.target as HTMLSelectElement).value })"
         >
+          <option v-if="fieldMixed('lineStart')" value="" disabled>Mixed</option>
           <option v-for="end in LINE_ENDS" :key="end.id" :value="end.id">{{ end.label }}</option>
         </select>
       </label>
@@ -306,9 +380,10 @@ const glowIntensity = computed(() =>
         <span class="w-16 shrink-0">End</span>
         <select
           class="flex-1 px-2 py-1 text-xs rounded-md bg-surface-raised text-content focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          :value="any.lineEnd ?? 'none'"
+          :value="fieldMixed('lineEnd') ? '' : (any.lineEnd ?? 'none')"
           @change="emit('change', { lineEnd: ($event.target as HTMLSelectElement).value })"
         >
+          <option v-if="fieldMixed('lineEnd')" value="" disabled>Mixed</option>
           <option v-for="end in LINE_ENDS" :key="end.id" :value="end.id">{{ end.label }}</option>
         </select>
       </label>
@@ -322,13 +397,16 @@ const glowIntensity = computed(() =>
           :value="numberOr('cornerRadius', 0)"
           @input="emit('change', { cornerRadius: Number(($event.target as HTMLInputElement).value) })"
         />
-        <span class="w-8 text-right tabular-nums">{{ numberOr('cornerRadius', 0) }}</span>
+        <span class="w-10 text-right tabular-nums">
+          {{ fieldMixed('cornerRadius') ? 'Mixed' : numberOr('cornerRadius', 0) }}
+        </span>
       </label>
     </section>
 
     <section v-if="hasFill || isText" class="px-3 py-2 space-y-2">
       <div class="flex items-center gap-2">
         <span class="text-[11px] text-content-tertiary flex-1">{{ isText ? 'Background' : 'Fill' }}</span>
+        <span v-if="fillMixed" class="text-[11px] text-content-muted">Mixed</span>
         <ToolbarPopover label="" :width="292">
           <template #trigger>
             <span class="color-well">
@@ -348,7 +426,7 @@ const glowIntensity = computed(() =>
 
     <section class="px-3 py-2 space-y-2">
       <!-- Style, in the same words the toolbar used to arm the tool. -->
-      <div class="space-y-1.5">
+      <div v-if="isText || hasShapeEffect" class="space-y-1.5">
         <span class="block text-[11px] text-content-tertiary">{{ isText ? 'Style' : 'Effect' }}</span>
         <div class="flex flex-wrap gap-1">
           <template v-if="isText">
@@ -357,7 +435,7 @@ const glowIntensity = computed(() =>
               :key="style.id"
               type="button"
               class="px-2 py-1 text-[11px] rounded-md transition-colors"
-              :class="textStyle === style.id
+              :class="!textStyleMixed && textStyle === style.id
                 ? 'bg-selection/15 text-content'
                 : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
               @click="setTextStyle(style.id)"
@@ -371,7 +449,7 @@ const glowIntensity = computed(() =>
               :key="fx.id"
               type="button"
               class="px-2 py-1 text-[11px] rounded-md transition-colors"
-              :class="shapeEffect === fx.id
+              :class="!shapeEffectMixed && shapeEffect === fx.id
                 ? 'bg-selection/15 text-content'
                 : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
               @click="setShapeEffect(fx.id)"
@@ -389,15 +467,18 @@ const glowIntensity = computed(() =>
           :value="glowIntensity"
           @input="setGlowIntensity(Number(($event.target as HTMLInputElement).value))"
         />
-        <span class="w-8 text-right tabular-nums">{{ glowIntensity }}</span>
+        <span class="w-10 text-right tabular-nums">
+          {{ glowIntensityMixed ? 'Mixed' : glowIntensity }}
+        </span>
       </label>
       <label class="flex items-center gap-2 text-xs text-content-tertiary">
         Opacity
         <input
           type="range" min="0" max="1" step="0.05" class="flex-1"
-          :value="shape.opacity ?? 1"
+          :value="any.opacity ?? 1"
           @input="emit('change', { opacity: Number(($event.target as HTMLInputElement).value) })"
         />
+        <span v-if="opacityMixed" class="w-10 text-right tabular-nums">Mixed</span>
       </label>
     </section>
   </div>

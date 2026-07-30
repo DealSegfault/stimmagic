@@ -1,8 +1,7 @@
 """Tests for the op-stack image editor's working-document store.
 
-The document is a directory, deliberately pack-ratty: steps removed from
-document.json keep their payloads, the journal only ever appends, and cache/ is
-the one subtree that may be discarded.
+The document is a directory: steps removed from document.json keep their
+payloads, recent undo history is bounded, and cache/ is reconstructible.
 """
 
 import io
@@ -197,6 +196,60 @@ class TestJournal:
         )
         assert response.status_code == 400
 
+    async def test_journal_is_compacted_to_the_newest_500_entries(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        document_id, _ = await _open(client, db_session, tmp_path, "journal-bounded")
+        entries = [
+            {"seq": seq, "action": "set_op_param", "inverse": None}
+            for seq in range(1, stack.JOURNAL_COMPACT_AT + 1)
+        ]
+
+        response = await client.post(
+            f"/api/image-stack/{document_id}/journal",
+            json={"entries": entries},
+        )
+        assert response.status_code == 200
+        assert response.json()["journal_length"] == stack.JOURNAL_MAX_ENTRIES
+
+        retained = (
+            await client.get(f"/api/image-stack/{document_id}/journal")
+        ).json()["entries"]
+        assert len(retained) == stack.JOURNAL_MAX_ENTRIES
+        assert retained[0]["seq"] == stack.JOURNAL_COMPACT_AT - 499
+        assert retained[-1]["seq"] == stack.JOURNAL_COMPACT_AT
+
+        async with db_session() as session:
+            document = await session.get(WorkingDocument, document_id)
+            journal = Path(document.state_locator) / "journal.jsonl"
+        assert len(journal.read_text(encoding="utf-8").splitlines()) == 500
+
+    async def test_read_culls_an_existing_oversized_journal_on_demand(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        document_id, _ = await _open(client, db_session, tmp_path, "journal-legacy-large")
+        async with db_session() as session:
+            document = await session.get(WorkingDocument, document_id)
+            journal = Path(document.state_locator) / "journal.jsonl"
+        raw_entries = [
+            {"seq": seq, "action": "set_op_param"}
+            for seq in range(1, stack.JOURNAL_COMPACT_AT + 26)
+        ]
+        journal.write_text(
+            "".join(f"{json.dumps(entry)}\n" for entry in raw_entries),
+            encoding="utf-8",
+        )
+
+        retained = (
+            await client.get(f"/api/image-stack/{document_id}/journal")
+        ).json()["entries"]
+        assert len(retained) == stack.JOURNAL_MAX_ENTRIES
+        assert retained[0]["seq"] == (
+            stack.JOURNAL_COMPACT_AT + 26 - stack.JOURNAL_MAX_ENTRIES
+        )
+        assert retained[-1]["seq"] == stack.JOURNAL_COMPACT_AT + 25
+        assert len(journal.read_text(encoding="utf-8").splitlines()) == 500
+
     async def test_replay_starts_at_the_last_checkpoint(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
@@ -315,6 +368,37 @@ class TestPayloads:
         assert (await client.get(
             f"/api/image-stack/{document_id}/payloads/composite-1.png?subdir=cache"
         )).status_code == 404
+
+    async def test_new_materialized_head_prunes_only_older_heads(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        document_id, _ = await _open(client, db_session, tmp_path, "head-cache-prune")
+        first = _png_bytes(color=(255, 0, 0))
+        latest = _png_bytes(color=(0, 0, 255))
+
+        for name, data in (
+            ("head-aaaaaaaa.png", first),
+            ("selection-derived.png", first),
+            ("head-bbbbbbbb.png", latest),
+        ):
+            response = await client.post(
+                f"/api/image-stack/{document_id}/payloads",
+                files={"file": (name, data, "image/png")},
+                data={"name": name, "subdir": "cache"},
+            )
+            assert response.status_code == 200
+
+        assert (await client.get(
+            f"/api/image-stack/{document_id}/payloads/head-aaaaaaaa.png?subdir=cache"
+        )).status_code == 404
+        kept = await client.get(
+            f"/api/image-stack/{document_id}/payloads/head-bbbbbbbb.png?subdir=cache"
+        )
+        assert kept.status_code == 200
+        assert kept.content == latest
+        assert (await client.get(
+            f"/api/image-stack/{document_id}/payloads/selection-derived.png?subdir=cache"
+        )).status_code == 200
 
 
 class TestSaveEdit:
@@ -473,3 +557,133 @@ class TestSaveEdit:
             )
             assert document is not None
             assert document.state_locator.endswith(".json")
+
+
+class TestStepNaming:
+    """A generative step is named after what it did, or keeps its verb.
+
+    Naming is advisory: the row already says Remove or Repaint, so every failure
+    path here has to be a quiet no-label rather than an error the editor has to
+    handle mid-run.
+    """
+
+    @pytest.fixture
+    def quick_task_vlm(self, monkeypatch):
+        """Stand in for the quick-task model, recording what it was asked."""
+        calls: list[dict] = []
+        reply = {"text": "house"}
+
+        async def fake_config(role, project_id=None):
+            assert role == "quick_task"
+            return object()
+
+        async def fake_vision(config, prompt, image_b64, *, max_tokens=500, temperature=0.3):
+            calls.append({"prompt": prompt, "image_b64": image_b64})
+            return reply["text"], None
+
+        monkeypatch.setattr("llm_resolver.get_effective_llm_config", fake_config)
+        monkeypatch.setattr("llm.llm_complete_vision", fake_vision)
+        return calls, reply
+
+    async def test_remove_is_named_after_its_subject(
+        self, client: httpx.AsyncClient, quick_task_vlm
+    ):
+        calls, reply = quick_task_vlm
+        reply["text"] = "house"
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "remove", "image_b64": "Zm9v"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["label"] == "Remove house"
+        assert calls[0]["image_b64"] == "Zm9v"
+
+    async def test_repaint_names_both_sides_of_the_swap(
+        self, client: httpx.AsyncClient, quick_task_vlm
+    ):
+        calls, reply = quick_task_vlm
+        reply["text"] = "dog -> fox"
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={
+                "operation": "repaint",
+                "image_b64": "Zm9v",
+                "prompt": "a red fox walking on the boards",
+            },
+        )
+        assert response.json()["label"] == "Dog → fox"
+        # The requested replacement is what makes the second half nameable.
+        assert "red fox walking" in calls[0]["prompt"]
+
+    async def test_a_repaint_with_no_prompt_is_not_named(
+        self, client: httpx.AsyncClient, quick_task_vlm
+    ):
+        calls, _ = quick_task_vlm
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "repaint", "image_b64": "Zm9v"},
+        )
+        assert response.json()["label"] is None
+        assert calls == []
+
+    async def test_expand_is_not_named(self, client: httpx.AsyncClient, quick_task_vlm):
+        calls, _ = quick_task_vlm
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "expand", "image_b64": "Zm9v"},
+        )
+        assert response.json()["label"] is None
+        assert calls == []
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "I'm sorry, I can't help with identifying objects in this image.",
+            "The subject at the center of this crop appears to be a small wooden farmhouse",
+            "",
+        ],
+    )
+    async def test_an_unusable_answer_leaves_the_verb(
+        self, client: httpx.AsyncClient, quick_task_vlm, reply
+    ):
+        """A label cut mid-word is worse than "Remove"."""
+        _, reply_box = quick_task_vlm
+        reply_box["text"] = reply
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "remove", "image_b64": "Zm9v"},
+        )
+        assert response.status_code == 200
+        assert response.json()["label"] is None
+
+    async def test_a_model_error_is_not_an_editor_error(
+        self, client: httpx.AsyncClient, monkeypatch
+    ):
+        async def fake_config(role, project_id=None):
+            return object()
+
+        async def exploding_vision(*args, **kwargs):
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr("llm_resolver.get_effective_llm_config", fake_config)
+        monkeypatch.setattr("llm.llm_complete_vision", exploding_vision)
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "remove", "image_b64": "Zm9v"},
+        )
+        assert response.status_code == 200
+        assert response.json()["label"] is None
+
+    async def test_no_configured_model_is_not_an_editor_error(
+        self, client: httpx.AsyncClient, monkeypatch
+    ):
+        async def no_config(role, project_id=None):
+            return None
+
+        monkeypatch.setattr("llm_resolver.get_effective_llm_config", no_config)
+        response = await client.post(
+            "/api/image-stack/name-edit",
+            json={"operation": "remove", "image_b64": "Zm9v"},
+        )
+        assert response.status_code == 200
+        assert response.json()["label"] is None

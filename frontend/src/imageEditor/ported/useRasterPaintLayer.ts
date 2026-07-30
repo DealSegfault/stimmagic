@@ -1,6 +1,6 @@
 /**
- * The retouch layer: clone stamp, spot heal, patch, dodge/burn with range
- * targeting, sponge, blur/sharpen, paint brush and flood fill — all applied
+ * One raster Paint layer: color paint plus the inherited pixel-reading
+ * engines (clone, heal, patch, dodge/burn, sponge, blur/sharpen), all applied
  * through the active selection mask.
  *
  * COPIED from packages/image-editor/src/plugins/retouch/composables/useRetouchLayer.ts (2026-07-27), imports
@@ -25,12 +25,12 @@ import { advanceStroke } from './strokeSpacing';
 import { applyLocalBlur, applyLocalSharpen } from './imageFilters';
 
 /**
- * Composable for managing the retouch bitmap layer
+ * Composable for managing one raster Paint layer.
  */
-export function useRetouchLayer() {
-  // The retouch layer canvas (stores all pixel edits)
-  const retouchCanvas = shallowRef<HTMLCanvasElement | null>(null);
-  const retouchCtx = shallowRef<CanvasRenderingContext2D | null>(null);
+export function useRasterPaintLayer() {
+  // The Paint layer canvas (stores all pixel edits)
+  const layerCanvas = shallowRef<HTMLCanvasElement | null>(null);
+  const layerCtx = shallowRef<CanvasRenderingContext2D | null>(null);
 
   // Layer size (should match image size)
   const layerSize = ref<Size | null>(null);
@@ -113,11 +113,11 @@ export function useRetouchLayer() {
   }
 
   /**
-   * Initialize or resize the retouch layer
+   * Initialize or resize the Paint layer
    */
   function initLayer(size: Size): void {
     if (
-      retouchCanvas.value &&
+      layerCanvas.value &&
       layerSize.value?.width === size.width &&
       layerSize.value?.height === size.height
     ) {
@@ -130,51 +130,51 @@ export function useRetouchLayer() {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     if (!ctx) {
-      throw new Error('Failed to get retouch canvas context');
+      throw new Error('Failed to get Paint layer canvas context');
     }
 
     // If we have existing content, copy it
-    if (retouchCanvas.value && retouchCtx.value) {
-      ctx.drawImage(retouchCanvas.value, 0, 0);
+    if (layerCanvas.value && layerCtx.value) {
+      ctx.drawImage(layerCanvas.value, 0, 0);
     }
 
-    retouchCanvas.value = canvas;
-    retouchCtx.value = ctx;
+    layerCanvas.value = canvas;
+    layerCtx.value = ctx;
     layerSize.value = { ...size };
   }
 
   /**
-   * Clear the retouch layer
+   * Clear the Paint layer
    */
   function clearLayer(): void {
-    if (!retouchCtx.value || !layerSize.value) return;
-    retouchCtx.value.clearRect(0, 0, layerSize.value.width, layerSize.value.height);
+    if (!layerCtx.value || !layerSize.value) return;
+    layerCtx.value.clearRect(0, 0, layerSize.value.width, layerSize.value.height);
   }
 
   /**
-   * Load retouch layer from data URL (used for project deserialization)
+   * Load Paint layer from data URL (used for project deserialization)
    */
   async function loadFromDataUrl(dataUrl: string): Promise<void> {
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        if (!retouchCtx.value || !retouchCanvas.value) {
-          reject(new Error('Retouch canvas not initialized before restore'));
+        if (!layerCtx.value || !layerCanvas.value) {
+          reject(new Error('Paint layer canvas not initialized before restore'));
           return;
         }
 
-        retouchCtx.value.clearRect(
+        layerCtx.value.clearRect(
           0,
           0,
-          retouchCanvas.value.width,
-          retouchCanvas.value.height
+          layerCanvas.value.width,
+          layerCanvas.value.height
         );
-        retouchCtx.value.drawImage(
+        layerCtx.value.drawImage(
           img,
           0,
           0,
-          retouchCanvas.value.width,
-          retouchCanvas.value.height
+          layerCanvas.value.width,
+          layerCanvas.value.height
         );
         resolve();
       };
@@ -184,11 +184,11 @@ export function useRetouchLayer() {
   }
 
   /**
-   * Export retouch layer to data URL (used for project serialization)
+   * Export Paint layer to data URL (used for project serialization)
    */
   function toDataUrl(): string | null {
-    if (!retouchCanvas.value) return null;
-    return retouchCanvas.value.toDataURL('image/png');
+    if (!layerCanvas.value) return null;
+    return layerCanvas.value.toDataURL('image/png');
   }
 
   /**
@@ -196,13 +196,13 @@ export function useRetouchLayer() {
    * markRaw prevents Vue from deeply proxying the canvas DOM element.
    */
   function toSnapshot(): HTMLCanvasElement | null {
-    if (!retouchCanvas.value || !layerSize.value) return null;
+    if (!layerCanvas.value || !layerSize.value) return null;
     const snap = document.createElement('canvas');
     snap.width = layerSize.value.width;
     snap.height = layerSize.value.height;
     const ctx = snap.getContext('2d');
     if (ctx) {
-      ctx.drawImage(retouchCanvas.value, 0, 0);
+      ctx.drawImage(layerCanvas.value, 0, 0);
     }
     return markRaw(snap);
   }
@@ -211,9 +211,9 @@ export function useRetouchLayer() {
    * Restore from a canvas snapshot (fast, ~1ms)
    */
   function loadFromSnapshot(snapshot: HTMLCanvasElement): void {
-    if (!retouchCtx.value || !layerSize.value) return;
-    retouchCtx.value.clearRect(0, 0, layerSize.value.width, layerSize.value.height);
-    retouchCtx.value.drawImage(snapshot, 0, 0);
+    if (!layerCtx.value || !layerSize.value) return;
+    layerCtx.value.clearRect(0, 0, layerSize.value.width, layerSize.value.height);
+    layerCtx.value.drawImage(snapshot, 0, 0);
   }
 
   /**
@@ -259,7 +259,7 @@ export function useRetouchLayer() {
     destPoint: Point,
     brushSettings: BrushSettings
   ): void {
-    if (!retouchCtx.value || !cloneOffset.value) return;
+    if (!layerCtx.value || !cloneOffset.value) return;
 
     const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
@@ -278,7 +278,7 @@ export function useRetouchLayer() {
       const srcX = point.x + cloneOffset.value.x;
       const srcY = point.y + cloneOffset.value.y;
 
-      // Sample from source (the combined base + retouch image)
+      // Sample from source (the combined base + current Paint layer)
       const sourceData = sampleRegion(
         sourceCtx,
         srcX - halfSize,
@@ -287,11 +287,11 @@ export function useRetouchLayer() {
         size
       );
 
-      // Apply to retouch layer with brush mask
+      // Apply to Paint layer with brush mask
       const destX = Math.floor(point.x - halfSize);
       const destY = Math.floor(point.y - halfSize);
 
-      const destData = retouchCtx.value!.getImageData(destX, destY, size, size);
+      const destData = layerCtx.value!.getImageData(destX, destY, size, size);
       const maskData = brushMask.data;
       const srcPixels = sourceData.data;
       const destPixels = destData.data;
@@ -328,7 +328,7 @@ export function useRetouchLayer() {
         }
       }
 
-      retouchCtx.value!.putImageData(destData, destX, destY);
+      layerCtx.value!.putImageData(destData, destX, destY);
     }
   }
 
@@ -341,7 +341,7 @@ export function useRetouchLayer() {
     point: Point,
     brushSettings: BrushSettings
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
@@ -375,7 +375,7 @@ export function useRetouchLayer() {
       const originalPixels = originalData.data;
 
       // Create the healed region
-      const destData = retouchCtx.value.getImageData(destX, destY, brushSize, brushSize);
+      const destData = layerCtx.value.getImageData(destX, destY, brushSize, brushSize);
       const destPixels = destData.data;
       const selectionMask = getSelectionMaskRegion(destX, destY, brushSize, brushSize);
 
@@ -429,7 +429,7 @@ export function useRetouchLayer() {
         }
       }
 
-      retouchCtx.value.putImageData(destData, destX, destY);
+      layerCtx.value.putImageData(destData, destX, destY);
     }
   }
 
@@ -444,7 +444,7 @@ export function useRetouchLayer() {
     range: 'shadows' | 'midtones' | 'highlights',
     isDodge: boolean
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
@@ -462,9 +462,9 @@ export function useRetouchLayer() {
       const destX = Math.floor(p.x - halfSize);
       const destY = Math.floor(p.y - halfSize);
 
-      // Sample from source (combined image + retouch layer)
+      // Sample from source (combined image + Paint layer)
       const sourceData = sampleRegion(sourceCtx, destX, destY, size, size);
-      const destData = retouchCtx.value!.getImageData(destX, destY, size, size);
+      const destData = layerCtx.value!.getImageData(destX, destY, size, size);
       const maskData = brushMask.data;
       const srcPixels = sourceData.data;
       const destPixels = destData.data;
@@ -482,13 +482,13 @@ export function useRetouchLayer() {
         const maskAlpha = (maskData[i + 3] / 255) * effectiveOpacity * selectionAlpha;
         if (maskAlpha === 0) continue;
 
-        // Get the current color (prefer retouch layer if has content, else source)
+        // Get the current color (prefer Paint layer if has content, else source)
         let r = srcPixels[i];
         let g = srcPixels[i + 1];
         let b = srcPixels[i + 2];
 
         if (destPixels[i + 3] > 0) {
-          // Blend existing retouch data
+          // Blend existing Paint layer data
           const existingAlpha = destPixels[i + 3] / 255;
           r = destPixels[i] * existingAlpha + srcPixels[i] * (1 - existingAlpha);
           g = destPixels[i + 1] * existingAlpha + srcPixels[i + 1] * (1 - existingAlpha);
@@ -498,7 +498,7 @@ export function useRetouchLayer() {
         // Adjust luminosity
         const adjusted = adjustLuminosity(r, g, b, amount * maskAlpha, range);
 
-        // Write to retouch layer
+        // Write to Paint layer
         const srcA = maskAlpha;
         const dstA = destPixels[i + 3] / 255;
         const outA = srcA + dstA * (1 - srcA);
@@ -511,7 +511,7 @@ export function useRetouchLayer() {
         }
       }
 
-      retouchCtx.value!.putImageData(destData, destX, destY);
+      layerCtx.value!.putImageData(destData, destX, destY);
     }
   }
 
@@ -525,7 +525,7 @@ export function useRetouchLayer() {
     strength: number, // 0-100
     isSaturate: boolean
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
@@ -543,9 +543,9 @@ export function useRetouchLayer() {
       const destX = Math.floor(p.x - halfSize);
       const destY = Math.floor(p.y - halfSize);
 
-      // Sample from source (combined image + retouch layer)
+      // Sample from source (combined image + Paint layer)
       const sourceData = sampleRegion(sourceCtx, destX, destY, size, size);
-      const destData = retouchCtx.value!.getImageData(destX, destY, size, size);
+      const destData = layerCtx.value!.getImageData(destX, destY, size, size);
       const maskData = brushMask.data;
       const srcPixels = sourceData.data;
       const destPixels = destData.data;
@@ -563,13 +563,13 @@ export function useRetouchLayer() {
         const maskAlpha = (maskData[i + 3] / 255) * effectiveOpacity * selectionAlpha;
         if (maskAlpha === 0) continue;
 
-        // Get the current color (prefer retouch layer if has content, else source)
+        // Get the current color (prefer Paint layer if has content, else source)
         let r = srcPixels[i];
         let g = srcPixels[i + 1];
         let b = srcPixels[i + 2];
 
         if (destPixels[i + 3] > 0) {
-          // Blend existing retouch data
+          // Blend existing Paint layer data
           const existingAlpha = destPixels[i + 3] / 255;
           r = destPixels[i] * existingAlpha + srcPixels[i] * (1 - existingAlpha);
           g = destPixels[i + 1] * existingAlpha + srcPixels[i + 1] * (1 - existingAlpha);
@@ -579,7 +579,7 @@ export function useRetouchLayer() {
         // Adjust saturation
         const adjusted = adjustSaturation(r, g, b, amount * maskAlpha);
 
-        // Write to retouch layer
+        // Write to Paint layer
         const srcA = maskAlpha;
         const dstA = destPixels[i + 3] / 255;
         const outA = srcA + dstA * (1 - srcA);
@@ -592,7 +592,7 @@ export function useRetouchLayer() {
         }
       }
 
-      retouchCtx.value!.putImageData(destData, destX, destY);
+      layerCtx.value!.putImageData(destData, destX, destY);
     }
   }
 
@@ -624,7 +624,7 @@ export function useRetouchLayer() {
     strength: number,
     isBlur: boolean
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
@@ -654,11 +654,11 @@ export function useRetouchLayer() {
 
       if (regionW <= 0 || regionH <= 0) continue;
 
-      // Draw only the needed region from source + retouch into the small work canvas
+      // Draw only the needed region from source + Paint layer into the small work canvas
       localCtx.clearRect(0, 0, regionW, regionH);
       localCtx.drawImage(sourceCanvas, regionX, regionY, regionW, regionH, 0, 0, regionW, regionH);
-      if (retouchCanvas.value) {
-        localCtx.drawImage(retouchCanvas.value, regionX, regionY, regionW, regionH, 0, 0, regionW, regionH);
+      if (layerCanvas.value) {
+        localCtx.drawImage(layerCanvas.value, regionX, regionY, regionW, regionH, 0, 0, regionW, regionH);
       }
 
       // Apply blur/sharpen on the local region canvas
@@ -688,7 +688,7 @@ export function useRetouchLayer() {
         );
       }
 
-      // Copy the processed region back to retouch layer, respecting selection
+      // Copy the processed region back to Paint layer, respecting selection
       const destX = Math.floor(p.x - halfSize);
       const destY = Math.floor(p.y - halfSize);
       // Read back just the brush-sized area from the local canvas
@@ -700,7 +700,7 @@ export function useRetouchLayer() {
       const selectionMask = getSelectionMaskRegion(destX, destY, size, size);
 
       if (selectionMask) {
-        const destData = retouchCtx.value!.getImageData(destX, destY, size, size);
+        const destData = layerCtx.value!.getImageData(destX, destY, size, size);
         const processedPixels = processedData.data;
         const destPixels = destData.data;
 
@@ -721,9 +721,9 @@ export function useRetouchLayer() {
             destPixels[i + 3] = destPixels[i + 3] * (1 - selectionAlpha) + processedPixels[i + 3] * selectionAlpha;
           }
         }
-        retouchCtx.value!.putImageData(destData, destX, destY);
+        layerCtx.value!.putImageData(destData, destX, destY);
       } else {
-        retouchCtx.value!.putImageData(processedData, destX, destY);
+        layerCtx.value!.putImageData(processedData, destX, destY);
       }
     }
   }
@@ -760,7 +760,7 @@ export function useRetouchLayer() {
     brushSettings: BrushSettings,
     color: { r: number; g: number; b: number; a?: number }
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const { size, hardness, opacity, flow, spacing } = brushSettings;
     const brushMask = getBrushMask(size, hardness);
@@ -776,7 +776,7 @@ export function useRetouchLayer() {
       const destX = Math.floor(p.x - halfSize);
       const destY = Math.floor(p.y - halfSize);
 
-      const destData = retouchCtx.value!.getImageData(destX, destY, brushSize, brushSize);
+      const destData = layerCtx.value!.getImageData(destX, destY, brushSize, brushSize);
       const maskData = brushMask.data;
       const destPixels = destData.data;
 
@@ -806,7 +806,7 @@ export function useRetouchLayer() {
         }
       }
 
-      retouchCtx.value!.putImageData(destData, destX, destY);
+      layerCtx.value!.putImageData(destData, destX, destY);
     }
   }
 
@@ -819,7 +819,7 @@ export function useRetouchLayer() {
     color: { r: number; g: number; b: number; a?: number },
     tolerance: number = 32
   ): void {
-    if (!retouchCtx.value) return;
+    if (!layerCtx.value) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
@@ -842,9 +842,9 @@ export function useRetouchLayer() {
     const targetG = srcPixels[startIdx + 1];
     const targetB = srcPixels[startIdx + 2];
 
-    // Get retouch layer data
-    const retouchData = retouchCtx.value.getImageData(0, 0, width, height);
-    const retouchPixels = retouchData.data;
+    // Get Paint layer data
+    const layerData = layerCtx.value.getImageData(0, 0, width, height);
+    const layerPixels = layerData.data;
 
     // Create visited array
     const visited = new Uint8Array(width * height);
@@ -877,18 +877,18 @@ export function useRetouchLayer() {
 
       visited[pixelIdx] = 1;
 
-      // Fill this pixel on retouch layer (blend with selection alpha)
+      // Fill this pixel on Paint layer (blend with selection alpha)
       const finalAlpha = colorAlpha * selectionAlpha;
-      retouchPixels[idx] = color.r;
-      retouchPixels[idx + 1] = color.g;
-      retouchPixels[idx + 2] = color.b;
-      retouchPixels[idx + 3] = finalAlpha * 255;
+      layerPixels[idx] = color.r;
+      layerPixels[idx + 1] = color.g;
+      layerPixels[idx + 2] = color.b;
+      layerPixels[idx + 3] = finalAlpha * 255;
 
       // Add neighbors
       queue.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
     }
 
-    retouchCtx.value.putImageData(retouchData, 0, 0);
+    layerCtx.value.putImageData(layerData, 0, 0);
   }
 
   /**
@@ -906,12 +906,12 @@ export function useRetouchLayer() {
     bounds: { x: number; y: number; width: number; height: number },
     blendWidth: number = 15
   ): void {
-    if (!retouchCtx.value || !selectionMaskCtx) return;
+    if (!layerCtx.value || !selectionMaskCtx) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    applyPatch(sourceCtx, retouchCtx.value, selectionMaskCtx, offset, bounds, blendWidth);
+    applyPatch(sourceCtx, layerCtx.value, selectionMaskCtx, offset, bounds, blendWidth);
   }
 
   /**
@@ -929,8 +929,8 @@ export function useRetouchLayer() {
   }
 
   return {
-    retouchCanvas,
-    retouchCtx,
+    layerCanvas,
+    layerCtx,
     layerSize,
     cloneOffset,
     initLayer,

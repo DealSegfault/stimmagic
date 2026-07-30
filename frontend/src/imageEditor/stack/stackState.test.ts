@@ -79,7 +79,7 @@ test('a parametric op is never stale — it is deterministic in its params', () 
 test('a container that reads pixels carries an advisory hash like a patch', () => {
   const d = doc([
     adjust('d'),
-    { id: 'r', class: 'container', enabled: true, label: 'Retouch', exec: { kind: 'retouch' },
+    { id: 'r', class: 'container', enabled: true, label: 'Paint', exec: { kind: 'paint' },
       raster_ref: 'payloads/r.png', sampled_input_hash: 'base' },
   ])
   assert.equal(deriveStackState(d).ops[1].staleness, 'advisory')
@@ -88,9 +88,51 @@ test('a container that reads pixels carries an advisory hash like a patch', () =
 test('a pure paint layer has no sampled hash and never goes advisory', () => {
   const d = doc([
     adjust('d'),
-    { id: 'p', class: 'container', enabled: true, label: 'Retouch', exec: { kind: 'paint' },
+    { id: 'p', class: 'container', enabled: true, label: 'Paint', exec: { kind: 'paint' },
       raster_ref: 'payloads/p.png' },
   ])
+  assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
+})
+
+test('retouch region children participate in their container pixel identity', () => {
+  const base = {
+    id: 'repair',
+    class: 'container',
+    enabled: true,
+    label: 'Retouch',
+    exec: { kind: 'retouch-regions', version: 1 },
+    defaults: {},
+    regions: [{ id: 'spot', kind: 'heal', enabled: true, mask_ref: 'payloads/mask.png', settings: {} }],
+  }
+  const before = stackHashes(doc([base as any])).head
+  const after = stackHashes(doc([{
+    ...base,
+    regions: [{ ...base.regions[0], settings: { exposure: 10 } }],
+  } as any])).head
+
+  assert.notEqual(before, after)
+})
+
+test('a masked adjustment is parametric and never carries sampling staleness', () => {
+  const d = doc([
+    adjust('under'),
+    {
+      id: 'local',
+      class: 'container',
+      enabled: true,
+      label: 'Retouch',
+      exec: { kind: 'retouch-regions', version: 1 },
+      defaults: {},
+      regions: [{
+        id: 'mask',
+        kind: 'adjust',
+        enabled: true,
+        mask_ref: 'payloads/mask.png',
+        settings: { exposure: 20, opacity: 1, feather_px: 4 },
+      }],
+    } as any,
+  ])
+
   assert.equal(deriveStackState(d).ops[1].staleness, 'clean')
 })
 

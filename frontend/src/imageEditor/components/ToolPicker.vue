@@ -10,11 +10,14 @@
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
 import ToolIcon from '../../components/tools/ToolIcon.vue'
 import ToolProviderLabel from '../../components/tools/ToolProviderLabel.vue'
+import { isRunnableTool } from '../../utils/toolHandoff'
 
 const props = withDefaults(defineProps<{
   tools: any[]
   /** Only tools that can run this task are listed. */
   taskType: string
+  /** Optional compatible tasks, ordered from best match to fallback. */
+  compatibleTaskTypes?: string[]
   selectedId?: string | null
   /**
    * Width. A fixed 320px is right under a toolbar with the whole window to
@@ -28,9 +31,28 @@ const emit = defineEmits<{ select: [any]; close: [] }>()
 
 const root = ref<HTMLElement | null>(null)
 
-const eligible = computed(() =>
-  props.tools.filter(tool => (tool.task_types || []).includes(props.taskType))
-)
+const eligible = computed(() => {
+  const accepted = props.compatibleTaskTypes?.length
+    ? props.compatibleTaskTypes
+    : [props.taskType]
+  // Every row here is an offer, so a tool behind a disconnected or disabled
+  // provider does not belong in it — the catalog carries those so screens that
+  // explain a tool can name it, not so a menu can promise one that cannot run.
+  const runnable = props.tools.filter(isRunnableTool)
+  return accepted.flatMap(taskType =>
+    runnable.filter(tool => {
+      const taskTypes = tool.task_types?.length
+        ? tool.task_types
+        : tool.task_type
+          ? [tool.task_type]
+          : []
+      return taskTypes.includes(taskType)
+        && !accepted.slice(0, accepted.indexOf(taskType)).some(earlier =>
+          taskTypes.includes(earlier)
+        )
+    })
+  )
+})
 
 function isCloud(tool: any): boolean {
   return tool.provider_type === 'stimma-cloud' || tool.is_stimma_cloud === true

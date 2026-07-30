@@ -8,6 +8,7 @@
  * system. Nobody gets forty controls in a toolbar; nobody loses them either.
  */
 import { computed } from 'vue'
+import { AdjustmentsHorizontalIcon, ClockIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import Button from '../../components/ui/Button.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
@@ -15,6 +16,7 @@ import ToolIcon from './ToolIcon.vue'
 import BrushPicker from '../ported/BrushPicker.vue'
 import ColorPicker from '../ported/ColorPicker.vue'
 import PaintPicker from './PaintPicker.vue'
+import ToolAdvancedParams from './ToolAdvancedParams.vue'
 import {
   CROP_ASPECTS,
 } from '../stack/adjustSections'
@@ -71,6 +73,8 @@ const fillSubs = ['rectangle', 'ellipse']
 // Sharpie strokes take their glow from the brush, not the shape style, so the
 // effect menu would lie on Draw.
 const effectSubs = ['arrow', 'rectangle', 'ellipse', 'line']
+const retouchAdjustmentSubs = ['light', 'color', 'detail']
+const retouchModelSubs = ['remove', 'repaint']
 
 /**
  * A SELECTED shape overrides the sub-tool: the controls shown are the ones the
@@ -127,23 +131,30 @@ function chipClass(active: boolean, pending = false) {
   >
     <!-- Sub-tools, for the families that have them. -->
     <template v-if="family.subTools.length">
-      <Tooltip
+      <template
         v-for="option in family.subTools"
         :key="option.id"
-        :text="option.pending ? 'Not built yet' : option.label"
       >
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
-          :class="chipClass(sub === option.id, option.pending)"
-          :disabled="option.pending"
-          :aria-label="option.label"
-          @click="emit('sub', option.id)"
+        <Tooltip
+          :text="option.pending ? 'Not built yet' : option.hint ?? option.label"
         >
-          <ToolIcon v-if="option.icon" :name="option.icon" />
-          <span v-else>{{ option.label }}</span>
-        </button>
-      </Tooltip>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+            :class="chipClass(sub === option.id, option.pending)"
+            :disabled="option.pending"
+            :aria-label="option.label"
+            @click="emit('sub', option.id)"
+          >
+            <ToolIcon v-if="option.icon" :name="option.icon" />
+            <span v-else>{{ option.label }}</span>
+          </button>
+        </Tooltip>
+        <span
+          v-if="family.id === 'retouch' && (option.id === 'patch' || option.id === 'repaint')"
+          class="w-px h-5 bg-edge-subtle mx-1"
+        />
+      </template>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
     </template>
 
@@ -169,20 +180,6 @@ function chipClass(active: boolean, pending = false) {
           </button>
           <span class="w-px h-5 bg-edge-subtle mx-1" />
 
-          <!-- The mask IS the selection: brushing it happens through the
-               selection rail's brush, the same as every other region. -->
-          <button
-            v-if="sub === 'inpaint' && state.hasSelection"
-            type="button"
-            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
-                   bg-selection/15 text-content hover:bg-selection/25"
-            title="Clear the selection"
-            @click="emit('set', { clearSelection: true })"
-          >
-            Using selection
-            <span aria-hidden="true">×</span>
-          </button>
-
           <template v-if="sub === 'expand'">
             <button
               v-for="factor in [1.15, 1.25, 1.5]"
@@ -199,7 +196,7 @@ function chipClass(active: boolean, pending = false) {
           <div class="flex-1" />
 
           <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
-            Count
+            Variations
             <input
               type="number" min="1" max="8"
               class="w-12 px-2 py-1 bg-surface-raised rounded-md text-content"
@@ -272,6 +269,170 @@ function chipClass(active: boolean, pending = false) {
     </template>
 
     <!-- Retouch --------------------------------------------------------- -->
+    <template v-else-if="family.id === 'retouch'">
+      <!-- Remove/Repaint are one explicit model run over the shared selection,
+           not a stream of brush gestures. Everything about that one run — model,
+           Advanced, prompt, Count, Run — lives in a single compose card, so the
+           action sits directly under its input instead of a row away. Repaint
+           leads with the prompt and docks the run controls into the card's
+           footer; Remove has no prompt, so the card collapses to that one row.
+           Every provider parameter still lives behind Advanced. -->
+      <div
+        v-if="retouchModelSubs.includes(sub ?? '')"
+        class="w-full"
+      >
+        <!-- Both states share one card shell so they read as the same panel.
+             Repaint's input is the prompt; Remove has none, so where the prompt
+             would be it names the gesture instead — the two stay parallel and
+             neither feels cramped. -->
+        <div
+          class="rounded-lg border border-edge-subtle bg-surface-raised overflow-hidden"
+          :class="sub === 'repaint'
+            ? 'focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30'
+            : ''"
+        >
+          <textarea
+            v-if="sub === 'repaint'"
+            rows="2"
+            class="w-full px-3 py-2.5 text-sm bg-transparent text-content resize-none
+                   placeholder:text-content-muted focus-visible:outline-none"
+            placeholder="Describe what should replace the selected area"
+            :value="state.prompt"
+            @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
+            @keydown.enter.meta="emit('run')"
+          />
+          <p v-else class="px-3 py-2.5 text-sm text-content-muted">
+            Select the area to remove, then Run.
+          </p>
+
+          <!-- The run controls, docked into the card's footer under the input. -->
+          <div class="flex items-center gap-1.5 px-2 py-1.5 border-t border-edge-subtle">
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                     border border-edge-subtle text-content-secondary
+                     hover:text-content hover:bg-overlay-subtle"
+              @click="emit('openToolPicker', $event)"
+            >
+              {{ toolLabel || 'No tool' }}
+              <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+
+            <ToolbarPopover
+              label=""
+              :width="360"
+              :disabled="!state.activeTool"
+              aria-label="Advanced settings"
+            >
+              <template #trigger>
+                <AdjustmentsHorizontalIcon class="w-4 h-4" />
+              </template>
+              <ToolAdvancedParams
+                v-if="state.activeTool"
+                :tool="state.activeTool"
+                :values="state.toolParams || {}"
+                @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
+              />
+            </ToolbarPopover>
+
+            <ToolbarPopover
+              v-if="sub === 'repaint'"
+              label=""
+              :width="320"
+              :disabled="!state.recentRepaintPrompts?.length"
+              close-on-select
+              aria-label="Recent Repaint prompts"
+            >
+              <template #trigger>
+                <ClockIcon class="w-3.5 h-3.5" />
+              </template>
+              <div class="space-y-1">
+                <p class="px-2 pb-1 text-xs font-semibold text-content-secondary">
+                  Recent prompts
+                </p>
+                <!-- The row is the container so the whole strip highlights and
+                     reveals its remove control; the prompt and the × are
+                     siblings, not nested buttons. Only the prompt closes the
+                     popover, so removing several in a row keeps it open. -->
+                <div
+                  v-for="recent in state.recentRepaintPrompts"
+                  :key="recent"
+                  class="group/recent flex items-center gap-1 rounded-md pr-1
+                         hover:bg-overlay-subtle"
+                >
+                  <button
+                    type="button"
+                    data-close-popover
+                    class="min-w-0 flex-1 rounded-md px-2 py-2 text-left text-xs leading-5
+                           text-content-secondary group-hover/recent:text-content
+                           focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                    @click="emit('set', { prompt: recent })"
+                  >
+                    {{ recent }}
+                  </button>
+                  <button
+                    type="button"
+                    class="grid h-6 w-6 shrink-0 place-items-center rounded-md
+                           text-content-tertiary opacity-0 transition-opacity
+                           group-hover/recent:opacity-100 hover:text-content
+                           focus-visible:opacity-100 focus-visible:outline-none
+                           focus-visible:ring-2 ring-accent/60"
+                    aria-label="Remove from recent prompts"
+                    @click="emit('set', { removeRecentPrompt: recent })"
+                  >
+                    <XMarkIcon class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            </ToolbarPopover>
+
+            <div class="flex-1" />
+            <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
+              Variations
+              <input
+                type="number"
+                min="1"
+                max="8"
+                class="w-12 px-2 py-1 rounded-md font-mono tabular-nums text-content bg-overlay-subtle"
+                :value="state.candidateCount"
+                @input="emit('set', {
+                  candidateCount: Number(($event.target as HTMLInputElement).value),
+                })"
+              />
+            </label>
+            <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
+              Run
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The sub-tool chip above says what manual repair is being authored.
+           The brush only defines its region; it is not itself a Paint stroke. -->
+      <ToolbarPopover
+        v-else-if="sub !== 'patch' && !retouchAdjustmentSubs.includes(sub ?? '')"
+        :label="`${Math.round(state.retouchBrush.size)}px`"
+      >
+        <template #trigger>
+          <span
+            class="w-4 h-4 rounded-full bg-content"
+            :style="{
+              opacity: state.retouchBrush.opacity / 100,
+              filter: `blur(${(100 - state.retouchBrush.hardness) / 40}px)`,
+            }"
+          />
+        </template>
+        <BrushPicker
+          :model-value="state.retouchBrush"
+          :stroke-color="state.paintColor"
+          @update:model-value="emit('set', { retouchBrush: $event })"
+        />
+      </ToolbarPopover>
+    </template>
+
+    <!-- Paint ----------------------------------------------------------- -->
     <template v-else-if="family.id === 'paint'">
       <Tooltip
         v-for="engine in PAINT_ENGINES"
@@ -407,21 +568,6 @@ function chipClass(active: boolean, pending = false) {
       >
         New layer
       </button>
-      <!-- The invisible-scope trap, closed: if strokes are clipped, the bar
-           says so, and the × is the way out without leaving Paint. -->
-      <template v-if="state.hasSelection">
-        <span class="w-px h-5 bg-edge-subtle mx-1" />
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
-                 bg-selection/15 text-content hover:bg-selection/25"
-          title="Strokes only land inside the selection — click to clear it"
-          @click="emit('set', { clearSelection: true })"
-        >
-          Painting inside selection
-          <span aria-hidden="true">×</span>
-        </button>
-      </template>
     </template>
 
     <!-- Filters: picking one IS applying it, so the strip belongs where the
@@ -462,20 +608,26 @@ function chipClass(active: boolean, pending = false) {
       </div>
     </template>
 
-    <!-- Levels: six addable edits. Each click makes its own focused step —
-         a Tone, a Detail, a Tint, or an Auto (a Tone seeded from the
+    <!-- Adjust: six addable edits. Each click makes its own focused step —
+         a Light, a Color, a Detail, or an Auto (a Light edit seeded from the
          histogram) — whose controls live in its Properties. Same rule as the
          strip: the bar offers what you can ADD. -->
     <template v-else-if="family.id === 'levels'">
-      <button
+      <Tooltip
         v-for="edit in LEVEL_EDITS"
         :key="edit.id"
-        type="button"
-        class="px-2.5 py-1.5 text-xs rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
-        @click="emit('set', { addLevel: edit.id })"
+        :text="edit.label"
       >
-        {{ edit.label }}
-      </button>
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          :aria-label="edit.label"
+          @click="emit('set', { addLevel: edit.id })"
+        >
+          <ToolIcon :name="edit.icon" />
+        </button>
+      </Tooltip>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <button
         v-for="auto in AUTO_EDITS"

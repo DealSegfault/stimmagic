@@ -8,7 +8,10 @@
  */
 
 import type { Point, Size } from './geometry';
-import { colorDistance } from './pixelOps';
+import {
+  createWandMaskAlpha,
+  type WandMaskOptions,
+} from '../stack/wandMask';
 
 /**
  * Create an empty selection mask canvas
@@ -160,65 +163,38 @@ export function floodFillSelection(
   maskCtx: CanvasRenderingContext2D,
   sourceCtx: CanvasRenderingContext2D,
   startX: number, startY: number,
-  tolerance: number,
+  options: WandMaskOptions,
   mode: 'new' | 'add' | 'subtract' | 'intersect'
 ): void {
   const { width, height } = maskCtx.canvas;
 
-  // Get source image data
   const sourceData = sourceCtx.getImageData(0, 0, width, height);
-  const srcPixels = sourceData.data;
+  const alpha = createWandMaskAlpha(
+    sourceData.data,
+    width,
+    height,
+    startX,
+    startY,
+    options,
+  );
 
-  // Get the target color at start position
-  const startIdx = (Math.floor(startY) * width + Math.floor(startX)) * 4;
-  const targetR = srcPixels[startIdx];
-  const targetG = srcPixels[startIdx + 1];
-  const targetB = srcPixels[startIdx + 2];
-
-  // Create result mask
   const resultCanvas = document.createElement('canvas');
   resultCanvas.width = width;
   resultCanvas.height = height;
   const resultCtx = resultCanvas.getContext('2d', { willReadFrequently: true })!;
-  const resultData = resultCtx.getImageData(0, 0, width, height);
+  const resultData = resultCtx.createImageData(width, height);
   const resultPixels = resultData.data;
-
-  // Flood fill using scanline algorithm
-  const visited = new Uint8Array(width * height);
-  const stack: Array<[number, number]> = [[Math.floor(startX), Math.floor(startY)]];
-
-  while (stack.length > 0) {
-    const [x, y] = stack.pop()!;
-    if (x < 0 || x >= width || y < 0 || y >= height) continue;
-
-    const idx = y * width + x;
-    if (visited[idx]) continue;
-    visited[idx] = 1;
-
-    const pixelIdx = idx * 4;
-    const r = srcPixels[pixelIdx];
-    const g = srcPixels[pixelIdx + 1];
-    const b = srcPixels[pixelIdx + 2];
-
-    const dist = colorDistance(r, g, b, targetR, targetG, targetB);
-    if (dist <= tolerance) {
-      // Mark as selected (white in mask)
-      resultPixels[pixelIdx] = 255;
-      resultPixels[pixelIdx + 1] = 255;
-      resultPixels[pixelIdx + 2] = 255;
-      resultPixels[pixelIdx + 3] = 255;
-
-      // Add neighbors
-      stack.push([x + 1, y]);
-      stack.push([x - 1, y]);
-      stack.push([x, y + 1]);
-      stack.push([x, y - 1]);
-    }
+  for (let index = 0; index < alpha.length; index++) {
+    const pixelOffset = index * 4;
+    resultPixels[pixelOffset] = 255;
+    resultPixels[pixelOffset + 1] = 255;
+    resultPixels[pixelOffset + 2] = 255;
+    resultPixels[pixelOffset + 3] = alpha[index];
   }
-
   resultCtx.putImageData(resultData, 0, 0);
 
-  // Apply to mask based on mode
+  // Refinement happens on the temporary result above. Only the finished wand
+  // mask is combined, so Add/Subtract never re-feathers older selections.
   if (mode === 'new') {
     maskCtx.clearRect(0, 0, width, height);
     maskCtx.drawImage(resultCanvas, 0, 0);

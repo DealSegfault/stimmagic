@@ -20,8 +20,14 @@
 import { computed } from 'vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolIcon from './ToolIcon.vue'
+import ToolbarPopover from './ToolbarPopover.vue'
 import { SELECT_TOOLS, SELECTION_MODES } from '../stack/toolFamilies'
 import type { SelectToolId, SelectionMode } from '../stack/toolFamilies'
+import {
+  FEATHER_SLIDER_MAX,
+  featherPxFromSlider,
+  featherSliderFromPx,
+} from '../stack/featherScale'
 
 const props = defineProps<{
   armed: SelectToolId | null
@@ -29,6 +35,9 @@ const props = defineProps<{
   combine: SelectionMode
   featherPx: number
   tolerance: number
+  spread: number
+  growPx: number
+  antialias: boolean
   brushSize: number
   /**
    * The pointer — object select — is the workspace's IDLE state, not an armed
@@ -50,12 +59,12 @@ const combineEnabled = computed(() => props.armed !== null)
 /**
  * ONE slider slot, fixed geometry; each tool brings its primary parameter.
  * Only the label, range and binding swap when a tool arms — a readout
- * changing, not a layout change, so no click target ever moves. (Wand shows
- * Tolerance, its primary; feather-on-wand is the niche this trades away.)
+ * changing, not a layout change, so no click target ever moves. The wand's
+ * secondary refinements live in the fixed options slot beside the slider.
  */
 const SLIDER_SLOTS = {
-  feather: { label: 'Feather', key: 'featherPx', min: 0, max: 48, unit: 'px' },
-  tolerance: { label: 'Tolerance', key: 'tolerance', min: 1, max: 128, unit: '' },
+  feather: { label: 'Feather', key: 'featherPx', min: 0, max: FEATHER_SLIDER_MAX, unit: 'px' },
+  tolerance: { label: 'Threshold', key: 'tolerance', min: 1, max: 100, unit: '' },
   brush: { label: 'Brush', key: 'selectBrushSize', min: 8, max: 300, unit: 'px' },
 } as const
 
@@ -68,8 +77,20 @@ const slot = computed(() => {
 const slotValue = computed(() => {
   if (props.armed === 'wand') return props.tolerance
   if (props.armed === 'brush') return props.brushSize
-  return props.featherPx
+  return featherSliderFromPx(props.featherPx)
 })
+
+const slotReadout = computed(() =>
+  slot.value.key === 'featherPx' ? props.featherPx : slotValue.value
+)
+
+function onSliderInput(value: number) {
+  if (slot.value.key === 'featherPx') {
+    emit('set', { featherPx: featherPxFromSlider(value) })
+    return
+  }
+  emit('set', { [slot.value.key]: value })
+}
 
 function buttonClass(active: boolean, enabled = true) {
   if (!enabled) return 'text-content-tertiary/50 cursor-default'
@@ -146,10 +167,75 @@ function sliderClass(enabled: boolean) {
         :min="slot.min" :max="slot.max"
         :value="slotValue"
         :disabled="!combineEnabled"
-        @input="emit('set', { [slot.key]: Number(($event.target as HTMLInputElement).value) })"
+        @input="onSliderInput(Number(($event.target as HTMLInputElement).value))"
       />
-      <span class="tabular-nums w-10 text-content-secondary">{{ slotValue }}{{ slot.unit }}</span>
+      <span class="tabular-nums w-10 text-content-secondary">{{ slotReadout }}{{ slot.unit }}</span>
     </label>
+
+    <ToolbarPopover
+      label=""
+      aria-label="Wand settings"
+      :width="284"
+      :disabled="armed !== 'wand'"
+    >
+      <template #trigger>
+        <ToolIcon name="sliders" />
+      </template>
+      <div class="space-y-3">
+        <p class="text-xs font-semibold text-content-secondary">Wand refinement</p>
+
+        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
+          <span class="text-content-tertiary">Spread</span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            :value="spread"
+            @input="emit('set', { spread: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="font-mono tabular-nums text-right text-content-secondary">{{ spread }}%</span>
+        </label>
+
+        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
+          <span class="text-content-tertiary">Grow</span>
+          <input
+            type="range"
+            min="-40"
+            max="40"
+            :value="growPx"
+            @input="emit('set', { growPx: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="font-mono tabular-nums text-right text-content-secondary">{{ growPx }}px</span>
+        </label>
+
+        <label class="grid grid-cols-[4.5rem_1fr_2.5rem] items-center gap-2 text-xs">
+          <span class="text-content-tertiary">Feather</span>
+          <input
+            type="range"
+            min="0"
+            :max="FEATHER_SLIDER_MAX"
+            :value="featherSliderFromPx(featherPx)"
+            @input="emit('set', {
+              featherPx: featherPxFromSlider(Number(($event.target as HTMLInputElement).value)),
+            })"
+          />
+          <span class="font-mono tabular-nums text-right text-content-secondary">{{ featherPx }}px</span>
+        </label>
+
+        <label class="flex items-center justify-between gap-3 text-xs text-content-secondary">
+          <span>
+            Anti-alias
+            <span class="block text-content-tertiary">Smooth hard mask edges</span>
+          </span>
+          <input
+            type="checkbox"
+            class="accent-accent"
+            :checked="antialias"
+            @change="emit('set', { antialias: ($event.target as HTMLInputElement).checked })"
+          />
+        </label>
+      </div>
+    </ToolbarPopover>
 
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 

@@ -38,7 +38,7 @@ function brush(
 }
 
 /**
- * Conservative starting points for retouch work.
+ * Conservative starting points for pixel-reading Paint engines.
  *
  * The effect engines intentionally begin soft and low-strength. A person can
  * turn them up for a dramatic pass; the default should survive several passes
@@ -167,4 +167,3 @@ export function paintEngineSettings(
     saturate: typeof stored?.saturate === 'boolean' ? stored.saturate : fallback.saturate,
   }
 }
-

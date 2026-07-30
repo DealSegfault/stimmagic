@@ -74,7 +74,10 @@ export function useWebSocket() {
           const message = JSON.parse(event.data)
           handleMessage(message)
         } catch (error) {
-          console.error('[WebSocket] Failed to parse message:', error, event.data)
+          console.error('[WebSocket] Failed to parse message', {
+            errorType: error?.name || 'Error',
+            payloadChars: typeof event.data === 'string' ? event.data.length : null
+          })
         }
       }
 
@@ -143,7 +146,9 @@ export function useWebSocket() {
     const { event, data } = message
 
     if (!event) {
-      console.warn('[WebSocket] Received message without event type:', message)
+      console.warn('[WebSocket] Received message without event type', {
+        dataKeys: data && typeof data === 'object' ? Object.keys(data) : []
+      })
       return
     }
 

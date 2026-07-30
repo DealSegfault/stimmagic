@@ -25,6 +25,12 @@ import {
 import { applyEffects, hasEffects, setEffectsSeed } from '../ported/effects'
 import { FILTER_MATRICES } from '../ported/filterMatrices'
 import { renderShapes } from '../ported/shapes'
+import {
+  applyPhotographicAdjustments,
+  hasPhotographicAdjustments,
+} from './photoAdjustments'
+import { wholeImageAdjustmentParams } from './adjustSections'
+import type { ToneCurve } from './toneCurve.ts'
 
 export interface CropParams {
   /**
@@ -58,8 +64,19 @@ export interface AdjustParams {
   contrast?: number
   saturation?: number
   exposure?: number
+  highlights?: number
+  shadows?: number
+  whites?: number
+  blacks?: number
+  curve?: ToneCurve
   temperature?: number
+  tint?: number
+  hue?: number
   gamma?: number
+  vibrance?: number
+  colorizeHue?: number
+  colorizeAmount?: number
+  defringe?: number
   filter?: string | null
   /** Preset strength, 0-100; below 100 blends the preset toward identity. */
   filterAmount?: number
@@ -89,7 +106,21 @@ export interface AdjustParams {
   motionBlur?: number
   motionBlurAngle?: number
   vignette?: number
+  texture?: number
   clarity?: number
+  dehaze?: number
+  moire?: number
+  noiseReduction?: number
+  sharpenRadius?: number
+  sharpenDetail?: number
+  sharpenMasking?: number
+  noiseReductionDetail?: number
+  noiseReductionContrast?: number
+  colorNoiseReduction?: number
+  colorNoiseReductionDetail?: number
+  colorNoiseReductionSmoothness?: number
+  grainSize?: number
+  grainRoughness?: number
   halftone?: number
   halftoneAngle?: number
   vhs?: number
@@ -196,17 +227,19 @@ export function applyCrop(
 /** Whether a Adjust op would change any pixel — a no-op still costs a copy. */
 export function adjustIsIdentity(params: AdjustParams): boolean {
   const zeroish = (v: number | undefined) => !v
+  const photo = wholeImageAdjustmentParams(params)
   return (
-    zeroish(params.brightness) && zeroish(params.contrast) && zeroish(params.saturation) &&
-    zeroish(params.exposure) && zeroish(params.temperature) &&
-    (params.gamma === undefined || params.gamma === 1) &&
+    zeroish(photo.brightness) && zeroish(photo.contrast) && zeroish(photo.saturation) &&
+    zeroish(photo.exposure) && zeroish(photo.temperature) && zeroish(photo.tint) &&
+    (photo.gamma === undefined || photo.gamma === 1) &&
+    !hasPhotographicAdjustments(photo) &&
     !params.filter && !params.colorMatrix &&
     !params.splitToningEnabled && !params.gradientMapEnabled && !params.colorIsolationEnabled &&
-    !hasEffects(effectsStateFrom(params))
+    !hasEffects(effectsStateFrom({ ...params, ...photo }))
   )
 }
 
-function effectsStateFrom(params: AdjustParams) {
+export function effectsStateFrom(params: AdjustParams) {
   return {
     blur: params.blur ?? 0,
     sharpen: params.sharpen ?? 0,
@@ -217,7 +250,21 @@ function effectsStateFrom(params: AdjustParams) {
     motionBlur: params.motionBlur ?? 0,
     motionBlurAngle: params.motionBlurAngle ?? 0,
     vignette: params.vignette ?? 0,
+    texture: params.texture ?? 0,
     clarity: params.clarity ?? 0,
+    noiseReduction: params.noiseReduction ?? 0,
+    sharpenRadius: params.sharpenRadius ?? 1,
+    sharpenDetail: params.sharpenDetail ?? 0,
+    sharpenMasking: params.sharpenMasking ?? 0,
+    noiseReductionDetail: params.noiseReductionDetail ?? 0,
+    noiseReductionContrast: params.noiseReductionContrast ?? 0,
+    colorNoiseReduction: params.colorNoiseReduction ?? 0,
+    colorNoiseReductionDetail: params.colorNoiseReductionDetail ?? 0,
+    colorNoiseReductionSmoothness: params.colorNoiseReductionSmoothness ?? 0,
+    grainSize: params.grainSize ?? 0,
+    grainRoughness: params.grainRoughness ?? 50,
+    moire: params.moire ?? 0,
+    defringe: params.defringe ?? 0,
     halftone: params.halftone ?? 0,
     halftoneAngle: params.halftoneAngle ?? 0,
     vhs: params.vhs ?? 0,
@@ -245,26 +292,34 @@ export function applyAdjust(
    */
   seed = 0
 ): HTMLCanvasElement {
+  const photo = wholeImageAdjustmentParams(params)
   const out = makeCanvas(width, height)
   const ctx = out.getContext('2d', { willReadFrequently: true })!
   ctx.drawImage(input, 0, 0, width, height)
 
   const adjustments = {
-    brightness: params.brightness ?? 0,
-    contrast: params.contrast ?? 0,
-    saturation: params.saturation ?? 0,
-    exposure: params.exposure ?? 0,
-    temperature: params.temperature ?? 0,
-    gamma: params.gamma ?? 1,
+    brightness: photo.brightness,
+    contrast: photo.contrast,
+    saturation: photo.saturation,
+    exposure: photo.exposure,
+    temperature: photo.temperature,
+    tint: photo.tint,
+    gamma: photo.gamma,
   }
   const hasAdjustments =
     adjustments.brightness !== 0 || adjustments.contrast !== 0 ||
     adjustments.saturation !== 0 || adjustments.exposure !== 0 ||
-    adjustments.temperature !== 0 || adjustments.gamma !== 1
+    adjustments.temperature !== 0 || adjustments.tint !== 0 || adjustments.gamma !== 1
 
   if (hasAdjustments) {
     const data = ctx.getImageData(0, 0, width, height)
     applyColorMatrix(data, combineAdjustments(adjustments))
+    ctx.putImageData(data, 0, 0)
+  }
+
+  if (hasPhotographicAdjustments(photo)) {
+    const data = ctx.getImageData(0, 0, width, height)
+    applyPhotographicAdjustments(data, photo)
     ctx.putImageData(data, 0, 0)
   }
 
@@ -328,7 +383,7 @@ export function applyAdjust(
     ctx.putImageData(data, 0, 0)
   }
 
-  const effects = effectsStateFrom(params)
+  const effects = effectsStateFrom({ ...params, ...photo })
   if (hasEffects(effects)) {
     setEffectsSeed(seed)
     const result = applyEffects(out, effects)
@@ -340,9 +395,10 @@ export function applyAdjust(
 }
 
 /**
- * A raster layer (Paint, or an imported retouch layer) drawn over its input.
- * A layer IS a step: several Paint rows are several layers, each at its own
- * stack position with its own opacity.
+ * A transparent raster contribution drawn over its input.
+ *
+ * Paint uses this for a whole layer; Retouch uses it for each independently
+ * stored repair result. Imported legacy retouch pixels are Paint layers.
  */
 export function applyRasterLayer(
   input: CanvasImageSource,

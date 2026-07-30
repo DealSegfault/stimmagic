@@ -212,7 +212,12 @@ async def _cloud_search(
         base_url = get_settings().cloud.base_url
         url = f"{base_url}/api/search/web"
 
-        log.info("cloud search request", query=query, kind=kind, base_url=base_url)
+        log.info(
+            "cloud search request",
+            query_chars=len(query),
+            kind=kind,
+            base_url=base_url,
+        )
 
         async with httpx.AsyncClient() as client:
             response = await client.post(

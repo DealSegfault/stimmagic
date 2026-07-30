@@ -3,7 +3,7 @@
  * The selected adjustment step's control surface.
  *
  * Steps are fine-grained now, and the panel only ever shows the one step's own
- * controls: a Tone step gets the tone sliders, a Tint step the split-tone
+ * controls: a Light step gets the tone sliders, a Color step the split-tone
  * dials, a strip step (preset or pixel look) gets Amount. The collapsible
  * everything-surface survives only for steps migrated from the snapshot
  * editor, which carry an arbitrary mix of params in one blob.
@@ -15,10 +15,13 @@ import { computed, ref } from 'vue'
 import {
   ADJUST_SECTIONS, adjustControl, effectLookOf, levelEditById,
 } from '../stack/adjustSections'
-import type { AdjustControl } from '../stack/adjustSections'
+import type { AdjustSliderControl } from '../stack/adjustSections'
+import type { ToneCurveHistogram } from '../stack/toneCurve'
+import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
 
 const props = defineProps<{
   params: Record<string, any>
+  histogram?: ToneCurveHistogram
   disabled?: boolean
 }>()
 
@@ -27,7 +30,7 @@ const emit = defineEmits<{
   commit: []
 }>()
 
-function valueOf(control: AdjustControl) {
+function valueOf(control: AdjustSliderControl) {
   const value = props.params?.[control.key]
   return typeof value === 'number' ? value : control.default
 }
@@ -40,7 +43,11 @@ function setToggle(key: string, value: boolean) {
   emit('change', { [key]: value }, `adjust:${key}`)
 }
 
-/** A Tone / Detail / Tint step: its marker names its control set. */
+function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
+  emit('change', patch, coalesceKey)
+}
+
+/** A Light / Color / Detail step: its marker names its control set. */
 const levelEdit = computed(() =>
   props.params?.section ? levelEditById(props.params.section) ?? null : null
 )
@@ -113,30 +120,18 @@ const openSection = ref<string>('levels')
       </label>
     </section>
 
-    <!-- A Tone / Detail / Tint step: its own sliders, flat — the set is small
+    <!-- A Light / Color / Detail step: its own sliders, flat — the set is small
          enough that hiding it behind a header would just be a click tax. -->
-    <section v-if="levelEdit" class="px-3 py-2 space-y-2">
-      <label
-        v-for="control in levelEdit.controls"
-        :key="control.key"
-        class="flex items-center gap-2"
-      >
-        <span class="w-28 shrink-0 text-xs text-content-tertiary">{{ control.label }}</span>
-        <input
-          type="range"
-          class="flex-1"
-          :min="control.min"
-          :max="control.max"
-          :step="control.step"
-          :disabled="disabled"
-          :value="valueOf(control)"
-          @input="setValue(control.key, Number(($event.target as HTMLInputElement).value))"
-          @change="emit('commit')"
-        />
-        <span class="w-10 text-right text-xs text-content-tertiary tabular-nums">
-          {{ valueOf(control) }}
-        </span>
-      </label>
+    <section v-if="levelEdit" class="px-3 py-2">
+      <PhotoAdjustmentControls
+        :controls="levelEdit.controls"
+        :values="params"
+        :histogram="histogram"
+        :disabled="disabled"
+        coalesce-prefix="adjust"
+        @change="setPhotoValue"
+        @commit="emit('commit')"
+      />
     </section>
 
     <!-- Migrated blob steps: the full legacy surface. -->

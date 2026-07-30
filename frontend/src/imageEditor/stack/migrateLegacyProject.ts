@@ -135,7 +135,7 @@ export function migrateLegacyProject(project: any): MigrationResult {
     ops.push(op)
   }
 
-  // 2. Retouch raster → a Paint layer. Strokes are not replayable, so the
+  // 2. Legacy retouch raster → a Paint layer. Strokes are not replayable, so the
   //    baked layer is imported as-is and further painting adds to it.
   const retouch = state.retouchLayerData
   if (typeof retouch === 'string' && retouch.startsWith('data:')) {
@@ -144,7 +144,7 @@ export function migrateLegacyProject(project: any): MigrationResult {
       id: opId,
       class: 'container',
       enabled: true,
-      label: 'Retouch',
+      label: 'Paint',
       exec: { kind: 'paint' },
       raster_ref: `payloads/${opId}-layer.png`,
       blend: { feather_px: 0, opacity: 1 },
