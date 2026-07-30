@@ -122,6 +122,26 @@ def _mask_png_to_selection_rgba(mask_png: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+class WarmRequest(BaseModel):
+    image_data_url: str
+
+
+@router.post("/select/warm")
+async def warm_select(request: WarmRequest):
+    """
+    Pre-run the tracker's image encoder for an upcoming click. The editor
+    fires this when the Object tool arms; the request returns once the
+    embedding is cached, and the client ignores the response.
+    """
+    try:
+        image_bytes = _decode_data_url(request.image_data_url)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image data URL: {e}")
+    from sam3_tracker_service import get_sam3_tracker_service
+    await get_sam3_tracker_service().warm(image_bytes)
+    return {"success": True}
+
+
 @router.post("/select", response_model=SelectResponse)
 async def select_with_sam3(request: SelectRequest):
     """Segment the posted image for the editor's AI selection gestures."""

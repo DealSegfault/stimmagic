@@ -30,19 +30,20 @@ log = get_logger(__name__)
 # ONNX inference is synchronous; one worker serializes it.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sam3-tracker")
 
-MODEL_FILES = [
-    "vision_encoder.onnx",
-    "vision_encoder.onnx_data",
-    "prompt_encoder_mask_decoder.onnx",
-    "prompt_encoder_mask_decoder.onnx_data",
-]
+# Two encoder precisions: uint8-quantized for CPU (2.3× faster than fp32 at
+# ≥0.99 object-mask IoU, and a quarter of the download), fp32 where CUDA is
+# available (quantized ConvInteger/DynamicQuantize ops don't run on the CUDA
+# EP). Only the chosen variant is downloaded.
+ENCODER_FILES_CPU = ["vision_encoder_quantized.onnx", "vision_encoder_quantized.onnx_data"]
+ENCODER_FILES_CUDA = ["vision_encoder.onnx", "vision_encoder.onnx_data"]
+DECODER_FILES = ["prompt_encoder_mask_decoder.onnx", "prompt_encoder_mask_decoder.onnx_data"]
 
 # Sam3ImageProcessor: resize to 1008, scale to [0,1], normalize mean/std 0.5.
 INPUT_SIZE = 1008
 
 
-def _ensure_models_downloaded():
-    for filename in MODEL_FILES:
+def _ensure_models_downloaded(encoder_files: list[str]):
+    for filename in [*encoder_files, *DECODER_FILES]:
         model_cache.ensure_model(f"sam3-tracker/{filename}")
     return model_cache.models_root() / "sam3-tracker"
 
@@ -66,7 +67,6 @@ class SAM3TrackerService:
         import onnxruntime as ort
 
         log.info("SAM3 tracker: Loading ONNX models...")
-        models_dir = _ensure_models_downloaded()
 
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -74,9 +74,13 @@ class SAM3TrackerService:
         providers = ort.get_available_providers()
         if 'CUDAExecutionProvider' in providers:
             exec_providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+            encoder_files = ENCODER_FILES_CUDA
         else:
             exec_providers = ['CPUExecutionProvider']
+            encoder_files = ENCODER_FILES_CPU
         log.info(f"SAM3 tracker: Using providers: {exec_providers}")
+
+        models_dir = _ensure_models_downloaded(encoder_files)
 
         def load(model_name: str) -> "ort.InferenceSession":
             # Embed the external data so the session owns its weights.
@@ -87,8 +91,8 @@ class SAM3TrackerService:
                 providers=exec_providers,
             )
 
-        self._sess_encoder = load("vision_encoder.onnx")
-        self._sess_decoder = load("prompt_encoder_mask_decoder.onnx")
+        self._sess_encoder = load(encoder_files[0])
+        self._sess_decoder = load(DECODER_FILES[0])
         log.info("SAM3 tracker: ONNX models loaded")
 
     async def _ensure_loaded(self):
@@ -169,6 +173,24 @@ class SAM3TrackerService:
         except Exception as e:
             log.error(f"SAM3 tracker segmentation failed: {e}", exc_info=True)
             return SAM3Result(error=str(e), original_width=0, original_height=0)
+
+    async def warm(self, image_bytes: bytes) -> None:
+        """
+        Load the models and run the encoder into the cache, so the user's
+        first click on this image pays only the ~20ms decoder. Fired when the
+        editor arms the Object tool; the bytes must match what the click will
+        send, since the cache key is their hash.
+        """
+        try:
+            image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            cache_key = hashlib.sha1(image_bytes).hexdigest()
+        except Exception as e:
+            log.warning(f"SAM3 tracker warm: bad image: {e}")
+            return
+        await self._ensure_loaded()
+        async with self._inference_semaphore:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(_executor, self._embed_sync, image, cache_key)
 
     async def point_masks(
         self,

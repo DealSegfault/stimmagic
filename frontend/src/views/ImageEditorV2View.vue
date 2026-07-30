@@ -3843,6 +3843,9 @@ function armSelectTool(id: SelectToolId, force = false) {
   armedSelectTool.value = id
   lastSelectTool.value = id
   writeToolPrefs({ selectTool: id })
+  // Arming Object is the earliest honest signal a segmentation is coming;
+  // encode now so the click only pays the decoder.
+  if (id === 'object') warmAiSelect()
 }
 
 /**
@@ -3927,6 +3930,34 @@ let objectPickState: {
  *  our own change events from a gesture that invalidates the cycle stack. */
 let applyingAiMask = false
 
+/**
+ * The composite as segmentation sees it. Warm and select MUST both come
+ * through here: the backend's embedding cache is keyed on the sent bytes, so
+ * a warm encoded any other way buys nothing.
+ */
+function aiSelectCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
+  const scale = Math.min(1, AI_SELECT_MAX_SIDE / Math.max(src.width, src.height))
+  if (scale >= 1) return src
+  const sent = document.createElement('canvas')
+  sent.width = Math.round(src.width * scale)
+  sent.height = Math.round(src.height * scale)
+  sent.getContext('2d')!.drawImage(src, 0, 0, sent.width, sent.height)
+  return sent
+}
+
+/**
+ * Fire-and-forget encoder warm-up, sent when the Object tool arms: model load
+ * plus the encoder pass happen while the user aims, so the click itself pays
+ * only the decoder. Arming is the earliest signal of intent worth this much
+ * compute — composite edits do NOT re-warm.
+ */
+function warmAiSelect() {
+  const src = composite.value
+  if (!src) return
+  const image_data_url = aiSelectCanvas(src).toDataURL('image/png')
+  void axios.post('/api/mask/select/warm', { image_data_url }).catch(() => {})
+}
+
 function loadMaskImage(dataUrl: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -3965,14 +3996,7 @@ async function runAiSelect(
   aiSelectError.value = null
   showSelectionFeedback()
   try {
-    const scale = Math.min(1, AI_SELECT_MAX_SIDE / Math.max(src.width, src.height))
-    let sent: HTMLCanvasElement = src
-    if (scale < 1) {
-      sent = document.createElement('canvas')
-      sent.width = Math.round(src.width * scale)
-      sent.height = Math.round(src.height * scale)
-      sent.getContext('2d')!.drawImage(src, 0, 0, sent.width, sent.height)
-    }
+    const sent = aiSelectCanvas(src)
     const { data } = await axios.post('/api/mask/select', {
       image_data_url: sent.toDataURL('image/png'),
       ...request,

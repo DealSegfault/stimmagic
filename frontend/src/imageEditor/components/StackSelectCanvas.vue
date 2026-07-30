@@ -24,6 +24,8 @@ import { useMagneticLasso } from '../ported/useMagneticLasso'
 import type { Point, SelectionMode } from '../ported/geometry'
 import type { SelectToolId } from '../stack/toolFamilies'
 import {
+  DEFAULT_LINEAR_SOFTNESS,
+  DEFAULT_RADIAL_FEATHER,
   MIN_GRADIENT_EXTENT,
   gradientMaskCanvas,
   isDegenerate,
