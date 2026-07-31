@@ -6,6 +6,12 @@ Usage:
     python scripts/generate-icons.py                    # No badge (production)
     python scripts/generate-icons.py --channel canary   # Purple "CANARY" badge
     python scripts/generate-icons.py --channel beta     # Blue "BETA" badge
+    python scripts/generate-icons.py --channel debug    # Red "DEBUG" badge
+
+Writes into src-tauri/icons/ by default, which is committed and must stay at the
+production icon so a plain `cargo tauri build` works from a fresh clone. Local
+badged builds pass --out to write into an ignored directory instead; see the
+`stimma` CLI, which generates and points Tauri at them via a --config override.
 """
 import argparse
 import json
@@ -28,13 +34,15 @@ MACOS_BASE_ICON = ICONS_DIR / "icon-macos-base.png"  # HIG-compliant 1024x1024 w
 # which the system prefers over icon.icns whenever CFBundleIconName is set.
 # icon.icns remains the icon on macOS 15 and earlier.
 ICON_COMPOSER_DOC = ICONS_DIR / "Stimma.icon"
-ASSETS_CAR = ICONS_DIR / "Assets.car"
 # Name actool registers the icon under; must match CFBundleIconName in Info.plist.
 APP_ICON_NAME = "Stimma"
 
+# One colour per separately-installable channel, so a glance at the Dock says
+# which build you're looking at.
 CHANNEL_BADGES = {
     "canary": {"color": (168, 85, 247), "label": "CANARY"},  # Purple
     "beta":   {"color": (59, 130, 246),  "label": "BETA"},    # Blue
+    "debug":  {"color": (220, 38, 38),   "label": "DEBUG"},   # Red
 }
 
 # All output sizes needed by Tauri
@@ -267,8 +275,13 @@ def generate_assets_car(channel: str, output_path: Path) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="Generate app icons with optional channel badge")
     parser.add_argument("--channel", default="production",
-                        help="Release channel: production (no badge), canary, beta")
+                        help="Release channel: production (no badge), canary, beta, debug")
+    parser.add_argument("--out", type=Path, default=ICONS_DIR,
+                        help="Directory to write generated icons into (default: src-tauri/icons)")
     args = parser.parse_args()
+
+    out_dir = args.out.resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if not BASE_ICON.exists():
         print(f"Error: Base icon not found at {BASE_ICON}")
@@ -298,7 +311,7 @@ def main():
 
     # Generate PNG outputs (used by Tauri for various platforms)
     for filename, size in PNG_OUTPUTS.items():
-        output = ICONS_DIR / filename
+        output = out_dir / filename
         # Use raw base for Windows Store logos, HIG base for general PNGs
         is_windows = filename.startswith("Square") or filename == "StoreLogo.png"
         src = win_icon if is_windows else macos_icon
@@ -311,15 +324,15 @@ def main():
         print(f"  {filename} ({sz[0]}x{sz[1]})")
 
     # Generate ICO (Windows — use raw base)
-    generate_ico(win_icon, ICONS_DIR / "icon.ico")
+    generate_ico(win_icon, out_dir / "icon.ico")
     print(f"  icon.ico ({len(ICO_SIZES)} sizes)")
 
     # Generate ICNS (macOS 15 and earlier — use HIG base)
-    generate_icns(macos_icon, ICONS_DIR / "icon.icns")
+    generate_icns(macos_icon, out_dir / "icon.icns")
     print(f"  icon.icns")
 
     # Generate Assets.car (macOS 26+ Liquid Glass icon)
-    if generate_assets_car(args.channel, ASSETS_CAR):
+    if generate_assets_car(args.channel, out_dir / "Assets.car"):
         print(f"  Assets.car")
 
     print("Done.")

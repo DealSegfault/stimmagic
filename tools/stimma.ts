@@ -1256,7 +1256,60 @@ async function linuxPythonVendoredLibPath(target: string): Promise<string | unde
   return dirs.length > 0 ? dirs.join(":") : undefined;
 }
 
-async function appBuild(args: string[]): Promise<void> {
+// Channels that get a coloured banner on the icon, so separately-installable
+// builds are distinguishable at a glance in the Dock.
+const BADGED_CHANNELS = new Set(["debug", "canary", "beta"]);
+
+/**
+ * Generate badged icons for a channel and return a Tauri config fragment
+ * pointing at them.
+ *
+ * The icons committed under src-tauri/icons stay at the unbadged production
+ * mark — they are what a plain `cargo tauri build` uses from a fresh clone — so
+ * badged variants are written to an ignored directory and injected per build
+ * rather than overwriting tracked files.
+ *
+ * Returns null for channels with no badge, or if generation fails.
+ */
+async function channelIconConfig(channel: string): Promise<Record<string, unknown> | null> {
+  if (!BADGED_CHANNELS.has(channel)) return null;
+
+  const relDir = `icons/.generated/${channel}`;
+  const outDir = join(repoRoot, "src-tauri", "icons", ".generated", channel);
+  const code = await run(
+    "uv",
+    ["run", "python", join(repoRoot, "scripts", "generate-icons.py"), "--channel", channel, "--out", outDir],
+    { cwd: join(repoRoot, "backend"), check: false },
+  );
+  if (code !== 0) {
+    console.warn(`Warning: could not generate ${channel} icons; using the committed production icon.`);
+    return null;
+  }
+
+  // bundle.resources is replaced wholesale by --config, not merged key by key,
+  // so carry the existing entries over alongside the redirected Assets.car.
+  const cfg = JSON.parse(await Deno.readTextFile(join(repoRoot, "src-tauri", "tauri.conf.json")));
+  const resources: Record<string, string> = { ...(cfg.bundle?.resources ?? {}) };
+  if ("icons/Assets.car" in resources) {
+    delete resources["icons/Assets.car"];
+    resources[`${relDir}/Assets.car`] = "Assets.car";
+  }
+
+  return {
+    bundle: {
+      icon: [
+        `${relDir}/32x32.png`,
+        `${relDir}/128x128.png`,
+        `${relDir}/128x128@2x.png`,
+        `${relDir}/icon.icns`,
+        `${relDir}/icon.ico`,
+      ],
+      resources,
+    },
+  };
+}
+
+async function appBuild(args: string[], channel: string): Promise<void> {
   let polishedDmg = false;
 
   for (const arg of args) {
@@ -1295,19 +1348,22 @@ async function appBuild(args: string[]): Promise<void> {
   let tauriCommand = tauriCli;
   let tauriBuildArgs = ["build"];
   let tauriCwd = join(repoRoot, "src-tauri");
+  const configOverride: Record<string, unknown> = {};
   if (!await pathExists(tauriCli)) {
     tauriCommand = "cargo";
     tauriBuildArgs = ["tauri", "build"];
   } else {
-    tauriBuildArgs.push(
-      "--config",
-      JSON.stringify({
-        build: {
-          beforeBuildCommand: `npm --prefix ${join(repoRoot, "frontend")} run build`,
-          frontendDist: "../frontend/dist",
-        },
-      }),
-    );
+    configOverride.build = {
+      beforeBuildCommand: `npm --prefix ${join(repoRoot, "frontend")} run build`,
+      frontendDist: "../frontend/dist",
+    };
+  }
+
+  const iconConfig = await channelIconConfig(channel);
+  if (iconConfig) Object.assign(configOverride, iconConfig);
+
+  if (Object.keys(configOverride).length > 0) {
+    tauriBuildArgs.push("--config", JSON.stringify(configOverride));
   }
   if (Deno.build.os === "darwin" && Deno.env.get("APPLE_SIGNING_IDENTITY") && Deno.env.get("SKIP_NOTARIZE_WAIT") === "1") {
     tauriBuildArgs.push("--skip-stapling");
@@ -1690,16 +1746,22 @@ function tauriDevEnv(bundleId: string, ports: { server: number; frontend: number
   return env;
 }
 
-function tauriDevConfig(bundleId: string, sandbox: string, ports: { frontend: number }): string {
+function tauriDevConfig(
+  bundleId: string,
+  sandbox: string,
+  ports: { frontend: number },
+  iconConfig: Record<string, unknown> | null = null,
+): string {
   return JSON.stringify({
     identifier: sandboxIdentifier(bundleId, sandbox),
     build: {
       devUrl: `http://${DEV_HOST}:${ports.frontend}`,
     },
+    ...(iconConfig ?? {}),
   });
 }
 
-async function commandDevAll(bundleId: string, sandbox: string, runtimeEnv: Record<string, string>): Promise<void> {
+async function commandDevAll(bundleId: string, sandbox: string, channel: string, runtimeEnv: Record<string, string>): Promise<void> {
   const ports = await getSandboxPorts(bundleId, sandbox);
   const backendDir = join(repoRoot, "backend");
   const frontendDir = join(repoRoot, "frontend");
@@ -1711,7 +1773,7 @@ async function commandDevAll(bundleId: string, sandbox: string, runtimeEnv: Reco
     STIMMA_BACKEND_PORT: String(ports.server),
     STIMMA_FRONTEND_PORT: String(ports.frontend),
   };
-  const tauriConfig = tauriDevConfig(bundleId, sandbox, ports);
+  const tauriConfig = tauriDevConfig(bundleId, sandbox, ports, await channelIconConfig(channel));
   const processes: DevProcess[] = [];
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | null = null;
@@ -1900,12 +1962,13 @@ async function main(): Promise<void> {
         if (official) {
           console.log(`Note: 'dev app' uses the externally running backend on :${ports.server} — start it with 'stimma dev backend --official' for backend surfaces.`);
         }
-        await run("cargo", ["tauri", "dev", "--config", tauriDevConfig(bundleId, sandbox, ports)], {
+        const devIcons = await channelIconConfig(channel);
+        await run("cargo", ["tauri", "dev", "--config", tauriDevConfig(bundleId, sandbox, ports, devIcons)], {
           cwd: repoRoot,
           env: tauriDevEnv(bundleId, ports, sandbox, runtimeEnv),
         });
       } else if (sub === "all") {
-        await commandDevAll(bundleId, sandbox, runtimeEnv);
+        await commandDevAll(bundleId, sandbox, channel, runtimeEnv);
       } else {
         printUsage();
       }
@@ -1939,7 +2002,7 @@ async function main(): Promise<void> {
 
     case "app": {
       if (sub === "build") {
-        await appBuild(rest);
+        await appBuild(rest, channel);
       } else if (sub === "run") {
         if (Deno.build.os === "darwin") {
           await run("open", [await macosAppBundlePath()]);

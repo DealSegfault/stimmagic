@@ -212,6 +212,8 @@ jobs:
           for window in cfg.get("app", {}).get("windows", []):
               window["title"] = cfg["productName"]
           cfg.setdefault("build", {}).pop("beforeBuildCommand", None)
+          # macOS 26 Liquid Glass icon; nothing on Linux reads it.
+          cfg.setdefault("bundle", {}).setdefault("resources", {}).pop("icons/Assets.car", None)
           cfg.setdefault("bundle", {})["targets"] = ["appimage"]
           cfg["bundle"]["createUpdaterArtifacts"] = "v1Compatible"
           cfg.setdefault("plugins", {}).setdefault("updater", {})["active"] = True

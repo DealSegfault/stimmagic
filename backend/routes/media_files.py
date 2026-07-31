@@ -1128,6 +1128,19 @@ async def _generate_layout_preview(
         return None
 
 
+def _svg_render_box(width: int, height: int, target_long_side: int) -> tuple[int, int]:
+    """Scale an SVG's intrinsic box so its long side is ``target_long_side``.
+
+    Aspect ratio is preserved, so a 200×100 document still lands inside the
+    square thumbnail box rather than being stretched to fill it.
+    """
+    long_side = max(width, height)
+    if long_side <= 0 or target_long_side <= 0:
+        return max(1, width), max(1, height)
+    scale = target_long_side / long_side
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 async def _generate_svg_preview(
     file_path: str,
     size: int,
@@ -1159,14 +1172,20 @@ async def _generate_svg_preview(
         )
         svg_text = read_svg_file(svg_path)
         width, height = intrinsic_size(parse_svg(svg_text))
+        # Render into a box the size of the thumbnail we actually want, not the
+        # document's own work area. A 24×24 icon is 24×24 only by convention —
+        # the geometry is vector, so laying it out at 512px costs nothing and is
+        # the difference between a crisp mark and a 48px bitmap stretched across
+        # a tile. dpr then supplies the usual supersampling on top of that box.
+        render_w, render_h = _svg_render_box(width, height, size)
         png_bytes = await render_svg_document(
             svg_text,
-            width,
-            height,
+            render_w,
+            render_h,
             wait_for_client_timeout_s=wait_for_client_timeout_s,
             render_timeout_s=render_timeout_s,
             queue_timeout_s=queue_timeout_s,
-            target_long_side=size,
+            target_long_side=size * 2,
         )
         img = Image.open(io.BytesIO(png_bytes))
         img.load()
@@ -1194,9 +1213,11 @@ UI_THUMB_OK = "ok"
 UI_THUMB_TRANSIENT = "transient"
 UI_THUMB_FAILED = "failed"
 
-# Bump when the vector-thumbnail grounding below changes. Scoped to SVG in the
-# cache key so it does not invalidate the rest of the library.
-SVG_GROUND_VERSION = 1
+# Bump when the vector-thumbnail grounding or rasterization below changes.
+# Scoped to SVG in the cache key so it does not invalidate the rest of the
+# library. v2: render at the requested thumbnail size instead of the document's
+# own (often tiny) work area.
+SVG_GROUND_VERSION = 2
 
 # Grounds for a vector thumbnail whose ink tone is known. A near-black rather
 # than pure black, so a white mark reads as artwork sitting on a surface instead

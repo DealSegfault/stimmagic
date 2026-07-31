@@ -309,6 +309,18 @@ class TestFormatRegistration:
         assert "svg" in UI_RENDERED_FORMATS
         assert "stimmalayout" in UI_RENDERED_FORMATS
 
+    def test_render_box_follows_the_thumbnail_size_not_the_work_area(self):
+        """A 24px icon must rasterize at thumbnail size — vector has no native px."""
+        from routes.media_files import _svg_render_box
+
+        assert _svg_render_box(24, 24, 512) == (512, 512)
+        # Aspect ratio survives: the long side hits the target, the short side scales.
+        assert _svg_render_box(200, 100, 512) == (512, 256)
+        # Oversized documents come down to the box rather than rendering huge.
+        assert _svg_render_box(2048, 1024, 256) == (256, 128)
+        # Degenerate sizes must not divide by zero or produce a 0px canvas.
+        assert _svg_render_box(0, 0, 512) == (1, 1)
+
 
 class TestUploadSanitization:
     def test_upload_sanitizes_before_hashing(self):
