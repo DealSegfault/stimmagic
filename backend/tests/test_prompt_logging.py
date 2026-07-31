@@ -35,7 +35,7 @@ async def test_websocket_broadcast_logs_payload_shape_without_content():
     assert secret_prompt not in _logged_text(mock_log)
     mock_log.info.assert_called_once_with(
         "WS OUT (broadcast)",
-        event="chat_item_created",
+        ws_event="chat_item_created",
         data_keys=["chat_id", "item"],
         chat_id=42,
     )
@@ -59,7 +59,7 @@ async def test_websocket_direct_logs_payload_shape_without_content():
     assert secret_prompt not in _logged_text(mock_log)
     mock_log.info.assert_called_once_with(
         "WS OUT (direct)",
-        event="prompt_preview",
+        ws_event="prompt_preview",
         data_keys=["prompt", "request_id"],
         request_id="req-123",
     )
