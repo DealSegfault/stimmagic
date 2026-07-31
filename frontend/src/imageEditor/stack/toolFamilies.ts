@@ -15,7 +15,7 @@
 import type { IconName } from '../ported/icons'
 
 export type FamilyId =
-  | 'generate' | 'crop' | 'retouch' | 'paint'
+  | 'crop' | 'retouch' | 'paint'
   | 'levels' | 'filters'
   | 'annotate'
 
@@ -46,11 +46,6 @@ export interface ToolFamily {
 }
 
 export const FAMILY_ICONS: Record<FamilyId | 'select', string> = {
-  // Sparkle: every model-backed verb lives under one family, and the family
-  // name is what carries the cost meaning.
-  generate:
-    '<path d="M12 3l1.9 5.9L20 11l-6.1 2.1L12 19l-1.9-5.9L4 11l6.1-2.1z" fill="currentColor" stroke="none"/>'
-    + '<path d="M19 3l.8 2.2L22 6l-2.2.8L19 9l-.8-2.2L16 6l2.2-.8z" fill="currentColor" stroke="none"/>',
   crop:
     '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/>',
   select:
@@ -75,18 +70,6 @@ export const FAMILY_ICONS: Record<FamilyId | 'select', string> = {
 }
 
 export const TOOL_FAMILIES: ToolFamily[] = [
-  {
-    id: 'generate',
-    label: 'Generate',
-    key: 'g',
-    icon: FAMILY_ICONS.generate,
-    // Masked replacement moved to Retouch as Repaint. Expand remains here
-    // until canvas generation gets its own durable home.
-    defaultSub: 'expand',
-    subTools: [
-      { id: 'expand', label: 'Expand' },
-    ],
-  },
   {
     id: 'crop',
     label: 'Crop',
@@ -246,8 +229,8 @@ export const SELECT_TOOLS: Array<{
   { id: 'lasso', label: 'Lasso', icon: 'lasso' },
   { id: 'magnetic', label: 'Magnetic', icon: 'magnetLasso' },
   { id: 'wand', label: 'Wand', icon: 'wand' },
-  // Painting a selection is how most inpaint masks get made, which is why the
-  // brush is a selection tool rather than a Generate-only surface.
+  // Painting a selection is how most model-backed region masks get made,
+  // which is why the brush is a workspace selection tool.
   { id: 'brush', label: 'Brush', icon: 'paintbrush' },
   // AI select (SAM3): click segments the object under the pointer; its popup
   // over the island adds select-by-name. Last on the rail — the manual tools

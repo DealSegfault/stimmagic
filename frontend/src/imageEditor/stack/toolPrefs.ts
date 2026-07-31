@@ -37,7 +37,6 @@ export interface ToolPrefs {
   /** @deprecated Read only as a migration fallback for Expand/Repaint. */
   inpaintToolId?: string
   /** Catalog tool used to fill an expanded canvas border. */
-  expandToolId?: string
   /** Catalog tool used by Retouch → Repaint (`inpaint-image`). */
   repaintToolId?: string
   /** @deprecated Read only as a migration fallback for Remove. */
@@ -47,7 +46,6 @@ export interface ToolPrefs {
   /** Catalog tool used by Retouch → Remove background (`remove-background`). */
   cutoutToolId?: string
   /** Sticky model prompts, separate because Expand and Repaint are different jobs. */
-  expandPrompt?: string
   repaintPrompt?: string
   /** Most recently submitted Repaint prompts, newest first. */
   recentRepaintPrompts?: string[]

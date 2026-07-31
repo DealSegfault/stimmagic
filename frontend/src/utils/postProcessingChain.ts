@@ -236,6 +236,7 @@ export function mergeRecordedChain(
 export const CHAIN_TOOL_TASK_TYPES = [
   'filter',
   'image-to-image',
+  'process-image',
   'upscale-image',
   'remove-background',
   'image-to-video',
@@ -244,7 +245,7 @@ export const CHAIN_TOOL_TASK_TYPES = [
 ] as const
 
 /** Steps that take an image and emit an image. */
-const IMAGE_IN_IMAGE_OUT = new Set(['image-to-image', 'upscale-image', 'remove-background'])
+const IMAGE_IN_IMAGE_OUT = new Set(['image-to-image', 'process-image', 'upscale-image', 'remove-background'])
 
 // Media a tool-step task type takes/emits. Filters are NOT special-cased here;
 // they declare their accepted media (getChainFilterAccepts) and preserve the

@@ -40,11 +40,10 @@ const props = defineProps<{
   family: FamilyId
   sub: string | null
   state: Record<string, any>
-  /** The catalog tool that will run the active Generate sub-tool. */
+  /** The catalog tool that will run the active model-backed Retouch sub-tool. */
   toolLabel?: string | null
   busy?: boolean
   canRun?: boolean
-  hint?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -238,81 +237,8 @@ function chipClass(active: boolean, pending = false) {
       </template>
     </template>
 
-    <!-- Generate ------------------------------------------------------- -->
-    <!--
-      Generate gets two rows: the tool and the knobs on one, the prompt on its
-      own below. It is the only family whose main input is a sentence, and a
-      sentence squeezed between a brush slider and a Run button gets forty
-      characters of room.
-    -->
-    <template v-if="family.id === 'generate'">
-      <div class="w-full flex flex-col gap-2">
-        <div class="flex items-center gap-1.5 flex-wrap">
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md border border-edge-subtle text-content-secondary hover:text-content hover:bg-overlay-subtle"
-            @click="emit('openToolPicker', $event)"
-          >
-            {{ toolLabel || 'No tool' }}
-            <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-          <span class="w-px h-5 bg-edge-subtle mx-1" />
-
-          <template v-if="sub === 'expand'">
-            <button
-              v-for="factor in [1.15, 1.25, 1.5]"
-              :key="factor"
-              type="button"
-              class="px-2.5 py-1.5 text-xs rounded-md transition-colors"
-              :class="chipClass(state.expandFactor === factor)"
-              @click="emit('set', { expandFactor: factor })"
-            >
-              +{{ Math.round((factor - 1) * 100) }}%
-            </button>
-          </template>
-
-          <div class="flex-1" />
-
-          <label class="flex items-center gap-1.5 text-xs text-content-tertiary">
-            Variations
-            <input
-              type="number" min="1" max="8"
-              class="w-12 px-2 py-1 bg-surface-raised rounded-md text-content"
-              :value="state.candidateCount"
-              @input="emit('set', { candidateCount: Number(($event.target as HTMLInputElement).value) })"
-            />
-          </label>
-          <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
-            {{ sub === 'expand' ? 'Expand' : 'Run' }}
-          </Button>
-        </div>
-
-        <textarea
-          rows="2"
-          class="w-full px-3 py-2 text-sm bg-surface-raised rounded-md text-content resize-none
-                 placeholder:text-content-tertiary focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          :placeholder="sub === 'expand'
-            ? 'Describe what surrounds it'
-            : 'Describe the change'"
-          :value="state.prompt"
-          @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
-          @keydown.enter.meta="emit('run')"
-        />
-        <ReferenceImageStrip
-          v-if="sub === 'expand' && (state.referenceMax > 0 || state.referenceImages?.length)"
-          :model-value="state.referenceImages || []"
-          :min-items="state.referenceMin || 0"
-          :max-items="state.referenceMax || 0"
-          :disabled="busy"
-          @update:model-value="emit('set', { referenceImages: $event })"
-        />
-      </div>
-    </template>
-
     <!-- Crop ------------------------------------------------------------ -->
-    <template v-else-if="family.id === 'crop'">
+    <template v-if="family.id === 'crop'">
       <button
         v-for="preset in CROP_ASPECTS"
         :key="preset.id"
@@ -947,11 +873,5 @@ function chipClass(active: boolean, pending = false) {
       </label>
     </template>
 
-    <!-- Only rendered with a hint: an empty spacer wraps to a phantom second
-         flex line, and the row-gap above it reads as padding under the bar. -->
-    <template v-if="hint">
-      <div class="flex-1" />
-      <span class="text-[11px] text-content-tertiary">{{ hint }}</span>
-    </template>
   </div>
 </template>

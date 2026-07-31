@@ -30,10 +30,9 @@ test('Retouch is repairs only — the adjustment surface lives under Adjust', ()
   )
 })
 
-test('masked replacement is Repaint under Retouch, not Inpaint under Generate', () => {
-  assert.deepEqual(
-    familyById('generate').subTools.map(tool => tool.id),
-    ['expand'],
-  )
-  assert.equal(familyById('generate').defaultSub, 'expand')
+test('the retired Generate family and Expand tool are absent', () => {
+  assert.ok(!TOOL_FAMILIES.some(family => family.id === ('generate' as string)))
+  assert.ok(!TOOL_FAMILIES.some(family =>
+    family.subTools.some(tool => tool.id === 'expand'),
+  ))
 })

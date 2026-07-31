@@ -391,7 +391,7 @@ class TestToolProvider(ToolProvider):
             output_schema={
                 "type": "object",
                 "properties": {
-                    "image_data": {"type": "string", "format": "binary"},
+                    "assets": {"type": "array", "items": {"type": "string", "format": "binary"}},
                 },
             },
             metadata={"generator_type": "test"},
@@ -762,6 +762,8 @@ class TestToolProvider(ToolProvider):
             output_bytes = base64.b64decode(_STUB_MP4_B64)
         elif task_type in _AUDIO_TASK_TYPES:
             output_bytes = base64.b64decode(_STUB_FLAC_B64)
+        elif task_type == "process-image":
+            output_bytes = self._process_input_image(seed, tool_id, parameters)
         else:
             output_bytes = self._generate_dummy_image(config, seed, tool_id, parameters)
 
@@ -813,6 +815,56 @@ class TestToolProvider(ToolProvider):
             except Exception:
                 pass
         return config.output_size
+
+    def _process_input_image(
+        self,
+        seed: int,
+        tool_id: str,
+        parameters: Dict[str, Any],
+    ) -> bytes:
+        """Really transform the input for process-image: same dimensions out,
+        visibly different pixels, seed-jittered so candidates differ."""
+        from utils.image_ops import open_oriented
+
+        inputs = parameters.get("input_images") or []
+        if not inputs:
+            raise ValueError("process-image requires input_images")
+        img = open_oriented(inputs[0]).convert("RGB")
+
+        operation = str(parameters.get("operation") or "enhance")
+        strength = float(parameters.get("strength") or 0.5)
+        # Seed jitter keeps repeated runs distinguishable without drowning
+        # the operation itself.
+        jitter = 1.0 + ((seed % 7) - 3) * 0.03
+
+        if operation == "colorize":
+            gray = ImageOps.grayscale(img)
+            warm = ImageOps.colorize(gray, black=(40, 26, 18), white=(255, 244, 224))
+            img = Image.blend(img, warm, min(1.0, max(0.0, strength * jitter)))
+            img = ImageEnhance.Color(img).enhance(1.0 + strength * 0.6 * jitter)
+        elif operation == "denoise":
+            radius = max(0.3, strength * 2.0 * jitter)
+            img = img.filter(ImageFilter.GaussianBlur(radius))
+            img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=60, threshold=3))
+        else:  # enhance
+            img = ImageOps.autocontrast(img, cutoff=int(1 + strength * 2))
+            img = ImageEnhance.Contrast(img).enhance(1.0 + strength * 0.25 * jitter)
+            img = ImageEnhance.Color(img).enhance(1.0 + strength * 0.35 * jitter)
+
+        self._draw_params(img, tool_id, seed, parameters)
+
+        serializable = {
+            k: v for k, v in parameters.items()
+            if isinstance(v, (str, int, float, bool, list, dict, type(None)))
+        }
+        info = PngInfo()
+        info.add_text(
+            "stimma:test_params",
+            json.dumps({"tool_id": tool_id, "seed": seed, "parameters": serializable}, default=str),
+        )
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG", pnginfo=info)
+        return buffer.getvalue()
 
     def _generate_dummy_image(
         self,

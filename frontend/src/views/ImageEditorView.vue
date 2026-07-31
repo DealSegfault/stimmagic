@@ -172,9 +172,6 @@ const error = ref<string | null>(null)
 const baseInfo = ref<any>(null)
 const initialToolPrefs = readToolPrefs()
 
-/** Generate sub-tool modes. Repaint and Remove live under Retouch. */
-type Mode = null | 'expand' | 'adjust' | 'crop'
-const mode = ref<Mode>(null)
 const candidateCount = ref(4)
 /**
  * How far Remove/Repaint grow the mask past the selection edge at submit
@@ -187,7 +184,6 @@ const maskExpandPercent = ref(
 const selectedOpId = ref<string | null>(null)
 
 const tools = ref<any[]>([])
-const expandToolId = ref<string | null>(null)
 const repaintToolId = ref<string | null>(null)
 const removeToolId = ref<string | null>(null)
 const cutoutToolId = ref<string | null>(null)
@@ -197,47 +193,30 @@ const modelToolParams = ref<Record<string, Record<string, any>>>({})
 const family = ref<FamilyId | null>(null)
 const sub = ref<string | null>(null)
 const repaintPrompt = ref(initialToolPrefs.repaintPrompt ?? '')
-const expandPrompt = ref(initialToolPrefs.expandPrompt ?? '')
 /** Content-specific drafts; references never leak into Remove or across verbs. */
 const repaintReferenceImages = ref<ModelReferenceImage[]>([])
-const expandReferenceImages = ref<ModelReferenceImage[]>([])
 const recentRepaintPrompts = ref([
   ...(initialToolPrefs.recentRepaintPrompts ?? []),
 ])
 const prompt = computed({
-  get: () =>
-    family.value === 'retouch' && sub.value === 'repaint'
-      ? repaintPrompt.value
-      : expandPrompt.value,
+  get: () => repaintPrompt.value,
   set: value => {
-    if (family.value === 'retouch' && sub.value === 'repaint') {
-      repaintPrompt.value = value
-      writeToolPrefs({ repaintPrompt: value })
-    } else {
-      expandPrompt.value = value
-      writeToolPrefs({ expandPrompt: value })
-    }
+    repaintPrompt.value = value
+    writeToolPrefs({ repaintPrompt: value })
   },
 })
 const referenceImages = computed<ModelReferenceImage[]>({
-  get: () =>
-    family.value === 'retouch' && sub.value === 'repaint'
-      ? repaintReferenceImages.value
-      : family.value === 'generate' && sub.value === 'expand'
-        ? expandReferenceImages.value
-        : [],
+  get: () => family.value === 'retouch' && sub.value === 'repaint'
+    ? repaintReferenceImages.value
+    : [],
   set: value => {
     if (family.value === 'retouch' && sub.value === 'repaint') {
       repaintReferenceImages.value = value
-    } else if (family.value === 'generate' && sub.value === 'expand') {
-      expandReferenceImages.value = value
     }
   },
 })
-/** Expand grows the canvas and auto-masks the new border. */
-const expandFactor = ref(1.25)
 /**
- * Catalog tool picker for the active Generate sub-tool.
+ * Catalog tool picker for the active model-backed Retouch sub-tool.
  *
  * The button set this and nothing rendered it, so clicking did nothing at all.
  * It uses the shared TaskTypeToolList, which is the same tool-and-provider row
@@ -248,7 +227,7 @@ const toolPickerOpen = ref(false)
 /** Where the trigger sits, so the menu opens under it rather than at the edge. */
 const toolPickerLeft = ref(16)
 
-/** Repaint and Expand share STP inpaint; Remove may use erase or inpaint. */
+/** Repaint uses STP inpaint; Remove may use erase or inpaint. */
 const activeTaskType = computed(() =>
   family.value === 'retouch' && sub.value === 'cutout'
     ? 'remove-background'
@@ -265,7 +244,7 @@ const activeToolId = computed(() => {
   if (family.value === 'retouch' && sub.value === 'remove') return removeToolId.value
   if (family.value === 'retouch' && sub.value === 'repaint') return repaintToolId.value
   if (family.value === 'retouch' && sub.value === 'cutout') return cutoutToolId.value
-  return expandToolId.value
+  return null
 })
 const activeTool = computed(() =>
   tools.value.find(tool => tool.full_tool_id === activeToolId.value) ?? null
@@ -310,9 +289,6 @@ function chooseTool(tool: any) {
   } else if (family.value === 'retouch' && sub.value === 'cutout') {
     cutoutToolId.value = tool.full_tool_id
     writeToolPrefs({ cutoutToolId: tool.full_tool_id })
-  } else {
-    expandToolId.value = tool.full_tool_id
-    writeToolPrefs({ expandToolId: tool.full_tool_id })
   }
   toolPickerOpen.value = false
 }
@@ -1534,9 +1510,6 @@ const canRun = computed(() => {
   if (family.value === 'retouch' && sub.value === 'cutout') {
     return !!activeToolId.value
   }
-  // Expand auto-masks the border it adds, so it has nothing to wait for
-  // beyond a tool.
-  if (mode.value === 'expand') return !!expandToolId.value && referencesValid
   return false
 })
 
@@ -1585,7 +1558,6 @@ function selectFamily(id: FamilyId) {
   // land in select mode with its handles up, not with the arrow tool armed
   // (which hides the handles and turns the next click into a drawing).
   if (id === 'annotate' && selectedShapeId.value) sub.value = null
-  if (id === 'generate') mode.value = (sub.value as Mode) ?? null
   // Paint entered with the Patch engine still up wants a selection.
   if (id === 'paint' && paintEngineId.value === 'patch' && !selection.value) {
     armSelectTool('lasso', true)
@@ -1632,9 +1604,6 @@ function selectSub(id: string) {
   if (family.value === 'retouch') discardFragileMaskedAdjustment()
   sub.value = id
   if (family.value) rememberSubTool(family.value, id)
-  if (family.value === 'generate') {
-    mode.value = id as Mode
-  }
   if (family.value === 'retouch' && id === 'patch' && !selection.value) {
     armSelectTool('lasso', true)
   } else if (
@@ -1651,7 +1620,6 @@ const subbarState = computed(() => ({
   prompt: prompt.value,
   candidateCount: candidateCount.value,
   maskExpandPercent: maskExpandPercent.value,
-  expandFactor: expandFactor.value,
   cropAspect: cropAspect.value,
   rotation: cropParamsOf().cropRotation ?? 0,
   flipX: !!cropParamsOf().flipX,
@@ -1695,7 +1663,7 @@ const subbarState = computed(() => ({
  * selection tool must let go.
  */
 const SUBBAR_KEEPS_SELECT = new Set([
-  'prompt', 'candidateCount', 'maskExpandPercent', 'expandFactor', 'toolParamPatch',
+  'prompt', 'candidateCount', 'maskExpandPercent', 'toolParamPatch',
   'removeRecentPrompt', 'referenceImages',
 ])
 
@@ -1708,7 +1676,6 @@ function onSubbarSet(patch: Record<string, any>, continuous = false) {
     maskExpandPercent.value = patch.maskExpandPercent
     writeToolPrefs({ maskExpandPercent: patch.maskExpandPercent })
   }
-  if ('expandFactor' in patch) expandFactor.value = patch.expandFactor
   if ('removeRecentPrompt' in patch) {
     recentRepaintPrompts.value = recentRepaintPrompts.value.filter(
       entry => entry !== patch.removeRecentPrompt,
@@ -1807,35 +1774,17 @@ function onSubbarSet(patch: Record<string, any>, continuous = false) {
   if ('newLayer' in patch) startNewPaintLayer()
 }
 
-/** One line of fact per mode: what to do, and what it will cost. */
-/**
- * Only where the toolbar cannot speak for itself.
- *
- * A hint that narrates what the controls already show is noise — the tools are
- * the explanation. What survives is the Generate sub-tools, whose cost and
- * effect are not visible until they run.
- */
-const subbarHint = computed(() => {
-  if (family.value === 'generate') {
-    if (sub.value === 'expand') return 'Grows the canvas · the new border is auto-masked'
-  }
-  return null
-})
-
 async function run() {
   if (!canRun.value || !stack.doc.value || !composite.value) return
 
   busy.value = true
   error.value = null
   try {
-    const action =
-      family.value === 'retouch' && sub.value === 'remove'
-        ? 'remove'
-        : family.value === 'retouch' && sub.value === 'repaint'
-          ? 'repaint'
-          : family.value === 'retouch' && sub.value === 'cutout'
-            ? 'cutout'
-            : 'expand'
+    const action = sub.value === 'remove'
+      ? 'remove'
+      : sub.value === 'repaint'
+        ? 'repaint'
+        : 'cutout'
     const toolId = activeToolId.value!
     const tool = activeTool.value
     if (!tool) throw new Error('That tool is no longer in the catalog.')
@@ -1864,15 +1813,8 @@ async function run() {
     // not have.
     const headComposite = await compositor.render(stack.doc.value)
 
-    // Expand grows the frame and auto-masks the border it added — the same
-    // extend-pad invariant the prep flow uses — then fills it like any patch.
-    let submitInput = headComposite
+    const submitInput = headComposite
     let submitMask = selectionAsMask()
-    if (action === 'expand') {
-      const grown = growCanvas(headComposite, expandFactor.value)
-      submitInput = grown.image
-      submitMask = grown.borderMask
-    }
     // A cutout has no drawn region — its "mask" is the whole frame. It exists
     // for the patch machinery (crop bounds, resample), not the wire:
     // remove-background tools declare no mask input, so none is uploaded.
@@ -1883,7 +1825,7 @@ async function run() {
 
     // Remove/Repaint grow their mask copy past the selection edge: a crisp
     // object-hugging mask leaves the model repainting inside the outline it
-    // was meant to replace. Expand's border mask is already sized on purpose.
+    // was meant to replace.
     if (action === 'remove' || action === 'repaint') {
       expandMaskCanvas(submitMask, maskExpandPercent.value)
     }
@@ -1896,9 +1838,7 @@ async function run() {
       ? 'Remove object'
       : action === 'repaint'
         ? 'Regenerate'
-        : action === 'cutout'
-          ? 'Remove background'
-          : 'Expand'
+        : 'Remove background'
 
     const authoredFrame = payloadFrame()
     const authoredToDocument = payloadTransform()
@@ -1972,7 +1912,6 @@ async function run() {
       clearSelection()
       disarmSelect()
     }
-    if (action === 'expand') mode.value = 'expand'
   } catch (err: any) {
     error.value = apiErrorMessage(err, 'Could not start the edit.')
   } finally {
@@ -2099,34 +2038,6 @@ function fullFrameMask(width: number, height: number): HTMLCanvasElement {
   ctx.fillStyle = '#fff'
   ctx.fillRect(0, 0, width, height)
   return mask
-}
-
-/**
- * Grow a canvas about its centre and return the border it added as a mask.
- * The border is what the model fills; the original pixels are preserved by the
- * patch composite exactly as with any other mask.
- */
-function growCanvas(source: HTMLCanvasElement, factor: number) {
-  const width = Math.round(source.width * factor)
-  const height = Math.round(source.height * factor)
-  const offsetX = Math.round((width - source.width) / 2)
-  const offsetY = Math.round((height - source.height) / 2)
-
-  const image = document.createElement('canvas')
-  image.width = width
-  image.height = height
-  image.getContext('2d')!.drawImage(source, offsetX, offsetY)
-
-  const borderMask = document.createElement('canvas')
-  borderMask.width = width
-  borderMask.height = height
-  const maskCtx = borderMask.getContext('2d')!
-  maskCtx.fillStyle = '#fff'
-  maskCtx.fillRect(0, 0, width, height)
-  maskCtx.fillStyle = '#000'
-  maskCtx.fillRect(offsetX, offsetY, source.width, source.height)
-
-  return { image, borderMask }
 }
 
 // -- adjust ----------------------------------------------------------------
@@ -5321,7 +5232,7 @@ function onKeydown(event: KeyboardEvent) {
     // explicitly deselects it.
     if (hasDismissibleCanvasFeedback.value) {
       dismissCanvasFeedback()
-    } else if (family.value || mode.value) {
+    } else if (family.value) {
       leaveMode()
     } else if (selectedShapeId.value) {
       selectedShapeId.value = null
@@ -5411,7 +5322,6 @@ function leaveMode() {
   disarmMaskedAdjustmentEditing()
   family.value = null
   sub.value = null
-  mode.value = null
   // Ending a mode session ends its STEP: the next entry starts a new one.
   cropOpId.value = null
   resetPaintSession()
@@ -5455,13 +5365,8 @@ async function hydrateEditorExtras() {
     const validRemove = (id: string) =>
       eligibleRemove.some(t => t.full_tool_id === id)
 
-    // The former Generate/Inpaint pick is a safe migration fallback for both
-    // Expand and Repaint; each gets its own preference from this point on.
-    expandToolId.value =
-      rememberedIfValid(prefs.expandToolId, validRepaint)
-      ?? rememberedIfValid(prefs.inpaintToolId, validRepaint)
-      ?? eligibleRepaint[0]?.full_tool_id
-      ?? null
+    // The former Generate/Inpaint pick remains a migration fallback for
+    // Repaint; the retired Expand surface no longer owns a tool preference.
     repaintToolId.value =
       rememberedIfValid(prefs.repaintToolId, validRepaint)
       ?? rememberedIfValid(prefs.inpaintToolId, validRepaint)
@@ -5482,7 +5387,7 @@ async function hydrateEditorExtras() {
       ?? eligibleCutout[0]?.full_tool_id
       ?? null
     for (const id of [
-      expandToolId.value, repaintToolId.value, removeToolId.value, cutoutToolId.value,
+      repaintToolId.value, removeToolId.value, cutoutToolId.value,
     ]) {
       ensureModelToolParams(all.find(tool => tool.full_tool_id === id))
     }
@@ -5826,7 +5731,6 @@ watch(
           :tool-label="activeToolLabel"
           :busy="busy"
           :can-run="canRun"
-          :hint="subbarHint"
           @sub="selectSub"
           @set="onSubbarSet"
           @commit="onSubbarCommit"
