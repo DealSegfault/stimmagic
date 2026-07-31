@@ -9,7 +9,7 @@
           "image-name" : "pinwheel.svg",
           "name" : "Pinwheel",
           "position" : {
-            "scale" : 0.72,
+            "scale" : 0.857,
             "translation-in-points" : [ 0, 0 ]
           }
         }
