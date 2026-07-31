@@ -38,7 +38,8 @@
       "binaries/stimma-watchdog"
     ],
     "resources": {
-      "binaries/stimma-backend-aarch64-apple-darwin": "stimma-backend"
+      "binaries/stimma-backend-aarch64-apple-darwin": "stimma-backend",
+      "icons/Assets.car": "Assets.car"
     },
     "icon": [
       "icons/32x32.png",

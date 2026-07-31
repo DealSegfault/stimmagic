@@ -1,0 +1,31 @@
+{
+  "fill" : {
+    "automatic-gradient" : "extended-srgb:1.00000,1.00000,1.00000,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "image-name" : "pinwheel.svg",
+          "name" : "Pinwheel",
+          "position" : {
+            "scale" : 0.72,
+            "translation-in-points" : [ 0, 0 ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.35
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [ "watchOS" ],
+    "squares" : [ "iOS", "macOS" ]
+  }
+}

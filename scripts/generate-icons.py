@@ -8,6 +8,7 @@ Usage:
     python scripts/generate-icons.py --channel beta     # Blue "BETA" badge
 """
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -22,6 +23,14 @@ REPO_ROOT = SCRIPT_DIR.parent
 ICONS_DIR = REPO_ROOT / "src-tauri" / "icons"
 BASE_ICON = ICONS_DIR / "icon-base.png"
 MACOS_BASE_ICON = ICONS_DIR / "icon-macos-base.png"  # HIG-compliant 1024x1024 with squircle + padding
+
+# macOS 26 (Tahoe) Liquid Glass icon source. Compiled by actool into Assets.car,
+# which the system prefers over icon.icns whenever CFBundleIconName is set.
+# icon.icns remains the icon on macOS 15 and earlier.
+ICON_COMPOSER_DOC = ICONS_DIR / "Stimma.icon"
+ASSETS_CAR = ICONS_DIR / "Assets.car"
+# Name actool registers the icon under; must match CFBundleIconName in Info.plist.
+APP_ICON_NAME = "Stimma"
 
 CHANNEL_BADGES = {
     "canary": {"color": (168, 85, 247), "label": "CANARY"},  # Purple
@@ -75,6 +84,27 @@ def add_badge(img: Image.Image, channel: str) -> Image.Image:
         return img
 
     img = img.copy()
+    _draw_badge(img, channel, inset_frac=0.10)
+    return img
+
+
+def render_badge_layer(channel: str, size: int = 1024) -> Image.Image:
+    """Render the channel badge alone on a transparent canvas.
+
+    Used as a standalone layer in the Icon Composer document, where the squircle
+    and its padding are drawn by the system rather than baked into the artwork.
+    """
+    # Smaller than the legacy badge: here the canvas is the full squircle rather
+    # than the ~80% content box, so the same fraction would read much larger.
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    _draw_badge(img, channel, inset_frac=0.10, font_frac=0.068)
+    return img
+
+
+def _draw_badge(img: Image.Image, channel: str, inset_frac: float, font_frac: float = 0.09) -> None:
+    """Draw the channel badge in-place, centered `inset_frac` up from the bottom."""
+    badge_info = CHANNEL_BADGES[channel]
+
     draw = ImageDraw.Draw(img)
     w, h = img.size
 
@@ -82,7 +112,7 @@ def add_badge(img: Image.Image, channel: str) -> Image.Image:
     bg_color = badge_info["color"]
 
     # Scale badge relative to icon size
-    font_size = max(int(h * 0.09), 12)
+    font_size = max(int(h * font_frac), 12)
     font = _get_font(font_size)
 
     # Measure text
@@ -97,8 +127,7 @@ def add_badge(img: Image.Image, channel: str) -> Image.Image:
     badge_h = text_h + pad_y * 2
 
     # Position: bottom-center of the visible icon area
-    # For HIG icons, the squircle body is ~80% of canvas (10% inset each side)
-    inset = int(h * 0.10)
+    inset = int(h * inset_frac)
     bx = (w - badge_w) // 2
     by = h - inset - badge_h - int(h * 0.02)
 
@@ -120,8 +149,6 @@ def add_badge(img: Image.Image, channel: str) -> Image.Image:
     text_x = bx + (badge_w - text_w) // 2
     text_y = by + (badge_h - text_h) // 2 - bbox[1]  # Adjust for font baseline
     draw.text((text_x, text_y), label, fill=(255, 255, 255, 255), font=font)
-
-    return img
 
 
 def generate_icns(source_img: Image.Image, output_path: Path) -> None:
@@ -166,6 +193,75 @@ def generate_ico(source_img: Image.Image, output_path: Path) -> None:
     # Use the largest image as the base — PIL's ICO encoder uses the base
     # image size to filter, so starting from 16x16 drops all larger sizes.
     imgs[-1].save(output_path, format="ICO", append_images=imgs[:-1])
+
+
+def generate_assets_car(channel: str, output_path: Path) -> bool:
+    """Compile the Icon Composer document into Assets.car for macOS 26 (Tahoe).
+
+    Returns True if Assets.car was written. Compiling needs actool from Xcode 26
+    on macOS; elsewhere the existing Assets.car (if any) is left untouched.
+    """
+    if not ICON_COMPOSER_DOC.exists():
+        print(f"Warning: {ICON_COMPOSER_DOC.name} not found — skipping Assets.car")
+        return False
+
+    if platform.system() != "Darwin" or not shutil.which("xcrun"):
+        print("Skipping Assets.car (not macOS)")
+        return False
+
+    # icon.svg is the canonical mark; keep the document's copy in step with it so
+    # editing the document in Icon Composer never diverges from the other outputs.
+    source_svg = ICONS_DIR / "icon.svg"
+    if source_svg.exists():
+        shutil.copy2(source_svg, ICON_COMPOSER_DOC / "Assets" / "pinwheel.svg")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        doc = tmp / ICON_COMPOSER_DOC.name
+        shutil.copytree(ICON_COMPOSER_DOC, doc)
+
+        # The badge rides in its own group so the glass/shadow treatment applied
+        # to the logo doesn't smear the label text.
+        if channel in CHANNEL_BADGES:
+            render_badge_layer(channel).save(doc / "Assets" / "badge.png", "PNG")
+            spec = json.loads((doc / "icon.json").read_text())
+            spec["groups"].append({
+                "layers": [{"image-name": "badge.png", "name": "Channel badge"}],
+                "shadow": {"kind": "neutral", "opacity": 0.0},
+                "translucency": {"enabled": False, "value": 0.5},
+            })
+            (doc / "icon.json").write_text(json.dumps(spec, indent=2))
+
+        compiled = tmp / "compiled"
+        compiled.mkdir()
+        result = subprocess.run(
+            [
+                "xcrun", "actool", str(doc),
+                "--compile", str(compiled),
+                "--output-format", "human-readable-text",
+                "--notices", "--warnings", "--errors",
+                "--output-partial-info-plist", str(tmp / "partial.plist"),
+                "--app-icon", APP_ICON_NAME,
+                "--include-all-app-icons",
+                "--development-region", "en",
+                "--target-device", "mac",
+                "--minimum-deployment-target", "26.0",
+                "--platform", "macosx",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        car = compiled / "Assets.car"
+        if result.returncode != 0 or not car.exists():
+            print("Warning: actool failed — Assets.car not regenerated.")
+            print((result.stderr or result.stdout).strip()[:2000])
+            return False
+
+        # actool also emits a legacy .icns here, but it only carries 16pt and
+        # 128pt renditions. generate_icns() keeps producing the full-size one.
+        shutil.copy2(car, output_path)
+        return True
 
 
 def main():
@@ -218,9 +314,13 @@ def main():
     generate_ico(win_icon, ICONS_DIR / "icon.ico")
     print(f"  icon.ico ({len(ICO_SIZES)} sizes)")
 
-    # Generate ICNS (macOS — use HIG base)
+    # Generate ICNS (macOS 15 and earlier — use HIG base)
     generate_icns(macos_icon, ICONS_DIR / "icon.icns")
     print(f"  icon.icns")
+
+    # Generate Assets.car (macOS 26+ Liquid Glass icon)
+    if generate_assets_car(args.channel, ASSETS_CAR):
+        print(f"  Assets.car")
 
     print("Done.")
 
