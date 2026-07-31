@@ -116,7 +116,7 @@ class WebSocketManager:
             else:
                 log.info(
                     "WS OUT (broadcast)",
-                    event=event,
+                    ws_event=event,
                     **_payload_log_metadata(data),
                 )
 
@@ -140,7 +140,7 @@ class WebSocketManager:
         if event != "pong":
             log.info(
                 "WS OUT (direct)",
-                event=event,
+                ws_event=event,
                 **_payload_log_metadata(data),
             )
         try:

@@ -1274,6 +1274,11 @@ const BADGED_CHANNELS = new Set(["debug", "canary", "beta"]);
 async function channelIconConfig(channel: string): Promise<Record<string, unknown> | null> {
   if (!BADGED_CHANNELS.has(channel)) return null;
 
+  // Release workflows run generate-icons.py for the real channel and build via
+  // `tools/stimma app build` with no --channel, which would otherwise default to
+  // debug here and overwrite the channel icons CI just produced.
+  if (Deno.env.get("GITHUB_ACTIONS")) return null;
+
   const relDir = `icons/.generated/${channel}`;
   const outDir = join(repoRoot, "src-tauri", "icons", ".generated", channel);
   const code = await run(

@@ -63,7 +63,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     message_data = message.get("data", {})
                     log.info(
                         "WS IN",
-                        event=message.get("event"),
+                        ws_event=message.get("event"),
                         data_keys=sorted(str(key) for key in message_data)
                         if isinstance(message_data, dict) else [],
                     )
