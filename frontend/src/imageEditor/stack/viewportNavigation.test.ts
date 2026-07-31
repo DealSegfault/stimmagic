@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   clampViewportPan,
+  panForWheelDelta,
   panForZoomAtPoint,
 } from '../ported/viewportNavigation.ts'
 
@@ -34,5 +35,12 @@ test('zoom preserves the image point beneath the cursor', () => {
   assert.deepEqual(
     panForZoomAtPoint({ x: 0, y: 0 }, 1, 2, { x: 100, y: -50 }),
     { x: -100, y: 50 },
+  )
+})
+
+test('two-axis wheel scrolling pans the canvas', () => {
+  assert.deepEqual(
+    panForWheelDelta({ x: 25, y: -10 }, { x: 12, y: -8 }),
+    { x: 13, y: -2 },
   )
 })

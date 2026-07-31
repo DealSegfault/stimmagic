@@ -41,3 +41,14 @@ export function panForZoomAtPoint(
     y: pointFromViewportCenter.y - (pointFromViewportCenter.y - pan.y) * factor,
   }
 }
+
+/** Translate wheel scroll offsets into canvas movement in both axes. */
+export function panForWheelDelta(
+  pan: ViewportPoint,
+  delta: ViewportPoint,
+): ViewportPoint {
+  return {
+    x: pan.x - delta.x,
+    y: pan.y - delta.y,
+  }
+}

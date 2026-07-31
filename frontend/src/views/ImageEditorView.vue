@@ -131,6 +131,7 @@ import type { TextStyleId } from '../imageEditor/stack/textStyles'
 import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import {
   clampViewportPan,
+  panForWheelDelta,
   panForZoomAtPoint,
 } from '../imageEditor/ported/viewportNavigation'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
@@ -1111,6 +1112,33 @@ function zoomViewBy(direction: 1 | -1) {
 function onViewportWheel(event: WheelEvent) {
   const element = viewport.value
   if (!element) return
+
+  // Browser engines report a trackpad pinch as a ctrl-modified wheel event. Plain
+  // two-finger scrolling is viewport navigation instead: move the image in
+  // both axes, with the same "content follows the scroll" direction as other
+  // canvas editors.
+  if (!event.ctrlKey) {
+    const linePixels = 16
+    const deltaX = event.deltaX * (
+      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? linePixels
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? element.clientWidth
+          : 1
+    )
+    const deltaY = event.deltaY * (
+      event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? linePixels
+        : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+          ? element.clientHeight
+          : 1
+    )
+    viewPan.value = panForWheelDelta(viewPan.value, { x: deltaX, y: deltaY })
+    clampViewPan()
+    return
+  }
+
+  if (event.deltaY === 0) return
   const rect = element.getBoundingClientRect()
   const anchor = {
     x: event.clientX - rect.left - rect.width / 2,
