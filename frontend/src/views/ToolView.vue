@@ -711,7 +711,7 @@
                 <SparklesIcon class="w-6 h-6 text-content-muted" />
               </template>
               <template #action>
-                <Button :disabled="!canSubmit" @click="submitJob()">Create something</Button>
+                <Button :disabled="!canSubmit" :title="submitBlockedReason" @click="submitJob()">Create something</Button>
               </template>
             </EmptyState>
           </Transition>
@@ -909,7 +909,7 @@
                   <SparklesIcon class="w-6 h-6 text-content-muted" />
                 </template>
                 <template #action>
-                  <Button :disabled="!canSubmit" @click="submitJob()">Create something</Button>
+                  <Button :disabled="!canSubmit" :title="submitBlockedReason" @click="submitJob()">Create something</Button>
                 </template>
               </EmptyState>
             </Transition>
@@ -1055,6 +1055,7 @@ import { STIMMA_TOOL_PROVIDER_DISPLAY_NAME, isStimmaCloudTool as isStimmaCloud }
 import { copyToClipboard } from '../utils/clipboard'
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import { formatTaskTypeLabel } from '../utils/taskTypeIcons'
+import { validateTaskType } from '../utils/taskTypeValidation'
 import { addToast } from '../composables/useToasts'
 import SlideshowMode from '../components/SlideshowMode.vue'
 import CompareMode from '../components/CompareMode.vue'
@@ -3258,6 +3259,23 @@ const inputFieldChecks: Record<string, () => boolean> = {
   'negative_prompt': () => true, // Always optional
 }
 
+/**
+ * Rules the TASK TYPE imposes, above the per-field checks. A task type is an
+ * interface the app understands on its own — `outpaint-image` means "grows a
+ * canvas by these four percentages" whatever tool implements it — so a rule
+ * like "at least one edge must be expanded" is knowable here without the tool
+ * having to encode it. See utils/taskTypeValidation.ts.
+ */
+const taskTypeValidation = computed(() =>
+  validateTaskType(
+    tool.value?.task_type ?? tool.value?.task_types?.[0],
+    (modelParams.value ?? {}) as Record<string, unknown>
+  )
+)
+
+/** Why the submit button is dead, when the reason is a task-type rule. */
+const submitBlockedReason = computed(() => taskTypeValidation.value.reason)
+
 // Can submit check - schema-driven validation
 const canSubmit = computed(() => {
   if (!tool.value || !outputFolder.value) return false
@@ -3268,6 +3286,8 @@ const canSubmit = computed(() => {
     const check = inputFieldChecks[field]
     if (check && !check()) return false
   }
+
+  if (!taskTypeValidation.value.ok) return false
 
   return true
 })

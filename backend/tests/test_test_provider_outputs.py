@@ -96,15 +96,40 @@ async def test_upscale_scales_input_dimensions(provider, tmp_path):
 
 
 async def test_outpaint_expands_input_dimensions(provider, tmp_path):
+    """Growth is a percentage of the CORRESPONDING axis: left/right of width,
+    top/bottom of height. 100x60 at 30/30/10/0 → 30px each side, 6px on top."""
     src = tmp_path / "src.png"
     Image.new("RGB", (100, 60)).save(src)
     result = await _execute(
         provider,
         "outpaint-image:test-outpaint",
-        {"input_images": [str(src)], "expand_left": 30, "expand_right": 30, "expand_top": 10, "expand_bottom": 0},
+        {
+            "input_images": [str(src)],
+            "expand_left_pct": 30, "expand_right_pct": 30,
+            "expand_top_pct": 10, "expand_bottom_pct": 0,
+        },
     )
     img = Image.open(io.BytesIO(result.output_data))
-    assert img.size == (160, 70)
+    assert img.size == (160, 66)
+
+
+async def test_outpaint_equal_percentages_preserve_aspect_ratio(provider, tmp_path):
+    """The reason the unit is percent: equal edges hold the source's shape,
+    where equal pixels would drag a wide image toward square."""
+    src = tmp_path / "wide.png"
+    Image.new("RGB", (200, 100)).save(src)
+    result = await _execute(
+        provider,
+        "outpaint-image:test-outpaint",
+        {
+            "input_images": [str(src)],
+            "expand_left_pct": 25, "expand_right_pct": 25,
+            "expand_top_pct": 25, "expand_bottom_pct": 25,
+        },
+    )
+    img = Image.open(io.BytesIO(result.output_data))
+    assert img.size == (300, 150)
+    assert img.width / img.height == 2.0
 
 
 async def test_video_and_audio_outputs_are_valid_containers(provider):

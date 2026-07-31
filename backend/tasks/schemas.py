@@ -21,6 +21,28 @@ def normalize_task_type(task_type: str) -> str:
     return TASK_TYPE_ALIASES.get(task_type, task_type)
 
 
+# The outpaint-image canvas-growth interface.
+#
+# Unit: percent of the source image's CORRESPONDING axis — top/bottom of its
+# height, left/right of its width. This is not an arbitrary choice; it is the
+# rule the app's own Extend Canvas prep step has always used (see
+# routes/generation.py), and both sides must agree or one slider means two
+# canvases. Percent rather than pixels because equal values on every edge then
+# preserve the source's aspect ratio at any resolution, and because a caller can
+# hit a target ratio without first fetching the image's dimensions.
+#
+# Every field defaults to 0 and at least one must be above 0 for the job to mean
+# anything — an outpaint has no neutral amount, so there is no defensible
+# default canvas. Hosts enforce that before submitting; see
+# frontend/src/utils/taskTypeValidation.ts.
+OUTPAINT_EXPAND_FIELDS: List[str] = [
+    "expand_top_pct",
+    "expand_bottom_pct",
+    "expand_left_pct",
+    "expand_right_pct",
+]
+
+
 # Required and optional input/output fields for each task type.
 # Tools declaring a task_type must include all required fields in their schemas.
 TASK_SCHEMA_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
@@ -78,9 +100,19 @@ TASK_SCHEMA_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
         "optional_input": [],
         "required_output": ["assets"],
     },
+    # Canvas extension. The four expand fields are REQUIRED of any outpaint
+    # tool, not optional: they are the whole interface, and a caller that has to
+    # discover per-tool which of them exist has no interface at all. See
+    # OUTPAINT_EXPAND_FIELDS for the unit and the non-zero rule.
     TaskType.OUTPAINT_IMAGE.value: {
-        "required_input": ["input_images"],
-        "optional_input": ["prompt", "negative_prompt", "expand_left", "expand_right", "expand_top", "expand_bottom"],
+        "required_input": [
+            "input_images",
+            "expand_top_pct",
+            "expand_bottom_pct",
+            "expand_left_pct",
+            "expand_right_pct",
+        ],
+        "optional_input": ["prompt", "negative_prompt"],
         "required_output": ["assets"],
     },
     TaskType.REMOVE_BACKGROUND.value: {

@@ -163,11 +163,11 @@ const paramExtractors: Record<string, (s: PayloadBuilderState) => any> = {
   'mask_fill_holes': (s) => s.modelParams.mask_fill_holes,
   'feathering': (s) => s.modelParams.feathering,
 
-  // Outpaint padding
-  'top': (s) => s.modelParams.top,
-  'bottom': (s) => s.modelParams.bottom,
-  'left': (s) => s.modelParams.left,
-  'right': (s) => s.modelParams.right,
+  // Outpaint growth (expand_*_pct) needs no entry here — the generic
+  // modelParams fallback below carries it. The bare top/bottom/left/right
+  // extractors that used to sit here were an older outpaint convention that no
+  // tool declares; each one only re-read modelParams under its own name, so the
+  // fallback already did exactly the same thing.
 }
 
 /**

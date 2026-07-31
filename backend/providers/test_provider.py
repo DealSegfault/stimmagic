@@ -522,18 +522,18 @@ class TestToolProvider(ToolProvider):
              {**_images}, ["input_images"]),
             ("outpaint-image:test-outpaint", "Test Outpaint", "outpaint-image",
              {**_images, **_prompt, **_neg, **_seed,
-              "expand_left": {"type": "integer", "default": 0, "minimum": 0,
-                              "description": "Pixels of new canvas to add on the left edge."},
-              "expand_right": {"type": "integer", "default": 0, "minimum": 0,
-                               "description": "Pixels of new canvas to add on the right edge."},
-              "expand_top": {"type": "integer", "default": 0, "minimum": 0,
-                             "description": "Pixels of new canvas to add on the top edge."},
-              "expand_bottom": {"type": "integer", "default": 0, "minimum": 0,
-                                "description": "Pixels of new canvas to add on the bottom edge. "
-                                               "Output size is input size plus the expands — for a target "
-                                               "aspect ratio, compute the padding from the input dimensions "
-                                               "(e.g. 1024x1024 -> 16:9 needs 1024*16/9-1024 = 796 total horizontal)."}},
-             ["input_images"]),
+              "expand_left_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                  "description": "New canvas on the left edge, as a percentage of the image's width."},
+              "expand_right_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                   "description": "New canvas on the right edge, as a percentage of the image's width."},
+              "expand_top_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                 "description": "New canvas on the top edge, as a percentage of the image's height."},
+              "expand_bottom_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                    "description": "New canvas on the bottom edge, as a percentage of the image's "
+                                                   "height. Percentages are dimensionless, so a target aspect ratio "
+                                                   "needs no knowledge of the source size — square to 16:9 is "
+                                                   "16/9-1 = 77.8% of width, split across left and right."}},
+             ["input_images", "expand_left_pct", "expand_right_pct", "expand_top_pct", "expand_bottom_pct"]),
             ("erase-image:test-erase", "Test Erase", "erase-image",
              {**_images,
               "mask": {"type": "string", "format": "file-path", "x-control": "mask_editor",
@@ -751,9 +751,13 @@ class TestToolProvider(ToolProvider):
                 if tool_id.startswith("upscale-image:") and isinstance(scale, int):
                     return (w * scale, h * scale)
                 if tool_id.startswith("outpaint-image:"):
+                    # Percent of the corresponding axis, truncated — the same
+                    # rule as routes/generation.py's Extend Canvas step.
+                    def _pct(field: str, axis: int) -> int:
+                        return int(axis * float(parameters.get(field) or 0) / 100)
                     return (
-                        w + int(parameters.get("expand_left") or 0) + int(parameters.get("expand_right") or 0),
-                        h + int(parameters.get("expand_top") or 0) + int(parameters.get("expand_bottom") or 0),
+                        w + _pct("expand_left_pct", w) + _pct("expand_right_pct", w),
+                        h + _pct("expand_top_pct", h) + _pct("expand_bottom_pct", h),
                     )
                 return (w, h)
             except Exception:
