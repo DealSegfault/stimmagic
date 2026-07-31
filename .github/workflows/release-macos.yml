@@ -231,7 +231,12 @@ jobs:
           security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign || true
           security import "$RUNNER_TEMP/DeveloperIDCA.cer" -k "$KEYCHAIN_PATH" -T /usr/bin/codesign || true
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN_PATH"
+          # Setting the search list replaces it outright. macOS 26 no longer falls
+          # back to the system roots implicitly, so codesign could find the
+          # identity but not build its chain to the self-signed Apple Root CA
+          # ("unable to build chain to self-signed root" -> errSecInternalComponent).
+          # Name the root store explicitly; cleanup below restores the original list.
+          security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" "$KEYCHAIN_PATH" /System/Library/Keychains/SystemRootCertificates.keychain
           security find-identity -v -p codesigning "$KEYCHAIN_PATH" | tee "$RUNNER_TEMP/codesigning-identities.txt"
           if ! grep -qE '[1-9][0-9]* valid identities found' "$RUNNER_TEMP/codesigning-identities.txt"; then
             echo "No codesigning identities are available after importing Apple certificate."
@@ -544,6 +549,9 @@ jobs:
             [ -f "$kc" ] || continue
             security show-keychain-info "$kc" >/dev/null 2>&1 || continue
             [ "$kc" = "${STIMMA_SIGNING_KEYCHAIN:-}" ] && continue
+            # Added to the search list only for the signing step; dropping it here
+            # keeps the user's list from accumulating it across releases.
+            [ "$kc" = "/System/Library/Keychains/SystemRootCertificates.keychain" ] && continue
             REMAINING+=("$kc")
           done < <(security list-keychains -d user)
           security list-keychains -d user -s "${REMAINING[@]}"
