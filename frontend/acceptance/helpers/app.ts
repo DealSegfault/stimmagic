@@ -112,13 +112,13 @@ export async function openToolById(page: Page, toolId: string, projectId?: numbe
   if (!page.url().includes(toolUrl)) {
     await page.goto(url);
   }
-  await expect(page.getByRole('button', { name: /^Run/ })).toBeVisible({ timeout: 10000 });
+  await expect(toolRunButton(page)).toBeVisible({ timeout: 10000 });
 }
 
 export async function openPromptToolById(page: Page, toolId: string, projectId?: number, extraQuery: Record<string, string> = {}) {
   await openToolById(page, toolId, projectId, extraQuery);
   await promptInput(page).waitFor({ state: 'visible', timeout: 30000 });
-  await expect(page.getByRole('button', { name: /^Run/ })).toBeEnabled({ timeout: 10000 });
+  await expect(toolRunButton(page)).toBeEnabled({ timeout: 10000 });
 }
 
 export async function submitGeneration(page: Page, prompt: string) {
@@ -128,9 +128,13 @@ export async function submitGeneration(page: Page, prompt: string) {
   // acceptance profile the overlay can appear after openTool() has already
   // dismissed it, so close it again at the actual interaction boundary.
   await dismissReadinessPanelIfNeeded(page);
-  const runButton = page.getByTestId('tool-run-button');
+  const runButton = toolRunButton(page);
   await expect(runButton).toBeEnabled({ timeout: 10000 });
   await runButton.click();
+}
+
+function toolRunButton(page: Page) {
+  return page.locator('#tool-header-slot').getByTestId('tool-run-button');
 }
 
 async function disablePromptTransforms(page: Page) {
