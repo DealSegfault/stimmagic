@@ -10,6 +10,24 @@ from core.profile_context import get_current_profile
 log = get_logger(__name__)
 
 
+def _payload_log_metadata(data: dict) -> dict:
+    """Return content-free metadata for a WebSocket payload.
+
+    WebSocket events routinely carry chat messages, prompts, tool arguments,
+    model output, and media metadata. Logging a serialized preview therefore
+    leaks user content even when truncated. Keep only mechanical identifiers
+    and the payload shape.
+    """
+    metadata = {"data_keys": sorted(str(key) for key in data)}
+    for key in ("chat_id", "request_id", "profile_id", "flow_id", "project_id"):
+        value = data.get(key)
+        if isinstance(value, (int, float)) or (
+            isinstance(value, str) and value.isascii() and value.replace("-", "").isalnum()
+        ):
+            metadata[key] = value
+    return metadata
+
+
 class WebSocketManager:
     """Manages WebSocket connections and broadcasts events to connected clients."""
 
@@ -96,8 +114,11 @@ class WebSocketManager:
                 profile_id = data.get('profile_id') or data.get('job', {}).get('profile_id')
                 log.info(f"WS OUT (broadcast): {event} - job_id={job_id}, generator_instance_id={gen_inst_id}, profile_id={profile_id}")
             else:
-                data_preview = json.dumps(data)[:200]
-                log.info(f"WS OUT (broadcast): {event} - {data_preview}")
+                log.info(
+                    "WS OUT (broadcast)",
+                    event=event,
+                    **_payload_log_metadata(data),
+                )
 
         # Send to all connected clients
         disconnected = []
@@ -115,10 +136,13 @@ class WebSocketManager:
     async def send_to(self, websocket: WebSocket, event: str, data: dict):
         """Send an event to a specific client."""
         message = json.dumps({"event": event, "data": data})
-        # Log outgoing message (skip noisy pong events, truncate data)
+        # Log outgoing message shape, never its content.
         if event != "pong":
-            data_preview = json.dumps(data)[:200]
-            log.info(f"WS OUT (direct): {event} - {data_preview}")
+            log.info(
+                "WS OUT (direct)",
+                event=event,
+                **_payload_log_metadata(data),
+            )
         try:
             await websocket.send_text(message)
         except Exception as e:

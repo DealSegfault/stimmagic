@@ -109,7 +109,7 @@ import {
   getChainFilterDef,
   getChainFilterDefaults,
   type ChainFilterDef,
-} from '@stimma/image-editor'
+} from '../../../utils/filterDefs'
 
 const props = defineProps<{
   chain: PostProcessingChain

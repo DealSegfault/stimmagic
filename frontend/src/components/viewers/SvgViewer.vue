@@ -39,7 +39,7 @@
       </div>
 
       <div
-        class="flex-shrink-0 flex items-center gap-3 px-4 pb-3 pt-1 cursor-default"
+        class="flex-shrink-0 flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-3 pt-1 cursor-default"
         @click.stop
         @contextmenu.stop
         @pointerdown.stop
@@ -168,12 +168,20 @@ const PIXEL_HINTS = {
 
 // Transparency is the normal state for an icon or a logo, so the ground is a
 // control rather than a fixed choice: a white mark and a black mark cannot both
-// be legible against the same backdrop.
+// be legible against the same backdrop. Auto is the default and reads the
+// document's own paint (svg-info's `ink`), because the failure it prevents —
+// a black icon on the app's dark chrome — looks like a bug, not a preference.
 const BACKGROUND_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
   { value: 'checker', label: 'Checker' },
   { value: 'light', label: 'Light' },
   { value: 'dark', label: 'Dark' },
 ]
+
+// Ink tone → the ground that keeps it legible. 'mixed' means the document uses
+// more than one tone (or paint we cannot reduce), where checkerboard is the
+// honest answer.
+const GROUND_FOR_INK = { dark: 'light', light: 'dark', mixed: 'checker' }
 
 const BACKGROUND_STORAGE_PART = 'background'
 
@@ -190,7 +198,8 @@ const pixelValue = ref(256)
 const showScaleMenu = ref(false)
 const scaleMenuRef = ref(null)
 
-const background = ref('checker')
+const background = ref('auto')
+const ink = ref('mixed')
 
 const containerRef = ref(null)
 const containerWidth = ref(0)
@@ -203,11 +212,15 @@ const { getSvgDocumentUrl } = useMediaApi()
 // header, so the URL has to carry its database in the path.
 const documentUrl = computed(() => getSvgDocumentUrl(props.mediaId))
 
+const resolvedBackground = computed(() =>
+  background.value === 'auto' ? (GROUND_FOR_INK[ink.value] || 'checker') : background.value
+)
+
 const backgroundClass = computed(() => ({
   checker: 'bg-checker',
   light: 'bg-white',
   dark: 'bg-black',
-}[background.value]))
+}[resolvedBackground.value]))
 
 function backgroundStorageKey() {
   return makeProfileKey('svg-viewer', BACKGROUND_STORAGE_PART)
@@ -250,7 +263,10 @@ const scale = computed(() => {
   // Padding allowance matches the p-4 on the stage wrapper.
   const available = Math.max(1, containerWidth.value - 32)
   const availableHeight = Math.max(1, containerHeight.value - 32)
-  return Math.min(available / naturalWidth.value, availableHeight / naturalHeight.value, 1)
+  // Fit UPSCALES. Capping at 1:1 is a raster habit — it left a 24-unit icon as
+  // a 24px speck in the middle of the stage. Vector has no native pixel size to
+  // respect, so "fit to window" means fit the window.
+  return Math.min(available / naturalWidth.value, availableHeight / naturalHeight.value)
 })
 
 const renderWidth = computed(() => Math.max(1, Math.round(naturalWidth.value * scale.value)))
@@ -304,6 +320,7 @@ async function loadInfo() {
     const { data } = await axios.get(`${getApiBase()}/media/${props.mediaId}/svg-info`)
     naturalWidth.value = data.width
     naturalHeight.value = data.height
+    ink.value = data.ink || 'mixed'
     warnings.value = data.warnings || []
   } catch (e) {
     error.value = e.response?.data?.detail || `Failed to load SVG: ${e.message}`

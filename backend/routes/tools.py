@@ -6,6 +6,7 @@ Provider tools are the source of truth. This file provides:
 3. Tool state persistence (working parameters)
 """
 import json
+import uuid
 from datetime import datetime
 from typing import List, Optional, Dict
 
@@ -110,9 +111,15 @@ class SearchToolOptionsRequest(BaseModel):
 
 
 class ExecuteToolRequest(BaseModel):
-    """Request to execute a lightweight tool."""
+    """Request to execute a lightweight tool.
+
+    ``parameters`` is the single schema-driven namespace matching the tool's
+    ``parameter_schema`` — inputs live in it alongside everything else
+    (``input_images``, ``subject``, ...), the same shape the generation queue
+    uses. Earlier revisions declared a second ``inputs`` dict that the provider
+    interface never accepted; it is gone rather than plumbed through.
+    """
     parameters: Dict = {}
-    inputs: Dict = {}  # e.g., {"image": "/path/to/image.png"}
     # Accepted only for wire compatibility. Output placement is server-owned.
     output_folder: Optional[str] = None
 
@@ -1131,26 +1138,20 @@ async def execute_tool(
     """
     import shutil
     from pathlib import Path
-    from providers import ProviderRegistry
+    from providers import ExecutionResult, ProviderRegistry
+    from providers.lightweight import LightweightProvider
 
     registry = ProviderRegistry.get_instance()
 
-    # Find the provider and tool
-    provider = None
-    tool_id = None
-    for pid, p in registry._providers.items():
-        if full_tool_id.startswith(f"{pid}:"):
-            tool_id = full_tool_id[len(pid) + 1:]
-            tool = await p.get_tool(tool_id)
-            if tool:
-                provider = p
-                break
-
-    if not provider or not tool_id:
+    found = registry.get_tool(full_tool_id)
+    if not found:
         raise HTTPException(status_code=404, detail="Tool not found")
+    provider, tool = found
 
-    # Verify this is a lightweight tool
-    if provider.provider_type != "builtin" or not hasattr(provider, '_tools'):
+    # Only tools that execute in-process belong here. provider_type is not the
+    # discriminator — several providers report "builtin" — so identify the
+    # lightweight provider itself.
+    if not isinstance(provider, LightweightProvider):
         raise HTTPException(
             status_code=400,
             detail="This endpoint is only for lightweight tools. Use the generation queue for other tools."
@@ -1160,12 +1161,10 @@ async def execute_tool(
         # Execute the tool
         result = None
         async for progress_or_result in provider.execute(
-            tool_id=tool_id,
+            tool_id=tool.id,
             parameters=request.parameters,
-            inputs=request.inputs,
         ):
             # Keep the last result (progress updates are intermediate)
-            from providers import ExecutionResult
             if isinstance(progress_or_result, ExecutionResult):
                 result = progress_or_result
 
@@ -1185,21 +1184,23 @@ async def execute_tool(
         )
         output_folder.mkdir(parents=True, exist_ok=True)
 
-        final_outputs = {}
-        for key, value in (result.outputs or {}).items():
-            if isinstance(value, str) and Path(value).exists():
-                # It's a file path - copy to output folder
-                src_path = Path(value)
-                dst_path = output_folder / src_path.name
-                shutil.copy2(src_path, dst_path)
-                final_outputs[key] = str(dst_path)
-            else:
-                final_outputs[key] = value
+        # Lightweight tools write to a temp file and name it in
+        # metadata["output_path"]; moving it into managed staging is also the
+        # temp-file cleanup. Metadata-only tools (detect-objects) name nothing
+        # and correctly return no outputs.
+        metadata = dict(result.metadata or {})
+        final_outputs: Dict = {}
+        produced = metadata.pop("output_path", None)
+        if produced and Path(produced).exists():
+            src_path = Path(produced)
+            dst_path = output_folder / f"{uuid.uuid4().hex}{src_path.suffix}"
+            shutil.move(str(src_path), dst_path)
+            final_outputs["output_path"] = str(dst_path)
 
         return ExecuteToolResponse(
             success=True,
             outputs=final_outputs,
-            metadata=result.metadata or {},
+            metadata=metadata,
         )
 
     except HTTPException:

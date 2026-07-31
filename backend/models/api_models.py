@@ -157,6 +157,14 @@ class GenerationJobRequest(BaseModel):
     project_id: Optional[int] = None  # Project to associate generated media with
     forever_work_reserved: Optional[bool] = None
 
+    # Where the generated Media lands. Defaults to a library Asset. The editor
+    # submits candidates with 'context' rooted at its working document so they
+    # are durable and reachable without ever becoming library Assets. The route
+    # restricts which roots a client may name — see submit_generation_job.
+    output_disposition: Optional[str] = None
+    output_context_kind: Optional[str] = None
+    output_context_id: Optional[str] = None
+
 
 class BatchSetInput(BaseModel):
     """Reference to a set for batch processing."""

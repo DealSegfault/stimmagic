@@ -532,6 +532,14 @@
                     class="self-center"
                     :title="unseenKindFor(tab.id) === 'error' ? 'Finished with errors since you last looked' : 'Finished since you last looked'"
                   />
+                  <!-- The op-stack editor saves explicitly, so its entry says
+                       when the head is behind the stack. -->
+                  <StatusDot
+                    v-if="hasUnsavedEdits(tab)"
+                    bucket="warning"
+                    class="self-center"
+                    title="Unsaved edits"
+                  />
                 </template>
               </button>
               <!-- Unavailable indicator (warning triangle), same slot a close X would use -->
@@ -848,6 +856,14 @@
                     class="self-center"
                     :title="unseenKindFor(tab.id) === 'error' ? 'Finished with errors since you last looked' : 'Finished since you last looked'"
                   />
+                  <!-- The op-stack editor saves explicitly, so its entry says
+                       when the head is behind the stack. -->
+                  <StatusDot
+                    v-if="hasUnsavedEdits(tab)"
+                    bucket="warning"
+                    class="self-center"
+                    title="Unsaved edits"
+                  />
                 </template>
               </button>
               <!-- Unavailable indicator (warning triangle); hidden on hover so the close X
@@ -1020,7 +1036,9 @@ import { useAgentActivity } from '../composables/useAgentActivity'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useSendToTool } from '../composables/useSendToTool'
-import { useWorkspaceTabs, toolTabRoute, type WorkspaceTab } from '../composables/useWorkspaceTabs'
+import { useWorkspaceTabs, toolTabRoute, editorTabRoute, editorRouteTabId, editorAssetId, type WorkspaceTab } from '../composables/useWorkspaceTabs'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
+import { isEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import { removeRecentEntity } from '../composables/useRecentEntities'
 import { useProjectRoute } from '../composables/useProjectRoute'
 import { useWorkspaceTabsContextMenu } from '../composables/useWorkspaceTabsContextMenu'
@@ -1138,7 +1156,7 @@ const { sendToTool } = useSendToTool()
 
 // Workspace tabs
 const {
-  pinnedTabs, openTabs, allTabs, addTab, addEditorTab, updateEditorMedia, nextEditorId,
+  pinnedTabs, openTabs, allTabs, addTab, addEditorTab, updateEditorMedia,
   findNextTab, removeTab, updateTabName, removeTabByEntity,
   reconcileToolPins, moveTab, setLastLibraryRoute, getLastLibraryRoute,
   markTabActivated, updateTabCustomName
@@ -1554,10 +1572,15 @@ function isTabActive(tab: WorkspaceTab): boolean {
   if (tab.type === 'chat') return route.name === 'chat' && String(route.params.id) === tab.entityId
   if (tab.type === 'board') return route.name === 'board-detail' && String(route.params.id) === tab.entityId
   if (tab.type === 'project') return String(route.name || '').startsWith('project-') && String(route.params.id) === tab.entityId
-  if (tab.type === 'editor') return (route.name === 'edit-image' || route.name === 'edit-image-empty') && String(route.params.editorId) === tab.entityId
+  if (tab.type === 'editor') return editorRouteTabId(route) === tab.id
   if (tab.type === 'lineage') return route.name === 'lineage' && String(route.params.mediaId) === tab.entityId
   if (tab.type === 'flow') return route.name === 'flow' && String(route.params.id) === tab.entityId
   return false
+}
+
+function hasUnsavedEdits(tab: WorkspaceTab): boolean {
+  const assetId = editorAssetId(tab)
+  return assetId !== null && isEditorDirty(assetId)
 }
 
 function isTabGenerating(tab: WorkspaceTab): boolean {
@@ -1575,13 +1598,7 @@ function navigateToTab(tab: WorkspaceTab) {
   else if (tab.type === 'chat') router.push({ name: 'chat', params: { id: tab.entityId } })
   else if (tab.type === 'board') router.push({ name: 'board-detail', params: { id: tab.entityId } })
   else if (tab.type === 'project') router.push({ name: getLastProjectRoute(tab.entityId), params: { id: tab.entityId } })
-  else if (tab.type === 'editor') {
-    if (tab.editorMediaId) {
-      router.push({ name: 'edit-image', params: { editorId: tab.entityId, mediaId: tab.editorMediaId } })
-    } else {
-      router.push({ name: 'edit-image-empty', params: { editorId: tab.entityId } })
-    }
-  }
+  else if (tab.type === 'editor') router.push(editorTabRoute(tab))
   else if (tab.type === 'lineage') router.push({ name: 'lineage', params: { mediaId: tab.entityId } })
   else if (tab.type === 'flow') router.push({ name: 'flow', params: { id: tab.entityId } })
 
@@ -1775,8 +1792,9 @@ async function handleTabMediaDrop(tab: WorkspaceTab, e: DragEvent) {
       console.error('Failed to add media to board:', error)
     }
   } else if (tab.type === 'editor') {
-    updateEditorMedia(tab.id, String(mediaId))
-    router.push({ name: 'edit-image', params: { editorId: tab.entityId, mediaId } })
+    // An editor tab IS its Asset's document — another image can't be loaded
+    // into it. Open that image's own editor instead.
+    void openImageEditor(router, mediaId)
   }
 }
 
@@ -2592,8 +2610,16 @@ watch(
           }
         }).catch(() => {})
       }
-    } else if ((name === 'edit-image' || name === 'edit-image-empty') && params.editorId) {
-      addEditorTab(String(params.editorId), params.mediaId ? String(params.mediaId) : undefined)
+    } else if (name === 'edit-image' && params.assetId) {
+      // The editor route carries only the Asset, so the thumbnail
+      // and name come from the asset's head revision.
+      const assetId = String(params.assetId)
+      const tab = addEditorTab(assetId)
+      fetch(`/api/assets/${assetId}`).then(r => r.ok ? r.json() : null).then(data => {
+        if (!data) return
+        if (data.media?.id != null) updateEditorMedia(tab.id, String(data.media.id))
+        if (data.asset?.title) updateTabName(tab.id, data.asset.title)
+      }).catch(() => {})
     } else if (name === 'lineage' && params.mediaId) {
       addTab('lineage', String(params.mediaId), 'Lineage')
     } else if (name === 'flow' && params.id) {

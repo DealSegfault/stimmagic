@@ -1,5 +1,6 @@
 import { computed, type Ref, type ComputedRef } from 'vue'
 import { detectResolutionControls } from '../utils/resolutionControls'
+import type { ScaleFactorConstraints } from '../utils/resolutionControls'
 import { AUDIO_TASK_TYPES } from '../utils/taskTypeIcons'
 import type { ParamConstraint, ConstraintExpr } from '../utils/paramConstraints'
 
@@ -36,6 +37,9 @@ export interface MediaInputConfig {
   label: string
   description?: string
   control?: string  // x-control value: 'image_picker' | 'video_frame_picker' | 'audio_picker'
+  // Audio slots only (STP x-audio-role): 'driving' means the output reproduces
+  // this track; 'reference' means it only steers audio the tool generates.
+  audioRole?: 'driving' | 'reference'
 }
 
 export interface GenericParam {
@@ -125,6 +129,7 @@ export interface UseToolSchemaFeaturesReturn {
   hasScaleFactor: ComputedRef<boolean>
   hasUpscaleResolution: ComputedRef<boolean>
   showUpscalePicker: ComputedRef<boolean>
+  scaleFactorConstraints: ComputedRef<ScaleFactorConstraints>
   hasResolution: ComputedRef<boolean>
   hasFrameCount: ComputedRef<boolean>
   hasDuration: ComputedRef<boolean>
@@ -218,6 +223,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
   const hasScaleFactor = computed(() => resControls.value.hasScaleFactor)
   const hasUpscaleResolution = computed(() => resControls.value.hasUpscaleResolution)
   const showUpscalePicker = computed(() => resControls.value.showUpscalePicker)
+  const scaleFactorConstraints = computed(() => resControls.value.scaleFactor)
 
   // Check if tool has a 'resolution' param (for config transfer purposes - any resolution param)
   const hasResolution = computed(() => {
@@ -386,6 +392,10 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
       label: schema?.['x-label'] || 'Audio',
       description: schema?.description,
       control: schema?.['x-control'],
+      // STP x-audio-role: 'driving' (the output reproduces this track) vs
+      // 'reference' (a voice sample steering audio the tool still generates).
+      // Absent means driving.
+      audioRole: schema?.['x-audio-role'] || 'driving',
     }
   })
 
@@ -580,6 +590,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
     hasScaleFactor,
     hasUpscaleResolution,
     showUpscalePicker,
+    scaleFactorConstraints,
     hasResolution,
     hasFrameCount,
     hasDuration,

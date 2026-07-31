@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import MediaItem, MediaLineage, GenerationJob, Tool, CachedProviderTool
+from database import MediaItem, MediaLineage, GenerationJob, Tool, CachedProviderTool, WorkingDocument
 from database_registry import get_database_registry
 from core.dependencies import get_db_session
 from core.profile_context import get_current_profile
@@ -172,6 +172,30 @@ def _prompt_input_image_count(
     )
 
 
+def _prompt_audio_conditioned(
+    parameters: Dict[str, Any],
+    schema_props: Dict[str, Any],
+) -> bool:
+    """True when this job feeds a DRIVING audio track into the tool.
+
+    Schema-driven, like every other media question: any parameter the tool
+    declares with an `audio_picker` control that actually carries a value. An
+    input marked `x-audio-role: reference` doesn't count — a voice sample steers
+    audio the tool still generates, so the prompt should still describe sound
+    (STP: Media Input Formats → x-audio-role). Tools that OUTPUT audio are a
+    different axis (`is_audio`) and are unaffected.
+    """
+    for field, value in parameters.items():
+        prop = schema_props.get(field) or {}
+        if str(prop.get("x-control") or "") != "audio_picker":
+            continue
+        if str(prop.get("x-audio-role") or "driving") != "driving":
+            continue
+        if _count_value(value) > 0:
+            return True
+    return False
+
+
 def _prompt_media_id(parameters: Dict[str, Any], effective_task: str) -> Optional[int]:
     if "video" in (effective_task or ""):
         # i2v enhancement may include the start frame as visual context. Keep
@@ -322,6 +346,7 @@ async def _apply_generation_prompt_pipeline(
         is_video="video" in effective_task,
         is_audio=effective_task in _AUDIO_TASK_TYPES,
         input_image_count=_prompt_input_image_count(parameters, schema_props, effective_task),
+        audio_conditioned=_prompt_audio_conditioned(parameters, schema_props),
         media_id=_prompt_media_id(parameters, effective_task),
         width=_optional_int(parameters, "width"),
         height=_optional_int(parameters, "height"),
@@ -1374,6 +1399,64 @@ async def get_controlnet_preview(path: str):
     return FileResponse(file_path, media_type="image/png")
 
 
+# Output roots a client may name on the public submit route. The queue and
+# finalizer support more dispositions than this, but the others are server-owned
+# (batch membership, ephemeral flow runs) and must not be mintable by a client.
+CLIENT_OUTPUT_CONTEXT_KINDS = frozenset({"working_document"})
+
+
+async def _resolve_output_disposition(
+    session: AsyncSession, request: GenerationJobRequest
+) -> tuple[str, str | None, str | None]:
+    """Validate the requested output disposition and prove the root exists."""
+    disposition = request.output_disposition or "asset"
+    kind = request.output_context_kind
+    context_id = request.output_context_id
+
+    if disposition == "asset":
+        if kind or context_id:
+            raise HTTPException(
+                status_code=400,
+                detail="asset output cannot have a context root",
+            )
+        return "asset", None, None
+
+    if disposition != "context":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Output disposition not available on this route: {disposition}",
+        )
+    if kind not in CLIENT_OUTPUT_CONTEXT_KINDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Output context kind not available on this route: {kind}",
+        )
+    if not context_id:
+        raise HTTPException(
+            status_code=400, detail="context output requires a context root"
+        )
+
+    document = (
+        await session.execute(
+            select(WorkingDocument).where(
+                WorkingDocument.id == _as_int(context_id),
+                WorkingDocument.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Working document not found")
+
+    return "context", kind, str(document.id)
+
+
+def _as_int(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid context root id")
+
+
 @router.post("/submit")
 async def submit_generation_job(
     request: GenerationJobRequest,
@@ -1388,6 +1471,10 @@ async def submit_generation_job(
     log.info(f"Received generation request: tool_id={request.tool_id}, task_type={request.task_type}")
 
     try:
+        disposition, context_kind, context_id = await _resolve_output_disposition(
+            session, request
+        )
+
         # Build the single flat parameters dict with job metadata that needs tracking
         parameters = dict(request.parameters) if request.parameters else {}
         parameters = await _apply_generation_prompt_pipeline(
@@ -1430,6 +1517,9 @@ async def submit_generation_job(
             tool_id=request.tool_id,
             preset_id=request.preset_id,
             project_id=request.project_id,
+            output_disposition=disposition,
+            output_context_kind=context_kind,
+            output_context_id=context_id,
             consume_pending_request=_should_consume_forever_reservation(request),
         )
 
@@ -1530,7 +1620,11 @@ async def submit_batch_jobs(
 
         # Generate smart title upfront if user didn't provide one
         output_title = request.output_set_title
-        log.info(f"BATCH TITLE DEBUG: output_set_title={request.output_set_title}, input_set_ids={input_set_ids}")
+        log.info(
+            "BATCH TITLE DEBUG: batch title state",
+            has_output_set_title=bool(request.output_set_title),
+            input_set_ids=input_set_ids,
+        )
         if not output_title and input_set_ids:
             from structured_media import generate_smart_batch_title
             tool_name = _model_name_for_tool(request.tool_id)
@@ -1542,11 +1636,17 @@ async def submit_batch_jobs(
                     task_type=request.task_type or "unknown",
                     input_set_ids=input_set_ids,
                 )
-                log.info(f"BATCH TITLE DEBUG: generate_smart_batch_title returned: {output_title}")
+                log.info(
+                    "BATCH TITLE DEBUG: generate_smart_batch_title returned",
+                    output_title_chars=len(output_title or ""),
+                )
             except Exception as e:
                 log.error(f"BATCH TITLE DEBUG: generate_smart_batch_title failed: {e}", exc_info=True)
             if output_title:
-                log.info(f"Generated smart batch title upfront: '{output_title}'")
+                log.info(
+                    "Generated smart batch title upfront",
+                    output_title_chars=len(output_title or ""),
+                )
 
         # Prepare every child before queueing any of them. Prompt enhancement
         # failures are pre-queue failures; they should not leave a partial batch
@@ -2878,6 +2978,10 @@ class PromptWarmPoolUpdateRequest(BaseModel):
     is_video: bool = False
     is_audio: bool = False
     input_image_count: int = 0
+    # Whether an audio track is attached (audio-conditioned video). Part of the
+    # warmed snapshot: it changes the enhancement, so a pool warmed without it
+    # must not be served to a submit with it.
+    audio_conditioned: bool = False
     prompt_sources_signature: str = ""
     # How many enhanced variants to keep warm. Client authority - it's the one
     # that knows the forever-mode concurrency it's driving toward. 0 clears
@@ -2907,6 +3011,7 @@ async def update_prompt_warm_pool(request: PromptWarmPoolUpdateRequest):
         is_video=request.is_video,
         is_audio=request.is_audio,
         input_image_count=request.input_image_count,
+        audio_conditioned=request.audio_conditioned,
         prompt_sources_signature=request.prompt_sources_signature,
         concurrency=request.concurrency,
         profile_id=get_current_profile(),

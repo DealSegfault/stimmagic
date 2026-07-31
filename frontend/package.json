@@ -18,7 +18,8 @@
     "test:agent-unavailable": "node --test --experimental-strip-types src/utils/agentUnavailableState.test.ts",
     "test:settings-readiness": "node --test --experimental-strip-types src/utils/settingsReadiness.test.ts",
     "test:update-schedule": "node --test --experimental-strip-types src/utils/updateCheckSchedule.test.ts",
-    "test:database-cleanup": "node --test tests/databaseCleanupState.test.mjs"
+    "test:database-cleanup": "node --test tests/databaseCleanupState.test.mjs",
+    "test:image-stack": "node --test --experimental-strip-types src/imageEditor/stack/*.test.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.2",
@@ -32,7 +33,6 @@
     "@dagrejs/dagre": "^3.0.0",
     "@heroicons/vue": "^2.2.0",
     "@replit/codemirror-vim": "^6.3.0",
-    "@stimma/image-editor": "file:../packages/image-editor",
     "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2",

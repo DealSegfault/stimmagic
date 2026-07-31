@@ -1391,35 +1391,6 @@ async def restore_assets(
     return {"status": "success", "asset_ids": changed}
 
 
-@router.post("/batch/deletion-manifest")
-async def get_asset_batch_deletion_manifest(
-    request: AssetIdsRequest,
-    session: AsyncSession = Depends(get_db_session),
-):
-    """Return editor-project cleanup keys for one delete selection."""
-    asset_ids = list(dict.fromkeys(request.asset_ids))
-    rows = (
-        await session.execute(
-            select(AssetRevision.asset_id, AssetRevision.primary_media_id)
-            .join(Asset, Asset.id == AssetRevision.asset_id)
-            .where(
-                AssetRevision.asset_id.in_(asset_ids),
-                Asset.state.in_(("trashed", "deleting")),
-            )
-            .order_by(AssetRevision.asset_id, AssetRevision.id)
-        )
-    ).all()
-    grouped: dict[int, list[int]] = defaultdict(list)
-    for asset_id, media_id in rows:
-        grouped[asset_id].append(media_id)
-    return {
-        "items": [
-            {"asset_id": asset_id, "media_ids": grouped.get(asset_id, [])}
-            for asset_id in asset_ids
-        ]
-    }
-
-
 @router.post("/batch/permanent", status_code=202)
 async def permanently_delete_assets(
     request: AssetIdsRequest, session: AsyncSession = Depends(get_db_session)
@@ -1511,6 +1482,7 @@ async def empty_asset_trash(session: AsyncSession = Depends(get_db_session)):
         "privacy_status": "pending" if queued else "completed",
         "retained_media_ids": [],
         "media_ids": revision_media_ids,
+        "asset_ids": asset_ids,
         "accepted": len(asset_ids),
         "operation": queued[-1].to_dict() if queued else None,
     }
@@ -1859,29 +1831,6 @@ async def promote_contextual_media(
     item = await get_asset_browser_item(asset.id, session=session)
     await ws_manager.broadcast("asset_created", {"asset": item})
     return {"asset": item}
-
-
-@router.get("/trash-deletion-manifest")
-async def get_asset_trash_deletion_manifest(
-    session: AsyncSession = Depends(get_db_session),
-):
-    rows = (
-        await session.execute(
-            select(AssetRevision.asset_id, AssetRevision.primary_media_id)
-            .join(Asset, Asset.id == AssetRevision.asset_id)
-            .where(Asset.state == "trashed", Asset.deleted_at.is_not(None))
-            .order_by(AssetRevision.asset_id, AssetRevision.id)
-        )
-    ).all()
-    grouped: dict[int, list[int]] = defaultdict(list)
-    for asset_id, media_id in rows:
-        grouped[asset_id].append(media_id)
-    return {
-        "items": [
-            {"asset_id": asset_id, "media_ids": media_ids}
-            for asset_id, media_ids in grouped.items()
-        ]
-    }
 
 
 @router.get("/item/{asset_id}/browser")

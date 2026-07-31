@@ -162,19 +162,9 @@ const routes = [
     component: StimpacksView
   },
   {
-    path: '/edit-image',
-    name: 'edit-image-landing',
-    component: ImageEditorView,
-    props: { editorId: null, mediaId: null }
-  },
-  {
-    path: '/edit-image/:editorId',
-    name: 'edit-image-empty',
-    component: ImageEditorView,
-    props: true
-  },
-  {
-    path: '/edit-image/:editorId/:mediaId',
+    // One stack document per Asset. Reopening the same Asset resumes the same
+    // document rather than creating another editor instance.
+    path: '/edit-image/:assetId',
     name: 'edit-image',
     component: ImageEditorView,
     props: true

@@ -534,6 +534,13 @@ class TestToolProvider(ToolProvider):
                                                "aspect ratio, compute the padding from the input dimensions "
                                                "(e.g. 1024x1024 -> 16:9 needs 1024*16/9-1024 = 796 total horizontal)."}},
              ["input_images"]),
+            ("erase-image:test-erase", "Test Erase", "erase-image",
+             {**_images,
+              "mask": {"type": "string", "format": "file-path", "x-control": "mask_editor",
+                       "x-mask-format": "white-black", "x-source-field": "input_images"},
+              "dilate_pixels": {"type": "integer", "default": 10, "minimum": 0, "maximum": 25},
+              **_seed},
+             ["input_images", "mask"]),
             ("filter:test-filter", "Test Filter", "filter",
              {**_images, "intensity": {"type": "number", "default": 1.0, "minimum": 0.0, "maximum": 2.0}},
              ["input_images"]),

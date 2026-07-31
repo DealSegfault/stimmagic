@@ -1228,6 +1228,7 @@ import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, Svg
 import { makeProfileKey, makeToolDbKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { useWorkspaceTabs, toolInstanceScopedId, toolInstanceRoute } from '../composables/useWorkspaceTabs'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 import { getCurrentProfileId } from '../composables/useProfile'
 import { getCachedPin } from '../composables/usePinLock'
 import { getApiBase } from '../apiConfig'
@@ -1240,7 +1241,6 @@ import {
 } from '../utils/slideshowLiveQueue'
 
 const router = useRouter()
-const { nextEditorId } = useWorkspaceTabs()
 const { setKeywordFilter, setTagFilter, setSimilarFilter } = useBrowseFilters()
 
 const props = defineProps({
@@ -4010,8 +4010,10 @@ function handleKeydown(event) {
         exitSetView()
         return
       }
-      // Close slideshow directly - don't rely on parent having ESC handler
+      // The slideshow owns this Escape transition. Consume the event so a
+      // parent surface cannot also interpret the same keypress as "go back".
       event.preventDefault()
+      event.stopImmediatePropagation()
       close()
       break
   }
@@ -4460,7 +4462,7 @@ function isImageFormat(format) {
 function handleEditImage(mediaId = null) {
   const targetMediaId = mediaId || currentPayloadId.value
   if (!targetMediaId) return
-  router.push({ name: 'edit-image', params: { editorId: nextEditorId(), mediaId: targetMediaId } })
+  void openImageEditor(router, targetMediaId)
 }
 
 // Exporting a specific version routes through the same Export modal as the

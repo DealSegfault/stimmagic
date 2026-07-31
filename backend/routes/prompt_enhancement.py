@@ -87,6 +87,36 @@ def _input_images_phrase(n: int) -> str:
     """Human-readable count of input images for the edit system prompt."""
     return "an input image" if n <= 1 else f"{n} input images"
 
+
+# The cinematography prompts carry an {audio_guidance} slot because the right
+# instruction flips entirely on whether the tool generates its own soundtrack.
+_AUDIO_GENERATED_GUIDANCE = (
+    "If the user gives spoken lines or sound effects, carry them through verbatim — modern "
+    "video models render dialogue and audio, so these are content to keep, not motion to mime; "
+    'never reduce a line to "her lips move". Keep them even when the speaker or source is '
+    "offscreen or not visible{frame_clause}: an unseen voice or an off-camera sound is audio the "
+    "model should produce, not a detail to drop because it doesn't move."
+)
+
+_AUDIO_SUPPLIED_GUIDANCE = (
+    "The user supplied the soundtrack: the model reproduces that track exactly and generates no "
+    "sound of its own, so write the picture that belongs to it — mouth movement and jaw "
+    "articulation while a voice is heard, breath between phrases, an impact landing on a hit, "
+    "movement carried on the tempo. Keep any words the user wrote and attribute them to the "
+    "speaker; they tell the model what the mouth is doing. Don't write sound effects, ambience, "
+    "or dialogue as things to produce — nothing you write changes the audio, and invented sound "
+    "design only pulls the picture away from the real track."
+)
+
+
+def _audio_guidance(*, audio_conditioned: bool, image_variant: bool) -> str:
+    """Pick the soundtrack instruction for the cinematography prompts."""
+    if audio_conditioned:
+        return _AUDIO_SUPPLIED_GUIDANCE
+    return _AUDIO_GENERATED_GUIDANCE.format(
+        frame_clause=" in the frame" if image_variant else ""
+    )
+
 # Raster formats we can hand to a VLM. Source frames in other formats (or video)
 # are simply not shown — enhancement falls back to the text-only path.
 _VLM_IMAGE_FORMATS = frozenset({"jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff"})
@@ -102,7 +132,8 @@ _DIALOGUE_QUOTE_RE = re.compile(r'["“][^"“”]+["”]')
 
 
 def _protected_text_guidance(
-    prompt: str, *, keyword_mode: bool = False, cinematography: bool = False
+    prompt: str, *, keyword_mode: bool = False, cinematography: bool = False,
+    audio_conditioned: bool = False,
 ) -> str:
     """Build the 'PRESERVING PROTECTED TEXT' block for the spans actually present.
 
@@ -115,15 +146,24 @@ def _protected_text_guidance(
     ``keyword_mode`` adds the comma-separated-tag nuance the SD1.5/SDXL prompt needs.
     ``cinematography`` adds a dialogue bullet when the prompt quotes spoken lines —
     the video prompt's motion-only framing otherwise drops the words and keeps only
-    the lip movement.
+    the lip movement. ``audio_conditioned`` keeps that bullet but drops the claim
+    that the model voices the line: with a supplied track it doesn't, and the words
+    are there to align the visible performance.
     """
     bullets: List[str] = []
     if cinematography and _DIALOGUE_QUOTE_RE.search(prompt):
-        bullets.append(
-            '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
-            "written and present them as a spoken line — they are content the video model "
-            'voices, never motion to mime (don\'t reduce them to "her lips move").'
-        )
+        if audio_conditioned:
+            bullets.append(
+                '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
+                "written and attribute them to the speaker — they mark what is being said in "
+                "the supplied audio, so the visible performance lines up with it."
+            )
+        else:
+            bullets.append(
+                '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
+                "written and present them as a spoken line — they are content the video model "
+                'voices, never motion to mime (don\'t reduce them to "her lips move").'
+            )
     if _VERBATIM_TOKEN_RE.search(prompt):
         bullets.append(
             "- Placeholder tokens of the form __VERBATIM_A__, __VERBATIM_B__ … "
@@ -251,6 +291,11 @@ class ImprovePromptRequest(BaseModel):
     # the prompt as an instruction over the input image(s) rather than a fresh
     # scene to describe. 0 for text-to-image. Ignored for video/keyword/ideogram.
     input_image_count: int = 0
+    # Whether the tool is generating against a supplied audio track (LTX
+    # image+audio-to-video, lip-sync, avatar). On the cinematography path this
+    # flips the soundtrack instruction: the model reproduces the track rather than
+    # scoring the clip, so invented sound design and dialogue are wrong.
+    audio_conditioned: bool = False
     # For image-to-video: the library id of the source/first frame. When present
     # on the cinematography path, the frame is shown to the model so the prompt
     # animates the real image. Ignored for other styles.
@@ -572,7 +617,10 @@ IMPORTANT: The user's edits are INTENTIONAL. If they removed something, do NOT a
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt enhancement error: {e}", exc_info=True)
+            log.error(
+                "Prompt enhancement error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -645,15 +693,26 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         "{input_images_desc}", _input_images_phrase(request.input_image_count)
     )
     system_prompt = system_prompt.replace(
+        "{audio_guidance}",
+        _audio_guidance(
+            audio_conditioned=request.audio_conditioned,
+            image_variant=bool(source_image_b64),
+        ),
+    )
+    system_prompt = system_prompt.replace(
         "{protected_text_guidance}",
         _protected_text_guidance(
             request.prompt,
             keyword_mode=(mode == "keyword"),
             cinematography=(mode == "cinematography"),
+            audio_conditioned=request.audio_conditioned,
         ),
     )
     system_prompt = re.sub(r"\n{3,}", "\n\n", system_prompt)
-    log.info(f"Prompt improve mode={mode} image={'yes' if source_image_b64 else 'no'}")
+    log.info(
+        f"Prompt improve mode={mode} image={'yes' if source_image_b64 else 'no'} "
+        f"audio_conditioned={request.audio_conditioned}"
+    )
 
     # Build the user message
     if source_image_b64:
@@ -717,7 +776,10 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt improve error: {e}", exc_info=True)
+            log.error(
+                "Prompt improve error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -779,7 +841,10 @@ async def translate_prompt(request: TranslatePromptRequest):
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Prompt translate error: {e}", exc_info=True)
+            log.error(
+                "Prompt translate error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -902,7 +967,11 @@ async def prompt_to_ideogram_json(request: IdeogramJsonRequest):
             try:
                 json_prompt = _extract_json_object(raw)
             except json.JSONDecodeError as e:
-                log.error(f"Ideogram JSON parse failed: {e}; raw: {raw[:500]}")
+                log.error(
+                    "Ideogram JSON parse failed",
+                    error_type=type(e).__name__,
+                    output_chars=len(raw or ""),
+                )
                 raise HTTPException(
                     status_code=502,
                     detail="The model returned invalid JSON for Ideogram. Try again.",
@@ -920,7 +989,10 @@ async def prompt_to_ideogram_json(request: IdeogramJsonRequest):
         except EntitlementError as e:
             raise _entitlement_http_exception(e)
         except Exception as e:
-            log.error(f"Ideogram JSON error: {e}", exc_info=True)
+            log.error(
+                "Ideogram JSON error",
+                error_type=type(e).__name__,
+            )
             raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -975,7 +1047,10 @@ def _parse_categories_response(response_content: str) -> tuple[List[CategoryItem
 
     except json.JSONDecodeError as e:
         log.error(f"Failed to parse categories JSON: {e}")
-        log.error(f"Response content: {response_content[:500]}")
+        log.error(
+            "Categories response could not be parsed",
+            output_chars=len(response_content or ""),
+        )
         return [], None
 
 
@@ -1018,7 +1093,10 @@ def _parse_options_response(response_content: str) -> tuple[List[str], Optional[
                     options.append(item.strip())
 
     if not parsed_any:
-        log.error(f"Failed to parse options JSON. Response content: {response_content[:500]}")
+        log.error(
+            "Failed to parse options JSON",
+            output_chars=len(response_content or ""),
+        )
         return [], None
 
     return options, None
@@ -1100,7 +1178,10 @@ async def suggest_categories(request: SuggestCategoriesRequest):
                 )
 
                 if refusal:
-                    log.warning(f"Suggest-categories detected refusal: {refusal[:100]}")
+                    log.warning(
+                        "Suggest-categories detected refusal",
+                        refusal_chars=len(refusal),
+                    )
                     if debug_info:
                         debug_info["raw_response"] = response_content
                     return SuggestCategoriesResponse(categories=[], debug=debug_info, message=refusal)
@@ -1127,7 +1208,10 @@ async def suggest_categories(request: SuggestCategoriesRequest):
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Suggest-categories error: {e}", exc_info=True)
+        log.error(
+            "Suggest-categories error",
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1170,10 +1254,10 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
     for category, result in zip(request.categories, gathered):
         if isinstance(result, Exception):
             log.error(
-                "Suggest-options batch failed for %s: %s",
-                category.label,
-                result,
-                exc_info=result,
+                "Suggest-options batch failed",
+                category_chars=len(category.category or ""),
+                label_chars=len(category.label or ""),
+                error_type=type(result).__name__,
             )
             results.append(SuggestOptionsResponse(
                 category=category.category,
@@ -1230,7 +1314,12 @@ Category: {request.category.label} ({request.category.category})"""
         }
 
     try:
-        log.info(f"Suggest-options starting - category: {request.category.label}, exclude: {len(request.exclude)} items")
+        log.info(
+            "Suggest-options starting",
+            category_chars=len(request.category.category or ""),
+            label_chars=len(request.category.label or ""),
+            exclude_count=len(request.exclude),
+        )
 
         with llm_correlation_context("prompt-agent"):
             response_content = await llm_complete_text(
@@ -1247,7 +1336,11 @@ Category: {request.category.label} ({request.category.category})"""
         options, refusal = _parse_options_response(response_content)
 
         if refusal:
-            log.warning(f"Suggest-options detected refusal for {request.category.label}: {refusal[:100]}")
+            log.warning(
+                "Suggest-options detected refusal",
+                category_chars=len(request.category.category or ""),
+                refusal_chars=len(refusal),
+            )
             return SuggestOptionsResponse(
                 category=request.category.category,
                 label=request.category.label,
@@ -1257,7 +1350,11 @@ Category: {request.category.label} ({request.category.category})"""
                 message=refusal
             )
 
-        log.info(f"Suggest-options returning {len(options)} options for {request.category.label}")
+        log.info(
+            "Suggest-options returning",
+            option_count=len(options),
+            category_chars=len(request.category.category or ""),
+        )
         return SuggestOptionsResponse(
             category=request.category.category,
             label=request.category.label,
@@ -1267,12 +1364,19 @@ Category: {request.category.label} ({request.category.category})"""
         )
 
     except asyncio.TimeoutError:
-        log.error(f"Suggest-options request timed out for {request.category.label}")
+        log.error(
+            "Suggest-options request timed out",
+            category_chars=len(request.category.category or ""),
+        )
         raise HTTPException(status_code=504, detail="Request timed out")
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Suggest-options error for {request.category.label}: {e}", exc_info=True)
+        log.error(
+            "Suggest-options error",
+            category_chars=len(request.category.category or ""),
+            error_type=type(e).__name__,
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1504,7 +1608,7 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=422, detail={"message": message, "debug": debug_info})
             raise HTTPException(status_code=422, detail=message)
         except QuotaExceededError as e:
-            log.warning(f"Prompt-agent step quota exceeded: {e}")
+            log.warning("Prompt-agent step quota exceeded")
             _track_step("failed", error_type="quota_exceeded")
             message = str(e) or "LLM quota exceeded. Check your plan or usage and try again."
             if debug_info:
@@ -1513,7 +1617,7 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=429, detail={"message": message, "debug": debug_info})
             raise HTTPException(status_code=429, detail=message)
         except EntitlementError as e:
-            log.warning(f"Prompt-agent step: no active subscription: {e}")
+            log.warning("Prompt-agent step: no active subscription")
             _track_step("failed", error_type="subscription_required")
             message = str(e) or "No active Stimma subscription."
             if debug_info:
@@ -1521,7 +1625,10 @@ async def agent_step(request: AgentStepRequest):
                 raise HTTPException(status_code=402, detail={"code": "subscription_required", "message": message, "debug": debug_info})
             raise HTTPException(status_code=402, detail={"code": "subscription_required", "message": message})
         except Exception as e:
-            log.error(f"Prompt-agent step error: {e}", exc_info=True)
+            log.error(
+                "Prompt-agent step error",
+                error_type=type(e).__name__,
+            )
             error_type = classify_agent_error(e)
             _track_step("failed", error_type=error_type)
             if debug_info:

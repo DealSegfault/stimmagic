@@ -43,13 +43,20 @@
                   <span>Randomize</span>
                 </label>
                 <!-- Editable even while Randomize is on — typing a seed means
-                     you want that seed, so the first edit unchecks Randomize. -->
+                     you want that seed, so the first edit unchecks Randomize.
+
+                     The placeholder is what makes the field exist when it has
+                     no value: transparent background, transparent border and an
+                     empty value render as nothing at all, so the row read as a
+                     stray checkbox. Hosts that always carry a seed never hit
+                     that state; ones that start empty do. -->
                 <input v-no-autocorrect
                   :value="values[param.name]"
                   @input="onSeedInput(param.name, ($event.target as HTMLInputElement).value)"
                   type="number"
+                  :placeholder="(values.randomizeSeed ?? true) ? 'Random' : 'Set seed'"
                   :disabled="constraintState(param).disabled"
-                  :class="['w-24 text-right bg-transparent border-b border-transparent font-mono tabular-nums text-xs disabled:opacity-40 focus:border-accent outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
+                  :class="['w-24 text-right bg-transparent border-b border-transparent font-mono tabular-nums text-xs disabled:opacity-40 focus:border-accent outline-none placeholder:text-content-muted/70 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none',
                            (values.randomizeSeed ?? true) ? 'text-content-muted focus:text-content-secondary' : 'text-content-secondary']"
                 >
                               </div>

@@ -1,11 +1,5 @@
 import axios from 'axios'
 import { getApiBase } from '../apiConfig'
-import {
-  confirmAssetProjectDeletion,
-  confirmAssetProjectDeletions,
-  prepareAssetProjectDeletion,
-  prepareAssetProjectDeletions,
-} from '../utils/editorProjectPrivacy'
 
 export interface AssetBrowserItem {
   asset_id: number
@@ -168,36 +162,17 @@ export function useAssetApi() {
   }
 
   async function permanentlyDelete(assetId: number) {
-    const revisions = (await axios.get(`${api()}/assets/${assetId}/revisions`)).data
-    prepareAssetProjectDeletion(
-      assetId,
-      (revisions.items || []).map((revision: { primary_media_id: number }) => revision.primary_media_id),
-    )
-    const result = (await axios.delete(`${api()}/assets/${assetId}/permanent`)).data
-    void confirmAssetProjectDeletion(assetId)
-    return result
+    return (await axios.delete(`${api()}/assets/${assetId}/permanent`)).data
   }
 
   async function permanentlyDeleteMany(assetIds: number[]) {
     const uniqueAssetIds = [...new Set(assetIds)]
-    const manifest = (await axios.post(`${api()}/assets/batch/deletion-manifest`, {
-      asset_ids: uniqueAssetIds,
-    })).data
-    prepareAssetProjectDeletions((manifest.items || []).map(
-      (item: { asset_id: number; media_ids: number[] }) => ({
-        assetId: item.asset_id,
-        mediaIds: item.media_ids || [],
-      }),
-    ))
 
     // Submit the selection in one request; the global deletion queue reports
     // progress in Asset units regardless of how deletion was triggered.
-    const result = (await axios.post(`${api()}/assets/batch/permanent`, {
+    return (await axios.post(`${api()}/assets/batch/permanent`, {
       asset_ids: uniqueAssetIds,
     })).data
-
-    void confirmAssetProjectDeletions(uniqueAssetIds)
-    return result
   }
 
   async function getTrashSourceFileCount(): Promise<{ count: number }> {
@@ -205,25 +180,12 @@ export function useAssetApi() {
   }
 
   async function emptyTrash() {
-    const manifest = (await axios.get(`${api()}/assets/trash-deletion-manifest`)).data
-    prepareAssetProjectDeletions((manifest.items || []).map(
-      (item: { asset_id: number; media_ids: number[] }) => ({
-        assetId: item.asset_id,
-        mediaIds: item.media_ids || [],
-      }),
-    ))
-
     // Queue the whole Trash in one request rather than one request per Asset.
     const result = (await axios.delete(`${api()}/assets`)).data
 
-    void confirmAssetProjectDeletions(
-      (manifest.items || []).map((item: { asset_id: number }) => item.asset_id),
-    )
     return {
       ...result,
-      asset_ids: (manifest.items || []).map(
-        (item: { asset_id: number }) => item.asset_id,
-      ),
+      asset_ids: result.asset_ids || [],
     }
   }
 

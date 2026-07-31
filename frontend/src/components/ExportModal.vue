@@ -11,31 +11,43 @@
       </div>
     </template>
 
-          <!-- Body — fixed structure, sections use visibility not v-if -->
-          <div class="px-6 py-5 space-y-4">
+          <div class="px-6 py-5 space-y-5">
 
-            <!-- Format row -->
-            <div class="flex items-center justify-between">
-              <label class="text-xs font-semibold text-content-secondary">Format</label>
-              <div class="flex gap-1">
-                <button
+            <!-- Formats are a grid so every choice stays legible at modal width. -->
+            <div class="space-y-2">
+              <p class="text-xs font-semibold text-content-secondary">Format</p>
+              <div
+                class="grid grid-cols-3 gap-1.5"
+                role="radiogroup"
+                aria-label="Export format"
+              >
+                <label
                   v-for="fmt in availableFormats"
                   :key="fmt.value"
-                  @click="format = fmt.value"
-                  :class="[
-                    'px-2.5 py-1 rounded text-xs font-medium transition-colors',
-                    format === fmt.value
-                      ? 'bg-accent text-white'
-                      : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
-                  ]"
+                  class="cursor-pointer"
                 >
-                  {{ fmt.label }}
-                </button>
+                  <input
+                    v-model="format"
+                    type="radio"
+                    name="export-format"
+                    :value="fmt.value"
+                    class="peer sr-only"
+                  >
+                  <span
+                    :class="[
+                      'flex min-h-9 items-center justify-center rounded-md px-3 py-2 text-center text-xs font-medium transition-colors duration-150 peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60',
+                      format === fmt.value
+                        ? 'bg-accent/15 text-accent'
+                        : 'bg-overlay-faint text-content-secondary hover:bg-overlay-subtle hover:text-content'
+                    ]"
+                  >
+                    {{ fmt.label }}
+                  </span>
+                </label>
               </div>
             </div>
 
-            <!-- Quality row — always rendered for stable height, hidden when not applicable -->
-            <div :class="['flex items-center gap-3 transition-opacity', showQuality ? 'opacity-100' : 'opacity-0 pointer-events-none']">
+            <div v-if="showQuality" class="flex items-center gap-3">
               <label class="text-xs font-semibold text-content-secondary w-16 shrink-0">Quality</label>
               <input
                 v-model.number="quality"
@@ -162,28 +174,56 @@
               </template>
 
               <template v-else-if="format === 'html'">
-                <div class="border-t border-edge-subtle" />
-
-                <div class="flex items-center justify-between">
-                  <label class="text-xs font-semibold text-content-secondary">Form</label>
-                  <div class="flex gap-1">
-                    <button
-                      v-for="opt in CODE_VARIANTS"
-                      :key="opt.value"
-                      @click="codeVariant = opt.value"
-                      :class="[
-                        'px-2.5 py-1 rounded text-xs font-medium transition-colors',
-                        codeVariant === opt.value
-                          ? 'bg-accent text-white'
-                          : 'bg-surface-overlay text-content-tertiary hover:bg-surface-raised border border-surface-raised'
-                      ]"
-                    >
-                      {{ opt.label }}
-                    </button>
+                <div class="space-y-3">
+                  <div class="flex items-center justify-between">
+                    <p class="text-xs font-semibold text-content-secondary">Form</p>
+                    <div class="flex gap-1">
+                      <button
+                        v-for="opt in CODE_VARIANTS"
+                        :key="opt.value"
+                        type="button"
+                        :aria-pressed="codeVariant === opt.value"
+                        @click="codeVariant = opt.value"
+                        :class="[
+                          'rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-150',
+                          codeVariant === opt.value
+                            ? 'bg-accent/15 text-accent'
+                            : 'bg-overlay-faint text-content-secondary hover:bg-overlay-subtle hover:text-content'
+                        ]"
+                      >
+                        {{ opt.label }}
+                      </button>
+                    </div>
                   </div>
-                </div>
 
-                <p class="text-xs text-content-tertiary">{{ codeVariantHint }}</p>
+                  <div class="relative h-32 overflow-hidden rounded-md bg-overlay-faint">
+                    <pre
+                      v-if="codePreview"
+                      class="h-full overflow-auto whitespace-pre p-3 pr-11 font-mono text-[11px] leading-relaxed text-content-secondary custom-scrollbar select-text"
+                    >{{ codePreview }}</pre>
+                    <div
+                      v-else
+                      class="flex h-full items-center justify-center px-4 text-center text-xs text-content-muted"
+                    >
+                      {{ codePreviewError || 'Generating preview…' }}
+                    </div>
+
+                    <div class="absolute right-1.5 top-1.5">
+                      <Tooltip :text="copied ? 'Copied' : 'Copy code'">
+                        <IconButton
+                          class="bg-surface/90 backdrop-blur"
+                          :disabled="codePreviewLoading || !codePreview"
+                          :aria-label="copied ? 'Copied' : 'Copy code'"
+                          @click="copyCodePreview"
+                        >
+                          <CheckIcon v-if="copied" class="h-4 w-4 text-green-500" />
+                          <ClipboardDocumentIcon v-else class="h-4 w-4" />
+                        </IconButton>
+                      </Tooltip>
+                    </div>
+                  </div>
+
+                </div>
               </template>
 
               <template v-else-if="format === 'icon'">
@@ -211,18 +251,6 @@
                 <p class="text-xs text-content-tertiary">{{ iconPlatformHint }}</p>
               </template>
 
-              <template v-else-if="format === 'svg'">
-                <div class="border-t border-edge-subtle" />
-
-                <label class="flex items-center gap-2 cursor-pointer">
-                  <input
-                    v-model="svgOptimize"
-                    type="checkbox"
-                    class="w-3.5 h-3.5 rounded border-surface-raised bg-surface-overlay accent-accent"
-                  >
-                  <span class="text-xs text-content-secondary">Collapse whitespace and drop editor attributes</span>
-                </label>
-              </template>
             </template>
 
             <!-- Resize section (images) -->
@@ -338,8 +366,10 @@
           </div>
 
     <template #footer>
-      <Button variant="secondary" @click="$emit('close')">Cancel</Button>
-      <Button variant="primary" :loading="exporting" @click="handleExport">
+      <Button variant="secondary" @click="$emit('close')">
+        {{ isClipboardExport ? 'Close' : 'Cancel' }}
+      </Button>
+      <Button v-if="!isClipboardExport" variant="primary" :loading="exporting" @click="handleExport">
         {{ exporting ? 'Exporting...' : exportButtonLabel }}
       </Button>
     </template>
@@ -347,10 +377,12 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import Modal from './ui/Modal.vue'
 import IconButton from './ui/IconButton.vue'
 import Button from './ui/Button.vue'
+import Tooltip from './ui/Tooltip.vue'
+import { CheckIcon, ClipboardDocumentIcon } from '@heroicons/vue/24/outline'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useTauriDownload } from '../composables/useTauriDownload'
 import axios from 'axios'
@@ -399,10 +431,14 @@ const layoutFetchedHeight = ref(0)
 const layoutDimsLoading = ref(false)
 
 // Vector-specific state
-const svgOptimize = ref(false)
 const codeVariant = ref('inline')
+const codePreview = ref('')
+const codePreviewLoading = ref(false)
+const codePreviewError = ref('')
 const iconPlatform = ref('icon-macos')
 const pngSetSizes = ref([16, 32, 64, 128, 256, 512, 1024])
+let codePreviewRequestId = 0
+let copiedTimer = null
 
 const PNG_SET_SIZES = [16, 24, 32, 48, 64, 128, 180, 256, 512, 1024]
 
@@ -524,10 +560,10 @@ const availableFormats = computed(() => {
     return [
       { label: 'SVG', value: 'svg' },
       { label: 'PNG', value: 'png' },
-      { label: 'PNG set', value: 'png-set' },
       { label: 'PDF', value: 'pdf' },
-      { label: 'Code', value: 'html' },
+      { label: 'Multi-size PNGs', value: 'png-set' },
       { label: 'App icon', value: 'icon' },
+      { label: 'SVG code', value: 'html' },
     ]
   }
 
@@ -574,12 +610,6 @@ const videoResolutions = [
   { label: '720p', value: '720' },
 ]
 
-const codeVariantHint = computed(() => ({
-  'inline': 'Themeable — currentColor and CSS reach inside it.',
-  'data-uri': 'Isolated — no CSS from the page can touch it.',
-  'symbol': 'Define once, reference many times.',
-}[codeVariant.value]))
-
 const iconPlatformHint = computed(() => ({
   'icon-macos': 'One .icns file, 32 through 1024px.',
   'icon-windows': 'One .ico file, 16 through 256px.',
@@ -614,6 +644,55 @@ function togglePngSetSize(size) {
   pngSetSizes.value = [...next].sort((a, b) => a - b)
 }
 
+async function refreshCodePreview() {
+  const requestId = ++codePreviewRequestId
+  copied.value = false
+  codePreviewError.value = ''
+
+  if (!props.show || !isClipboardExport.value) {
+    codePreview.value = ''
+    codePreviewLoading.value = false
+    return
+  }
+
+  const mediaId = props.mediaIds[0]
+  if (mediaId === undefined || mediaId === null) {
+    codePreview.value = ''
+    codePreviewLoading.value = false
+    codePreviewError.value = 'Code preview unavailable.'
+    return
+  }
+
+  codePreview.value = ''
+  codePreviewLoading.value = true
+  try {
+    const response = await axios.post(`${getApiBase()}/media/${mediaId}/svg-export`, {
+      format: 'html',
+      variant: codeVariant.value,
+    })
+    if (requestId !== codePreviewRequestId) return
+    codePreview.value = String(response.data)
+  } catch (error) {
+    if (requestId !== codePreviewRequestId) return
+    console.error('[ExportModal] Failed to generate SVG code preview:', error)
+    codePreviewError.value = 'Couldn’t load the code preview.'
+  } finally {
+    if (requestId === codePreviewRequestId) codePreviewLoading.value = false
+  }
+}
+
+async function copyCodePreview() {
+  if (!codePreview.value) return
+  try {
+    await navigator.clipboard.writeText(codePreview.value)
+    copied.value = true
+    if (copiedTimer) clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { copied.value = false }, 1500)
+  } catch (error) {
+    console.error('[ExportModal] Failed to copy SVG code:', error)
+  }
+}
+
 // Reset state when modal opens
 watch(() => props.show, (newVal) => {
   if (newVal) {
@@ -622,7 +701,6 @@ watch(() => props.show, (newVal) => {
     copied.value = false
     if (mediaCategory.value === 'vector') {
       format.value = 'svg'
-      svgOptimize.value = false
       codeVariant.value = 'inline'
       iconPlatform.value = 'icon-macos'
       pngSetSizes.value = [16, 32, 64, 128, 256, 512, 1024]
@@ -646,6 +724,21 @@ watch(() => props.show, (newVal) => {
     stripMetadata.value = false
     videoResolution.value = 'original'
   }
+})
+
+watch(
+  [
+    () => props.show,
+    format,
+    codeVariant,
+    () => props.mediaIds[0],
+  ],
+  refreshCodePreview,
+)
+
+onBeforeUnmount(() => {
+  codePreviewRequestId += 1
+  if (copiedTimer) clearTimeout(copiedTimer)
 })
 
 // --- Export handler ---
@@ -726,9 +819,7 @@ async function handleVectorExport() {
   const mediaId = props.mediaIds[0]
   const body = { format: format.value === 'icon' ? iconPlatform.value : format.value }
 
-  if (format.value === 'svg') {
-    body.optimize = svgOptimize.value
-  } else if (format.value === 'png') {
+  if (format.value === 'png') {
     if (layoutScaleMode.value === 'custom') body.width = layoutCustomWidth.value
     else body.scale = layoutScaleNumber.value
   } else if (format.value === 'png-set') {

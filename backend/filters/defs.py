@@ -1,14 +1,15 @@
 """Built-in (in-app) filter definitions for post-processing chains.
 
-Mirrors packages/image-editor/src/filterDefs.ts and constants.ts — the editor
-owns the source of truth; tests/test_postprocessing_filters.py asserts the
-two sides stay in sync (ids, params, ranges, defaults, matrices).
+Mirrors ``frontend/src/utils/filterDefs.ts`` and
+``frontend/src/imageEditor/ported/filterMatrices.ts``. The frontend owns the
+source of truth; tests/test_postprocessing_filters.py asserts the two sides
+stay in sync (ids, params, ranges, defaults, matrices).
 """
 
 from typing import Any, Dict, List, Optional
 
 # 5x4 color matrices applied as [R', G', B', A'] = matrix x [R, G, B, A, 1].
-# Mirrors FILTER_MATRICES in packages/image-editor/src/constants.ts.
+# Mirrors FILTER_MATRICES in frontend/src/imageEditor/ported/filterMatrices.ts.
 FILTER_MATRICES: Dict[str, List[float]] = {
     "none": [
         1, 0, 0, 0, 0,
@@ -129,7 +130,7 @@ FILTER_MATRICES: Dict[str, List[float]] = {
 # Color preset ids offered by the Filter step (everything except "none").
 COLOR_FILTER_IDS: List[str] = [k for k in FILTER_MATRICES if k != "none"]
 
-# Mirrors CHAIN_FILTER_DEFS in packages/image-editor/src/filterDefs.ts.
+# Mirrors CHAIN_FILTER_DEFS in frontend/src/utils/filterDefs.ts.
 # Terminology matches the editor's panels: Filters (presets), Levels, Effects.
 CHAIN_FILTER_DEFS: List[Dict[str, Any]] = [
     {

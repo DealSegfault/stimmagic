@@ -130,8 +130,6 @@ class SvgExportOptions(BaseModel):
     sizes: Optional[list[int]] = None
     # html only: "inline" | "data-uri" | "symbol"
     variant: str = "inline"
-    # svg only.
-    optimize: bool = False
     # Background for opaque targets and flattened rasters.
     background: str = "#ffffff"
 
@@ -190,9 +188,14 @@ async def get_svg_document_by_db_guid(
 
 @router.get("/media/{media_id}/svg-info")
 async def get_svg_info(media_id: int, session: AsyncSession = Depends(get_db_session)):
-    """Nominal size, node count, and portability warnings for the viewer."""
+    """Nominal size, node count, ink tone, and portability warnings for the viewer.
+
+    ``ink`` is what the viewer's Auto ground reads: a black mark on a dark
+    backdrop is an empty rectangle, and transparency means the document itself
+    cannot answer the question.
+    """
     _item, clean = await _load_svg(media_id, session)
-    from utils.svg_doc import parse_svg
+    from utils.svg_doc import ink_tone, parse_svg
 
     root = parse_svg(clean)
     width, height = intrinsic_size(root)
@@ -201,6 +204,7 @@ async def get_svg_info(media_id: int, session: AsyncSession = Depends(get_db_ses
         "height": height,
         "byte_size": len(clean.encode("utf-8")),
         "node_count": sum(1 for _ in root.iter()),
+        "ink": ink_tone(root),
         "warnings": lint(root),
     }
 
@@ -493,11 +497,12 @@ async def export_svg(
         )
 
     if fmt == "svg":
-        text = _optimize(svg_text) if request.optimize else svg_text
+        text = _optimize(svg_text)
         return _attachment(text.encode("utf-8"), f"{base_name}.svg", "image/svg+xml")
 
     if fmt == "html":
-        code = _embed_code(svg_text, request.variant, base_name, width, height)
+        source = _optimize(svg_text)
+        code = _embed_code(source, request.variant, base_name, width, height)
         # Code is meant to be copied, so return it as text the client can put on
         # the clipboard rather than as a download of a snippet.
         return Response(

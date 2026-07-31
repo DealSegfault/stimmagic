@@ -197,7 +197,7 @@
             v-if="preCheckResult?.nsfw && !isBlocked"
             class="mb-4 px-3 py-2 rounded-lg bg-violet-500/10 border border-violet-500/20"
           >
-            <p class="text-xs text-violet-400">Content detected as NSFW &mdash; viewers will see a content warning.</p>
+            <p class="text-xs text-violet-400">Content detected as mature &mdash; viewers will see a content warning.</p>
           </div>
 
           <!-- Creator identity + NSFW toggle row -->
@@ -231,7 +231,7 @@
               :disabled="preCheckResult?.nsfw"
               @click="toggleNsfw"
             >
-              <span>{{ preCheckResult?.nsfw ? 'NSFW (auto)' : 'NSFW' }}</span>
+              <span>{{ preCheckResult?.nsfw ? 'Mature (auto)' : 'Mature' }}</span>
               <span
                 class="relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors duration-200"
                 :class="nsfwOverride ? 'bg-violet-500' : 'bg-overlay-medium'"

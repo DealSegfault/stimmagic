@@ -614,6 +614,7 @@ class TestPromptWarmPool:
             is_video=False,
             is_audio=False,
             input_image_count=0,
+            audio_conditioned=False,
             prompt_sources_signature="sig-1",
             concurrency=concurrency,
             profile_id="default",
@@ -805,7 +806,7 @@ class TestPromptWarmPool:
         generation_queue._prompt_warm_intent[client] = {
             "tool_id": "t", "prompt": "p", "instructions": None, "model": None,
             "is_video": False, "is_audio": False, "input_image_count": 0,
-            "prompt_sources_signature": "s", "concurrency": 1,
+            "audio_conditioned": False, "prompt_sources_signature": "s", "concurrency": 1,
             "profile_id": "default", "updated_at": time.monotonic(),
         }
         generation_queue._prompt_warm_ready[client] = [{"improvedPrompt": "x"}]
@@ -823,7 +824,7 @@ class TestPromptWarmPool:
         generation_queue._prompt_warm_intent[client] = {
             "tool_id": "t", "prompt": "p", "instructions": None, "model": None,
             "is_video": False, "is_audio": False, "input_image_count": 0,
-            "prompt_sources_signature": "s", "concurrency": 1,
+            "audio_conditioned": False, "prompt_sources_signature": "s", "concurrency": 1,
             "profile_id": "default", "updated_at": time.monotonic(),
         }
         generation_queue._prompt_warm_ready[client] = [{"improvedPrompt": "x"}]

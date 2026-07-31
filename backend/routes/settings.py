@@ -331,6 +331,8 @@ class SettingsResponse(BaseModel):
     # dev builds have no telemetry regardless of this value.
     telemetry_enabled: Optional[bool] = None
     distribution: str = "dev"  # Build distribution: 'dev' | 'official'
+    # Release channel: 'production' | 'beta' | 'canary' | 'dev'.
+    app_branch: str = "dev"
     privacy_lockdown_active: bool = False
     llm_reasoning_levels: Dict[str, str] = Field(default_factory=dict)
     llm_model_prompts: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -507,6 +509,7 @@ async def get_settings_all():
     """
     from providers import ProviderRegistry
     from distribution import get_distribution, is_privacy_lockdown
+    from user_agent import get_app_branch
 
     settings = get_settings()
     current_profile_id = get_current_profile()
@@ -747,6 +750,7 @@ async def get_settings_all():
         theme=settings.theme,
         telemetry_enabled=settings.telemetry.enabled,
         distribution=get_distribution(),
+        app_branch=get_app_branch(),
         privacy_lockdown_active=is_privacy_lockdown(),
         llm_reasoning_levels=settings.llm_reasoning_levels,
         llm_model_prompts={

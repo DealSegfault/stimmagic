@@ -7,6 +7,7 @@ the image model and failed the job with 'Invalid params'.
 import pytest
 
 from routes.prompt_enhancement import (
+    _audio_guidance,
     _protected_text_guidance,
     _strip_hallucinated_placeholders,
     _input_images_phrase,
@@ -31,7 +32,7 @@ def prompt_variant_probe(monkeypatch):
     def fake_get_prompt(namespace, key):
         assert namespace == "prompt_enhancement"
         seen["prompt_keys"].append(key)
-        return f"SYSTEM_KEY:{key}\n{{input_images_desc}}\n{{protected_text_guidance}}"
+        return f"SYSTEM_KEY:{key}\n{{input_images_desc}}\n{{audio_guidance}}\n{{protected_text_guidance}}"
 
     async def fake_llm_complete_text(*, config, messages, max_tokens, temperature):
         seen["messages"] = messages
@@ -256,3 +257,68 @@ def test_strip_does_not_merge_across_newlines():
     # The comment line stays on its own line — the token's whitespace cleanup
     # must not pull the next line up.
     assert "\n# keep it gloomy" in cleaned
+
+
+# --- audio conditioning: the soundtrack is supplied, not generated -----------
+
+def test_improve_request_defaults_audio_conditioned_false():
+    assert ImprovePromptRequest(prompt="x").audio_conditioned is False
+
+
+def test_audio_guidance_generated_tells_the_model_to_render_the_sound():
+    text = _audio_guidance(audio_conditioned=False, image_variant=False)
+    assert "render dialogue and audio" in text
+    assert "not visible:" in text  # no "in the frame" for the text-only variant
+
+
+def test_audio_guidance_generated_image_variant_says_in_the_frame():
+    text = _audio_guidance(audio_conditioned=True, image_variant=True)
+    assert "supplied the soundtrack" in text
+    text = _audio_guidance(audio_conditioned=False, image_variant=True)
+    assert "not visible in the frame:" in text
+
+
+def test_audio_guidance_supplied_forbids_inventing_sound():
+    text = _audio_guidance(audio_conditioned=True, image_variant=False)
+    assert "reproduces that track exactly" in text
+    assert "Don't write sound effects" in text
+    # It must not still be telling the model it renders audio.
+    assert "render dialogue and audio" not in text
+
+
+async def test_improve_prompt_swaps_audio_guidance_when_track_supplied(prompt_variant_probe):
+    import routes.prompt_enhancement as pe
+
+    await pe.improve_prompt(
+        ImprovePromptRequest(
+            prompt="she turns toward the camera",
+            model="ltx-2.3", is_video=True, audio_conditioned=True,
+        ),
+        session=None,
+    )
+    system = prompt_variant_probe["messages"][0]["content"]
+    assert "supplied the soundtrack" in system
+    assert "render dialogue and audio" not in system
+
+
+async def test_improve_prompt_keeps_generated_audio_guidance_by_default(prompt_variant_probe):
+    import routes.prompt_enhancement as pe
+
+    await pe.improve_prompt(
+        ImprovePromptRequest(prompt="she turns toward the camera", model="ltx-2.3", is_video=True),
+        session=None,
+    )
+    system = prompt_variant_probe["messages"][0]["content"]
+    assert "render dialogue and audio" in system
+    assert "supplied the soundtrack" not in system
+
+
+def test_dialogue_bullet_drops_the_voicing_claim_when_audio_is_supplied():
+    prompt = 'she says, "we are closing now"'
+    generated = _protected_text_guidance(prompt, cinematography=True)
+    supplied = _protected_text_guidance(prompt, cinematography=True, audio_conditioned=True)
+    assert "content the video model voices" in generated
+    assert "content the video model voices" not in supplied
+    # Either way the words themselves must be preserved.
+    assert "keep the spoken words exactly as written" in supplied
+    assert "supplied audio" in supplied

@@ -114,3 +114,28 @@ async def test_auto_name_keeps_title_when_llm_returns_same(db_session, monkeypat
     # Name unchanged, no broadcast
     assert updated_chat.name == "Dog Photo Variations"
     assert len(mock_ws.broadcasts) == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_name_does_not_log_prompt_or_generated_title(db_session, monkeypatch):
+    secret_prompt = "PRIVATE PROMPT sentinel-autoname-27149"
+    secret_title = "PRIVATE TITLE sentinel-autoname-60934"
+
+    async with db_session() as session:
+        chat = Chat(name="")
+        session.add(chat)
+        await session.commit()
+        await session.refresh(chat)
+        chat_id = chat.id
+
+    _, mock_ws = _make_llm_fixtures(monkeypatch, return_name=secret_title)
+
+    with (
+        patch("routes.chats.ws_manager", mock_ws),
+        patch("routes.chats.log") as mock_log,
+    ):
+        await auto_name_chat(chat_id, secret_prompt, profile_id="default")
+
+    logged = repr(mock_log.method_calls)
+    assert secret_prompt not in logged
+    assert secret_title not in logged

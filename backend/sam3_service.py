@@ -9,6 +9,7 @@ exposed directly to the agent.
 """
 
 import asyncio
+import hashlib
 import io
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -207,6 +208,10 @@ class SAM3Service:
         self._load_lock = asyncio.Lock()
         # Semaphore to ensure one inference at a time
         self._inference_semaphore = asyncio.Semaphore(1)
+        # One cached image-encoder pass (the expensive step, ~100s of MB), so
+        # interactive callers re-prompting the same image only pay the decoder.
+        self._encoder_cache_key: Optional[str] = None
+        self._encoder_cache_value = None
 
     def _load_model_sync(self):
         """Load the SAM3 ONNX models synchronously. Called in thread pool."""
@@ -275,29 +280,42 @@ class SAM3Service:
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(_executor, self._load_model_sync)
 
+    def _encode_image_sync(self, image: Image.Image, cache_key: Optional[str]):
+        """Run the image encoder, reusing the cached pass when the key matches."""
+        if cache_key is not None and cache_key == self._encoder_cache_key:
+            log.debug("SAM3: Reusing cached image embedding")
+            return self._encoder_cache_value
+
+        log.debug("SAM3: Running image encoder...")
+        image_input = np.asarray(image.resize((1008, 1008))).transpose(2, 0, 1)
+        image_output = self._sess_image.run(None, {"image": image_input})
+        assert len(image_output) == 6
+
+        if cache_key is not None:
+            self._encoder_cache_key = cache_key
+            self._encoder_cache_value = image_output
+        return image_output
+
     def _segment_sync(
         self,
-        image_path: str,
+        image: Image.Image,
+        cache_key: Optional[str],
         prompt: str,
         confidence_threshold: float,
         max_detections: int,
+        want_visualization: bool,
     ) -> SAM3Result:
         """Run segmentation synchronously. Called in thread pool."""
         from osam._models.yoloworld.clip import tokenize
 
         try:
-            # Load image (EXIF-oriented so masks align with the displayed image)
-            from utils.image_ops import open_oriented
-            image = open_oriented(image_path).convert("RGB")
             original_width, original_height = image.size
-            log.info(f"SAM3: Segmenting image {original_width}x{original_height} with prompt '{prompt}'")
+            log.info(
+                f"SAM3: Segmenting image {original_width}x{original_height}",
+                prompt_chars=len(prompt),
+            )
 
-            # Run image encoder
-            log.debug("SAM3: Running image encoder...")
-            image_input = np.asarray(image.resize((1008, 1008))).transpose(2, 0, 1)
-            image_output = self._sess_image.run(None, {"image": image_input})
-
-            assert len(image_output) == 6
+            image_output = self._encode_image_sync(image, cache_key)
             vision_pos_enc = image_output[:3]
             backbone_fpn = image_output[3:]
 
@@ -377,7 +395,7 @@ class SAM3Service:
 
             # Create visualization
             visualization = None
-            if len(masks) > 0:
+            if want_visualization and len(masks) > 0:
                 # Filter masks by confidence for visualization
                 valid_indices = [i for i in range(len(scores)) if scores[i] >= confidence_threshold]
                 if valid_indices:
@@ -402,37 +420,59 @@ class SAM3Service:
 
     async def segment(
         self,
-        image_path: str,
-        prompt: str,
+        image_path: Optional[str] = None,
+        prompt: str = "",
         confidence_threshold: float = 0.2,
         max_detections: int = -1,
+        image_bytes: Optional[bytes] = None,
+        want_visualization: bool = False,
     ) -> SAM3Result:
         """
         Segment an image using a text prompt.
 
         Args:
-            image_path: Path to the image file
+            image_path: Path to the image file (or pass image_bytes instead)
             prompt: Text prompt describing what to segment (e.g., "cat", "person")
             confidence_threshold: Minimum confidence score for detections (0-1)
             max_detections: Maximum number of detections (-1 for unlimited)
+            image_bytes: Encoded image bytes as an alternative to image_path
+            want_visualization: Also render the labeled-overlay debug image
 
         Returns:
             SAM3Result with detections, masks, and visualization
         """
+        try:
+            if image_bytes is not None:
+                image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+                cache_key = hashlib.sha1(image_bytes).hexdigest()
+            elif image_path:
+                # EXIF-oriented so masks align with the displayed image
+                from utils.image_ops import open_oriented
+                image = open_oriented(image_path).convert("RGB")
+                stat = os.stat(image_path)
+                cache_key = f"{image_path}:{stat.st_mtime_ns}:{stat.st_size}"
+            else:
+                return SAM3Result(error="No image provided", original_width=0, original_height=0)
+        except Exception as e:
+            log.error(f"SAM3: Failed to load image: {e}")
+            return SAM3Result(error=str(e), original_width=0, original_height=0)
+
         # Ensure model is loaded
         await self._ensure_loaded()
 
         # Acquire semaphore to ensure one inference at a time
         async with self._inference_semaphore:
-            log.info(f"SAM3: Starting segmentation for '{prompt}'")
+            log.info("SAM3: Starting segmentation", prompt_chars=len(prompt))
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 _executor,
                 self._segment_sync,
-                image_path,
+                image,
+                cache_key,
                 prompt,
                 confidence_threshold,
                 max_detections,
+                want_visualization,
             )
             return result
 

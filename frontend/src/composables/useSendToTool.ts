@@ -306,7 +306,7 @@ export function useSendToTool() {
       // Check if tool schema has input_image for generic single-image tools (e.g., bg removal)
       const hasInputImage = tool.parameter_schema?.properties?.input_image
 
-      if (['image-to-image', 'upscale-image', 'inpaint-image', 'outpaint-image', 'remove-background'].includes(effectiveTaskType) || hasInputImage) {
+      if (['image-to-image', 'upscale-image', 'inpaint-image', 'erase-image', 'outpaint-image', 'remove-background'].includes(effectiveTaskType) || hasInputImage) {
         sessionStorage.setItem(storageKey, JSON.stringify({ inputImages: mediaEntries, append: add }))
       } else if (effectiveTaskType === 'upscale-video' || effectiveTaskType === 'video-to-video' || effectiveTaskType === 'video-extend') {
         sessionStorage.setItem(storageKey, JSON.stringify({ inputVideos: mediaEntries, append: add }))

@@ -29,8 +29,12 @@
         class="my-2"
         :model-value="upscalePickerValue"
         @update:model-value="onUpscalePickerUpdate"
-        :support-scale-factor="showUpscalePicker"
-        :support-resolution="showUpscalePicker"
+        :support-scale-factor="hasScaleFactor"
+        :support-resolution="hasUpscaleResolution"
+        :scale-min="scaleFactorConstraints.min"
+        :scale-max="scaleFactorConstraints.max"
+        :scale-step="scaleFactorConstraints.step"
+        :scale-allowed-values="scaleFactorConstraints.allowedValues"
         compact
       />
 
@@ -189,7 +193,7 @@ import SettingsDropdown from '../../ui/SettingsDropdown.vue'
 import UpscaleResolutionPicker from '../UpscaleResolutionPicker.vue'
 import { useToolSchemaFeatures } from '../../../composables/useToolSchemaFeatures'
 import { useProvidersApi, type ProviderTool } from '../../../composables/useProvidersApi'
-import { getChainFilterDef } from '@stimma/image-editor'
+import { getChainFilterDef } from '../../../utils/filterDefs'
 import { snapDimsToGrid } from '../../../utils/resolutionControls'
 import {
   defaultChainStepPromptOptions,
@@ -250,6 +254,9 @@ const {
   hasPrompt,
   promptPlaceholder,
   showUpscalePicker,
+  hasScaleFactor,
+  hasUpscaleResolution,
+  scaleFactorConstraints,
   hasWidthHeight,
   hasAspectRatio,
   aspectRatioChoices,

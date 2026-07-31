@@ -15,6 +15,9 @@ class TaskType(str, Enum):
     UPSCALE_IMAGE = "upscale-image"
     UPSCALE_VIDEO = "upscale-video"
     INPAINT_IMAGE = "inpaint-image"
+    # Masked object removal. Separate from inpaint because the tools take no
+    # prompt at all — the job is a clean background, not new content.
+    ERASE_IMAGE = "erase-image"
     OUTPAINT_IMAGE = "outpaint-image"
     REMOVE_BACKGROUND = "remove-background"
     DETECT_OBJECTS = "detect-objects"
@@ -43,6 +46,8 @@ class TaskType(str, Enum):
             "upscale-vid": cls.UPSCALE_VIDEO,
             "video-upscale": cls.UPSCALE_VIDEO,
             "inpaint": cls.INPAINT_IMAGE,
+            "erase": cls.ERASE_IMAGE,
+            "object-removal": cls.ERASE_IMAGE,
             "outpaint": cls.OUTPAINT_IMAGE,
             "rembg": cls.REMOVE_BACKGROUND,
             "background-removal": cls.REMOVE_BACKGROUND,

@@ -60,7 +60,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Log incoming message (skip noisy ping events)
                 if message.get("event") != "ping":
-                    log.info(f"WS IN: {message.get('event')} - {json.dumps(message.get('data', {}))[:200]}")
+                    message_data = message.get("data", {})
+                    log.info(
+                        "WS IN",
+                        event=message.get("event"),
+                        data_keys=sorted(str(key) for key in message_data)
+                        if isinstance(message_data, dict) else [],
+                    )
 
                 # Handle ping/pong for keep-alive
                 if message.get("event") == "ping":

@@ -403,3 +403,58 @@ class TestRunPromptPipeline:
         assert out == "live improved prompt"
         assert len(calls) == 1
         assert calls[0].instructions == "current instructions"
+
+    async def test_preload_warmed_without_audio_is_not_reused_once_a_track_is_attached(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        """A supplied soundtrack changes the enhancement, so a pool warmed before
+        the user attached one must not be served to that submit."""
+        import routes.prompt_enhancement as pe
+
+        calls = []
+
+        async def fake_improve(request, session):
+            calls.append(request)
+            return pe.ImprovePromptResponse(improved_prompt="live improved prompt")
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+
+        preload = {
+            "originalPrompt": "she turns to the camera",
+            "processedPrompt": "she turns to the camera",
+            "improvedPrompt": "warmed improved prompt",
+            "instructions": None,
+            "model": "ltx-2.3",
+            "isVideo": True,
+            "isAudio": False,
+            "inputImageCount": 0,
+            "audioConditioned": False,
+            "promptSourcesSignature": pp.prompt_sources_signature([], []),
+        }
+
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "she turns to the camera",
+            {"autoImprove": {"enabled": True}},
+            model="ltx-2.3",
+            is_video=True,
+            audio_conditioned=True,
+            prompt_preload=preload,
+        )
+        assert out == "live improved prompt"
+        assert len(calls) == 1
+        assert calls[0].audio_conditioned is True
+
+        # Same preload, same flag → reused without an LLM call.
+        preload["audioConditioned"] = True
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "she turns to the camera",
+            {"autoImprove": {"enabled": True}},
+            model="ltx-2.3",
+            is_video=True,
+            audio_conditioned=True,
+            prompt_preload=preload,
+        )
+        assert out == "warmed improved prompt"
+        assert len(calls) == 1

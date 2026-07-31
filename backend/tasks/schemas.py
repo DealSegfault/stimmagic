@@ -72,6 +72,12 @@ TASK_SCHEMA_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
         "optional_input": ["prompt", "negative_prompt"],
         "required_output": ["assets"],
     },
+    # Object removal: image + mask, and deliberately no prompt.
+    TaskType.ERASE_IMAGE.value: {
+        "required_input": ["input_images", "mask"],
+        "optional_input": [],
+        "required_output": ["assets"],
+    },
     TaskType.OUTPAINT_IMAGE.value: {
         "required_input": ["input_images"],
         "optional_input": ["prompt", "negative_prompt", "expand_left", "expand_right", "expand_top", "expand_bottom"],

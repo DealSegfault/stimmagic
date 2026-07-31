@@ -1,8 +1,8 @@
 """Built-in Darkroom tool definitions.
 
-The "Darkroom: *" image tools built from the vendored ComfyUI-Darkroom
-engine (see vendor/ATTRIBUTION.md): Film Stock, Develop, Color Grade, and
-Lens & Optics.
+The image tools built from the vendored ComfyUI-Darkroom engine (see
+vendor/ATTRIBUTION.md): Film Stock, Develop, Color Grade, and Lens & Optics.
+User-facing names carry no prefix; attribution rides in each description.
 Registered by the lightweight provider; task type "filter" so they are
 ordinary catalog tools usable from ToolView, the chat agent, flows, and
 post-processing chains.
@@ -49,7 +49,7 @@ class DarkroomToolDef:
 
 FILM_STOCK_TOOL = DarkroomToolDef(
     id="darkroom-film-stock",
-    name="Darkroom: Film Stock",
+    name="Film Stock",
     description=(
         "Give a digital image the look of real film: 161 film stocks with "
         "physics-based characteristic curves, plus optional cross-processing, "
@@ -105,7 +105,7 @@ FILM_STOCK_TOOL = DarkroomToolDef(
 
 DEVELOP_TOOL = DarkroomToolDef(
     id="darkroom-develop",
-    name="Darkroom: Develop",
+    name="Develop",
     description=(
         "Camera-raw style image development: white balance (manual Kelvin or "
         "auto), exposure and tonal controls, clarity/texture/dehaze, optional "
@@ -154,7 +154,7 @@ DEVELOP_TOOL = DarkroomToolDef(
 
 COLOR_GRADE_TOOL = DarkroomToolDef(
     id="darkroom-color-grade",
-    name="Darkroom: Color Grade",
+    name="Color Grade",
     description=(
         "Professional color grading, one corrector at a time: tone curves, "
         "lift/gamma/gain, log wheels, 3-way color balance, perceptual OkLab "
@@ -239,7 +239,7 @@ COLOR_GRADE_TOOL = DarkroomToolDef(
 
 LENS_TOOL = DarkroomToolDef(
     id="darkroom-lens",
-    name="Darkroom: Lens & Optics",
+    name="Lens & Optics",
     description=(
         "Simulate or correct real lens optics: 102 measured lens profiles "
         "(distortion + chromatic aberration + vignette in one pass), or "

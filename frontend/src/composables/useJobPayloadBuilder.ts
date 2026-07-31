@@ -68,6 +68,16 @@ function allPickedImages(s: PayloadBuilderState) {
   return [...s.globalPrefs.inputImages, ...(s.globalPrefs.inpaintRefImages ?? [])]
 }
 
+/**
+ * Media lineage must remain positional with input_images. An editor composite
+ * is uploaded for the first slot and has no library id; filtering that null
+ * would incorrectly make reference 1 look like the edited target.
+ */
+export function positionalImageMediaIds(s: PayloadBuilderState): (number | null)[] {
+  const ids = allPickedImages(s).map(i => lineageMediaId(i) ?? null)
+  return ids.some(id => id != null) ? ids : []
+}
+
 // Parameter extractors - keyed by parameter_schema property name.
 // Unified table: well-known inputs (prompt, images, mask, dimensions, seed) and
 // tuning parameters (steps, cfg, sampler, etc.) all live here, keyed by field name.
@@ -97,7 +107,7 @@ const paramExtractors: Record<string, (s: PayloadBuilderState) => any> = {
       const endId = lineageMediaId(s.videoImages.endImage) ?? null
       return startId == null && endId == null ? [] : [startId, endId]
     }
-    return allPickedImages(s).map(lineageMediaId).filter(Boolean)
+    return positionalImageMediaIds(s)
   },
 
   // Video inputs (unified array)
@@ -278,9 +288,9 @@ export function extractParameters(config: PayloadBuilderConfig, state: PayloadBu
         if (startId != null || endId != null) ids = [startId, endId]
       }
       if (ids) params.input_media_ids = ids
-    } else if (allPickedImages(state).some(i => lineageMediaId(i))) {
+    } else if (positionalImageMediaIds(state).length > 0) {
       // ImagePicker mode — media IDs from inputImages (+ inpaint refs)
-      params.input_media_ids = allPickedImages(state).map(lineageMediaId).filter(Boolean)
+      params.input_media_ids = positionalImageMediaIds(state)
     }
   }
 

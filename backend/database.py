@@ -1517,6 +1517,7 @@ TASK_TYPE_TO_CATEGORY = {
     'text-to-image': 'Text to Image',
     'image-to-image': 'Image to Image',
     'inpaint-image': 'Inpaint',
+    'erase-image': 'Erase',
     'outpaint-image': 'Outpaint',
     'image-to-video': 'Video',
     'text-to-video': 'Video',

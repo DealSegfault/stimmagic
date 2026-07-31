@@ -8,12 +8,6 @@ import router from './router'
 import App from './App.vue'
 import './style.css'
 import { installTextSelectionPolicy } from './utils/textSelection'
-import {
-  isEditorDebugEnabled,
-  logEditorDebug,
-  getRecentEditorDebugEvents,
-  summarizeEditorDebugError,
-} from '../../packages/image-editor/src/utils/editorDebug'
 
 initConsoleBridge()
 installTextSelectionPolicy()
@@ -115,39 +109,6 @@ initApiConfig().then(() => {
 }).then(() => {
   const app = createApp(App)
   app.use(router)
-
-  if (isEditorDebugEnabled()) {
-    app.config.warnHandler = (msg, instance, trace) => {
-      logEditorDebug('Vue', 'warn', {
-        message: msg,
-        component: instance?.type?.name ?? null,
-        trace,
-        route: router.currentRoute.value.fullPath,
-      })
-      console.warn('[EditorDebug] Vue warn', msg, trace)
-    }
-
-    app.config.errorHandler = (error, instance, info) => {
-      const errorSummary = summarizeEditorDebugError(error)
-      const recentEvents = getRecentEditorDebugEvents(25)
-
-      logEditorDebug('Vue', 'error', {
-        info,
-        component: instance?.type?.name ?? null,
-        route: router.currentRoute.value.fullPath,
-        error: errorSummary,
-        recentEvents,
-      })
-
-      console.error('[EditorDebug] Vue error', {
-        info,
-        component: instance?.type?.name ?? null,
-        route: router.currentRoute.value.fullPath,
-        error: errorSummary,
-        recentEvents,
-      })
-    }
-  }
 
   installVueConsoleHandlers(app)
 

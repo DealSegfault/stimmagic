@@ -174,7 +174,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useWorkspaceTabsContextMenu } from '../composables/useWorkspaceTabsContextMenu'
-import { useWorkspaceTabs, toolTabRoute, toolInstanceRoute, toolRouteTabId } from '../composables/useWorkspaceTabs'
+import { useWorkspaceTabs, toolTabRoute, toolInstanceRoute, toolRouteTabId, editorTabRoute, editorRouteTabId } from '../composables/useWorkspaceTabs'
 import { useProjectRoute } from '../composables/useProjectRoute'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useToasts } from '../composables/useToasts'
@@ -203,7 +203,8 @@ function getActiveTabId(): string | null {
   if (route.name === 'board-detail') return `board:${route.params.id}`
   if (route.name === 'flow') return `flow:${route.params.id}`
   if (String(route.name || '').startsWith('project-')) return `project:${route.params.id}`
-  if (route.name === 'edit-image' || route.name === 'edit-image-empty') return `editor:${route.params.editorId}`
+  const editorId = editorRouteTabId(route)
+  if (editorId) return editorId
   return null
 }
 
@@ -215,10 +216,7 @@ function goToTab(tab: import('../composables/useWorkspaceTabs').WorkspaceTab) {
   else if (tab.type === 'board') router.push({ name: 'board-detail', params: { id: tab.entityId } })
   else if (tab.type === 'flow') router.push({ name: 'flow', params: { id: tab.entityId } })
   else if (tab.type === 'project') router.push({ name: getLastProjectRoute(tab.entityId), params: { id: tab.entityId } })
-  else if (tab.type === 'editor') {
-    if (tab.editorMediaId) router.push({ name: 'edit-image', params: { editorId: tab.entityId, mediaId: tab.editorMediaId } })
-    else router.push({ name: 'edit-image-empty', params: { editorId: tab.entityId } })
-  }
+  else if (tab.type === 'editor') router.push(editorTabRoute(tab))
 }
 
 function navigateAfterClose(excludeIds: Set<string>) {

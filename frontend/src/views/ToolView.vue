@@ -429,20 +429,6 @@
           @explode="explodeBatch"
         />
 
-        <!-- Reference audio: its own section, separate from the visual input
-             above (audio-conditioned tools like lip-sync / avatar). -->
-        <MediaPicker
-          v-if="audioInputConfig"
-          :model-value="audioInputItems"
-          @update:model-value="updateAudioInputItems"
-          :accept="audioInputConfig.accept"
-          :min-items="audioInputConfig.min"
-          :max-items="audioInputConfig.max"
-          :reorderable="audioInputConfig.reorderable"
-          :label="audioInputConfig.label"
-          :description="audioInputConfig.description"
-        />
-
         <!-- Inpaint: Combined source image + Mask editor -->
         <MaskEditor
           ref="maskEditorRef"
@@ -495,6 +481,22 @@
           @view-media="openSingleImageSlideshow"
           @suggest-resolution="onSuggestResolution"
           @suggest-aspect="onSuggestAspect"
+        />
+
+        <!-- Reference audio: its own section, below the visual inputs — the
+             picture is what the user picks first, and the clip (a driving track
+             for lip-sync/avatar, or a voice sample for identity) reads as a
+             qualifier on it rather than a peer of it. -->
+        <MediaPicker
+          v-if="audioInputConfig"
+          :model-value="audioInputItems"
+          @update:model-value="updateAudioInputItems"
+          :accept="audioInputConfig.accept"
+          :min-items="audioInputConfig.min"
+          :max-items="audioInputConfig.max"
+          :reorderable="audioInputConfig.reorderable"
+          :label="audioInputConfig.label"
+          :description="audioInputConfig.description"
         />
 
         <!-- Video Parameters: Duration (for tools using duration param) -->
@@ -588,8 +590,12 @@
           @update:model-value="onResolutionPickerUpdate"
           :input-width="inputImageWidth"
           :input-height="inputImageHeight"
-          :support-scale-factor="showUpscalePicker"
-          :support-resolution="showUpscalePicker"
+          :support-scale-factor="hasScaleFactor"
+          :support-resolution="hasUpscaleResolution"
+          :scale-min="scaleFactorConstraints.min"
+          :scale-max="scaleFactorConstraints.max"
+          :scale-step="scaleFactorConstraints.step"
+          :scale-allowed-values="scaleFactorConstraints.allowedValues"
         />
 
 
@@ -1029,7 +1035,6 @@ import { useTabNavigation } from '../composables/useTabNavigation'
 import Spinner from '../components/ui/Spinner.vue'
 import Button from '../components/ui/Button.vue'
 import EmptyState from '../components/EmptyState.vue'
-import { useGlobalKeyboardShortcuts } from '../composables/useGlobalKeyboardShortcuts'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useAssetApi } from '../composables/useAssetApi'
 import { useExpirationClock } from '../composables/useExpirationClock'
@@ -1090,7 +1095,7 @@ import PostProcessingPanel from '../components/generation/postprocessing/PostPro
 import SchemaParamGroup from '../components/generation/SchemaParamGroup.vue'
 import { resolveParamConstraints } from '../utils/paramConstraints'
 import { CHAIN_TOOL_TASK_TYPES, defaultInsertIndex, emptyChain, mergeRecordedChain, newStepId, normalizeChain, stepInputMedia, stepAcceptedMedia, toRecordedSteps, type ChainStep, type PostProcessingChain } from '../utils/postProcessingChain'
-import { CHAIN_FILTER_DEFS, getChainFilterDef, getChainFilterDefaults } from '@stimma/image-editor'
+import { CHAIN_FILTER_DEFS, getChainFilterDef, getChainFilterDefaults } from '../utils/filterDefs'
 import RemixBanner from '../components/generation/RemixBanner.vue'
 import PromptAgentChat from '../components/generation/PromptAgentChat.vue'
 import JobsGrid from '../components/generation/JobsGrid.vue'
@@ -2826,15 +2831,6 @@ function inputItemFromSource(source: any) {
   }
 }
 
-// Global keyboard shortcuts
-useGlobalKeyboardShortcuts({
-  onEscapePressed: () => {
-    if (slideshowState.active) {
-      exitSlideshow()
-    }
-  }
-})
-
 // Watch for browser back button
 watch(slideshowActive, (newValue) => {
   if (!newValue && slideshowState.active) {
@@ -3037,6 +3033,7 @@ const {
   hasScaleFactor,
   hasUpscaleResolution,
   showUpscalePicker,
+  scaleFactorConstraints,
   hasResolution,
   hasFrameCount,
   hasDuration,
@@ -3123,6 +3120,17 @@ const enhanceInputImageCount = computed(() => {
   return globalPrefs.value.inputImages?.length ?? 0
 })
 
+// Audio-conditioned video (LTX image+audio-to-video, lip-sync, avatar): the tool
+// reproduces the supplied track rather than scoring the clip, so the enhancer must
+// stop writing sound design and write the visible performance instead.
+// A 'reference' clip (voice sample for speaker identity) doesn't count — the tool
+// still writes its own audio there, so the prompt should still describe sound.
+const enhanceAudioConditioned = computed(() =>
+  audioInputConfig.value?.audioRole !== 'reference' &&
+  !!audioInputConfig.value &&
+  (globalPrefs.value.inputAudios?.length ?? 0) > 0
+)
+
 // image-to-video: the start frame, fed to the enhancer so the cinematography
 // prompt animates the actual image. Only when it's a library item (has a mediaId).
 const enhanceSourceMediaId = computed<number | null>(() =>
@@ -3156,6 +3164,7 @@ const { clear: clearPromptWarmPool } = usePromptWarmPool({
   isVideo: enhanceIsVideo,
   isAudio: enhanceIsAudio,
   inputImageCount: enhanceInputImageCount,
+  audioConditioned: enhanceAudioConditioned,
   active: computed(() => uiState.value.generateForeverMode ?? false),
   concurrency: computed(() => uiState.value.generateForeverConcurrency ?? 1),
 })
@@ -4432,6 +4441,8 @@ async function submitOneJob(options: ForeverSubmitOptions = {}): Promise<SubmitJ
           isAudio: enhanceIsAudio.value,
           // Input images on a non-video tool → edit-style enhancement.
           inputImageCount: enhanceInputImageCount.value,
+          // Supplied soundtrack → the enhancer describes the picture, not the sound.
+          audioConditioned: enhanceAudioConditioned.value,
           mode: enhanceMode.value,
           // i2v: source frame for the enhancer (used on the cinematography path).
           mediaId: enhanceSourceMediaId.value,
@@ -6420,7 +6431,7 @@ async function handleProfileChanged() {
 }
 
 onMounted(async () => {
-  console.log('[ToolView onMounted] Starting, route.query:', JSON.stringify(route.query))
+  console.log('[ToolView onMounted] Starting', { queryKeys: Object.keys(route.query) })
   await loadTool()
   console.log('[ToolView onMounted] loadTool completed')
 
@@ -6487,7 +6498,7 @@ onMounted(async () => {
 
 // Use onActivated/onDeactivated for keyboard handler since this component is in KeepAlive
 onActivated(() => {
-  console.log('[ToolView onActivated] Component reactivated, route.query:', JSON.stringify(route.query))
+  console.log('[ToolView onActivated] Component reactivated', { queryKeys: Object.keys(route.query) })
   stageViewActive.value = true
   window.addEventListener('keydown', handleKeyDown)
   syncStageVideoPlayback()

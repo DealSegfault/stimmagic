@@ -750,7 +750,11 @@ async def acompletion(*, model, messages, api_key=None, api_base=None,
                     error_body = resp.text
                 except Exception:
                     error_body = "(could not read response body)"
-                log.error(f"LLM API error {resp.status_code}: {error_body[:2000]}")
+                log.error(
+                    "LLM API error",
+                    status=resp.status_code,
+                    response_chars=len(error_body or ""),
+                )
 
                 # Extract the upstream provider's message for whichever error
                 # path we end up taking. Shapes we handle:

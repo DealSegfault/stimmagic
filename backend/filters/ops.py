@@ -1,10 +1,9 @@
 """Server-side implementations of the built-in chain filters.
 
-NumPy/PIL ports of the editor's Canvas pixel math (packages/image-editor/
-src/utils/colorMatrix.ts and utils/effects.ts). The chain auto-runs server-
-side after generation, so the editor's client-side filters are re-implemented
-here on the shared definitions in defs.py — golden tests assert the
-ported color math visually matches the editor.
+NumPy/PIL ports of the image editor's Canvas pixel math. The chain auto-runs
+server-side after generation, so the client-side filters are re-implemented
+here on the shared definitions in defs.py. Golden tests assert that the
+frontend and backend definitions stay aligned.
 """
 
 from __future__ import annotations

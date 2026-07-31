@@ -954,7 +954,10 @@ async def generate_smart_batch_title(
 
             for set_id in input_set_ids[:3]:  # Max 3 input sets
                 title = await container_title_for_media(session, media_id=set_id)
-                log.info(f"SMART TITLE: Input set {set_id} title='{title}'")
+                log.info(
+                    f"SMART TITLE: Input set {set_id} has title",
+                    title_chars=len(title or ""),
+                )
                 if title and title != 'Untitled':
                     context_parts.append(f"Input set: \"{title}\"")
 
@@ -977,7 +980,10 @@ async def generate_smart_batch_title(
                         try:
                             gen_meta = json.loads(gen_meta_str)
                             prompt = gen_meta.get('prompt') or gen_meta.get('parameters', {}).get('prompt')
-                            log.info(f"SMART TITLE: Input item {media_id} prompt={prompt[:50] if prompt else None}...")
+                            log.info(
+                                f"SMART TITLE: Input item {media_id} has prompt metadata",
+                                prompt_chars=len(prompt or ""),
+                            )
                             if prompt and len(prompt) > 10:
                                 # Truncate long prompts
                                 prompts.append(prompt[:200] if len(prompt) > 200 else prompt)
@@ -999,7 +1005,11 @@ async def generate_smart_batch_title(
         # Build the prompt
         context = "\n".join(context_parts)
 
-        log.info(f"SMART TITLE: Calling LLM with context: {context}")
+        log.info(
+            "SMART TITLE: Calling LLM",
+            context_parts=len(context_parts),
+            context_chars=len(context),
+        )
 
         # Get LLM config
         llm_config = await get_effective_llm_config('quick_task')
@@ -1027,20 +1037,29 @@ Title:"""
             temperature=0.3,
         )
 
-        log.info(f"SMART TITLE: LLM returned: '{result}'")
+        log.info("SMART TITLE: LLM returned", output_chars=len(result or ""))
 
         if result:
             # Clean up the result
             title = result.strip().strip('"\'').strip()
             # Validate it's reasonable
             if title and 1 <= len(title.split()) <= 8 and len(title) <= 60:
-                log.info(f"Generated smart batch title: {title}")
+                log.info(
+                    "Generated smart batch title",
+                    title_chars=len(title),
+                )
                 return title
             else:
-                log.warning(f"Generated title rejected (invalid format): '{title}'")
+                log.warning(
+                    "Generated smart batch title rejected",
+                    title_chars=len(title or ""),
+                )
 
         return None
 
     except Exception as e:
-        log.warning(f"Failed to generate smart batch title: {e}")
+        log.warning(
+            "Failed to generate smart batch title",
+            error_type=type(e).__name__,
+        )
         return None

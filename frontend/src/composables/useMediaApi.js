@@ -3,7 +3,6 @@ import { getCurrentProfileId, getCurrentDbGuid } from './useProfile'
 import { getApiBase } from '../apiConfig'
 import { useTauriDownload } from './useTauriDownload'
 import { useTheme } from './useTheme'
-import { prepareMediaProjectDeletion } from '../utils/editorProjectPrivacy'
 
 // Use dynamic API base - will be '/api' in dev, 'http://127.0.0.1:PORT/api' in Tauri
 function getAPIBase() {
@@ -399,7 +398,6 @@ export function useMediaApi() {
   }
 
   async function permanentlyDeleteMedia(mediaId) {
-    prepareMediaProjectDeletion([Number(mediaId)])
     const response = await axios.delete(`${getAPIBase()}/trash/${mediaId}`)
     return response.data
   }
@@ -415,7 +413,6 @@ export function useMediaApi() {
       if (mediaIds.length >= (trash.data.total || 0)) break
       page += 1
     }
-    prepareMediaProjectDeletion(mediaIds)
     if (!mediaIds.length) {
       return { status: 'accepted', operation: null, accepted: 0 }
     }
@@ -453,7 +450,6 @@ export function useMediaApi() {
   }
 
   async function bulkPermanentlyDelete(mediaIds) {
-    prepareMediaProjectDeletion(mediaIds)
     const response = await axios.post(`${getAPIBase()}/trash/batch/delete`, {
       media_ids: mediaIds.map(id => parseInt(id))
     })

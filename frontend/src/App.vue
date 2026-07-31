@@ -211,6 +211,7 @@ import {
   devModeRef,
   setAppModifier,
   setDevMode,
+  setAppBranch,
   setCaptioningEnabled,
   setTelemetryEnabled,
 } from './appConfig'
@@ -225,7 +226,7 @@ import { useRouteRestore, getSavedRouteForProfile } from './composables/useRoute
 import { useTabNavigation } from './composables/useTabNavigation'
 import { useTheme } from './composables/useTheme'
 import { useMediaApi } from './composables/useMediaApi'
-import { useWorkspaceTabs, toolTabRoute, toolRouteTabId } from './composables/useWorkspaceTabs'
+import { useWorkspaceTabs, toolTabRoute, toolRouteTabId, editorTabRoute, editorRouteTabId } from './composables/useWorkspaceTabs'
 import { useProjectRoute } from './composables/useProjectRoute'
 import { useToasts } from './composables/useToasts'
 import { useAppUpdater, markUpdaterOwner } from './composables/useAppUpdater'
@@ -234,7 +235,6 @@ import { useStimpacksApi } from './composables/useStimpacksApi'
 import { setupLayoutRenderer } from './composables/useLayoutRenderer'
 import { makeGlobalKey } from './utils/storageKeys'
 import { updateCheckIntervalMs } from './utils/updateCheckSchedule'
-import { initEditorProjectPrivacyCleanup } from './utils/editorProjectPrivacy'
 import { setPrivacyLockdownActive, isPrivacyLockdownActive } from './composables/usePrivacyLockdown'
 
 const route = useRoute()
@@ -347,12 +347,11 @@ function getComponentKey(route) {
   if (route.name === 'saved-view') {
     return `saved-view-${route.params.id}`
   }
-  // Image editor - each editorId gets its own cached instance
-  if (route.name === 'edit-image' || route.name === 'edit-image-empty') {
-    return `editor-${route.params.editorId}`
-  }
-  if (route.name === 'edit-image-landing') {
-    return 'image-editor-landing'
+  // One cached editor instance per Asset (a stack belongs to its
+  // asset). Without the asset in the key every asset shares one instance and
+  // the second one opened shows the first one's image.
+  if (route.name === 'edit-image') {
+    return `editor-${route.params.assetId}`
   }
   if (route.name === 'lineage') {
     return `lineage-${route.params.mediaId}`
@@ -492,8 +491,9 @@ function getActiveTabId() {
   if (route.name === 'chat') return `chat:${route.params.id}`
   if (route.name === 'board-detail') return `board:${route.params.id}`
   if (String(route.name || '').startsWith('project-')) return `project:${route.params.id}`
-  if (route.name === 'edit-image' || route.name === 'edit-image-empty') return `editor:${route.params.editorId}`
   if (route.name === 'flow') return `flow:${route.params.id}`
+  const editorTabId = editorRouteTabId(route)
+  if (editorTabId) return editorTabId
   return null
 }
 
@@ -504,10 +504,7 @@ function navigateToTab(tab) {
   else if (tab.type === 'chat') router.push({ name: 'chat', params: { id: tab.entityId } })
   else if (tab.type === 'board') router.push({ name: 'board-detail', params: { id: tab.entityId } })
   else if (tab.type === 'project') router.push({ name: getLastProjectRoute(tab.entityId), params: { id: tab.entityId } })
-  else if (tab.type === 'editor') {
-    if (tab.editorMediaId) router.push({ name: 'edit-image', params: { editorId: tab.entityId, mediaId: tab.editorMediaId } })
-    else router.push({ name: 'edit-image-empty', params: { editorId: tab.entityId } })
-  }
+  else if (tab.type === 'editor') router.push(editorTabRoute(tab))
   else if (tab.type === 'flow') router.push({ name: 'flow', params: { id: tab.entityId } })
 }
 
@@ -729,12 +726,12 @@ async function loadAppSettings() {
   runStartupCleanup()
   setCloudBaseUrl(settings.cloud_base_url)
   setDevMode(settings.developer_mode)
+  setAppBranch(settings.app_branch)
   setCaptioningEnabled(settings.background_work?.captioning?.enabled)
   setTelemetryEnabled(settings.telemetry_enabled)
   const privacyLockdown = settings.privacy_lockdown_active === true
   setPrivacyLockdownActive(privacyLockdown)
   initFeatureFlags(useWebSocket().on)
-  initEditorProjectPrivacyCleanup(useWebSocket().on)
   // Account push events (balance/entitlements) -> quiet data refreshes.
   initAccountEvents()
   // Sidebar "finished while away" dots must track even when the sidebar

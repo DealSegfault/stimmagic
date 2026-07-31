@@ -30,6 +30,19 @@ function uniqueMediaTypes(types: Array<MediaType | null>): MediaType[] {
 }
 
 /**
+ * Can this tool run right now?
+ *
+ * The catalog deliberately reports tools behind a disconnected or disabled
+ * provider, so a screen that has to EXPLAIN one can still name it. A picker is
+ * the opposite case: every row there is an offer, so it filters on this.
+ * Availability the caller has not loaded is treated as runnable — a missing
+ * field must not empty a menu.
+ */
+export function isRunnableTool(tool: Partial<ProviderTool>): boolean {
+  return !tool.availability || tool.availability === 'available'
+}
+
+/**
  * The authoritative decision for every "send assets to tool" affordance.
  * UI surfaces use this to render eligibility; useSendToTool runs it again after
  * resolving full media records and the latest tool schema before committing the

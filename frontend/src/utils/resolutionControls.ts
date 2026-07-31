@@ -17,6 +17,22 @@
  *      "upscale_resolution"    -> UpscaleResolutionPicker     (hint-based)
  */
 
+/**
+ * Bounds the upscale picker must honour for a given tool's scale_factor.
+ *
+ * Upscalers disagree about what a legal factor is — SeedVR2 takes any 0.5–4,
+ * P-Image wants integers up to 16x, Bria accepts literally only 2 or 4. The
+ * picker reads these off the schema instead of assuming, so it can never offer
+ * a factor the provider will reject.
+ */
+export interface ScaleFactorConstraints {
+  min: number
+  max: number
+  step: number
+  /** Discrete legal factors. When set, the picker offers ONLY these. */
+  allowedValues: number[] | null
+}
+
 export interface ResolutionControls {
   hasWidthHeight: boolean
   hasMegapixels: boolean
@@ -25,6 +41,15 @@ export interface ResolutionControls {
   hasScaleFactor: boolean
   hasUpscaleResolution: boolean
   showUpscalePicker: boolean
+  scaleFactor: ScaleFactorConstraints
+}
+
+/** Legacy defaults — what the picker hardcoded before it read the schema. */
+const DEFAULT_SCALE_CONSTRAINTS: ScaleFactorConstraints = {
+  min: 0.5,
+  max: 4,
+  step: 0.1,
+  allowedValues: null,
 }
 
 type Props = Record<string, any> | null | undefined
@@ -44,6 +69,18 @@ export function detectResolutionControls(props: Props): ResolutionControls {
   const hasScaleFactor = p.scale_factor?.['x-control'] === 'upscale_resolution'
   const hasUpscaleResolution = p.resolution?.['x-control'] === 'upscale_resolution'
 
+  const sf = p.scale_factor
+  const sfAllowed = sf?.['x-allowed-values']
+  const scaleFactor: ScaleFactorConstraints = hasScaleFactor
+    ? {
+        min: Number.isFinite(Number(sf?.minimum)) ? Number(sf.minimum) : DEFAULT_SCALE_CONSTRAINTS.min,
+        max: Number.isFinite(Number(sf?.maximum)) ? Number(sf.maximum) : DEFAULT_SCALE_CONSTRAINTS.max,
+        step: Number(sf?.['x-step']) || (sf?.type === 'integer' ? 1 : DEFAULT_SCALE_CONSTRAINTS.step),
+        allowedValues:
+          Array.isArray(sfAllowed) && sfAllowed.length > 0 ? (sfAllowed as number[]) : null,
+      }
+    : { ...DEFAULT_SCALE_CONSTRAINTS }
+
   return {
     hasWidthHeight,
     hasMegapixels: 'megapixels' in p,
@@ -52,7 +89,24 @@ export function detectResolutionControls(props: Props): ResolutionControls {
     hasScaleFactor,
     hasUpscaleResolution,
     showUpscalePicker: hasScaleFactor || hasUpscaleResolution,
+    scaleFactor,
   }
+}
+
+/** Snap a factor onto the tool's legal rungs. Mirrors the backend snap in
+ *  stimma-cloud runware-provider.executeUpscale. */
+export function snapScaleFactor(c: ScaleFactorConstraints, value: number): number {
+  if (!Number.isFinite(value)) return c.allowedValues?.[0] ?? c.min
+  if (c.allowedValues?.length) {
+    return c.allowedValues.reduce((best, v) =>
+      Math.abs(v - value) < Math.abs(best - value) ? v : best
+    , c.allowedValues[0])
+  }
+  const clamped = Math.min(c.max, Math.max(c.min, value))
+  if (!c.step) return clamped
+  const snapped = c.min + Math.round((clamped - c.min) / c.step) * c.step
+  // Re-clamp: rounding can overshoot when (max - min) isn't a whole multiple of step.
+  return Math.min(c.max, Math.max(c.min, Number(snapped.toFixed(4))))
 }
 
 /**

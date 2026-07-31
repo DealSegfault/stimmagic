@@ -1200,7 +1200,10 @@ IMPORTANT: The user's edits are INTENTIONAL. If they removed something, do NOT a
     props.editor?.animateDiff(oldPrompt, finalPrompt)
 
   } catch (err: any) {
-    console.error('Failed to enhance prompt:', err)
+    console.error('Failed to enhance prompt', {
+      errorType: err?.name || 'Error',
+      status: err?.response?.status || null
+    })
     const detail = err.response?.data?.detail
     errorCode.value = typeof detail === 'object' ? detail?.code || null : null
     error.value = typeof detail === 'string'

@@ -10,9 +10,9 @@ import { recordEntityVisit, updateRecentEntityName, type RecentEntityType } from
 export type WorkspaceTabType = 'tool' | 'chat' | 'board' | 'editor' | 'lineage' | 'project' | 'flow'
 
 export interface WorkspaceTab {
-  id: string              // 'tool:{fullToolId}[:project:{p}]:i:{K}', 'chat:{id}', 'board:{id}', 'editor:{editorId}'
+  id: string              // 'tool:{fullToolId}[:project:{p}]:i:{K}', 'chat:{id}', 'board:{id}', 'editor:asset:{assetId}'
   type: WorkspaceTabType
-  entityId: string        // fullToolId, chatId, boardId, or editorId (unique instance)
+  entityId: string        // fullToolId, chatId, boardId, or asset-prefixed editor id
   pinned: boolean
   displayOrder: number
   displayName: string     // cached name for rendering without extra API calls
@@ -80,9 +80,6 @@ let nextDisplayOrder = 0
 // Recently closed tabs stack (in-memory only, not persisted)
 const recentlyClosed: WorkspaceTab[] = []
 const MAX_RECENTLY_CLOSED = 20
-
-// Editor instance counter - initialized from existing tabs
-let editorIdCounter = 0
 
 // Tool instance counter — persisted and strictly monotonic. Never derived
 // downward from live tabs: a closed instance's storage keys survive until the
@@ -281,27 +278,8 @@ function pruneNeverActivatedDuplicates() {
   }
 }
 
-function initEditorIdCounter() {
-  // Migrate old-format editor tabs (entityId was mediaId, no editorMediaId)
-  for (const tab of tabs.value) {
-    if (tab.type === 'editor' && !tab.editorMediaId) {
-      // Old format: entityId is the mediaId. Migrate to new format.
-      const oldMediaId = tab.entityId
-      const newEditorId = String(editorIdCounter++)
-      tab.editorMediaId = oldMediaId
-      tab.entityId = newEditorId
-      tab.id = `editor:${newEditorId}`
-    }
-  }
-  // Set counter past any existing editor IDs
-  for (const tab of tabs.value) {
-    if (tab.type === 'editor') {
-      const num = parseInt(tab.entityId, 10)
-      if (!isNaN(num) && num >= editorIdCounter) {
-        editorIdCounter = num + 1
-      }
-    }
-  }
+function removeSnapshotEditorTabs() {
+  tabs.value = tabs.value.filter(tab => tab.type !== 'editor' || editorAssetId(tab) !== null)
 }
 
 // Flag to prevent saving during profile/settings reload
@@ -342,7 +320,7 @@ function loadFromStorage() {
         tabs.value = parsed
         // Restore nextDisplayOrder
         nextDisplayOrder = parsed.reduce((max: number, t: WorkspaceTab) => Math.max(max, t.displayOrder), 0) + 1
-        initEditorIdCounter()
+        removeSnapshotEditorTabs()
         migrateToolTabsToInstances()
         pruneNeverActivatedDuplicates()
         return
@@ -417,6 +395,36 @@ export function makeTabId(type: WorkspaceTabType, entityId: string, projectId?: 
   return `${type}:${entityId}`
 }
 
+const EDITOR_ENTITY_PREFIX = 'asset:'
+
+export function editorEntityId(assetId: string | number): string {
+  return `${EDITOR_ENTITY_PREFIX}${assetId}`
+}
+
+/** The Asset an editor tab edits, or null for a stale pre-cutover tab. */
+export function editorAssetId(tab: WorkspaceTab): string | null {
+  return tab.type === 'editor' && tab.entityId.startsWith(EDITOR_ENTITY_PREFIX)
+    ? tab.entityId.slice(EDITOR_ENTITY_PREFIX.length)
+    : null
+}
+
+/** Router location for an Asset-keyed editor tab. */
+export function editorTabRoute(tab: WorkspaceTab) {
+  const assetId = editorAssetId(tab)
+  return { name: 'edit-image' as const, params: { assetId: assetId ?? '' } }
+}
+
+/**
+ * Tab id for an editor route, or null when `route` isn't one. Mirrors
+ * editorTabRoute in the other direction (active-tab checks).
+ */
+export function editorRouteTabId(route: { name?: unknown; params: Record<string, any> }): string | null {
+  if (route.name === 'edit-image' && route.params.assetId) {
+    return makeTabId('editor', editorEntityId(String(route.params.assetId)))
+  }
+  return null
+}
+
 /**
  * Tab id for the tool route currently in `route` — the one builder for
  * "which tab is active" checks (App.vue, WorkspaceTabsContextMenu). Returns
@@ -443,13 +451,6 @@ export function useWorkspaceTabs() {
     try {
       localStorage.setItem(getLastLibraryRouteKey(), path)
     } catch {}
-  }
-
-  /**
-   * Allocate a new unique editor instance ID.
-   */
-  function nextEditorId(): string {
-    return String(editorIdCounter++)
   }
 
   /**
@@ -586,27 +587,36 @@ export function useWorkspaceTabs() {
   }
 
   /**
-   * Add an editor tab with a unique instance ID. Returns the tab.
+   * Add (or refresh) the editor tab for an Asset. One tab per Asset:
+   * reopening the same asset resumes the same document, so it focuses the
+   * existing tab rather than starting a second one.
    */
-  function addEditorTab(editorId: string, mediaId?: string): WorkspaceTab {
-    const id = makeTabId('editor', editorId)
+  function addEditorTab(assetId: string, opts?: { mediaId?: string; name?: string }): WorkspaceTab {
+    const entityId = editorEntityId(assetId)
+    const id = makeTabId('editor', entityId)
     const existing = tabs.value.find(t => t.id === id)
     if (existing) {
-      if (mediaId && existing.editorMediaId !== mediaId) {
-        existing.editorMediaId = mediaId
-        tabs.value = [...tabs.value]
+      let changed = false
+      if (opts?.mediaId && existing.editorMediaId !== opts.mediaId) {
+        existing.editorMediaId = opts.mediaId
+        changed = true
       }
+      if (opts?.name && existing.displayName !== opts.name) {
+        existing.displayName = opts.name
+        changed = true
+      }
+      if (changed) tabs.value = [...tabs.value]
       return existing
     }
 
     const tab: WorkspaceTab = {
       id,
       type: 'editor',
-      entityId: editorId,
+      entityId,
       pinned: false,
       displayOrder: nextDisplayOrder++,
-      displayName: 'Edit Image',
-      editorMediaId: mediaId
+      displayName: opts?.name || 'Darkroom',
+      editorMediaId: opts?.mediaId
     }
     tabs.value = [...tabs.value, tab]
     return tab
@@ -934,7 +944,6 @@ export function useWorkspaceTabs() {
     addEditorTab,
     updateEditorMedia,
     updateLineageFocus,
-    nextEditorId,
     resolveToolInstance,
     getToolInstanceTab,
     duplicateToolTab,

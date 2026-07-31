@@ -60,30 +60,14 @@ const distributionAliases = [
   }
 ]
 
-export default defineConfig(({ command }) => ({
+export default defineConfig(() => ({
   plugins: [vue()],
   define: {
     __STIMMA_DISTRIBUTION__: JSON.stringify(distribution),
     __STIMMA_COMMIT__: JSON.stringify(commitHash),
   },
   resolve: {
-    alias: command === 'serve'
-      ? [
-          ...distributionAliases,
-          {
-            find: '@',
-            replacement: resolve(__dirname, '../packages/image-editor/src')
-          },
-          {
-            find: '@stimma/image-editor/style.css',
-            replacement: resolve(__dirname, '../packages/image-editor/src/styles/index.css')
-          },
-          {
-            find: '@stimma/image-editor',
-            replacement: resolve(__dirname, '../packages/image-editor/src/index.ts')
-          }
-        ]
-      : distributionAliases
+    alias: distributionAliases
   },
   server: {
     port: frontendPort,

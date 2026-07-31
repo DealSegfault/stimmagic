@@ -721,6 +721,29 @@ async def _pause_for_permission(
     raise HumanActionRequired(hitl_action)
 
 
+# Characters that survive a round trip through the model badly enough to break
+# the file open that follows. macOS screenshot names carry U+202F (narrow no-break
+# space) before AM/PM, and a model retyping that name emits a plain space — so the
+# path it writes does not exist and the run dies on FileNotFoundError. Normalizing
+# at copy time means the name the agent is told is the name on disk.
+_UNICODE_SPACES = (
+    "\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007"
+    "\u2008\u2009\u200a\u202f\u205f\u3000"
+)
+# Zero-width characters are invisible in the prompt and unreproducible by hand.
+_ZERO_WIDTH = "\u200b\u200c\u200d\ufeff"
+
+
+def _workspace_safe_filename(filename: str) -> str:
+    """Fold exotic whitespace in a copied attachment's name down to ASCII."""
+    cleaned = filename
+    for ch in _UNICODE_SPACES:
+        cleaned = cleaned.replace(ch, " ")
+    for ch in _ZERO_WIDTH:
+        cleaned = cleaned.replace(ch, "")
+    return cleaned.strip() or filename
+
+
 async def _copy_media_to_workspace(
     media_ids: List[int],
     chat_id: int,
@@ -743,7 +766,7 @@ async def _copy_media_to_workspace(
     for item in result.scalars().all():
         file_path = item.file_path
         if file_path and os.path.exists(file_path):
-            filename = os.path.basename(file_path)
+            filename = _workspace_safe_filename(os.path.basename(file_path))
             dest = os.path.join(str(workspace), filename)
             try:
                 source_path = Path(file_path)
@@ -951,7 +974,7 @@ async def run_agent(
         _track_gate_encountered("quota_exhausted")
 
     except ContentFilteredError as e:
-        log.warning(f"Chat {chat_id}: Content filtered: {e}")
+        log.warning(f"Chat {chat_id}: Content filtered")
         metadata = {
             "error_type": "content_filtered",
             "error_summary": str(e),
@@ -1514,7 +1537,7 @@ async def _run_agentic_loop_inner(
         log.info(
             f"Chat {chat_id} turn {turn}: "
             f"reasoning={'yes (' + str(len(reasoning)) + ' chars)' if reasoning else 'none'}, "
-            f"content={content[:150]!r}, "
+            f"content_chars={len(content or '')}, "
             f"tool_calls={len(tool_calls) if tool_calls else 0}"
         )
 

@@ -1,9 +1,8 @@
-"""Built-in chain filters: editor↔backend definition parity + filter math.
+"""Built-in chain filters: frontend↔backend definition parity + filter math.
 
-The editor (packages/image-editor/src/filterDefs.ts + constants.ts) is the
-source of truth for filter definitions; backend/postprocessing/filter_defs.py
-is a mirror. These tests assert the mirror never drifts, and that the NumPy
-ports of the editor's pixel math behave like the Canvas originals.
+The frontend definitions and matrices are the source of truth;
+``backend/filters/defs.py`` mirrors them. These tests assert that mirror never
+drifts and that the NumPy ports match the Canvas behavior.
 """
 
 import math
@@ -23,12 +22,12 @@ from filters.defs import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONSTANTS_TS = REPO_ROOT / "packages" / "image-editor" / "src" / "constants.ts"
-FILTER_DEFS_TS = REPO_ROOT / "packages" / "image-editor" / "src" / "filterDefs.ts"
+CONSTANTS_TS = REPO_ROOT / "frontend" / "src" / "imageEditor" / "ported" / "filterMatrices.ts"
+FILTER_DEFS_TS = REPO_ROOT / "frontend" / "src" / "utils" / "filterDefs.ts"
 
 requires_editor_sources = pytest.mark.skipif(
     not (CONSTANTS_TS.exists() and FILTER_DEFS_TS.exists()),
-    reason="image-editor sources not present",
+    reason="frontend filter sources not present",
 )
 
 
@@ -38,10 +37,10 @@ def _strip_comments(src: str) -> str:
 
 
 def _parse_ts_filter_matrices(src: str) -> dict:
-    """Extract FILTER_MATRICES entries from constants.ts."""
+    """Extract FILTER_MATRICES entries from filterMatrices.ts."""
     src = _strip_comments(src)
     m = re.search(r"export const FILTER_MATRICES[^=]*=\s*\{(.*?)\n\};", src, re.DOTALL)
-    assert m, "FILTER_MATRICES not found in constants.ts"
+    assert m, "FILTER_MATRICES not found in filterMatrices.ts"
     body = m.group(1)
     matrices = {}
     for entry in re.finditer(r"['\"]?([\w-]+)['\"]?:\s*\[([^\]]+)\]", body):

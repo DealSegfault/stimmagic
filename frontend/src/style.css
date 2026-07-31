@@ -255,12 +255,12 @@ body {
   color-scheme: dark;
 
   /* Surfaces — "Slate": neutrals carry a faint cool-blue cast so the
-     greys read designed rather than mechanical, and colourful media pops.
+     greys read designed rather than mechanical, and colorful media pops.
 
      Solid tokens are stored as space-separated RGB *channels* (e.g. `19 23 32`)
      so Tailwind's `<alpha-value>` placeholder can inject opacity — this is what
      makes `bg-surface/50`, `border-edge/30`, etc. resolve. The matching
-     `--color-*` var derives the full colour via `rgb(var(--*-rgb))` so the ~80
+     `--color-*` var derives the full color via `rgb(var(--*-rgb))` so the ~80
      places that read `var(--color-surface)` directly keep working unchanged. */
   --color-base-rgb: 11 14 20;
   --color-base: rgb(var(--color-base-rgb));

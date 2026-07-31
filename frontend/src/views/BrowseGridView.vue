@@ -294,9 +294,9 @@ import { getCurrentProfileId } from '../composables/useProfile'
 import { makeProfileKey } from '../utils/storageKeys'
 import { useMediaList } from '../composables/useMediaList'
 import { isSettingsLoaded } from '../appConfig'
-import { useWorkspaceTabs } from '../composables/useWorkspaceTabs'
 import { cloneDefaultBrowseFilters, normalizeBrowseFilters } from '../constants/browseFilters'
 import { assetIdOf, mediaIdOf } from '../utils/assetIdentity'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 
 // Props
 const props = defineProps({
@@ -359,7 +359,6 @@ const trashHeaderSubtitle = computed(() => {
 
 const route = useRoute()
 const router = useRouter()
-const { nextEditorId } = useWorkspaceTabs()
 const { decodeFiltersFromUrl } = useUrlState()
 const {
   getMediaItem: getPayloadMediaItem,
@@ -1245,7 +1244,7 @@ function handleCompareSelected() {
 // Multi-select helper - edit selected image
 function handleEditImage() {
   if (selectedItemIds.value.length === 1) {
-    router.push({ name: 'edit-image', params: { editorId: nextEditorId(), mediaId: selectedItemIds.value[0] } })
+    void openImageEditor(router, selectedItemIds.value[0])
     multiSelectMode.value = false
     selectedItemIds.value = []
   }
@@ -1927,9 +1926,9 @@ onMounted(async () => {
 
   // Check for URL query parameters and apply them to browse filters only
   if (!useExternalFilters && route.name === 'browse' && hasBrowseFilterQuery(route.query)) {
-    console.log('[BrowseGridView] Found URL query params:', route.query)
+    console.log('[BrowseGridView] Found URL query params', { queryKeys: Object.keys(route.query) })
     await applyUrlFiltersFromQuery(route.query)
-    console.log('[BrowseGridView] Decoded filters from URL:', JSON.stringify(filters))
+    console.log('[BrowseGridView] Decoded filters from URL', { filterCount: Object.keys(filters).length })
   }
 
   // Handle slideshowMedia query param (e.g., after image editor save)
