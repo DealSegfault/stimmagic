@@ -711,7 +711,14 @@
                 <SparklesIcon class="w-6 h-6 text-content-muted" />
               </template>
               <template #action>
-                <Button :disabled="!canSubmit" :title="submitBlockedReason" @click="submitJob()">Create something</Button>
+                <BatchRunButton
+                  :batch-size="uiState.batchSize"
+                  :disabled="!canSubmit"
+                  :is-mac="isMac"
+                  :media-batch-count="globalPrefs.batchMode ? mediaInputItems.length : 0"
+                  @run="submitJob"
+                  @update:batch-size="uiState.batchSize = $event"
+                />
               </template>
             </EmptyState>
           </Transition>
@@ -909,7 +916,14 @@
                   <SparklesIcon class="w-6 h-6 text-content-muted" />
                 </template>
                 <template #action>
-                  <Button :disabled="!canSubmit" :title="submitBlockedReason" @click="submitJob()">Create something</Button>
+                  <BatchRunButton
+                    :batch-size="uiState.batchSize"
+                    :disabled="!canSubmit"
+                    :is-mac="isMac"
+                    :media-batch-count="globalPrefs.batchMode ? mediaInputItems.length : 0"
+                    @run="submitJob"
+                    @update:batch-size="uiState.batchSize = $event"
+                  />
                 </template>
               </EmptyState>
             </Transition>

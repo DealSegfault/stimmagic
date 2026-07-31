@@ -35,6 +35,10 @@ def normalize_task_type(task_type: str) -> str:
 # anything — an outpaint has no neutral amount, so there is no defensible
 # default canvas. Hosts enforce that before submitting; see
 # frontend/src/utils/taskTypeValidation.ts.
+#
+# Tools SHOULD mark these `"x-format": "percent"` so the host renders "25%"
+# rather than a bare "25". A number whose unit the user has to infer is the
+# failure mode this whole contract exists to prevent.
 OUTPAINT_EXPAND_FIELDS: List[str] = [
     "expand_top_pct",
     "expand_bottom_pct",
@@ -116,6 +120,11 @@ TASK_SCHEMA_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
         "required_output": ["assets"],
     },
     TaskType.REMOVE_BACKGROUND.value: {
+        "required_input": ["input_images"],
+        "optional_input": [],
+        "required_output": ["assets"],
+    },
+    TaskType.PROCESS_IMAGE.value: {
         "required_input": ["input_images"],
         "optional_input": [],
         "required_output": ["assets"],

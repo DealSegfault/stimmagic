@@ -20,6 +20,10 @@ class TaskType(str, Enum):
     ERASE_IMAGE = "erase-image"
     OUTPAINT_IMAGE = "outpaint-image"
     REMOVE_BACKGROUND = "remove-background"
+    # Promptless full-image processing (restoration, denoise, colorize):
+    # image in → image out at the same dimensions. Separate from
+    # image-to-image, which implies images+prompt → image.
+    PROCESS_IMAGE = "process-image"
     DETECT_OBJECTS = "detect-objects"
     VIDEO_STITCH = "video-stitch"
     VIDEO_EXTEND = "video-extend"

@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 from PIL.PngImagePlugin import PngInfo
 
 from .base import (
@@ -351,6 +351,52 @@ class TestToolProvider(ToolProvider):
             metadata={"generator_type": "test"},
         )
 
+        # Process tool: promptless full-image processing that really transforms
+        # the input pixels (dims-preserving), so the editor's base chain is
+        # demoable and testable without a cloud provider.
+        self._descriptors["process-image:test-process"] = ToolDescriptor(
+            id="process-image:test-process",
+            name="Test Process Image",
+            task_type="process-image",
+            parameter_schema={
+                "type": "object",
+                "required": ["input_images"],
+                "properties": {
+                    "input_images": {
+                        "type": "array",
+                        "items": {"type": "string", "format": "file-path"},
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "x-control": "image_picker",
+                    },
+                    "operation": {
+                        "type": "string",
+                        "enum": ["enhance", "colorize", "denoise"],
+                        "default": "enhance",
+                        "x-label": "Operation",
+                    },
+                    "strength": {
+                        "type": "number",
+                        "default": 0.5,
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "x-label": "Strength",
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "minimum": 0,
+                    },
+                },
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "image_data": {"type": "string", "format": "binary"},
+                },
+            },
+            metadata={"generator_type": "test"},
+        )
+
         # Image-to-video tool (outputs PNG for test simplicity)
         self._descriptors["image-to-video:test-i2v"] = ToolDescriptor(
             id="image-to-video:test-i2v",
@@ -523,17 +569,21 @@ class TestToolProvider(ToolProvider):
             ("outpaint-image:test-outpaint", "Test Outpaint", "outpaint-image",
              {**_images, **_prompt, **_neg, **_seed,
               "expand_left_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                  "x-control": "slider", "x-format": "percent",
                                   "description": "New canvas on the left edge, as a percentage of the image's width."},
               "expand_right_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                   "x-control": "slider", "x-format": "percent",
                                    "description": "New canvas on the right edge, as a percentage of the image's width."},
               "expand_top_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                 "x-control": "slider", "x-format": "percent",
                                  "description": "New canvas on the top edge, as a percentage of the image's height."},
               "expand_bottom_pct": {"type": "integer", "default": 0, "minimum": 0, "maximum": 100,
+                                    "x-control": "slider", "x-format": "percent",
                                     "description": "New canvas on the bottom edge, as a percentage of the image's "
                                                    "height. Percentages are dimensionless, so a target aspect ratio "
                                                    "needs no knowledge of the source size — square to 16:9 is "
                                                    "16/9-1 = 77.8% of width, split across left and right."}},
-             ["input_images", "expand_left_pct", "expand_right_pct", "expand_top_pct", "expand_bottom_pct"]),
+             ["input_images"]),
             ("erase-image:test-erase", "Test Erase", "erase-image",
              {**_images,
               "mask": {"type": "string", "format": "file-path", "x-control": "mask_editor",
