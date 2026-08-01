@@ -2204,13 +2204,10 @@ async function run() {
       })
     }
 
-    // The patch now owns a COPY of the selection. Leaving its ants up would
-    // obscure the result exactly when the person needs to judge it. A cutout
-    // never consumed the selection, so it leaves it alone.
-    if (action === 'remove' || action === 'repaint') {
-      clearSelection()
-      disarmSelect()
-    }
+    // The patch owns its own mask copy, while the workspace selection remains
+    // available for another pass. This is the common Remove/Regenerate loop:
+    // judge the result, revise the prompt or settings, and run the same region
+    // again without rebuilding the selection.
   } catch (err: any) {
     error.value = apiErrorMessage(err, 'Could not start the edit.')
   } finally {
@@ -5429,8 +5426,9 @@ function appliedKeyFor(
 }
 
 /**
- * A live selection pre-fills the next mask. Consumed by COPY at the moment it
- * is used, never live-linked — the op ends up referencing only its own payload.
+ * A live selection pre-fills the next mask. Captured by COPY at the moment it
+ * is used, never live-linked — the op ends up referencing only its own payload,
+ * while the workspace selection remains available for another operation.
  * Flattened onto black: white-where-selected on opaque black is the shape every
  * mask consumer expects (the model’s own canvas is white on transparent).
  */

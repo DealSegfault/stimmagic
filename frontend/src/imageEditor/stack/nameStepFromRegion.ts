@@ -66,8 +66,8 @@ export function regionCropBase64(
  *
  * Takes the crop rather than the canvases: the caller cuts it synchronously,
  * while the mask and the input it was sampled against are still the ones the
- * step ran on. A Remove clears the selection the moment it starts, so reading
- * those canvases one await later reads someone else's pixels.
+ * step ran on. The workspace selection can be edited or reused immediately,
+ * so reading those live canvases one await later could read different pixels.
  */
 export async function nameStepFromCrop(
   operation: NameableOperation,
