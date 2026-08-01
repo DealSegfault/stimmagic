@@ -54,8 +54,6 @@ export interface ToolPrefs {
   repaintPrompt?: string
   /** Most recently submitted Repaint prompts, newest first. */
   recentRepaintPrompts?: string[]
-  /** Remove/Repaint pre-submit mask growth (negative shrinks); MaskEditor step semantics. */
-  maskExpandPercent?: number
   /** Last real sub-tool pick per family, keyed by family id. */
   sub?: Record<string, string>
 }

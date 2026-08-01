@@ -12,7 +12,7 @@
 import { computed, ref } from 'vue'
 import ScrubValue from '../../components/ui/ScrubValue.vue'
 import type { ExpandEdges } from '../stack/expandGeometry'
-import { expandedFrame } from '../stack/expandGeometry'
+import { hasExpansion } from '../stack/expandGeometry'
 
 const props = defineProps<{
   edges: ExpandEdges
@@ -62,12 +62,7 @@ function pixelStep(field: (typeof FIELDS)[number]): number {
   return Math.max(1, Math.round(axisSize(field.axis) / 100))
 }
 
-const target = computed(() =>
-  expandedFrame(props.edges, props.frameWidth, props.frameHeight)
-)
-const changed = computed(() =>
-  target.value.width !== props.frameWidth || target.value.height !== props.frameHeight
-)
+const changed = computed(() => hasExpansion(props.edges))
 </script>
 
 <template>
@@ -76,7 +71,10 @@ const changed = computed(() =>
       <label
         v-for="field in FIELDS"
         :key="field.edge"
-        class="grid grid-cols-[3.25rem_3.5rem] items-center text-xs text-content-tertiary"
+        class="grid items-center text-xs text-content-tertiary"
+        :class="unit === 'percent'
+          ? 'grid-cols-[3.25rem_2rem]'
+          : 'grid-cols-[3.25rem_3.5rem]'"
         :title="`New canvas on the ${field.edge} edge`"
       >
         <span>{{ field.label }}</span>
@@ -95,41 +93,36 @@ const changed = computed(() =>
       </label>
     </div>
 
-    <!-- Display unit only: the wire always carries the percents. -->
-    <div class="flex items-center rounded-md bg-overlay-subtle p-0.5 text-[11px]">
+    <div class="flex shrink-0 items-center gap-3">
+      <!-- Display unit only: the wire always carries the percents. -->
+      <div class="flex items-center rounded-md bg-overlay-subtle p-0.5 text-[11px]">
+        <button
+          v-for="choice in (['percent', 'pixels'] as const)"
+          :key="choice"
+          type="button"
+          class="px-1.5 py-0.5 rounded transition-colors
+                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+          :class="unit === choice
+            ? 'bg-selection/15 text-content'
+            : 'text-content-tertiary hover:text-content-secondary'"
+          @click="unit = choice"
+        >
+          {{ choice === 'percent' ? '%' : 'px' }}
+        </button>
+      </div>
+
+      <!-- Present only when modified, inline with the values and unit toggle. -->
       <button
-        v-for="choice in (['percent', 'pixels'] as const)"
-        :key="choice"
+        v-if="changed"
         type="button"
-        class="px-1.5 py-0.5 rounded transition-colors
-               focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-        :class="unit === choice
-          ? 'bg-selection/15 text-content'
-          : 'text-content-tertiary hover:text-content-secondary'"
-        @click="unit = choice"
+        class="text-[11px] text-content-tertiary hover:text-content transition-colors
+               disabled:opacity-40 disabled:hover:text-content-tertiary disabled:cursor-default
+               focus-visible:outline-none focus-visible:ring-2 ring-accent/60 rounded-md"
+        :disabled="disabled"
+        @click="emit('update', { top: 0, bottom: 0, left: 0, right: 0 })"
       >
-        {{ choice === 'percent' ? '%' : 'px' }}
+        Reset
       </button>
     </div>
-
-    <p
-      v-if="changed"
-      class="text-xs font-mono tabular-nums text-content-tertiary whitespace-nowrap"
-    >
-      {{ frameWidth }} × {{ frameHeight }} → {{ target.width }} × {{ target.height }}
-    </p>
-    <!-- Present only when modified (§3.5): a Reset with nothing to reset is
-         dead weight in a bar this dense. -->
-    <button
-      v-if="changed"
-      type="button"
-      class="text-[11px] text-content-tertiary hover:text-content transition-colors
-             disabled:opacity-40 disabled:hover:text-content-tertiary disabled:cursor-default
-             focus-visible:outline-none focus-visible:ring-2 ring-accent/60 rounded-md"
-      :disabled="disabled"
-      @click="emit('update', { top: 0, bottom: 0, left: 0, right: 0 })"
-    >
-      Reset
-    </button>
   </div>
 </template>

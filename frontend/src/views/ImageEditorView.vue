@@ -69,7 +69,6 @@ import {
   regionCropBase64,
 } from '../imageEditor/stack/nameStepFromRegion'
 import { apiErrorMessage } from '../imageEditor/stack/errors'
-import { DEFAULT_MASK_EXPAND_PERCENT, expandMaskCanvas } from '../imageEditor/stack/maskMorphology'
 import { setEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import {
   readToolPrefs, writeToolPrefs, rememberSubTool,
@@ -187,14 +186,6 @@ const baseInfo = ref<any>(null)
 const initialToolPrefs = readToolPrefs()
 
 const candidateCount = ref(4)
-/**
- * How far Remove/Repaint grow the mask past the selection edge at submit
- * (negative shrinks). Generation needs reach beyond the object or its outline
- * survives; the on-canvas selection itself stays exactly as drawn.
- */
-const maskExpandPercent = ref(
-  initialToolPrefs.maskExpandPercent ?? DEFAULT_MASK_EXPAND_PERCENT,
-)
 const selectedOpId = ref<string | null>(null)
 
 const tools = ref<any[]>([])
@@ -1846,7 +1837,6 @@ function selectSub(id: string) {
 const subbarState = computed(() => ({
   prompt: prompt.value,
   candidateCount: candidateCount.value,
-  maskExpandPercent: maskExpandPercent.value,
   cropAspect: cropAspect.value,
   rotation: cropParamsOf().cropRotation ?? 0,
   flipX: !!cropParamsOf().flipX,
@@ -1903,7 +1893,7 @@ const subbarState = computed(() => ({
  * selection tool must let go.
  */
 const SUBBAR_KEEPS_SELECT = new Set([
-  'prompt', 'candidateCount', 'maskExpandPercent', 'toolParamPatch',
+  'prompt', 'candidateCount', 'toolParamPatch',
   'removeRecentPrompt', 'referenceImages', 'expandEdges',
   // Showing or hiding the Looks strip is chrome, not canvas work.
   'looksOpen',
@@ -1914,10 +1904,6 @@ function onSubbarSet(patch: Record<string, any>, continuous = false) {
   if ('prompt' in patch) prompt.value = patch.prompt
   if ('candidateCount' in patch) candidateCount.value = patch.candidateCount
   if ('referenceImages' in patch) referenceImages.value = patch.referenceImages
-  if ('maskExpandPercent' in patch) {
-    maskExpandPercent.value = patch.maskExpandPercent
-    writeToolPrefs({ maskExpandPercent: patch.maskExpandPercent })
-  }
   // Deliberately not persisted: how much to grow is a property of THIS
   // image's composition, not a way of working — a new document starts at
   // zero, not at the last image's answer.
@@ -2107,13 +2093,6 @@ async function run() {
       submitMask = expandBorderMask(headComposite.width, headComposite.height, frame)
     }
     if (!submitMask) throw new Error('There is nothing selected to work on.')
-
-    // Remove/Repaint grow their mask copy past the selection edge: a crisp
-    // object-hugging mask leaves the model repainting inside the outline it
-    // was meant to replace.
-    if (action === 'remove' || action === 'repaint') {
-      expandMaskCanvas(submitMask, maskExpandPercent.value)
-    }
 
     const maskPayloadRef = await stack.uploadPayload(
       `${opId}-mask.png`, await canvasToBlob(submitMask)
