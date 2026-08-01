@@ -42,6 +42,7 @@
               v-for="entry in mosaic"
               :key="entry.tabId"
               :media-id="Number(entry.mediaId)"
+              :asset-id="Number(entry.assetId)"
               thumbnail
               :thumbnail-size="64"
               :draggable="false"

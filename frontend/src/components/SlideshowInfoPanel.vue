@@ -42,6 +42,15 @@
         </Tooltip>
       </div>
       <div class="grid grid-cols-2 gap-1.5 mt-2">
+        <button
+          v-if="isImageType(currentItem)"
+          type="button"
+          class="col-span-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-surface-raised px-3 py-2 text-xs font-medium text-content transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+          @click="$emit('edit-image', mediaIdOf(currentItem))"
+        >
+          <PencilSquareIcon class="h-3.5 w-3.5 flex-shrink-0" />
+          <span>Edit</span>
+        </button>
         <InspireMenu
           :media-id="mediaIdOf(currentItem)"
           @sent="$emit('menu-sent')"
@@ -722,7 +731,7 @@ import {
   ArchiveBoxIcon,
   TagIcon
 } from '@heroicons/vue/24/solid'
-import { ClipboardDocumentIcon, FolderOpenIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { ClipboardDocumentIcon, FolderOpenIcon, PencilSquareIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import ActionMenu from './ActionMenu.vue'
 import TagEditor from './TagEditor.vue'
 import InlineTagEditor from './InlineTagEditor.vue'

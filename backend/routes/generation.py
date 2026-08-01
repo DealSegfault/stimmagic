@@ -402,7 +402,10 @@ async def get_generation_folder(
 
 
 @router.post("/upload-reference")
-async def upload_reference_image(file: UploadFile = File(...)):
+async def upload_reference_image(
+    file: UploadFile = File(...),
+    materialize_asset: bool = Form(True),
+):
     """
     Upload a reference image for image-to-image tasks.
 
@@ -416,7 +419,11 @@ async def upload_reference_image(file: UploadFile = File(...)):
     try:
         upload_service = get_upload_service()
         content = await file.read()
-        media_item, file_path = await upload_service.upload_file(content, file.filename or "upload.png")
+        media_item, file_path = await upload_service.upload_file(
+            content,
+            file.filename or "upload.png",
+            materialize_asset=materialize_asset,
+        )
 
         return {
             "path": file_path,

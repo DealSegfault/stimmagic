@@ -164,6 +164,9 @@ export function useStackCandidates(deps: {
     const blob = await canvasToBlob(canvas)
     const form = new FormData()
     form.append('file', blob, 'composite.png')
+    // The editor's flattened input is internal job context, not a library
+    // Asset. Candidate outputs are owned by the working document separately.
+    form.append('materialize_asset', 'false')
     const { data } = await axios.post(`${API_BASE}/generate/upload-reference`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })

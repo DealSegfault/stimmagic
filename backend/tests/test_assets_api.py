@@ -350,6 +350,29 @@ async def test_revision_history_can_restore_an_old_version_as_a_new_latest_versi
 
 
 @pytest.mark.asyncio
+async def test_revision_history_hides_legacy_non_head_autosaves(client, db_session):
+    async with db_session() as session:
+        base_media = await create_media_item(session, file_hash="autosave-base")
+        auto_media = await create_media_item(session, file_hash="legacy-autosave")
+        saved_media = await create_media_item(session, file_hash="autosave-saved")
+        asset = await create_asset_from_media(session, media_id=base_media.id)
+        await commit_revision(
+            session, asset_id=asset.id, media_id=auto_media.id, autosave=True,
+        )
+        saved = await commit_revision(
+            session, asset_id=asset.id, media_id=saved_media.id,
+        )
+        asset_id = asset.id
+        await session.commit()
+
+    response = await client.get(f"/api/assets/{asset_id}/revisions")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [item["revision_number"] for item in payload["items"]] == [saved.revision_number, 1]
+    assert all(item["autosave"] is False for item in payload["items"])
+
+
+@pytest.mark.asyncio
 async def test_contextual_media_search_and_explicit_promotion(client, db_session):
     async with db_session() as session:
         matching = await create_media_item(session, extracted_prompt="a copper lighthouse")

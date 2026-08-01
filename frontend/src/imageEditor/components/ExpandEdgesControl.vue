@@ -71,27 +71,29 @@ const changed = computed(() =>
 </script>
 
 <template>
-  <!-- One inline row: the edges ARE Expand's subject, so they sit directly in
-       the bar's subject zone rather than inside an input-shaped card. -->
-  <div class="flex items-center gap-3 flex-wrap min-w-0">
-    <label
-      v-for="field in FIELDS"
-      :key="field.edge"
-      class="flex items-center gap-1.5 text-xs text-content-tertiary"
-      :title="`New canvas on the ${field.edge} edge`"
-    >
-      {{ field.label }}
-      <ScrubValue
-        :model-value="displayValue(field)"
-        :min="0"
-        :max="unit === 'percent' ? 100 : axisSize(field.axis)"
-        :step="unit === 'percent' ? 1 : pixelStep(field)"
-        :disabled="disabled"
-        :non-default="edges[field.edge] > 0"
-        :format="v => unit === 'percent' ? `${v}%` : `${v}px`"
-        @update:model-value="setEdge(field, $event)"
-      />
-    </label>
+  <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+    <div class="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+      <label
+        v-for="field in FIELDS"
+        :key="field.edge"
+        class="grid grid-cols-[3.25rem_3.5rem] items-center text-xs text-content-tertiary"
+        :title="`New canvas on the ${field.edge} edge`"
+      >
+        <span>{{ field.label }}</span>
+        <span class="text-right">
+          <ScrubValue
+            :model-value="displayValue(field)"
+            :min="0"
+            :max="unit === 'percent' ? 100 : axisSize(field.axis)"
+            :step="unit === 'percent' ? 1 : pixelStep(field)"
+            :disabled="disabled"
+            :non-default="edges[field.edge] > 0"
+            :format="v => unit === 'percent' ? `${v}%` : `${v}px`"
+            @update:model-value="setEdge(field, $event)"
+          />
+        </span>
+      </label>
+    </div>
 
     <!-- Display unit only: the wire always carries the percents. -->
     <div class="flex items-center rounded-md bg-overlay-subtle p-0.5 text-[11px]">
@@ -116,10 +118,6 @@ const changed = computed(() =>
     >
       {{ frameWidth }} × {{ frameHeight }} → {{ target.width }} × {{ target.height }}
     </p>
-    <p v-else class="text-xs text-content-muted truncate">
-      Grow at least one edge to expand.
-    </p>
-
     <!-- Present only when modified (§3.5): a Reset with nothing to reset is
          dead weight in a bar this dense. -->
     <button

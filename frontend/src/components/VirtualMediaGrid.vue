@@ -63,7 +63,7 @@
             >
               <div class="w-full h-full overflow-hidden rounded-media">
                 <AppImage
-                  :src="getThumbnailUrl(rowItem.file_hash, GRID_THUMBNAIL_SIZE)"
+                  :src="editorLivePreview(assetIdOf(rowItem)) || getThumbnailUrl(rowItem.file_hash, GRID_THUMBNAIL_SIZE)"
                   :alt="rowItem.vlm_caption || 'Media item'"
                   :contain="rowItem.file_format === 'stimmalayout' || rowItem.file_format === 'svg'"
                   :has-alpha="rowItem.has_alpha"
@@ -227,6 +227,7 @@ import { getMediaType, isVideo as isVideoType, isAudio, getBadgeConfig, formatDu
 import { makeProfileKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { assetIdOf, mediaIdOf } from '../utils/assetIdentity'
+import { editorLivePreview } from '../imageEditor/liveEditorPreview'
 
 const { formatRemainingTime } = useExpirationClock()
 

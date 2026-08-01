@@ -36,6 +36,7 @@ import { useMediaApi } from '../../composables/useMediaApi'
 import { useMediaContextMenu } from '../../composables/useMediaContextMenu'
 import { useTauriDrag } from '../../composables/useTauriDrag'
 import { createDragPreview, handleDragEnd } from '../../composables/useDragPreview'
+import { editorLivePreview } from '../../imageEditor/liveEditorPreview'
 
 const contextMenu = useMediaContextMenu()
 const { isTauri, handleDragStart: tauriHandleDragStart } = useTauriDrag()
@@ -130,6 +131,8 @@ const effectiveQueued = computed(() =>
 // Prefer fileHash for URLs (hash-based URLs are the standard, more cache-friendly)
 // Fall back to mediaId if hash not provided
 const imageSrc = computed(() => {
+  const live = editorLivePreview(props.assetId)
+  if (live) return live
   const identifier = props.fileHash ?? props.mediaId
   if (!identifier) return undefined
 

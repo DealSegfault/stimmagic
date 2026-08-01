@@ -327,7 +327,7 @@ class Asset(Base):
 
 
 class AssetRevision(Base):
-    """Immutable saved state of an Asset."""
+    """Saved state of an Asset; autosave heads remain mutable until promoted."""
     __tablename__ = "asset_revisions"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -336,8 +336,8 @@ class AssetRevision(Base):
     primary_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='RESTRICT'), nullable=False, index=True)
     revision_number = Column(Integer, nullable=False)
     note = Column(String, nullable=True)
-    # Committed automatically on leaving the editor. At most one lives at the
-    # head of a chain: the next commit sharing its parent swallows it.
+    # Committed automatically while editing. At most one lives at the head of
+    # a chain: later autosaves replace it and Save promotes it in place.
     autosave = Column(Boolean, nullable=False, default=False, server_default='0')
     missing_parent = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)

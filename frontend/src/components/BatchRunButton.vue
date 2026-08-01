@@ -92,7 +92,7 @@
           Each repeat runs all {{ mediaBatchCount }} batch items with the current settings.
         </template>
         <template v-else>
-          Each image is queued separately with a fresh seed — the same as pressing Run {{ batchSize > 1 ? batchSize : 'N' }} times. No grouping.
+          Each image uses a fresh seed and appears with the others in this run's results.
         </template>
       </p>
     </div>

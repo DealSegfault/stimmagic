@@ -619,23 +619,21 @@ class TestAutosave:
             asset = await session.get(Asset, asset_id)
             assert asset.current_revision_id == second.json()["revision_id"]
 
-            replaced = await session.get(AssetRevision, first.json()["revision_id"])
-            assert replaced.deleted_at is not None
-
             head = await session.get(AssetRevision, second.json()["revision_id"])
+            assert second.json()["revision_id"] == first.json()["revision_id"]
             assert head.autosave is True
             assert head.note == "Edit autosave"
             assert head.parent_revision_id == base_revision_id
 
             from database import MediaOwner
-            replaced_owner = await session.scalar(
+            head_owner = await session.scalar(
                 select(MediaOwner).where(
                     MediaOwner.root_kind == "asset_revision",
-                    MediaOwner.root_id == str(replaced.id),
+                    MediaOwner.root_id == str(head.id),
                     MediaOwner.deleted_at.is_(None),
                 )
             )
-            assert replaced_owner is None
+            assert head_owner is not None
 
             live = (await session.execute(
                 select(AssetRevision).where(
@@ -645,7 +643,7 @@ class TestAutosave:
             )).scalars().all()
             assert {r.id for r in live} == {base_revision_id, head.id}
 
-    async def test_explicit_save_swallows_the_autosave_head(
+    async def test_explicit_save_promotes_the_autosave_head_in_place(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
         asset_id, media_id, _ = await _asset(db_session, tmp_path, name="autosave-promote")
@@ -666,10 +664,9 @@ class TestAutosave:
             autosave=False, color=(255, 255, 0),
         )
         assert saved.status_code == 200, saved.text
+        assert saved.json()["revision_id"] == auto.json()["revision_id"]
 
         async with db_session() as session:
-            swallowed = await session.get(AssetRevision, auto.json()["revision_id"])
-            assert swallowed.deleted_at is not None
             head = await session.get(AssetRevision, saved.json()["revision_id"])
             assert head.autosave is False
             assert head.note == "Image editor save"

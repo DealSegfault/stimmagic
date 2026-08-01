@@ -106,7 +106,7 @@ watch(
       <textarea
         :value="op.params.prompt ?? ''"
         rows="3"
-        placeholder="Describe what should replace the selected area"
+        placeholder="Describe the changes for the selected area"
         class="w-full resize-y rounded-md border border-transparent bg-overlay-subtle
                px-3 py-2 text-sm text-content outline-none placeholder:text-content-muted
                focus:border-accent focus-visible:ring-2 ring-accent/40"

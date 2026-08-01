@@ -1831,8 +1831,9 @@ async def save_edited_image(
 
     ``autosave`` commits are made on leaving the editor so the Asset always
     shows its current edit state. Consecutive commits from the same base
-    coalesce — the previous autosave head is swallowed — and an autosave never
-    branches: if something else advanced the Asset past the stack's lineage,
+    coalesce by replacing the mutable autosave head, while Save promotes that
+    same Revision in place. An autosave never branches: if something else
+    advanced the Asset past the stack's lineage,
     it declines with 409 rather than silently taking the head.
 
     This endpoint:
@@ -1939,10 +1940,10 @@ async def save_edited_image(
                 raise HTTPException(status_code=400, detail="Invalid base Revision")
             parent_revision = requested_parent
 
-        swallowed_autosave = None
+        mutable_autosave = None
         if not save_as_new:
             head = source_revision
-            # Saves from a stack are siblings off the stack's base, so an
+            # Saves from a stack are authored from the stack's base, so an
             # editor-made head that shares this commit's parent (or IS the
             # parent) is this document's own lineage. Anything else got there
             # some other way.
@@ -1961,20 +1962,8 @@ async def save_edited_image(
                     status_code=409,
                     detail="The Asset has newer changes",
                 )
-            if (
-                head.autosave
-                and head.id != parent_revision.id
-                and head.parent_revision_id == parent_revision.id
-            ):
-                # Another working document rooted at this head keeps it alive.
-                based_on_head = await session.scalar(
-                    select(WorkingDocument.id).where(
-                        WorkingDocument.base_revision_id == head.id,
-                        WorkingDocument.deleted_at.is_(None),
-                    )
-                )
-                if based_on_head is None:
-                    swallowed_autosave = head
+            if head.autosave and same_lineage:
+                mutable_autosave = head
 
         await record_lineage(
             session=session,
@@ -2011,7 +2000,7 @@ async def save_edited_image(
             create_asset_from_media,
             create_asset_snapshot,
             create_working_document,
-            retire_autosave_revision,
+            update_autosave_revision,
         )
         if save_as_new:
             target_asset = await create_asset_from_media(
@@ -2025,18 +2014,26 @@ async def save_edited_image(
                 AssetRevision, target_asset.current_revision_id
             )
         else:
-            committed_revision = await commit_revision(
-                session,
-                asset_id=source_asset.id,
-                media_id=db_media_item.id,
-                parent_revision_id=parent_revision.id,
-                note="Edit autosave" if autosave else "Image editor save",
-                idempotency_key=f"editor-output:{db_media_item.id}:revision",
-                autosave=autosave,
-            )
+            if mutable_autosave is not None:
+                committed_revision = await update_autosave_revision(
+                    session,
+                    revision=mutable_autosave,
+                    media_id=db_media_item.id,
+                    note="Edit autosave" if autosave else "Image editor save",
+                    idempotency_key=f"editor-output:{db_media_item.id}:revision",
+                    autosave=autosave,
+                )
+            else:
+                committed_revision = await commit_revision(
+                    session,
+                    asset_id=source_asset.id,
+                    media_id=db_media_item.id,
+                    parent_revision_id=parent_revision.id,
+                    note="Edit autosave" if autosave else "Image editor save",
+                    idempotency_key=f"editor-output:{db_media_item.id}:revision",
+                    autosave=autosave,
+                )
             target_asset = source_asset
-            if swallowed_autosave is not None:
-                await retire_autosave_revision(session, swallowed_autosave)
 
         if not save_as_new:
             # The stack keeps its own document AND its base.

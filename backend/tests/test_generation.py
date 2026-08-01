@@ -5,6 +5,7 @@ Tests the full stack: API endpoints -> generation queue -> provider execution ->
 """
 
 import asyncio
+import io
 import json
 import pytest
 from pathlib import Path
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
+from fastapi import UploadFile
 from sqlalchemy import select
 
 from database import Asset, AssetRevision, GenerationJob, MediaItem, MediaOwner
@@ -22,6 +24,32 @@ from tests.helpers import (
     process_job,
 )
 from routes import generation as generation_routes
+
+
+class TestReferenceUploadDisposition:
+    async def test_editor_reference_can_skip_asset_materialization(self):
+        media = SimpleNamespace(
+            id=17,
+            file_hash="hash",
+            width=320,
+            height=200,
+        )
+        upload = AsyncMock(return_value=(media, "/managed/composite.png"))
+        service = SimpleNamespace(upload_file=upload)
+        file = UploadFile(filename="composite.png", file=io.BytesIO(b"png"))
+
+        with patch("upload_service.get_upload_service", return_value=service):
+            result = await generation_routes.upload_reference_image(
+                file=file,
+                materialize_asset=False,
+            )
+
+        upload.assert_awaited_once_with(
+            b"png",
+            "composite.png",
+            materialize_asset=False,
+        )
+        assert result["media_id"] == 17
 
 
 # =============================================================================

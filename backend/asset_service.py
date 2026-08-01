@@ -301,6 +301,65 @@ async def retire_autosave_revision(
     await session.flush()
 
 
+async def update_autosave_revision(
+    session: AsyncSession,
+    *,
+    revision: AssetRevision,
+    media_id: int,
+    autosave: bool,
+    note: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> AssetRevision:
+    """Replace or promote the mutable autosave at an Asset's head.
+
+    An autosave is optimistic working state, not a historical version. Later
+    autosaves replace its payload in place; explicit Save promotes that same
+    row by clearing ``autosave``. This keeps one provisional version number
+    throughout an editing session.
+    """
+    if revision.deleted_at is not None or not revision.autosave:
+        raise AssetServiceError("Revision is not an active autosave")
+    asset = await session.get(Asset, revision.asset_id)
+    if asset is None or asset.current_revision_id != revision.id:
+        raise AssetServiceError("Autosave is not the Asset head")
+    await _live_media(session, media_id)
+
+    existing = await session.scalar(
+        select(AssetRevision).where(AssetRevision.primary_media_id == media_id)
+    )
+    if existing is not None and existing.id != revision.id:
+        raise AssetServiceError("Media is already the primary payload of another Revision")
+
+    now = datetime.utcnow()
+    owners = list(await session.scalars(
+        select(MediaOwner).where(
+            MediaOwner.root_kind == "asset_revision",
+            MediaOwner.root_id == str(revision.id),
+            MediaOwner.role == "primary",
+            MediaOwner.deleted_at.is_(None),
+        )
+    ))
+    for owner in owners:
+        owner.deleted_at = now
+
+    revision.primary_media_id = media_id
+    revision.autosave = autosave
+    revision.note = note
+    revision.created_at = now
+    asset.updated_at = now
+    await session.flush()
+    await acquire_media_owner(
+        session,
+        media_id=media_id,
+        root_kind="asset_revision",
+        root_id=revision.id,
+        role="primary",
+        idempotency_key=idempotency_key,
+    )
+    await session.flush()
+    return revision
+
+
 async def commit_artifact_revision(
     session: AsyncSession,
     *,

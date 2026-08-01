@@ -162,6 +162,10 @@ import {
 } from '../imageEditor/stack/modelToolRouting'
 import { isRunnableTool } from '../utils/toolHandoff'
 import { useLoraPool } from '../composables/useLoraPool'
+import {
+  clearEditorLivePreview,
+  publishEditorLivePreview,
+} from '../imageEditor/liveEditorPreview'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
 
@@ -200,8 +204,8 @@ const cutoutToolId = ref<string | null>(null)
 const expandToolId = ref<string | null>(null)
 /**
  * Expand's four edge percents. Zero all around, matching the contract's own
- * default: an expansion is a deliberate ask, and the card says why Run is
- * waiting ("Grow at least one edge to expand.").
+ * default: an expansion is a deliberate ask, and Run stays disabled until an
+ * edge changes.
  */
 const expandEdges = ref<ExpandEdges>({ top: 0, bottom: 0, left: 0, right: 0 })
 /** Session-owned defaults and edits, keyed by provider-scoped tool id. */
@@ -950,6 +954,7 @@ async function restoreCachedHead(): Promise<boolean> {
     restored.getContext('2d')!.drawImage(image, 0, 0)
     compositor.prime(hash, restored, doc.edits.map(op => op.id))
     composite.value = restored
+    publishEditorLivePreview(props.assetId, restored)
     return true
   } catch {
     return false
@@ -1121,6 +1126,7 @@ async function renderSnapshot(requestRevision: number) {
     const rendered = await compositor.render(doc)
     if (requestRevision !== renderRequestRevision) return
     composite.value = rendered
+    if (whole) publishEditorLivePreview(props.assetId, rendered)
     if (whole && bufferedStepPreviews) {
       stepPreviews.value = { ...stepPreviews.value, ...bufferedStepPreviews }
     }
@@ -1759,6 +1765,10 @@ function selectFamily(id: FamilyId) {
   // sub-bar say when it is scoping them.
   disarmSelect()
   toolPickerOpen.value = false
+  // Looks is a transient chooser, never the Adjust family's landing page.
+  // Closing it on every family transition means returning to Adjust cannot
+  // surface presets unless the user explicitly opens them in that visit.
+  looksOpen.value = false
   // Clicking the active family leaves it — entering and leaving are the same
   // gesture, and leaving with nothing drawn leaves nothing to undo.
   if (family.value === id) { leaveMode(); return }
@@ -4825,6 +4835,29 @@ watch(
 const annotateGesture = ref(0)
 const annotateGestureKey = computed(() => `annotate:${annotateGesture.value}`)
 
+let annotationPreviewTimer: ReturnType<typeof setTimeout> | null = null
+let annotationPreviewRevision = 0
+
+/** The stage omits live vector overlays, so thumbnail them from the real doc. */
+function scheduleAnnotationLivePreview() {
+  const revision = ++annotationPreviewRevision
+  if (annotationPreviewTimer) clearTimeout(annotationPreviewTimer)
+  annotationPreviewTimer = setTimeout(async () => {
+    annotationPreviewTimer = null
+    const doc = stack.doc.value
+    if (!doc) return
+    try {
+      const rendered = await compositor.render(JSON.parse(JSON.stringify(doc)))
+      if (revision === annotationPreviewRevision) {
+        publishEditorLivePreview(props.assetId, rendered)
+      }
+    } catch {
+      // The normal render/save path remains authoritative; a live thumbnail is
+      // an optimistic convenience and retries on the next edit.
+    }
+  }, 50)
+}
+
 /**
  * Reconcile the canvas's shape list against one step per shape.
  *
@@ -4902,6 +4935,7 @@ function onAnnotationsChange(shapes: Shape[]) {
   ]
 
   stack.replaceEdits(nextEdits, annotateGestureKey.value)
+  scheduleAnnotationLivePreview()
   if (newestOpId) selectedOpId.value = newestOpId
   // The live vector overlay already owns these pixels. Rebuilding the stage
   // here would only replay the stack, resample the palette and repaint the
@@ -4921,6 +4955,9 @@ function onAnnotationsChange(shapes: Shape[]) {
  */
 function focusRow(opId: string | null) {
   if (!opId) return
+  // Keyboard navigation in Edits is just as intentional as clicking a row:
+  // the selected step's controls, not the Looks browser, own the surface.
+  looksOpen.value = false
   selectedOpId.value = opId
   void nextTick(() => {
     const element = sidebarEl.value?.querySelector<HTMLElement>(`[data-op-id="${opId}"]`)
@@ -4964,6 +5001,7 @@ async function onStackKeydown(event: KeyboardEvent) {
  */
 function onRowSelect(op: any) {
   if (maskedAdjustOpId && maskedAdjustOpId !== op.id) disarmMaskedAdjustmentEditing()
+  looksOpen.value = false
   selectedOpId.value = op.id
   // A parent-row click selects the parent, not whichever child happened to be
   // selected before it. Child clicks stop propagation and take their own path.
@@ -6107,6 +6145,7 @@ watch(viewport, element => {
 onBeforeUnmount(() => {
   if (savedNoteTimer) clearTimeout(savedNoteTimer)
   if (headCacheTimer) clearTimeout(headCacheTimer)
+  if (annotationPreviewTimer) clearTimeout(annotationPreviewTimer)
   abandonScheduledRender()
   if (paintPrefsTimer) persistPaintSettings()
   if (retouchPreviewFrame !== null) cancelAnimationFrame(retouchPreviewFrame)
@@ -6118,6 +6157,7 @@ onBeforeUnmount(() => {
   removeViewportPanListeners()
   window.removeEventListener('tools-changed', refreshToolCatalog)
   setEditorDirty(props.assetId, false)
+  clearEditorLivePreview(props.assetId)
   resizeObserver?.disconnect()
   candidates.stop()
   void autosaveEdits()

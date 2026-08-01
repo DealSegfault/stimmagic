@@ -105,9 +105,14 @@ async def _browser_projections(session: AsyncSession, rows) -> list[dict]:
             (
                 await session.execute(
                     select(AssetRevision.asset_id, func.count(AssetRevision.id))
+                    .join(Asset, Asset.id == AssetRevision.asset_id)
                     .where(
                         AssetRevision.asset_id.in_(asset_ids),
                         AssetRevision.deleted_at.is_(None),
+                        or_(
+                            AssetRevision.autosave.is_(False),
+                            AssetRevision.id == Asset.current_revision_id,
+                        ),
                     )
                     .group_by(AssetRevision.asset_id)
                 )
@@ -1899,7 +1904,14 @@ async def list_asset_revisions(
         await session.execute(
             select(AssetRevision, MediaItem)
             .join(MediaItem, MediaItem.id == AssetRevision.primary_media_id)
-            .where(AssetRevision.asset_id == asset_id, AssetRevision.deleted_at.is_(None))
+            .where(
+                AssetRevision.asset_id == asset_id,
+                AssetRevision.deleted_at.is_(None),
+                or_(
+                    AssetRevision.autosave.is_(False),
+                    AssetRevision.id == asset.current_revision_id,
+                ),
+            )
             .order_by(AssetRevision.revision_number.desc())
         )
     ).all()

@@ -13,7 +13,6 @@ import {
   ClockIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline'
-import Button from '../../components/ui/Button.vue'
 import ScrubValue from '../../components/ui/ScrubValue.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
@@ -25,8 +24,8 @@ import PaintFillGroup from './PaintFillGroup.vue'
 import ReferenceImageStrip from './ReferenceImageStrip.vue'
 import ToolAdvancedParams, { filterScalarGroups } from './ToolAdvancedParams.vue'
 import ExpandEdgesControl from './ExpandEdgesControl.vue'
+import GenerationRunButton from './GenerationRunButton.vue'
 import { useToolSchemaFeatures } from '../../composables/useToolSchemaFeatures'
-import { DEFAULT_MASK_EXPAND_PERCENT } from '../stack/maskMorphology'
 import { OUTPAINT_EXPAND_FIELDS } from '../../utils/taskTypeValidation'
 import { toolSupportsLoras } from '../../utils/loraSchema'
 
@@ -392,14 +391,15 @@ function chipClass(active: boolean, pending = false) {
            Advanced. -->
       <div
         v-if="sub"
-        class="w-full flex items-center gap-2.5"
+        class="flex w-full flex-wrap items-center gap-x-2.5 gap-y-2"
+        :class="(sub === 'remove' || sub === 'cutout') && 'py-0.5'"
       >
         <!-- Subject: Repaint's prompt — the one input that IS an input.
              References ride inside it as attachment chips, like a chat
              composer, instead of claiming a second full-width row. -->
         <div
           v-if="sub === 'repaint'"
-          class="flex-1 min-w-0 flex items-center gap-2 px-2.5 rounded-md bg-overlay-subtle
+          class="flex min-w-64 flex-1 basis-80 items-center gap-2 rounded-md bg-overlay-subtle px-2.5
                  border border-transparent focus-within:border-accent"
         >
           <textarea
@@ -407,7 +407,7 @@ function chipClass(active: boolean, pending = false) {
             rows="1"
             class="flex-1 min-w-0 py-1.5 text-sm bg-transparent text-content resize-none
                    overflow-y-auto placeholder:text-content-muted focus-visible:outline-none"
-            placeholder="Describe what should replace the selected area"
+            placeholder="Describe the changes for the selected area"
             :value="state.prompt"
             @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
             @keydown.enter.meta="emit('run')"
@@ -480,7 +480,7 @@ function chipClass(active: boolean, pending = false) {
         <!-- Subject: Expand's four edges, inline — they ARE the tool's input. -->
         <ExpandEdgesControl
           v-else-if="sub === 'expand'"
-          class="flex-1 min-w-0"
+          class="min-w-0 flex-1 basis-[29rem]"
           :edges="state.expandEdges"
           :frame-width="state.frameWidth"
           :frame-height="state.frameHeight"
@@ -489,91 +489,59 @@ function chipClass(active: boolean, pending = false) {
         />
 
         <!-- Subject: no prompt, no fake input — the hint is just a sentence. -->
-        <p v-else class="flex-1 min-w-0 truncate text-sm text-content-muted">
+        <p v-else class="min-w-48 flex-1 basis-64 truncate text-sm text-content-muted">
           {{ sub === 'cutout'
             ? 'Makes the background transparent.'
             : 'Select the area to remove, then Run.' }}
         </p>
 
-        <!-- The invariant cluster. -->
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
-                 whitespace-nowrap text-content-secondary
-                 hover:text-content hover:bg-overlay-subtle"
-          @click="emit('openToolPicker', $event)"
-        >
-          {{ toolLabel || 'No tool' }}
-          <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
+        <div class="ml-auto flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            class="inline-flex max-w-56 items-center gap-1.5 truncate rounded-md px-2 py-1.5
+                   text-xs text-content-secondary hover:bg-overlay-subtle hover:text-content"
+            @click="emit('openToolPicker', $event)"
+          >
+            <span class="truncate">{{ toolLabel || 'No tool' }}</span>
+            <svg viewBox="0 0 24 24" class="h-3 w-3 shrink-0" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
 
-        <ToolbarPopover
-          v-if="state.activeTool && hasAdvancedParams"
-          label=""
-          :width="360"
-          :chevron="false"
-          aria-label="Advanced settings"
-        >
-          <template #trigger>
-            <AdjustmentsHorizontalIcon class="w-4 h-4" />
-          </template>
-          <ToolAdvancedParams
-            :tool="state.activeTool"
-            :values="state.toolParams || {}"
-            :exclude="sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined"
-            :lora-tool-id="state.loraToolId"
-            :is-refreshing-loras="state.isRefreshingLoras"
-            :is-uploading-lora="state.isUploadingLora"
-            :lora-upload-progress="state.loraUploadProgress"
-            :lora-upload-file-name="state.loraUploadFileName"
-            @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
-            @refresh-loras="emit('refreshLoras', $event)"
-            @upload-loras="(toolId, loraToolId, files) => emit('uploadLoras', toolId, loraToolId, files)"
-          />
-        </ToolbarPopover>
+          <ToolbarPopover
+            v-if="state.activeTool && hasAdvancedParams"
+            label=""
+            :width="360"
+            :chevron="false"
+            aria-label="Advanced settings"
+          >
+            <template #trigger>
+              <AdjustmentsHorizontalIcon class="h-4 w-4" />
+            </template>
+            <ToolAdvancedParams
+              :tool="state.activeTool"
+              :values="state.toolParams || {}"
+              :exclude="sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined"
+              :lora-tool-id="state.loraToolId"
+              :is-refreshing-loras="state.isRefreshingLoras"
+              :is-uploading-lora="state.isUploadingLora"
+              :lora-upload-progress="state.loraUploadProgress"
+              :lora-upload-file-name="state.loraUploadFileName"
+              @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
+              @refresh-loras="emit('refreshLoras', $event)"
+              @upload-loras="(toolId, loraToolId, files) => emit('uploadLoras', toolId, loraToolId, files)"
+            />
+          </ToolbarPopover>
 
-        <span v-if="sub !== 'cutout'" class="w-px h-5 bg-edge-subtle" />
-
-        <!-- The hot params, as scrub values — mono, drag to adjust, accent
-             when off-default. A cutout is whole-image and deterministic: no
-             mask to grow, no variations to pick between. Expand has no
-             selection mask at all — its region is the border the percents
-             define. -->
-        <label
-          v-if="sub !== 'cutout' && sub !== 'expand'"
-          class="flex items-center gap-1.5 text-xs text-content-tertiary whitespace-nowrap"
-          title="Grow the mask past the selection edge before the model runs — a mask that hugs the object leaves its outline behind. Negative shrinks."
-        >
-          Expand mask
-          <ScrubValue
-            :model-value="state.maskExpandPercent"
-            :min="-50"
-            :max="50"
-            :step="1"
-            :non-default="state.maskExpandPercent !== DEFAULT_MASK_EXPAND_PERCENT"
-            :format="v => `${v}%`"
-            @update:model-value="emit('set', { maskExpandPercent: $event })"
+          <GenerationRunButton
+            :count="state.candidateCount"
+            :variations="sub !== 'cutout'"
+            :disabled="!canRun"
+            :loading="busy"
+            @run="emit('run')"
+            @update:count="emit('set', { candidateCount: $event })"
           />
-        </label>
-        <label
-          v-if="sub !== 'cutout'"
-          class="flex items-center gap-1.5 text-xs text-content-tertiary whitespace-nowrap"
-        >
-          Variations
-          <ScrubValue
-            :model-value="state.candidateCount"
-            :min="1"
-            :max="8"
-            :step="1"
-            :non-default="state.candidateCount !== 4"
-            @update:model-value="emit('set', { candidateCount: $event })"
-          />
-        </label>
-        <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
-          Run
-        </Button>
+        </div>
       </div>
 
     </template>
