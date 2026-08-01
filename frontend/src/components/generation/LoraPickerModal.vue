@@ -1,6 +1,7 @@
 <template>
   <Modal
     :show="true"
+    submenu
     size="custom"
     custom-class="w-[760px] max-w-[95vw] max-h-[70vh] flex flex-col"
     @close="$emit('close')"

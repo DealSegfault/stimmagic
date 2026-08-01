@@ -15,6 +15,7 @@
 import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
 import { getCurrentProfileId } from '../../composables/useProfile'
+import { getApiBase } from '../../apiConfig'
 import { newOpId } from './opId'
 import type {
   JournalEntry,
@@ -30,6 +31,7 @@ import {
   normalizeJournalTerminology,
 } from './documentTerminology'
 import { hasUncommittedChanges } from './commitState'
+import { stackPayloadUrl } from './stackPayloadUrl'
 
 // Re-exported so callers keep one import for the document surface.
 export { newOpId }
@@ -739,10 +741,13 @@ export function useStackDocument() {
    * the same fallback the media file routes use.
    */
   function payloadUrl(ref: string, revision?: number | string): string {
-    const [subdir, name] = ref.split('/')
-    return `${API_BASE}/image-stack/${documentId.value}/payloads/${name}`
-      + `?subdir=${subdir}&profile=${getCurrentProfileId()}`
-      + (revision === undefined ? '' : `&revision=${revision}`)
+    return stackPayloadUrl(
+      getApiBase(),
+      documentId.value!,
+      ref,
+      getCurrentProfileId(),
+      revision,
+    )
   }
 
   async function uploadPayload(name: string, blob: Blob, subdir = 'payloads'): Promise<string> {

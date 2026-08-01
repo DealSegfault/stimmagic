@@ -6,10 +6,12 @@
  * are shown directly: Properties is already the disclosure boundary, so a
  * second Advanced disclosure only makes the controls harder to reach.
  */
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import Button from '../../components/ui/Button.vue'
 import ReferenceImageStrip from './ReferenceImageStrip.vue'
 import ToolAdvancedParams from './ToolAdvancedParams.vue'
+import { useLoraPool } from '../../composables/useLoraPool'
+import type { LoraPoolItem } from '../../composables/useLoraPool'
 import type { GenerativeOp, ModelReferenceImage, OpBlend } from '../stack/types'
 import {
   modelReferenceLimits,
@@ -26,6 +28,10 @@ const props = defineProps<{
   op: GenerativeOp
   tool: any | null
   running?: boolean
+  isRefreshingLoras?: boolean
+  isUploadingLora?: boolean
+  loraUploadProgress?: number | null
+  loraUploadFileName?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -34,6 +40,8 @@ const emit = defineEmits<{
   blend: [Partial<OpBlend>]
   blendCommit: []
   run: []
+  refreshLoras: [string]
+  uploadLoras: [string, string, File[]]
 }>()
 
 const isRepaint = computed(() =>
@@ -56,6 +64,38 @@ const referencesValid = computed(() => {
   const count = props.op.reference_images?.length ?? 0
   return count >= referenceLimits.value.min && count <= referenceLimits.value.max
 })
+
+// Each edit owns its enabled/weight selection, while the picker still shares
+// the normal tool's pool membership, groups, and display names.
+const loraPool = useLoraPool()
+const loraToolId = computed(() => props.tool?.full_tool_id
+  ? `${props.tool.full_tool_id}__i_image-stack-op-${props.op.id}`
+  : null)
+
+function opLoraItems(): LoraPoolItem[] {
+  const value = props.op.params?.loras
+  return Array.isArray(value)
+    ? value.map((item: any) => ({
+        lora: String(item?.lora || item?.path || ''),
+        weight: Number(item?.weight ?? 1),
+        enabled: true,
+      })).filter(item => item.lora)
+    : []
+}
+
+watch(loraToolId, id => {
+  if (id) loraPool.syncItemsToPool(id, opLoraItems())
+}, { immediate: true })
+
+watch(
+  () => loraPool.getEnabledLoras(loraToolId.value),
+  selected => {
+    if (JSON.stringify(selected) !== JSON.stringify(props.op.params?.loras ?? [])) {
+      emit('params', { loras: selected })
+    }
+  },
+  { deep: true, immediate: true },
+)
 
 </script>
 
@@ -114,7 +154,14 @@ const referencesValid = computed(() => {
       v-if="tool"
       :tool="tool"
       :values="toolParams"
+      :lora-tool-id="loraToolId"
+      :is-refreshing-loras="isRefreshingLoras"
+      :is-uploading-lora="isUploadingLora"
+      :lora-upload-progress="loraUploadProgress"
+      :lora-upload-file-name="loraUploadFileName"
       @update="(name, value) => emit('params', { [name]: value })"
+      @refresh-loras="emit('refreshLoras', $event)"
+      @upload-loras="(toolId, scopedId, files) => emit('uploadLoras', toolId, scopedId, files)"
     />
 
     <section class="space-y-3">

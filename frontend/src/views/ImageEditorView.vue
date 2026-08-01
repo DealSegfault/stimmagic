@@ -161,11 +161,18 @@ import {
   removeRouteForTool,
 } from '../imageEditor/stack/modelToolRouting'
 import { isRunnableTool } from '../utils/toolHandoff'
+import { useLoraPool } from '../composables/useLoraPool'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
 
 const stack = useStackDocument()
-const { listAllTools } = useProvidersApi()
+const {
+  listAllTools,
+  getProviderTool,
+  refreshProviderTools,
+  uploadToTool,
+} = useProvidersApi()
+const loraPool = useLoraPool()
 // <img> cannot send the X-Profile-ID header the profile middleware requires,
 // which is why media URLs carry their database in the path.
 const { getMediaFileUrl } = useMediaApi()
@@ -266,6 +273,13 @@ const activeToolLabel = computed(() => activeTool.value?.name ?? null)
 const activeToolParamValues = computed(() =>
   activeToolId.value ? modelToolParams.value[activeToolId.value] ?? {} : {}
 )
+const activeLoraToolId = computed(() => activeToolId.value
+  ? `${activeToolId.value}__i_image-stack-${stack.documentId.value ?? 'new'}`
+  : null)
+const isRefreshingLoras = ref(false)
+const isUploadingLora = ref(false)
+const loraUploadProgress = ref<number | null>(null)
+const loraUploadFileName = ref<string | null>(null)
 const activeReferenceLimits = computed(() =>
   family.value === 'generate'
   && (sub.value === 'remove' || sub.value === 'cutout' || sub.value === 'expand')
@@ -307,6 +321,75 @@ function chooseTool(tool: any) {
     writeToolPrefs({ expandToolId: tool.full_tool_id })
   }
   toolPickerOpen.value = false
+}
+
+async function refreshEditorLoras(fullToolId: string) {
+  if (!fullToolId) return
+  isRefreshingLoras.value = true
+  try {
+    await refreshProviderTools(fullToolId.split(':')[0] || undefined)
+    const refreshed = await getProviderTool(fullToolId)
+    tools.value = tools.value.map(tool =>
+      tool.full_tool_id === fullToolId ? { ...tool, ...refreshed } : tool
+    )
+  } catch (err: any) {
+    error.value = apiErrorMessage(err, 'Could not refresh LoRAs.')
+  } finally {
+    isRefreshingLoras.value = false
+  }
+}
+
+async function uploadEditorLoras(
+  fullToolId: string,
+  scopedLoraToolId: string,
+  files: File[],
+) {
+  if (!files.length) return
+  isUploadingLora.value = true
+  isRefreshingLoras.value = true
+  const failures: string[] = []
+  let added = 0
+  try {
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index]
+      loraUploadFileName.value = files.length > 1
+        ? `${file.name} (${index + 1}/${files.length})`
+        : file.name
+      loraUploadProgress.value = 0
+      try {
+        const result = await uploadToTool(
+          fullToolId,
+          'loras',
+          file,
+          percent => { loraUploadProgress.value = percent },
+        )
+        const path = (result as any).lora_id ?? result.installed_path
+        if (!result.success || !path) {
+          failures.push(`${file.name}: ${result.error || 'upload failed'}`)
+          continue
+        }
+        const displayName = (result as any).lora_id
+          ? file.name
+          : String(path).split('/').pop()?.replace(/\.[^.]+$/i, '').replace(/_/g, ' ') || String(path)
+        loraPool.addToPool(
+          scopedLoraToolId,
+          { path, name: displayName },
+          1,
+          added === 0,
+        )
+        added++
+      } catch (err: any) {
+        failures.push(`${file.name}: ${apiErrorMessage(err, 'Upload failed.')}`)
+      }
+    }
+    await refreshEditorLoras(fullToolId)
+    if (failures.length) error.value = failures.join('; ')
+  } finally {
+    isUploadingLora.value = false
+    isRefreshingLoras.value = false
+    loraUploadProgress.value = null
+    loraUploadFileName.value = null
+  }
 }
 
 // -- selection --------------------------------------------------------------
@@ -1770,6 +1853,11 @@ const subbarState = computed(() => ({
   retouchSaturate: retouchSaturate.value,
   activeTool: activeTool.value,
   toolParams: activeToolParamValues.value,
+  loraToolId: activeLoraToolId.value,
+  isRefreshingLoras: isRefreshingLoras.value,
+  isUploadingLora: isUploadingLora.value,
+  loraUploadProgress: loraUploadProgress.value,
+  loraUploadFileName: loraUploadFileName.value,
   expandEdges: expandEdges.value,
   frameWidth: composite.value?.width ?? 0,
   frameHeight: composite.value?.height ?? 0,
@@ -1951,7 +2039,12 @@ async function run() {
     const toolId = activeToolId.value!
     const tool = activeTool.value
     if (!tool) throw new Error('That tool is no longer in the catalog.')
-    const toolParams = sanitizeModelToolParams(tool, activeToolParamValues.value)
+    const toolParams = sanitizeModelToolParams(tool, {
+      ...activeToolParamValues.value,
+      ...(tool.parameter_schema?.properties?.loras && activeLoraToolId.value
+        ? { loras: loraPool.getEnabledLoras(activeLoraToolId.value) }
+        : {}),
+    })
     const removeRoute = action === 'remove' ? removeRouteForTool(tool) : null
     if (action === 'remove' && !removeRoute) {
       throw new Error('That tool cannot remove or inpaint an image.')
@@ -6266,6 +6359,8 @@ watch(
           @commit="onSubbarCommit"
           @run="run"
           @open-tool-picker="onOpenToolPicker"
+          @refresh-loras="refreshEditorLoras"
+          @upload-loras="uploadEditorLoras"
         />
 
         <!-- Under the sub-bar and left-aligned to the button that opened it. -->
@@ -6731,11 +6826,17 @@ watch(
               :op="selectedModelOp"
               :tool="selectedModelTool"
               :running="runningOpIds.has(selectedModelOp.id)"
+              :is-refreshing-loras="isRefreshingLoras"
+              :is-uploading-lora="isUploadingLora"
+              :lora-upload-progress="loraUploadProgress"
+              :lora-upload-file-name="loraUploadFileName"
               @params="setSelectedModelParams"
               @references="setSelectedModelReferences"
               @blend="setSelectedModelBlend"
               @blend-commit="commitSelectedModelBlend"
               @run="resample(selectedModelOp.id)"
+              @refresh-loras="refreshEditorLoras"
+              @upload-loras="uploadEditorLoras"
             />
           </div>
         </div>

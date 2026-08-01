@@ -1,5 +1,5 @@
 <template>
-  <div class="my-6">
+  <div :class="compact ? 'my-1' : 'my-6'">
     <!-- Header: label + count + compact icon strip (＋ · ⌕ · disable-all · RAW · ⋯) -->
     <div class="flex items-center gap-2 pb-1 mb-1.5">
       <span class="text-xs font-semibold text-content-secondary">LoRAs</span>
@@ -86,7 +86,7 @@
     <div class="relative transition-colors select-none">
       <div ref="outerContainerRef" class="flex flex-col gap-2">
         <!-- Groups -->
-        <LoraGroupBox :chip-min-width="showRaw ? 400 : 300"
+        <LoraGroupBox :chip-min-width="compact ? (showRaw ? 300 : 220) : (showRaw ? 400 : 300)"
           v-for="(group, groupIndex) in displayGroups"
           :key="group.id"
           :group="group"
@@ -115,7 +115,7 @@
         </LoraGroupBox>
 
         <!-- "Other" group (ungrouped items) — visible when has items, or as drop target during chip drag -->
-        <LoraGroupBox :chip-min-width="showRaw ? 400 : 300"
+        <LoraGroupBox :chip-min-width="compact ? (showRaw ? 300 : 220) : (showRaw ? 400 : 300)"
           v-if="ungroupedPreview.length > 0 || (drag.type === 'chip' && drag.active && pool.groups.length > 0)"
           :group="otherGroup"
           :group-index="displayGroups.length"
@@ -226,6 +226,8 @@ interface Props {
   uploadProgress?: number | null
   uploadFileName?: string | null
   uploadConfig?: UploadConfig | null
+  /** Tighter spacing and row wrapping for editor property popovers. */
+  compact?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -235,6 +237,7 @@ const props = withDefaults(defineProps<Props>(), {
   uploadFileName: null,
   uploadConfig: null,
   modelName: null,
+  compact: false,
 })
 
 const emit = defineEmits<{

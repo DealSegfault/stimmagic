@@ -52,6 +52,20 @@ test('parameter sanitization cannot override host-managed or undeclared fields',
   )
 })
 
+test('LoRA selections remain ordinary declared STP parameters', () => {
+  const loraTool = {
+    parameter_schema: {
+      properties: {
+        input_images: { type: 'array' },
+        mask: { type: 'string' },
+        loras: { type: 'array', default: [] },
+      },
+    },
+  }
+  const loras = [{ lora: 'styles/ink.safetensors', weight: 0.8 }]
+  assert.deepEqual(sanitizeModelToolParams(loraTool, { loras }), { loras })
+})
+
 test('reference limits reserve the first input image for the edited target', () => {
   assert.deepEqual(modelReferenceLimits({
     parameter_schema: {

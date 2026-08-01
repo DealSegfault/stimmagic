@@ -115,10 +115,16 @@ function onDocumentPointerDown(event: PointerEvent) {
   if (!open.value) return
   const target = event.target as Node
   if (root.value?.contains(target) || panel.value?.contains(target)) return
+  // A picker launched from this panel may promote itself to a real modal
+  // (the LoRA catalog does). That modal is still owned by the popover even
+  // though both are teleported to body; closing the popover here would unmount
+  // the modal on its first click.
+  if ((target as Element).closest?.('[data-modal-layer]')) return
   open.value = false
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (document.querySelector('[data-modal-layer]')) return
   if (event.key === 'Escape') open.value = false
 }
 

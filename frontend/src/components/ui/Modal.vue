@@ -16,12 +16,15 @@ const props = withDefaults(defineProps<{
   closeOnEsc?: boolean
   /** Nested-confirm case (a confirm launched from within another modal): z-confirm instead of z-modal. */
   nested?: boolean
+  /** Picker launched from a menu/popover: one sanctioned tier above z-menu. */
+  submenu?: boolean
 }>(), {
   size: 'md',
   customClass: '',
   closeOnBackdrop: true,
   closeOnEsc: true,
   nested: false,
+  submenu: false,
 })
 
 const emit = defineEmits<{
@@ -38,7 +41,7 @@ const sizeClasses: Record<string, string> = {
 }
 
 const cardSizeClass = computed(() => props.size === 'custom' ? props.customClass : sizeClasses[props.size])
-const zClass = computed(() => props.nested ? 'z-confirm' : 'z-modal')
+const zClass = computed(() => props.submenu ? 'z-submenu' : props.nested ? 'z-confirm' : 'z-modal')
 
 // The backdrop covers the whole window, including the title-bar strip the
 // TopBar/sidebar mark as a Tauri drag region, so window dragging dies while a
@@ -84,6 +87,7 @@ onBeforeUnmount(() => {
     <Transition name="modal">
       <div
         v-if="show"
+        data-modal-layer
         class="fixed inset-0 flex items-center justify-center bg-overlay-backdrop backdrop-blur-sm"
         :class="zClass"
         @click.self="onBackdropClick"

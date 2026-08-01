@@ -28,6 +28,7 @@ import ExpandEdgesControl from './ExpandEdgesControl.vue'
 import { useToolSchemaFeatures } from '../../composables/useToolSchemaFeatures'
 import { DEFAULT_MASK_EXPAND_PERCENT } from '../stack/maskMorphology'
 import { OUTPAINT_EXPAND_FIELDS } from '../../utils/taskTypeValidation'
+import { toolSupportsLoras } from '../../utils/loraSchema'
 
 /** Mutable copy: the readonly tuple can't feed a `string[]` prop. */
 const OUTPAINT_EXPAND_FIELDS_LIST = [...OUTPAINT_EXPAND_FIELDS]
@@ -64,6 +65,8 @@ const emit = defineEmits<{
   commit: ['crop' | 'annotation']
   run: []
   openToolPicker: [MouseEvent]
+  refreshLoras: [string]
+  uploadLoras: [string, string, File[]]
 }>()
 
 const family = computed(() => familyById(props.family))
@@ -166,7 +169,7 @@ const { groupedGenericParams } = useToolSchemaFeatures({
 const hasAdvancedParams = computed(() => filterScalarGroups(
   groupedGenericParams.value,
   props.sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined,
-).length > 0)
+).length > 0 || toolSupportsLoras(activeToolRef.value))
 
 /**
  * The prompt is one quiet line that grows with its content (capped at ~4
@@ -520,7 +523,14 @@ function chipClass(active: boolean, pending = false) {
             :tool="state.activeTool"
             :values="state.toolParams || {}"
             :exclude="sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined"
+            :lora-tool-id="state.loraToolId"
+            :is-refreshing-loras="state.isRefreshingLoras"
+            :is-uploading-lora="state.isUploadingLora"
+            :lora-upload-progress="state.loraUploadProgress"
+            :lora-upload-file-name="state.loraUploadFileName"
             @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
+            @refresh-loras="emit('refreshLoras', $event)"
+            @upload-loras="(toolId, loraToolId, files) => emit('uploadLoras', toolId, loraToolId, files)"
           />
         </ToolbarPopover>
 
