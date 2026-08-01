@@ -22,7 +22,6 @@ issue.
 | [zlib](https://zlib.net/), [bzip2](https://sourceware.org/bzip2/), [xz/liblzma](https://tukaani.org/xz/) | Compression libraries in the bundled Python runtime | zlib / BSD-style / 0BSD |
 | [SQLite](https://sqlite.org/) | Database engine in the bundled Python runtime and app | Public domain |
 | [libedit](https://thrysoee.dk/editline/), [mpdecimal](https://www.bytereef.org/mpdecimal/), [Tcl/Tk](https://www.tcl.tk/) | Support libraries in the bundled Python runtime | BSD-style |
-| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and [ggml](https://github.com/ggerganov/ggml) | On-device speech recognition, statically linked via whisper-rs | MIT |
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | On-device speech recognition runtime | Apache-2.0 |
 | [ONNX Runtime](https://onnxruntime.ai/) | ML inference engine (Python package and via sherpa-onnx) | MIT |
 | [PDFium](https://pdfium.googlesource.com/pdfium/) via [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | PDF rendering; bundles FreeType, libjpeg-turbo, libpng, libtiff, OpenJPEG, ICU, LCMS, and other permissively licensed libraries — see pypdfium2's bundled `LICENSES` file | BSD-3-Clause / Apache-2.0 |
@@ -45,8 +44,7 @@ license:
 
 | Model | Author / source | Used for | License |
 |---|---|---|---|
-| [Whisper](https://github.com/openai/whisper) (ggml conversions via [whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)) | OpenAI | Voice input | MIT |
-| [Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) (int8 ONNX via [sherpa-onnx](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8)) | NVIDIA NeMo | Voice input | CC-BY-4.0 |
+| [Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) (int8 ONNX via [sherpa-onnx](https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8)) | NVIDIA NeMo | Voice input | CC-BY-4.0 |
 | [SAM 3](https://github.com/facebookresearch/sam3) (ONNX export via [wkentaro/sam3-onnx-models](https://huggingface.co/wkentaro/sam3-onnx-models)) | Meta AI | Segmentation / masking | SAM License (Meta; commercial use permitted, acceptable-use restrictions apply — full text distributed with the model) |
 | [AuraFace v1](https://huggingface.co/fal/AuraFace-v1) | fal.ai | Face detection and embedding | Apache-2.0 |
 | [Depth Anything V2](https://github.com/DepthAnything/Depth-Anything-V2) | HKU / TikTok | Depth estimation for guided generation | See upstream repository |
@@ -327,7 +325,7 @@ license:
 ## Rust crates
 
 <!-- BEGIN GENERATED: rust -->
-575 crates (535 compiled into shipped binaries; the rest are marked build-time only).
+567 crates (533 compiled into shipped binaries; the rest are marked build-time only).
 
 | Crate | Version(s) | License | Source | Notes |
 |---|---|---|---|---|
@@ -360,7 +358,7 @@ license:
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | https://github.com/smol-rs/atomic-waker |  |
 | autocfg | 1.5.0 | Apache-2.0 OR MIT | https://github.com/cuviper/autocfg | build-time only |
 | base64 | 0.21.7, 0.22.1 | MIT OR Apache-2.0 | https://github.com/marshallpierce/rust-base64 |  |
-| bindgen | 0.69.5, 0.72.1 | BSD-3-Clause | https://github.com/rust-lang/rust-bindgen | build-time only |
+| bindgen | 0.72.1 | BSD-3-Clause | https://github.com/rust-lang/rust-bindgen | build-time only |
 | bitflags | 1.3.2, 2.10.0 | MIT OR Apache-2.0 | https://github.com/bitflags/bitflags |  |
 | bitvec | 1.0.1 | MIT | https://github.com/bitvecto-rs/bitvec |  |
 | block | 0.1.6 | MIT | http://github.com/SSheldon/rust-block |  |
@@ -397,7 +395,6 @@ license:
 | chrono | 0.4.42 | MIT OR Apache-2.0 | https://github.com/chronotope/chrono |  |
 | clang-sys | 1.8.1 | Apache-2.0 | https://github.com/KyleMayes/clang-sys | build-time only |
 | clipboard-win | 5.4.1 | BSL-1.0 | https://github.com/DoumanAsh/clipboard-win |  |
-| cmake | 0.1.58 | MIT OR Apache-2.0 | https://github.com/rust-lang/cmake-rs | build-time only |
 | cocoa | 0.26.1 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |  |
 | cocoa-foundation | 0.2.1 | MIT OR Apache-2.0 | https://github.com/servo/core-foundation-rs |  |
 | combine | 4.6.7 | MIT | https://github.com/Marwes/combine |  |
@@ -472,7 +469,6 @@ license:
 | foreign-types-macros | 0.2.3 | MIT OR Apache-2.0 | https://github.com/sfackler/foreign-types |  |
 | foreign-types-shared | 0.3.1 | MIT OR Apache-2.0 | https://github.com/sfackler/foreign-types |  |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | https://github.com/servo/rust-url |  |
-| fs_extra | 1.3.0 | MIT | https://github.com/webdesus/fs_extra | build-time only |
 | funty | 2.0.0 | MIT | https://github.com/myrrlyn/funty |  |
 | futf | 0.1.5 | MIT  OR  Apache-2.0 | https://github.com/servo/futf |  |
 | futures-channel | 0.3.31 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |  |
@@ -510,7 +506,6 @@ license:
 | heck | 0.4.1, 0.5.0 | MIT OR Apache-2.0 | https://github.com/withoutboats/heck |  |
 | hermit-abi | 0.5.2 | MIT OR Apache-2.0 | https://github.com/hermit-os/hermit-rs |  |
 | hex | 0.4.3 | MIT OR Apache-2.0 | https://github.com/KokaKiwi/rust-hex |  |
-| home | 0.5.12 | MIT OR Apache-2.0 | https://github.com/rust-lang/cargo | build-time only |
 | html5ever | 0.29.1 | MIT OR Apache-2.0 | https://github.com/servo/html5ever |  |
 | http | 1.4.0 | MIT OR Apache-2.0 | https://github.com/hyperium/http |  |
 | http-body | 1.0.1 | MIT | https://github.com/hyperium/http-body |  |
@@ -539,7 +534,7 @@ license:
 | iri-string | 0.7.9 | MIT OR Apache-2.0 | https://github.com/lo48576/iri-string |  |
 | is-docker | 0.2.0 | MIT | https://github.com/TheLarkInn/is-docker |  |
 | is-wsl | 0.4.0 | MIT | https://github.com/TheLarkInn/is-wsl |  |
-| itertools | 0.12.1, 0.13.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools | build-time only |
+| itertools | 0.13.0 | MIT OR Apache-2.0 | https://github.com/rust-itertools/itertools | build-time only |
 | itoa | 1.0.16 | MIT OR Apache-2.0 | https://github.com/dtolnay/itoa |  |
 | javascriptcore-rs | 1.1.2 | MIT | https://github.com/tauri-apps/javascriptcore-rs |  |
 | javascriptcore-rs-sys | 1.1.1 | MIT | https://github.com/tauri-apps/javascriptcore-rs |  |
@@ -552,13 +547,12 @@ license:
 | keyboard-types | 0.7.0 | MIT OR Apache-2.0 | https://github.com/pyfisch/keyboard-types |  |
 | kuchikiki | 0.8.8-speedreader | MIT | https://github.com/brave/kuchikiki |  |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 | https://github.com/rust-lang-nursery/lazy-static.rs |  |
-| lazycell | 1.3.0 | MIT OR Apache-2.0 | https://github.com/indiv0/lazycell | build-time only |
 | libappindicator | 0.9.0 | Apache-2.0 OR MIT |  |  |
 | libappindicator-sys | 0.9.0 | Apache-2.0 OR MIT |  |  |
 | libc | 0.2.178 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |  |
 | libloading | 0.7.4, 0.8.9 | ISC | https://github.com/nagisa/rust_libloading/ |  |
 | libredox | 0.1.11 | MIT | https://gitlab.redox-os.org/redox-os/libredox |  |
-| linux-raw-sys | 0.11.0, 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/sunfishcode/linux-raw-sys |  |
+| linux-raw-sys | 0.11.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/sunfishcode/linux-raw-sys |  |
 | litemap | 0.8.1 | Unicode-3.0 | https://github.com/unicode-org/icu4x |  |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | https://github.com/Amanieu/parking_lot |  |
 | log | 0.4.29 | MIT OR Apache-2.0 | https://github.com/rust-lang/log |  |
@@ -643,7 +637,6 @@ license:
 | powerfmt | 0.2.0 | MIT OR Apache-2.0 | https://github.com/jhpratt/powerfmt |  |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 | https://github.com/cryptocorrosion/cryptocorrosion |  |
 | precomputed-hash | 0.1.1 | MIT | https://github.com/emilio/precomputed-hash |  |
-| prettyplease | 0.2.37 | MIT OR Apache-2.0 | https://github.com/dtolnay/prettyplease | build-time only |
 | proc-macro-crate | 1.3.1, 2.0.2, 3.4.0 | MIT OR Apache-2.0 | https://github.com/bkchr/proc-macro-crate |  |
 | proc-macro-error | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error |  |
 | proc-macro-error-attr | 1.0.4 | MIT OR Apache-2.0 | https://gitlab.com/CreepySkeleton/proc-macro-error |  |
@@ -680,9 +673,9 @@ license:
 | rkyv | 0.7.45 | MIT | https://github.com/rkyv/rkyv |  |
 | rkyv_derive | 0.7.45 | MIT | https://github.com/rkyv/rkyv |  |
 | rust_decimal | 1.39.0 | MIT | https://github.com/paupino/rust-decimal |  |
-| rustc-hash | 1.1.0, 2.1.2 | Apache-2.0 OR MIT | https://github.com/rust-lang/rustc-hash |  |
+| rustc-hash | 2.1.2 | Apache-2.0 OR MIT | https://github.com/rust-lang/rustc-hash |  |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 | https://github.com/djc/rustc-version-rs | build-time only |
-| rustix | 0.38.44, 1.1.3 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/rustix |  |
+| rustix | 1.1.3 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://github.com/bytecodealliance/rustix |  |
 | rustls | 0.23.36 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls |  |
 | rustls-native-certs | 0.8.3 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/rustls-native-certs |  |
 | rustls-pki-types | 1.14.0 | MIT OR Apache-2.0 | https://github.com/rustls/pki-types |  |
@@ -845,9 +838,6 @@ license:
 | webview2-com-macros | 0.8.0 | MIT | https://github.com/wravery/webview2-rs |  |
 | webview2-com-sys | 0.38.0 | MIT | https://github.com/wravery/webview2-rs |  |
 | weezl | 0.1.12 | MIT OR Apache-2.0 | https://github.com/image-rs/weezl |  |
-| which | 4.4.2 | MIT | https://github.com/harryfei/which-rs | build-time only |
-| whisper-rs | 0.12.0 | Unlicense | https://github.com/tazz4843/whisper-rs |  |
-| whisper-rs-sys | 0.10.0 | Unlicense | https://github.com/tazz4843/whisper-rs |  |
 | winapi | 0.3.9 | MIT OR Apache-2.0 | https://github.com/retep998/winapi-rs |  |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT OR Apache-2.0 | https://github.com/retep998/winapi-rs |  |
 | winapi-util | 0.1.11 | Unlicense OR MIT | https://github.com/BurntSushi/winapi-util |  |

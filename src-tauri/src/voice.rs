@@ -1,13 +1,12 @@
 //! On-device push-to-talk voice transcription.
 //!
 //! Audio is captured with `cpal`, downsampled to 16 kHz mono, and fed to a
-//! locally-loaded ASR model. Whisper uses whisper.cpp via `whisper-rs`
-//! (Metal-accelerated on macOS); Parakeet uses an int8 sherpa-onnx export. While
-//! the user holds the key, we re-transcribe the whole utterance every ~600 ms and
-//! stream interim text to the frontend over a Tauri `Channel`; on release we run
-//! one final pass and return the clean transcript.
+//! locally-loaded int8 Parakeet TDT 0.6B v3 sherpa-onnx export. While the user
+//! holds the key, we re-transcribe the whole utterance every ~600 ms and stream
+//! interim text to the frontend over a Tauri `Channel`; on release we run one
+//! final pass and return the clean transcript.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,7 +16,6 @@ use futures_util::StreamExt;
 use serde::Serialize;
 use sherpa_onnx::{OfflineRecognizer, OfflineRecognizerConfig, OfflineTransducerModelConfig};
 use tauri::ipc::Channel;
-use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 const SAMPLE_RATE: u32 = 16_000;
 /// Minimum audio (in samples at 16 kHz) before we bother running ASR.
@@ -39,12 +37,6 @@ const SILENCE_PEAK: f32 = 0.01;
 // Model registry
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ModelKind {
-    Whisper,
-    SherpaParakeetTdt,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct ModelFile {
     relative_path: &'static str,
@@ -53,85 +45,44 @@ struct ModelFile {
     size: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ModelInfo {
-    kind: ModelKind,
-    files: &'static [ModelFile],
-}
-
-const WHISPER_BASE_FILES: &[ModelFile] = &[ModelFile {
-    relative_path: "ggml-base.bin",
-    download_url: "https://models.stimma.ai/whisper/ggml-base.bin",
-    fallback_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"),
-    size: Some(147_951_465),
-}];
-
-const WHISPER_SMALL_FILES: &[ModelFile] = &[ModelFile {
-    relative_path: "ggml-small.bin",
-    download_url: "https://models.stimma.ai/whisper/ggml-small.bin",
-    fallback_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"),
-    size: Some(487_601_967),
-}];
-
-const PARAKEET_TDT_06B_V2_FILES: &[ModelFile] = &[
+const MODEL_DIR_NAME: &str = "parakeet-tdt-0.6b-v3-int8";
+const PARAKEET_TDT_06B_V3_FILES: &[ModelFile] = &[
     ModelFile {
-        relative_path: "parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx",
+        relative_path: "parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
         download_url:
-            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v2-int8/encoder.int8.onnx",
+            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
         fallback_url: Some(
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/encoder.int8.onnx",
+            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/encoder.int8.onnx",
         ),
-        size: Some(652_184_296),
+        size: Some(652_184_281),
     },
     ModelFile {
-        relative_path: "parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx",
+        relative_path: "parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
         download_url:
-            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v2-int8/decoder.int8.onnx",
+            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
         fallback_url: Some(
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/decoder.int8.onnx",
+            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/decoder.int8.onnx",
         ),
-        size: Some(7_257_753),
+        size: Some(11_845_275),
     },
     ModelFile {
-        relative_path: "parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx",
+        relative_path: "parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
         download_url:
-            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v2-int8/joiner.int8.onnx",
+            "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
         fallback_url: Some(
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/joiner.int8.onnx",
+            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/joiner.int8.onnx",
         ),
-        size: Some(1_739_080),
+        size: Some(6_355_277),
     },
     ModelFile {
-        relative_path: "parakeet-tdt-0.6b-v2-int8/tokens.txt",
-        download_url: "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v2-int8/tokens.txt",
+        relative_path: "parakeet-tdt-0.6b-v3-int8/tokens.txt",
+        download_url: "https://models.stimma.ai/parakeet/parakeet-tdt-0.6b-v3-int8/tokens.txt",
         fallback_url: Some(
-            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/resolve/main/tokens.txt",
+            "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/tokens.txt",
         ),
-        size: Some(9_384),
+        size: Some(93_939),
     },
 ];
-
-/// Returns metadata for a known model id, or `None`.
-fn model_info(model_id: &str) -> Option<ModelInfo> {
-    // Weights are primarily served from our R2 bucket (free, unmetered egress).
-    // Whisper comes from "ggerganov/whisper.cpp"; Parakeet v2 int8 comes from
-    // the sherpa-onnx export of NVIDIA's English-only Parakeet TDT 0.6B v2 model.
-    match model_id {
-        "base" => Some(ModelInfo {
-            kind: ModelKind::Whisper,
-            files: WHISPER_BASE_FILES,
-        }),
-        "small" => Some(ModelInfo {
-            kind: ModelKind::Whisper,
-            files: WHISPER_SMALL_FILES,
-        }),
-        "parakeet-tdt-0.6b-v2" => Some(ModelInfo {
-            kind: ModelKind::SherpaParakeetTdt,
-            files: PARAKEET_TDT_06B_V2_FILES,
-        }),
-        _ => None,
-    }
-}
 
 // Mirrors backend/privacy_lockdown.py: truthy values of STIMMA_PRIVACY_LOCKDOWN.
 fn privacy_lockdown_enabled() -> bool {
@@ -148,35 +99,47 @@ fn privacy_lockdown_enabled() -> bool {
 fn models_dir(app: &tauri::AppHandle) -> PathBuf {
     let bundle_id = app.config().identifier.clone();
     let (_data, cache) = crate::get_app_dirs(&bundle_id);
-    cache.join("whisper-models")
+    cache.join("voice-models")
 }
 
 fn model_file_path(app: &tauri::AppHandle, file: &ModelFile) -> PathBuf {
     models_dir(app).join(file.relative_path)
 }
 
-fn model_primary_path(app: &tauri::AppHandle, model_id: &str) -> Result<PathBuf, String> {
-    let info = model_info(model_id).ok_or_else(|| format!("unknown model: {model_id}"))?;
-    let file = info
-        .files
-        .first()
-        .ok_or_else(|| format!("model {model_id} has no files"))?;
-    Ok(model_file_path(app, file))
+fn model_dir(app: &tauri::AppHandle) -> PathBuf {
+    models_dir(app).join(MODEL_DIR_NAME)
 }
 
-fn model_dir(app: &tauri::AppHandle, model_id: &str) -> Result<PathBuf, String> {
-    Ok(model_primary_path(app, model_id)?
-        .parent()
-        .ok_or_else(|| format!("model {model_id} has no parent directory"))?
-        .to_path_buf())
+fn model_file_is_downloaded(app: &tauri::AppHandle, file: &ModelFile) -> bool {
+    let path = model_file_path(app, file);
+    path.is_file()
+        && path
+            .metadata()
+            .map(|metadata| match file.size {
+                Some(size) => metadata.len() == size,
+                None => metadata.len() > 0,
+            })
+            .unwrap_or(false)
 }
 
-fn model_is_downloaded(app: &tauri::AppHandle, model_id: &str) -> Result<bool, String> {
-    let info = model_info(model_id).ok_or_else(|| format!("unknown model: {model_id}"))?;
-    Ok(info.files.iter().all(|file| {
-        let path = model_file_path(app, file);
-        path.is_file() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
-    }))
+fn model_is_downloaded(app: &tauri::AppHandle) -> bool {
+    PARAKEET_TDT_06B_V3_FILES
+        .iter()
+        .all(|file| model_file_is_downloaded(app, file))
+}
+
+/// Remove caches created by builds that offered Whisper and Parakeet v2.
+/// These are disposable model weights and can be downloaded again by an older
+/// build from its upstream fallback if the user rolls back.
+pub fn cleanup_legacy_models(cache_dir: &Path) {
+    let legacy_dir = cache_dir.join("whisper-models");
+    if !legacy_dir.exists() {
+        return;
+    }
+    match std::fs::remove_dir_all(&legacy_dir) {
+        Ok(()) => log::info!("[voice] removed legacy voice model cache"),
+        Err(error) => log::warn!("[voice] failed to remove legacy voice model cache: {error}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +158,8 @@ struct Session {
 }
 
 pub struct VoiceState {
-    /// Cached loaded model, keyed by model id, kept warm across sessions.
-    model: Mutex<Option<(String, LoadedModel)>>,
+    /// Cached loaded model, kept warm across sessions.
+    model: Mutex<Option<Arc<OfflineRecognizer>>>,
     session: Mutex<Option<Session>>,
 }
 
@@ -209,68 +172,46 @@ impl VoiceState {
     }
 }
 
-#[derive(Clone)]
-enum LoadedModel {
-    Whisper(Arc<WhisperContext>),
-    SherpaParakeetTdt(Arc<OfflineRecognizer>),
-}
-
-/// Loads the requested model, reusing the cached context when the id matches.
+/// Loads Parakeet v3, reusing the cached recognizer across sessions.
 fn ensure_model(
     state: &VoiceState,
     app: &tauri::AppHandle,
-    model_id: &str,
-) -> Result<LoadedModel, String> {
+) -> Result<Arc<OfflineRecognizer>, String> {
     let mut guard = state.model.lock().unwrap();
-    if let Some((id, model)) = guard.as_ref() {
-        if id == model_id {
-            return Ok(model.clone());
-        }
+    if let Some(model) = guard.as_ref() {
+        return Ok(model.clone());
     }
 
-    if !model_is_downloaded(app, model_id)? {
-        return Err(format!("model {model_id} not downloaded"));
+    if !model_is_downloaded(app) {
+        return Err("voice model not downloaded".into());
     }
 
-    let info = model_info(model_id).ok_or_else(|| format!("unknown model: {model_id}"))?;
-    let model = match info.kind {
-        ModelKind::Whisper => {
-            let path = model_primary_path(app, model_id)?;
-            let path_str = path.to_str().ok_or("model path is not valid UTF-8")?;
-            let ctx =
-                WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
-                    .map_err(|e| format!("failed to load model: {e}"))?;
-            LoadedModel::Whisper(Arc::new(ctx))
-        }
-        ModelKind::SherpaParakeetTdt => {
-            let dir = model_dir(app, model_id)?;
-            let path = |name: &str| -> Result<String, String> {
-                dir.join(name)
-                    .to_str()
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| format!("{name} path is not valid UTF-8"))
-            };
+    let model = Arc::new(create_recognizer(&model_dir(app))?);
+    *guard = Some(model.clone());
+    Ok(model)
+}
 
-            let mut config = OfflineRecognizerConfig::default();
-            config.model_config.transducer = OfflineTransducerModelConfig {
-                encoder: Some(path("encoder.int8.onnx")?),
-                decoder: Some(path("decoder.int8.onnx")?),
-                joiner: Some(path("joiner.int8.onnx")?),
-            };
-            config.model_config.tokens = Some(path("tokens.txt")?);
-            config.model_config.model_type = Some("nemo_transducer".into());
-            config.model_config.provider = Some("cpu".into());
-            config.model_config.num_threads = 4;
-            config.decoding_method = Some("greedy_search".into());
-
-            let recognizer = OfflineRecognizer::create(&config)
-                .ok_or_else(|| "failed to load Parakeet model".to_string())?;
-            LoadedModel::SherpaParakeetTdt(Arc::new(recognizer))
-        }
+fn create_recognizer(dir: &Path) -> Result<OfflineRecognizer, String> {
+    let path = |name: &str| -> Result<String, String> {
+        dir.join(name)
+            .to_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("{name} path is not valid UTF-8"))
     };
 
-    *guard = Some((model_id.to_string(), model.clone()));
-    Ok(model)
+    let mut config = OfflineRecognizerConfig::default();
+    config.model_config.transducer = OfflineTransducerModelConfig {
+        encoder: Some(path("encoder.int8.onnx")?),
+        decoder: Some(path("decoder.int8.onnx")?),
+        joiner: Some(path("joiner.int8.onnx")?),
+    };
+    config.model_config.tokens = Some(path("tokens.txt")?);
+    config.model_config.model_type = Some("nemo_transducer".into());
+    config.model_config.provider = Some("cpu".into());
+    config.model_config.num_threads = 4;
+    config.decoding_method = Some("greedy_search".into());
+
+    OfflineRecognizer::create(&config).ok_or_else(|| "failed to load Parakeet model".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -299,34 +240,21 @@ pub enum TranscriptEvent {
     },
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ModelStatus {
-    base: bool,
-    small: bool,
-    parakeet_tdt_06b_v2: bool,
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn voice_model_status(app: tauri::AppHandle) -> Result<ModelStatus, String> {
-    Ok(ModelStatus {
-        base: model_is_downloaded(&app, "base")?,
-        small: model_is_downloaded(&app, "small")?,
-        parakeet_tdt_06b_v2: model_is_downloaded(&app, "parakeet-tdt-0.6b-v2")?,
-    })
+pub async fn voice_model_status(app: tauri::AppHandle) -> Result<bool, String> {
+    Ok(model_is_downloaded(&app))
 }
 
 #[tauri::command]
 pub async fn voice_download_model(
     app: tauri::AppHandle,
-    model_id: String,
     on_event: Channel<DownloadEvent>,
 ) -> Result<(), String> {
-    let result = download_model_inner(&app, &model_id, &on_event).await;
+    let result = download_model_inner(&app, &on_event).await;
     if let Err(e) = &result {
         let _ = on_event.send(DownloadEvent::Error { message: e.clone() });
     }
@@ -335,16 +263,14 @@ pub async fn voice_download_model(
 
 async fn download_model_inner(
     app: &tauri::AppHandle,
-    model_id: &str,
     on_event: &Channel<DownloadEvent>,
 ) -> Result<(), String> {
     use std::io::Write;
 
-    let info = model_info(model_id).ok_or_else(|| format!("unknown model: {model_id}"))?;
     let dir = models_dir(app);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    if model_is_downloaded(app, model_id)? {
+    if model_is_downloaded(app) {
         let _ = on_event.send(DownloadEvent::Done);
         return Ok(());
     }
@@ -355,23 +281,19 @@ async fn download_model_inner(
         return Err("Privacy Lockdown is on; voice model downloads are disabled".to_string());
     }
 
-    let known_total = info
-        .files
+    let known_total = PARAKEET_TDT_06B_V3_FILES
         .iter()
         .try_fold(0u64, |acc, file| file.size.map(|size| acc + size));
-    let mut downloaded: u64 = info
-        .files
+    let mut downloaded: u64 = PARAKEET_TDT_06B_V3_FILES
         .iter()
-        .map(|file| {
-            let path = model_file_path(app, file);
-            path.metadata().map(|m| m.len()).unwrap_or(0)
-        })
+        .filter(|file| model_file_is_downloaded(app, file))
+        .filter_map(|file| file.size)
         .sum();
     let mut last_emit: u64 = 0;
 
-    for model_file in info.files {
+    for model_file in PARAKEET_TDT_06B_V3_FILES {
         let final_path = model_file_path(app, model_file);
-        if final_path.is_file() && final_path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+        if model_file_is_downloaded(app, model_file) {
             continue;
         }
 
@@ -432,6 +354,19 @@ async fn download_model_inner(
         file.flush().map_err(|e| e.to_string())?;
         drop(file);
 
+        if let Some(expected_size) = model_file.size {
+            let actual_size = tmp_path.metadata().map_err(|e| e.to_string())?.len();
+            if actual_size != expected_size {
+                return Err(format!(
+                    "downloaded {} bytes for {}, expected {}",
+                    actual_size, model_file.relative_path, expected_size
+                ));
+            }
+        }
+
+        if final_path.exists() {
+            std::fs::remove_file(&final_path).map_err(|e| e.to_string())?;
+        }
         std::fs::rename(&tmp_path, &final_path).map_err(|e| e.to_string())?;
     }
 
@@ -443,7 +378,6 @@ async fn download_model_inner(
 pub async fn voice_start(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<VoiceState>>,
-    model_id: String,
     on_event: Channel<TranscriptEvent>,
 ) -> Result<(), String> {
     // Tear down any previous session first.
@@ -451,7 +385,7 @@ pub async fn voice_start(
         prev.stop.store(true, Ordering::SeqCst);
     }
 
-    let model = ensure_model(&state, &app, &model_id)?;
+    let model = ensure_model(&state, &app)?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let finished = Arc::new(AtomicBool::new(false));
@@ -524,7 +458,7 @@ pub async fn voice_keepalive(state: tauri::State<'_, Arc<VoiceState>>) -> Result
 // ---------------------------------------------------------------------------
 
 fn capture_and_transcribe(
-    model: LoadedModel,
+    model: Arc<OfflineRecognizer>,
     stop: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
     result: Arc<Mutex<String>>,
@@ -644,14 +578,13 @@ fn capture_and_transcribe(
         };
         let peak = samples.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
 
-        // Skip near-silent buffers: Whisper otherwise hallucinates non-speech
-        // annotations like "[BLANK_AUDIO]" on silence.
+        // Skip near-silent buffers rather than feeding background noise to ASR.
         let speech = samples.len() >= MIN_SAMPLES && peak >= SILENCE_PEAK;
 
         if speech {
-            match run_transcription(&model, &samples) {
+            match run_parakeet(&model, &samples) {
                 Ok(text) => {
-                    let cleaned = clean_transcript(&model, &text);
+                    let cleaned = collapse_whitespace(&text);
                     if stopping {
                         *result.lock().unwrap() = cleaned;
                     } else if !cleaned.is_empty() {
@@ -694,38 +627,6 @@ fn push_mono<T: Copy>(
     }
 }
 
-fn run_transcription(model: &LoadedModel, samples: &[f32]) -> Result<String, String> {
-    match model {
-        LoadedModel::Whisper(ctx) => run_whisper(ctx, samples),
-        LoadedModel::SherpaParakeetTdt(recognizer) => run_parakeet(recognizer, samples),
-    }
-}
-
-fn run_whisper(ctx: &WhisperContext, samples: &[f32]) -> Result<String, String> {
-    let mut state = ctx.create_state().map_err(|e| e.to_string())?;
-
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_n_threads(4);
-    params.set_translate(false);
-    // Let multilingual Whisper detect the spoken language.
-    params.set_language(None);
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-    params.set_suppress_blank(true);
-
-    state.full(params, samples).map_err(|e| e.to_string())?;
-
-    let n = state.full_n_segments().map_err(|e| e.to_string())?;
-    let mut out = String::new();
-    for i in 0..n {
-        let seg = state.full_get_segment_text(i).map_err(|e| e.to_string())?;
-        out.push_str(&seg);
-    }
-    Ok(out.trim().to_string())
-}
-
 fn run_parakeet(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<String, String> {
     let stream = recognizer.create_stream();
     stream.accept_waveform(SAMPLE_RATE as i32, samples);
@@ -734,31 +635,6 @@ fn run_parakeet(recognizer: &OfflineRecognizer, samples: &[f32]) -> Result<Strin
         .get_result()
         .ok_or_else(|| "failed to decode Parakeet transcript".to_string())?;
     Ok(result.text.trim().to_string())
-}
-
-fn clean_transcript(model: &LoadedModel, text: &str) -> String {
-    match model {
-        LoadedModel::Whisper(_) => clean_whisper_transcript(text),
-        LoadedModel::SherpaParakeetTdt(_) => collapse_whitespace(text),
-    }
-}
-
-/// Strips Whisper's non-speech annotations, e.g. `[BLANK_AUDIO]`, `(music)`,
-/// `*laughs*`, which it emits during silence or background noise.
-fn clean_whisper_transcript(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut depth: i32 = 0;
-    for ch in text.chars() {
-        match ch {
-            '[' | '(' => depth += 1,
-            ']' | ')' => depth = (depth - 1).max(0),
-            '*' => {}
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-    }
-    // Collapse whitespace left behind by removed annotations.
-    collapse_whitespace(&out)
 }
 
 fn collapse_whitespace(text: &str) -> String {
@@ -817,4 +693,48 @@ fn linear_resample(input: &[f32], ratio: f64) -> Vec<f32> {
         out.push(a + (b - a) * frac);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{cleanup_legacy_models, create_recognizer, run_parakeet};
+    use sherpa_onnx::Wave;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn legacy_model_cache_is_removed() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after epoch")
+            .as_nanos();
+        let cache_dir = std::env::temp_dir().join(format!(
+            "stimma-voice-cleanup-{}-{nonce}",
+            std::process::id()
+        ));
+        let legacy_dir = cache_dir.join("whisper-models/parakeet-tdt-0.6b-v2-int8");
+        std::fs::create_dir_all(&legacy_dir).expect("create legacy cache fixture");
+        std::fs::write(legacy_dir.join("encoder.int8.onnx"), b"old model")
+            .expect("write legacy cache fixture");
+
+        cleanup_legacy_models(&cache_dir);
+
+        assert!(!cache_dir.join("whisper-models").exists());
+        std::fs::remove_dir(cache_dir).expect("remove empty test cache");
+    }
+
+    #[test]
+    #[ignore = "requires a downloaded Parakeet v3 export"]
+    fn parakeet_v3_export_loads_and_transcribes() {
+        let model_dir = std::env::var_os("STIMMA_PARAKEET_V3_DIR")
+            .map(PathBuf::from)
+            .expect("STIMMA_PARAKEET_V3_DIR must point to the extracted model");
+        let wave_path = model_dir.join("test_wavs/en.wav");
+        let wave = Wave::read(wave_path.to_str().expect("wave path is UTF-8"))
+            .expect("read Parakeet test wave");
+        let recognizer = create_recognizer(&model_dir).expect("load Parakeet v3 export");
+        let transcript = run_parakeet(&recognizer, wave.samples()).expect("transcribe test wave");
+
+        assert!(!transcript.is_empty());
+    }
 }

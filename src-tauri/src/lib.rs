@@ -253,11 +253,6 @@ mod webview_data_store_tests {
 pub fn run() {
     let dev_mode = std::env::var("STIMMA_DEV").is_ok();
 
-    // Route whisper.cpp / ggml's internal logging through the `log` crate so it
-    // obeys our level filters instead of spewing per-token decoder dumps raw to
-    // stderr. Paired with a `Warn` filter on its target below.
-    whisper_rs::install_whisper_log_trampoline();
-
     let dev_backend_port = std::env::var("STIMMA_BACKEND_PORT")
         .ok()
         .and_then(|p| p.parse::<u16>().ok())
@@ -315,13 +310,7 @@ pub fn run() {
             windows::show_all_windows(app);
         }))
         .plugin(tauri_plugin_shell::init())
-        .plugin(
-            tauri_plugin_log::Builder::default()
-                // whisper.cpp's info/debug logging is an extreme firehose (every
-                // decoder token, every seek). Keep warnings/errors, drop the rest.
-                .level_for("whisper_rs::whisper_sys_log", log::LevelFilter::Warn)
-                .build(),
-        )
+        .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -383,6 +372,8 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            voice::cleanup_legacy_models(&app_cache_dir);
+
             // Recreate the windows that were open when the app last quit
             // (browser-style session restore). First launch — or a registry
             // that went missing — falls back to the single bootstrap "main"

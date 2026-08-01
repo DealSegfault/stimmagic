@@ -6,11 +6,10 @@
  * so the user watches their words appear as they speak. On stop, the Rust side
  * runs a final clean pass and returns the committed transcript.
  *
- * The model is downloaded on first use. `voiceModel` selects which model to use
- * and is persisted across sessions.
+ * Parakeet TDT 0.6B v3 is downloaded on first use.
  */
 
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { isTauri as checkIsTauri, initApiConfig } from '../apiConfig'
 import { useTelemetry } from './useTelemetry'
 import { isPrivacyLockdownActive } from './usePrivacyLockdown'
@@ -19,51 +18,10 @@ import { addToast } from './useToasts'
 export const VOICE_DOWNLOAD_LOCKDOWN_MESSAGE =
   'Voice model downloads are disabled while Privacy Lockdown is enabled. Disable Privacy Lockdown to download this model.'
 
-export const VOICE_MODELS = [
-  {
-    id: 'base',
-    label: 'Whisper Base',
-    size: '142 MB',
-    description: 'Multilingual · Faster',
-  },
-  {
-    id: 'small',
-    label: 'Whisper Small',
-    size: '466 MB',
-    description: 'Multilingual · Better quality',
-  },
-  {
-    id: 'parakeet-tdt-0.6b-v2',
-    label: 'Parakeet TDT 0.6B v2',
-    size: '661 MB',
-    description: 'English · Fastest',
-  },
-] as const
-
-export type VoiceModel = typeof VOICE_MODELS[number]['id']
 export type VoiceState = 'idle' | 'downloading' | 'recording' | 'finalizing' | 'error'
 
-// ---- Selected model (persisted, shared across all inputs) -----------------
-
-const VOICE_MODEL_KEY = 'stimma.voiceModel'
-
-function isVoiceModel(value: string | null): value is VoiceModel {
-  return VOICE_MODELS.some((model) => model.id === value)
-}
-
-function loadModel(): VoiceModel {
-  const v = localStorage.getItem(VOICE_MODEL_KEY)
-  // Migrate preferences from the former English-only Whisper variants.
-  if (v === 'base.en' || v === 'small.en') {
-    const migrated = v.slice(0, -3) as VoiceModel
-    localStorage.setItem(VOICE_MODEL_KEY, migrated)
-    return migrated
-  }
-  return isVoiceModel(v) ? v : 'base'
-}
-
-export const voiceModel = ref<VoiceModel>(loadModel())
-watch(voiceModel, (v) => localStorage.setItem(VOICE_MODEL_KEY, v))
+// Remove the preference left by builds that offered multiple voice models.
+localStorage.removeItem('stimma.voiceModel')
 
 // ---- Tauri bridge (lazy, shared) ------------------------------------------
 
@@ -95,24 +53,11 @@ async function initTauri(): Promise<void> {
 
 initTauri()
 
-interface ModelStatus {
-  base: boolean
-  small: boolean
-  parakeetTdt06bV2: boolean
-}
-
-function statusForModel(status: ModelStatus, model: VoiceModel): boolean {
-  if (model === 'small') return status.small
-  if (model === 'parakeet-tdt-0.6b-v2') return status.parakeetTdt06bV2
-  return status.base
-}
-
-/** Whether the given model is already downloaded. */
-export async function isModelReady(model: VoiceModel): Promise<boolean> {
+/** Whether Parakeet v3 is already downloaded. */
+async function isModelReady(): Promise<boolean> {
   await initTauri()
   if (!supported.value) return false
-  const status: ModelStatus = await invokeFn('voice_model_status')
-  return statusForModel(status, model)
+  return await invokeFn('voice_model_status')
 }
 
 // ---- Composable -----------------------------------------------------------
@@ -168,7 +113,7 @@ export function useVoiceInput(opts: VoiceInputOptions) {
     opts.setText(baseText + (needsSpace ? ' ' : '') + interim)
   }
 
-  async function downloadModel(model: VoiceModel) {
+  async function downloadModel() {
     if (isPrivacyLockdownActive()) {
       error.value = VOICE_DOWNLOAD_LOCKDOWN_MESSAGE
       state.value = 'error'
@@ -195,9 +140,9 @@ export function useVoiceInput(opts: VoiceInputOptions) {
     }
 
     try {
-      await invokeFn('voice_download_model', { modelId: model, onEvent: chan })
+      await invokeFn('voice_download_model', { onEvent: chan })
       if (state.value === 'downloading') state.value = 'idle'
-      track('voice_model_downloaded', { model }, 'feature')
+      track('voice_model_downloaded', { model: 'parakeet-tdt-0.6b-v3' }, 'feature')
     } catch (e) {
       error.value = String(e)
       state.value = 'error'
@@ -244,9 +189,8 @@ export function useVoiceInput(opts: VoiceInputOptions) {
       return false
     }
 
-    const model = voiceModel.value
-    if (!(await isModelReady(model))) {
-      await downloadModel(model)
+    if (!(await isModelReady())) {
+      await downloadModel()
       return false
     }
 
@@ -270,7 +214,7 @@ export function useVoiceInput(opts: VoiceInputOptions) {
     state.value = 'recording'
     recordingStartedAt = Date.now()
     try {
-      await invokeFn('voice_start', { modelId: model, onEvent: chan })
+      await invokeFn('voice_start', { onEvent: chan })
       startKeepalive()
       return true
     } catch (e) {
@@ -399,7 +343,6 @@ export function useVoiceInput(opts: VoiceInputOptions) {
     supported,
     state,
     error,
-    voiceModel,
     isRecording,
     isBusy,
     downloaded,

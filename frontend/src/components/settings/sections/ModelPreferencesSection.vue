@@ -26,41 +26,15 @@
             </button>
           </div>
         </SettingRow>
-
-        <SettingRow v-if="voiceSupported" label="Voice Input Model">
-          <template #description>
-            Processed on this device. <span v-if="!voiceModelReady">{{ privacyLockdownActive ? 'Downloads are off during Privacy Lockdown.' : 'Downloads on first use.' }}</span>
-          </template>
-          <span v-if="voiceModelReady" class="inline-flex items-center gap-1.5 text-[11px] text-content-tertiary">
-            <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            Ready
-          </span>
-          <SettingsDropdown
-            v-model="voiceModel"
-            control
-            compact
-            fill
-            hide-trigger-details
-            class="w-72"
-            :menu-width="320"
-            :options="voiceModelOptions"
-          />
-        </SettingRow>
       </div>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
-import { usePrivacyLockdown } from '../../../composables/usePrivacyLockdown'
 import { useTheme } from '../../../composables/useTheme'
 import { useSettingsApi } from '../../../composables/useSettingsApi'
-import { VOICE_MODELS, voiceModel, isModelReady, supported as voiceSupported } from '../../../composables/useVoiceInput'
-import SettingsDropdown from '../../ui/SettingsDropdown.vue'
 import SettingRow from '../SettingRow.vue'
-
-const { privacyLockdownActive } = usePrivacyLockdown()
 
 // Theme
 const { themePreference, setTheme } = useTheme()
@@ -77,17 +51,4 @@ function selectTheme(theme) {
   // Fire-and-forget persist to server
   updateTheme(theme).catch(err => console.error('Failed to persist theme:', err))
 }
-
-const voiceModelReady = ref(false)
-
-const voiceModelOptions = computed(() => VOICE_MODELS.map(model => ({
-  value: model.id,
-  label: model.label,
-  description: model.description,
-  meta: model.size,
-})))
-
-async function refreshVoiceModelReady() { voiceModelReady.value = await isModelReady(voiceModel.value) }
-watch(voiceModel, refreshVoiceModelReady)
-onMounted(refreshVoiceModelReady)
 </script>
