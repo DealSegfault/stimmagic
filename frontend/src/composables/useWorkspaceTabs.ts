@@ -615,7 +615,7 @@ export function useWorkspaceTabs() {
       entityId,
       pinned: false,
       displayOrder: nextDisplayOrder++,
-      displayName: opts?.name || 'Darkroom',
+      displayName: opts?.name || 'Edit',
       editorMediaId: opts?.mediaId
     }
     tabs.value = [...tabs.value, tab]
@@ -919,17 +919,28 @@ export function useWorkspaceTabs() {
 
   // --- Computed ---
 
+  // The row lists. Editor tabs are deliberately absent: they render as
+  // thumbnails on the editing shelf (see components/EditorShelf.vue), which
+  // orders them by recency rather than by drag, so keeping them out here also
+  // keeps the reorder indices in these arrays matching what the user sees.
   const pinnedTabs = computed(() => {
     return tabs.value
-      .filter(t => t.pinned)
+      .filter(t => t.pinned && t.type !== 'editor')
       .sort((a, b) => a.displayOrder - b.displayOrder)
   })
 
   const openTabs = computed(() => {
     return tabs.value
-      .filter(t => !t.pinned)
+      .filter(t => !t.pinned && t.type !== 'editor')
       .sort((a, b) => b.displayOrder - a.displayOrder)
   })
+
+  /**
+   * Every open editor, in tab order; the shelf applies its own ranking.
+   * Asset-keyed only — the same tabs the shelf can render, so callers can key
+   * separators off this length without an orphan hairline when one is skipped.
+   */
+  const editorTabs = computed(() => tabs.value.filter(t => t.type === 'editor' && editorAssetId(t) !== null))
 
   const allTabs = computed(() => {
     return tabs.value.sort((a, b) => a.displayOrder - b.displayOrder)
@@ -939,6 +950,7 @@ export function useWorkspaceTabs() {
     tabs: readonly(tabs),
     pinnedTabs,
     openTabs,
+    editorTabs,
     allTabs,
     addTab,
     addEditorTab,

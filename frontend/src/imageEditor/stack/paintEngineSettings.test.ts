@@ -29,11 +29,13 @@ test('each engine restores its own brush and gesture controls', () => {
 
   assert.deepEqual(dodge.brush, {
     size: 73, hardness: 8, opacity: 42, flow: 17, spacing: 31,
+    pressureSize: false, pressureOpacity: true,
   })
   assert.equal(dodge.exposure, 6)
   assert.equal(dodge.range, 'highlights')
   assert.deepEqual(sponge.brush, {
     size: 18, hardness: 70, opacity: 85, flow: 32, spacing: 44,
+    pressureSize: false, pressureOpacity: true,
   })
   assert.equal(sponge.strength, 9)
   assert.equal(sponge.saturate, false)
@@ -59,8 +61,43 @@ test('persisted engine settings are clamped and corrupt fields fall back', () =>
     opacity: 100,
     flow: 30,
     spacing: 1,
+    pressureSize: false,
+    pressureOpacity: true,
   })
   assert.equal(restored.exposure, 100)
   assert.equal(restored.range, 'midtones')
   assert.equal(restored.strength, 1)
+})
+
+test('gradient tool restores its spectrum, geometry, and reverse state defensively', () => {
+  const restored = paintEngineSettings('gradient', {
+    gradient: {
+      type: 'gradient',
+      direction: 'vertical',
+      colors: [
+        { r: -20, g: 40, b: 500, a: 2 },
+        { r: 200, g: 160, b: 120, a: 0.25 },
+      ],
+    },
+    gradientType: 'diamond',
+    gradientReverse: true,
+  })
+
+  assert.deepEqual(restored.gradient, {
+    type: 'gradient',
+    direction: 'horizontal',
+    colors: [
+      { r: 0, g: 40, b: 255, a: 1 },
+      { r: 200, g: 160, b: 120, a: 0.25 },
+    ],
+  })
+  assert.equal(restored.gradientType, 'diamond')
+  assert.equal(restored.gradientReverse, true)
+
+  const corrupt = paintEngineSettings('gradient', {
+    gradient: { type: 'gradient', direction: 'horizontal', colors: [] },
+    gradientType: 'spiral' as any,
+  })
+  assert.equal(corrupt.gradient.colors.length, 2)
+  assert.equal(corrupt.gradientType, 'linear')
 })

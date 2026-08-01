@@ -9,6 +9,7 @@ import type { Size, Point, Color } from './geometry';
 import type { SelectionMode } from './geometry';
 import type { WandMaskOptions } from '../stack/wandMask';
 import { applySelectionBrushSegment } from '../stack/selectionBrush';
+import { morphSelectionPixels } from '../stack/selectionMorphology';
 import {
   createSelectionMask,
   fillRectSelection,
@@ -633,6 +634,20 @@ export function useSelection() {
     updateMarchingAnts();
   }
 
+  /** Grow (positive) or contract (negative) the current mask in source pixels. */
+  function morph(deltaPx: number): void {
+    if (!selectionCtx.value || !hasSelection() || !deltaPx) return;
+    const { width, height } = selectionCtx.value.canvas;
+    const pixels = selectionCtx.value.getImageData(0, 0, width, height);
+    morphSelectionPixels(pixels.data, width, height, deltaPx);
+    selectionCtx.value.putImageData(pixels, 0, 0);
+    selectionShapes.value = [{ type: 'pixels' }];
+    isInverted.value = false;
+    baseShapesBeforeInvert.value = [];
+    currentFeatherRadius.value = 0;
+    updateMarchingAnts();
+  }
+
   /**
    * Brush a stroke into the selection mask directly.
    *
@@ -898,6 +913,7 @@ export function useSelection() {
     applyMaskCanvas,
     brushStroke,
     feather,
+    morph,
     invert,
     fillWithColor,
     clearPixels,

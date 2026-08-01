@@ -1,6 +1,8 @@
 import type { BrushSettings } from '../ported/geometry'
+import type { GradientPaint } from '../ported/shapeTypes'
 
 export type PaintRange = 'shadows' | 'midtones' | 'highlights'
+export type PaintGradientType = 'linear' | 'radial' | 'angle' | 'reflected' | 'diamond'
 
 export interface PaintColor {
   r: number
@@ -19,6 +21,10 @@ export interface PaintColor {
 export interface PaintEngineSettings {
   brush: BrushSettings
   color: PaintColor
+  /** Spectrum and geometry used by the Gradient tool's next drag. */
+  gradient: GradientPaint
+  gradientType: PaintGradientType
+  gradientReverse: boolean
   exposure: number
   range: PaintRange
   strength: number
@@ -26,15 +32,31 @@ export interface PaintEngineSettings {
 }
 
 const DEFAULT_COLOR: PaintColor = { r: 201, g: 162, b: 118, a: 1 }
+const DEFAULT_GRADIENT: GradientPaint = {
+  type: 'gradient',
+  colors: [
+    { r: 201, g: 162, b: 118, a: 1 },
+    { r: 174, g: 118, b: 201, a: 1 },
+  ],
+  // The canvas drag owns the direction; horizontal is the neutral preview.
+  direction: 'horizontal',
+}
 
+/**
+ * Stylus dynamics default to pressure→flow for every engine: dodging harder
+ * dodges more, painting harder lays down more paint. Pressure→size is a
+ * hand-lettering behavior, so only Paint starts with it on. Both are plain
+ * brush toggles from there.
+ */
 function brush(
   size: number,
   hardness: number,
   opacity = 100,
   flow = 100,
   spacing = 25,
+  pressureSize = false,
 ): BrushSettings {
-  return { size, hardness, opacity, flow, spacing }
+  return { size, hardness, opacity, flow, spacing, pressureSize, pressureOpacity: true }
 }
 
 /**
@@ -44,9 +66,22 @@ function brush(
  * turn them up for a dramatic pass; the default should survive several passes
  * over the same area without immediately clipping or looking painted on.
  */
-const DEFAULTS: Record<string, PaintEngineSettings> = {
+type PaintEngineDefaults = Omit<
+  PaintEngineSettings,
+  'gradient' | 'gradientType' | 'gradientReverse'
+>
+
+const DEFAULTS: Record<string, PaintEngineDefaults> = {
   paint: {
-    brush: brush(26, 60),
+    brush: brush(26, 60, 100, 100, 25, true),
+    color: DEFAULT_COLOR,
+    exposure: 10,
+    range: 'midtones',
+    strength: 20,
+    saturate: true,
+  },
+  erase: {
+    brush: brush(40, 80),
     color: DEFAULT_COLOR,
     exposure: 10,
     range: 'midtones',
@@ -54,6 +89,14 @@ const DEFAULTS: Record<string, PaintEngineSettings> = {
     saturate: true,
   },
   fill: {
+    brush: brush(26, 100),
+    color: DEFAULT_COLOR,
+    exposure: 10,
+    range: 'midtones',
+    strength: 20,
+    saturate: true,
+  },
+  gradient: {
     brush: brush(26, 100),
     color: DEFAULT_COLOR,
     exposure: 10,
@@ -135,6 +178,25 @@ function clamp(value: unknown, min: number, max: number, fallback: number): numb
   return Math.min(max, Math.max(min, finiteNumber(value, fallback)))
 }
 
+function gradientPaint(value: GradientPaint | undefined): GradientPaint {
+  const raw = value?.type === 'gradient' && Array.isArray(value.colors)
+    ? value.colors
+    : []
+  const colors = raw.slice(0, 8).map(color => ({
+    r: clamp(color?.r, 0, 255, DEFAULT_COLOR.r),
+    g: clamp(color?.g, 0, 255, DEFAULT_COLOR.g),
+    b: clamp(color?.b, 0, 255, DEFAULT_COLOR.b),
+    a: clamp(color?.a, 0, 1, DEFAULT_COLOR.a),
+  }))
+  return {
+    type: 'gradient',
+    colors: colors.length >= 2
+      ? colors
+      : DEFAULT_GRADIENT.colors.map(color => ({ ...color })),
+    direction: 'horizontal',
+  }
+}
+
 /** Read persisted settings defensively; old or corrupt preferences fall back narrowly. */
 export function paintEngineSettings(
   engineId: string,
@@ -144,6 +206,7 @@ export function paintEngineSettings(
   const storedBrush = stored?.brush
   const storedColor = stored?.color
   const range = stored?.range
+  const gradientType = stored?.gradientType
 
   return {
     brush: {
@@ -152,6 +215,12 @@ export function paintEngineSettings(
       opacity: clamp(storedBrush?.opacity, 0, 100, fallback.brush.opacity),
       flow: clamp(storedBrush?.flow, 0, 100, fallback.brush.flow),
       spacing: clamp(storedBrush?.spacing, 1, 100, fallback.brush.spacing),
+      pressureSize: typeof storedBrush?.pressureSize === 'boolean'
+        ? storedBrush.pressureSize
+        : fallback.brush.pressureSize,
+      pressureOpacity: typeof storedBrush?.pressureOpacity === 'boolean'
+        ? storedBrush.pressureOpacity
+        : fallback.brush.pressureOpacity,
     },
     color: {
       r: clamp(storedColor?.r, 0, 255, fallback.color.r),
@@ -159,6 +228,17 @@ export function paintEngineSettings(
       b: clamp(storedColor?.b, 0, 255, fallback.color.b),
       a: clamp(storedColor?.a, 0, 1, fallback.color.a),
     },
+    gradient: gradientPaint(stored?.gradient),
+    gradientType: gradientType === 'linear'
+      || gradientType === 'radial'
+      || gradientType === 'angle'
+      || gradientType === 'reflected'
+      || gradientType === 'diamond'
+      ? gradientType
+      : 'linear',
+    gradientReverse: typeof stored?.gradientReverse === 'boolean'
+      ? stored.gradientReverse
+      : false,
     exposure: clamp(stored?.exposure, 1, 100, fallback.exposure),
     range: range === 'shadows' || range === 'midtones' || range === 'highlights'
       ? range

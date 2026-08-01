@@ -133,14 +133,24 @@ function isPresetActive(preset: BrushPreset): boolean {
   );
 }
 
-// Select a preset
+// Select a preset. Pressure dynamics are a how-the-pen-behaves choice, not
+// part of the tip, so they survive switching presets.
 function selectPreset(preset: BrushPreset) {
   activePresetId.value = preset.id;
   isEraser.value = preset.isEraser ?? false;
-  editSettings.value = { ...preset.settings };
+  editSettings.value = {
+    ...preset.settings,
+    pressureSize: editSettings.value.pressureSize,
+    pressureOpacity: editSettings.value.pressureOpacity,
+  };
   emit('update:modelValue', { ...editSettings.value });
   emit('update:isEraser', isEraser.value);
   drawMainPreview();
+}
+
+function togglePressure(key: 'pressureSize' | 'pressureOpacity') {
+  editSettings.value = { ...editSettings.value, [key]: !editSettings.value[key] };
+  applySettings();
 }
 
 // Apply settings (called when sliders change)
@@ -530,6 +540,30 @@ defineExpose({ isEraser });
           <div class="stimma-brush-picker__slider-handle" :style="{ left: spacingPos }" />
         </div>
       </div>
+
+      <!-- Stylus dynamics: which brush properties pen pressure drives.
+           Inert with a mouse, so the row is safe to show unconditionally. -->
+      <div class="stimma-brush-picker__pressure-row">
+        <label class="stimma-brush-picker__slider-label">Pen pressure</label>
+        <div class="stimma-brush-picker__pressure-toggles">
+          <button
+            class="stimma-brush-picker__pressure-toggle"
+            :class="{ 'stimma-brush-picker__pressure-toggle--active': editSettings.pressureSize }"
+            title="Pen pressure controls brush size"
+            @click="togglePressure('pressureSize')"
+          >
+            Size
+          </button>
+          <button
+            class="stimma-brush-picker__pressure-toggle"
+            :class="{ 'stimma-brush-picker__pressure-toggle--active': editSettings.pressureOpacity }"
+            title="Pen pressure controls paint flow"
+            @click="togglePressure('pressureOpacity')"
+          >
+            Flow
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -648,6 +682,40 @@ defineExpose({ isEraser });
   height: 100%;
   background: rgb(var(--stimma-color-primary));
   border-radius: var(--stimma-border-radius-round);
+}
+
+.stimma-brush-picker__pressure-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.stimma-brush-picker__pressure-toggles {
+  display: flex;
+  gap: 4px;
+}
+
+.stimma-brush-picker__pressure-toggle {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: var(--stimma-border-radius);
+  border: 1px solid rgb(var(--stimma-color-foreground) / 0.15);
+  background: transparent;
+  color: rgb(var(--stimma-color-foreground) / 0.6);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.stimma-brush-picker__pressure-toggle:hover {
+  border-color: rgb(var(--stimma-color-foreground) / 0.4);
+}
+
+.stimma-brush-picker__pressure-toggle--active {
+  border-color: rgb(var(--stimma-color-primary));
+  background: rgb(var(--stimma-color-primary) / 0.15);
+  color: rgb(var(--stimma-color-foreground) / 0.9);
 }
 
 .stimma-brush-picker__slider-handle {

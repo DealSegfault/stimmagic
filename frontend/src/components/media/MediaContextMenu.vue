@@ -109,6 +109,21 @@
           </button>
         </div>
 
+        <!-- Edit (single image only): opens the asset's own edit mode, the
+             Darkroom. Editing is a primary action on an image, not a routing
+             operation, so it leads the menu. -->
+        <button
+          v-if="isImage && !isMultiple"
+          @click="handleEditImage"
+          class="w-full px-3 py-2 text-left text-xs text-content hover:bg-overlay-subtle flex items-center gap-2"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 flex-shrink-0 text-content-tertiary">
+            <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
+          </svg>
+          <span>Edit</span>
+        </button>
+        <div v-if="isImage && !isMultiple" class="border-t border-edge-subtle my-1"></div>
+
         <!-- Tags -->
         <button
           @click="handleEditTags"
@@ -279,18 +294,6 @@
         </template>
 
         <div class="border-t border-edge-subtle my-1"></div>
-
-        <!-- Send to Darkroom (single image only) -->
-        <button
-          v-if="isImage && !isMultiple"
-          @click="handleEditImage"
-          class="w-full px-3 py-2 text-left text-xs text-content hover:bg-overlay-subtle flex items-center gap-2"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 flex-shrink-0 text-content-tertiary">
-            <path d="M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z" />
-          </svg>
-          <span>Send to Darkroom</span>
-        </button>
 
         <!-- Create Set (multiple atomic items only) -->
         <button

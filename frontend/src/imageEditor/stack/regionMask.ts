@@ -227,6 +227,22 @@ export function gradientToolKind(tool: string | null): 'linear' | 'radial' | nul
 }
 
 /**
+ * Whether gradient chrome represents something the user can honestly edit.
+ *
+ * A persisted adjustment owns its mask, so its handles remain live whenever
+ * that step is selected. A workspace gradient is only the scope for a future
+ * destructive action, so its handles appear while its matching selection tool
+ * is armed — never as though they still owned pixels already painted.
+ */
+export function shouldShowGradientChrome(
+  mask: GradientMask,
+  armedTool: string | null,
+  ownsRenderedResult: boolean,
+): boolean {
+  return ownsRenderedResult || gradientToolKind(armedTool) === mask.kind
+}
+
+/**
  * The one slider a gradient brings to the island's fixed slot. Linear ramps
  * ease; ellipses feather. They are the same idea and deliberately not the same
  * number, because 100% feather on an ellipse still has an edge and 100%

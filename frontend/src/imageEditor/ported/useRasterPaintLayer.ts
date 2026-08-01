@@ -20,6 +20,12 @@ import {
 } from './pixelOps';
 import { advanceStroke } from './strokeSpacing';
 import { applyLocalBlur, applyLocalSharpen } from './imageFilters';
+import type { GradientPaint } from './shapeTypes';
+import type { PaintGradientType } from '../stack/paintEngineSettings';
+import {
+  rasterGradientStops,
+  reflectedGradientStops,
+} from '../stack/rasterGradient';
 
 /**
  * Composable for managing one raster Paint layer.
@@ -492,8 +498,12 @@ export function useRasterPaintLayer() {
           b = destPixels[i + 2] * existingAlpha + srcPixels[i + 2] * (1 - existingAlpha);
         }
 
-        // Adjust luminosity
-        const adjusted = adjustLuminosity(r, g, b, amount * maskAlpha, range);
+        // The dab bakes the FULL-strength adjustment; maskAlpha (brush shape ×
+        // flow × pen pressure) attenuates it through the compositing alpha
+        // below. Committed Retouch regions re-render parametrically as
+        // full-strength adjustment × mask, so scaling the amount here too
+        // would double-attenuate and make the stroke change on release.
+        const adjusted = adjustLuminosity(r, g, b, amount, range);
 
         // Write to Paint layer
         const srcA = maskAlpha;
@@ -573,8 +583,9 @@ export function useRasterPaintLayer() {
           b = destPixels[i + 2] * existingAlpha + srcPixels[i + 2] * (1 - existingAlpha);
         }
 
-        // Adjust saturation
-        const adjusted = adjustSaturation(r, g, b, amount * maskAlpha);
+        // Full-strength adjustment, attenuated only via compositing alpha —
+        // mirrors the committed region's parametric render (see dodge/burn).
+        const adjusted = adjustSaturation(r, g, b, amount);
 
         // Write to Paint layer
         const srcA = maskAlpha;
@@ -808,84 +819,137 @@ export function useRasterPaintLayer() {
   }
 
   /**
-   * Apply flood fill at position (paint bucket tool)
+   * Flat fill: the selection (feather and all), or the whole layer without
+   * one. No sampling, no tolerance — region-finding belongs to the selection
+   * tools; this just lays color into whatever region they made.
    */
-  function applyFloodFill(
-    sourceCanvas: HTMLCanvasElement,
-    point: Point,
-    color: { r: number; g: number; b: number; a?: number },
-    tolerance: number = 32
+  function applyFlatFill(color: { r: number; g: number; b: number; a?: number }): void {
+    const ctx = layerCtx.value;
+    const size = layerSize.value;
+    if (!ctx || !size) return;
+    ctx.save();
+    if (selectionMaskCtx) {
+      // The mask's alpha becomes the fill's alpha: source-in keeps the fill
+      // color and multiplies in the mask coverage, so feathered edges land
+      // feathered.
+      ctx.drawImage(selectionMaskCtx.canvas, 0, 0);
+      ctx.globalCompositeOperation = 'source-in';
+    }
+    ctx.fillStyle = `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a ?? 1})`;
+    ctx.fillRect(0, 0, size.width, size.height);
+    ctx.restore();
+  }
+
+  /**
+   * Gradient fill for one canvas drag. The start/end geometry is authored in
+   * image pixels; the active selection clips the result after the spectrum is
+   * rendered so feathered selection edges retain their coverage.
+   */
+  function applyGradientFill(
+    paint: GradientPaint,
+    start: Point,
+    end: Point,
+    type: PaintGradientType,
+    reverse = false,
+    preview = false,
   ): void {
-    if (!layerCtx.value) return;
+    const ctx = layerCtx.value;
+    const size = layerSize.value;
+    if (!ctx || !size) return;
 
-    const sourceCtx = sourceCanvas.getContext('2d');
-    if (!sourceCtx) return;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const extent = Math.hypot(dx, dy);
+    if (extent < 0.5) return;
 
-    const width = sourceCanvas.width;
-    const height = sourceCanvas.height;
+    const colorCss = (color: { r: number; g: number; b: number; a?: number }) =>
+      `rgba(${color.r}, ${color.g}, ${color.b}, ${color.a ?? 1})`;
+    const addStops = (gradient: CanvasGradient, reflected = false) => {
+      const stops = reflected
+        ? reflectedGradientStops(paint, reverse)
+        : rasterGradientStops(paint, reverse);
+      for (const stop of stops) gradient.addColorStop(stop.offset, colorCss(stop.color));
+    };
 
-    const x = Math.floor(point.x);
-    const y = Math.floor(point.y);
+    ctx.clearRect(0, 0, size.width, size.height);
+    ctx.save();
 
-    if (x < 0 || x >= width || y < 0 || y >= height) return;
-
-    // Get source image data
-    const sourceData = sourceCtx.getImageData(0, 0, width, height);
-    const srcPixels = sourceData.data;
-
-    // Get target color at click point
-    const startIdx = (y * width + x) * 4;
-    const targetR = srcPixels[startIdx];
-    const targetG = srcPixels[startIdx + 1];
-    const targetB = srcPixels[startIdx + 2];
-
-    // Get Paint layer data
-    const layerData = layerCtx.value.getImageData(0, 0, width, height);
-    const layerPixels = layerData.data;
-
-    // Create visited array
-    const visited = new Uint8Array(width * height);
-
-    // Flood fill using queue
-    const queue: Array<[number, number]> = [[x, y]];
-    const colorAlpha = color.a ?? 1;
-
-    function colorMatch(idx: number): boolean {
-      const dr = srcPixels[idx] - targetR;
-      const dg = srcPixels[idx + 1] - targetG;
-      const db = srcPixels[idx + 2] - targetB;
-      return Math.sqrt(dr * dr + dg * dg + db * db) <= tolerance * 1.732;
+    if (type === 'diamond') {
+      const stops = rasterGradientStops(paint, reverse);
+      // Canvas has no diamond gradient primitive. Render exact L1 distance;
+      // cap only the live preview, then render at source resolution on release.
+      const previewScale = preview
+        ? Math.min(1, 768 / Math.max(size.width, size.height))
+        : 1;
+      const width = Math.max(1, Math.round(size.width * previewScale));
+      const height = Math.max(1, Math.round(size.height * previewScale));
+      const diamond = document.createElement('canvas');
+      diamond.width = width;
+      diamond.height = height;
+      const diamondCtx = diamond.getContext('2d')!;
+      const pixels = diamondCtx.createImageData(width, height);
+      const sx = start.x * previewScale;
+      const sy = start.y * previewScale;
+      const radius = extent * previewScale;
+      const angle = Math.atan2(dy, dx);
+      const ux = Math.cos(angle);
+      const uy = Math.sin(angle);
+      const vx = -uy;
+      const vy = ux;
+      const stopMax = stops.length - 1;
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const px = x + 0.5 - sx;
+          const py = y + 0.5 - sy;
+          const t = Math.min(1, (Math.abs(px * ux + py * uy) + Math.abs(px * vx + py * vy)) / radius);
+          const position = t * stopMax;
+          const leftIndex = Math.min(stopMax, Math.floor(position));
+          const rightIndex = Math.min(stopMax, leftIndex + 1);
+          const mix = position - leftIndex;
+          const left = stops[leftIndex].color;
+          const right = stops[rightIndex].color;
+          const offset = (y * width + x) * 4;
+          pixels.data[offset] = Math.round(left.r + (right.r - left.r) * mix);
+          pixels.data[offset + 1] = Math.round(left.g + (right.g - left.g) * mix);
+          pixels.data[offset + 2] = Math.round(left.b + (right.b - left.b) * mix);
+          pixels.data[offset + 3] = Math.round(
+            ((left.a ?? 1) + ((right.a ?? 1) - (left.a ?? 1)) * mix) * 255,
+          );
+        }
+      }
+      diamondCtx.putImageData(pixels, 0, 0);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(diamond, 0, 0, size.width, size.height);
+    } else {
+      let gradient: CanvasGradient;
+      if (type === 'radial') {
+        gradient = ctx.createRadialGradient(start.x, start.y, 0, start.x, start.y, extent);
+        addStops(gradient);
+      } else if (type === 'angle') {
+        gradient = ctx.createConicGradient(Math.atan2(dy, dx), start.x, start.y);
+        addStops(gradient);
+      } else if (type === 'reflected') {
+        gradient = ctx.createLinearGradient(
+          start.x - dx,
+          start.y - dy,
+          start.x + dx,
+          start.y + dy,
+        );
+        addStops(gradient, true);
+      } else {
+        gradient = ctx.createLinearGradient(start.x, start.y, end.x, end.y);
+        addStops(gradient);
+      }
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size.width, size.height);
     }
 
-    while (queue.length > 0) {
-      const [cx, cy] = queue.shift()!;
-
-      if (cx < 0 || cx >= width || cy < 0 || cy >= height) continue;
-
-      const pixelIdx = cy * width + cx;
-      if (visited[pixelIdx]) continue;
-
-      const idx = pixelIdx * 4;
-      if (!colorMatch(idx)) continue;
-
-      // Check selection mask
-      const selectionAlpha = getSelectionAlpha(cx, cy);
-      if (selectionAlpha === 0) continue;
-
-      visited[pixelIdx] = 1;
-
-      // Fill this pixel on Paint layer (blend with selection alpha)
-      const finalAlpha = colorAlpha * selectionAlpha;
-      layerPixels[idx] = color.r;
-      layerPixels[idx + 1] = color.g;
-      layerPixels[idx + 2] = color.b;
-      layerPixels[idx + 3] = finalAlpha * 255;
-
-      // Add neighbors
-      queue.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+    if (selectionMaskCtx) {
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.drawImage(selectionMaskCtx.canvas, 0, 0);
     }
-
-    layerCtx.value.putImageData(layerData, 0, 0);
+    ctx.restore();
   }
 
   /**
@@ -944,7 +1008,8 @@ export function useRasterPaintLayer() {
     applyBlurBrush,
     applySharpenBrush,
     applyPaintBrush,
-    applyFloodFill,
+    applyFlatFill,
+    applyGradientFill,
     applyPatchTool,
     setSelectionMask,
     startStroke,

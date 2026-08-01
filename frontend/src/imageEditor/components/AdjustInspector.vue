@@ -13,10 +13,11 @@
  */
 import { computed, ref } from 'vue'
 import {
-  ADJUST_SECTIONS, adjustControl, effectLookStepOf, levelEditById,
+  ADJUST_SECTIONS, adjustControl, effectLookStepOf, levelEditById, lookById,
 } from '../stack/adjustSections'
 import type { AdjustSliderControl } from '../stack/adjustSections'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
+import LookControls from './LookControls.vue'
 import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
 
 const props = defineProps<{
@@ -65,13 +66,18 @@ const levelEdit = computed(() =>
   props.params?.section ? levelEditById(props.params.section) ?? null : null
 )
 
+/** A Looks step: the strip wrote a bundle and named which look it was. */
+const look = computed(() =>
+  props.params?.look ? lookById(props.params.look) ?? null : null
+)
+
 /**
  * A pixel-look step from the strip: shown as Amount plus the look's own
  * supporting dials. A migrated blob that happens to carry the key never
  * matches and keeps its full surface.
  */
 const effectLook = computed(() => {
-  if (levelEdit.value) return null
+  if (levelEdit.value || look.value) return null
   return effectLookStepOf(props.params || {}) ?? null
 })
 
@@ -92,7 +98,7 @@ const filterOnly = computed(() =>
 
 /** Migrated blob steps keep the old collapsible everything-surface. */
 const legacySections = computed(() => {
-  if (levelEdit.value || effectLook.value || filterOnly.value) return null
+  if (levelEdit.value || look.value || effectLook.value || filterOnly.value) return null
   return ADJUST_SECTIONS
 })
 
@@ -148,6 +154,23 @@ const openSection = ref<string>('levels')
         <span class="w-8 text-right tabular-nums">{{ valueOf(control) }}</span>
       </label>
     </section>
+
+    <!-- A Looks step: the groups the look moved, under their own headers. -->
+    <LookControls
+      v-if="look"
+      :values="params"
+      :label="look.label"
+      :histogram="histogram"
+      :disabled="disabled"
+      :picking="picking"
+      :clip-shadows="clipShadows"
+      :clip-highlights="clipHighlights"
+      coalesce-prefix="adjust"
+      @change="setPhotoValue"
+      @commit="emit('commit')"
+      @pick="emit('pick')"
+      @clip="emit('clip', $event)"
+    />
 
     <!-- A Light / Color / Detail step: its own sliders, flat — the set is small
          enough that hiding it behind a header would just be a click tax. -->

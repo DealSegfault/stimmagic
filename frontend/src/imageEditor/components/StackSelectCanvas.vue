@@ -31,6 +31,7 @@ import {
   isDegenerate,
   linearMaskFromDrag,
   radialMaskFromDrag,
+  shouldShowGradientChrome,
 } from '../stack/regionMask'
 import type { GradientMask } from '../stack/types'
 
@@ -64,6 +65,8 @@ const props = withDefaults(defineProps<{
    * after you have seen the grade is not the feature.
    */
   gradient?: GradientMask | null
+  /** True when the selected Adjust region owns the rendered result. */
+  gradientOwnsResult?: boolean
   /** Falloff a newly dragged ramp starts with, from the island's slider. */
   gradientSoftness?: number
   gradientFeather?: number
@@ -78,6 +81,7 @@ const props = withDefaults(defineProps<{
   brushSize: 80,
   visible: true,
   gradient: null,
+  gradientOwnsResult: false,
   gradientSoftness: DEFAULT_LINEAR_SOFTNESS,
   gradientFeather: DEFAULT_RADIAL_FEATHER,
 })
@@ -136,6 +140,13 @@ const shownGradient = computed<GradientMask | null>(
   () => draftGradient.value ?? handleDraft.value ?? props.gradient
 )
 
+/** Workspace selection chrome is tool-scoped; adjustment chrome is step-owned. */
+const gradientChromeVisible = computed(() => {
+  const mask = shownGradient.value
+  return !!mask && props.visible
+    && shouldShowGradientChrome(mask, props.armed, props.gradientOwnsResult)
+})
+
 const scale = computed(() =>
   props.source ? props.source.width / Math.max(1, props.displayWidth) : 1
 )
@@ -164,6 +175,10 @@ function publish(applyFeather = true) {
 
 function onPointerDown(event: PointerEvent) {
   if (!props.source || !props.armed) return
+  // A pen's barrel buttons press the same pointer the gesture is using. Left
+  // unguarded they restart the selection mid-drag, throwing away the lasso or
+  // marquee in progress.
+  if (event.button !== 0) return
   const point = pointFrom(event)
 
   // Object select is a click, not a drag: hand the point to the host and let
@@ -253,6 +268,8 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp(event: PointerEvent) {
+  // A barrel-button release is not the end of the drag; the tip is still down.
+  if (event.button !== 0) return
   if (!drawing || !props.armed) return
   const point = pointFrom(event)
   overlay.value?.releasePointerCapture(event.pointerId)
@@ -344,7 +361,7 @@ function gradientHandles(mask: GradientMask): Array<{ id: HandleId; x: number; y
 /** Handle positions in DISPLAY pixels, for the DOM grab targets. */
 const handlePoints = computed(() => {
   const mask = shownGradient.value
-  if (!mask || !props.visible) return []
+  if (!mask || !gradientChromeVisible.value) return []
   return gradientHandles(mask).map(handle => ({
     id: handle.id,
     left: handle.x / scale.value,
@@ -434,6 +451,8 @@ function draw() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   if (!props.visible) return
 
+  drawGradientDragPreview(ctx)
+
   // Live feedback for a brush gesture: rasterize the path opaquely first, then
   // apply one translucent wash. Stroking with the translucent color directly
   // makes self-overlaps visibly darker even though they are one selection.
@@ -467,20 +486,23 @@ function draw() {
   ctx.save()
   ctx.lineWidth = Math.max(1, scale.value)
 
-  // The committed selection: the model's own marching-ants paths.
-  for (const path of selection.marchingAntsPaths.value) {
-    if (path.length < 2) continue
-    ctx.beginPath()
-    ctx.moveTo(path[0].x, path[0].y)
-    for (const point of path.slice(1)) ctx.lineTo(point.x, point.y)
-    ctx.closePath()
-    ctx.strokeStyle = '#000'
-    ctx.setLineDash([])
-    ctx.stroke()
-    ctx.strokeStyle = '#fff'
-    ctx.setLineDash([5 * scale.value, 5 * scale.value])
-    ctx.lineDashOffset = -selection.antsOffset.value
-    ctx.stroke()
+  // A parametric gradient keeps its guides and handles instead of degrading
+  // to the outline of its raster fallback. Ordinary selections keep ants.
+  if (!shownGradient.value) {
+    for (const path of selection.marchingAntsPaths.value) {
+      if (path.length < 2) continue
+      ctx.beginPath()
+      ctx.moveTo(path[0].x, path[0].y)
+      for (const point of path.slice(1)) ctx.lineTo(point.x, point.y)
+      ctx.closePath()
+      ctx.strokeStyle = '#000'
+      ctx.setLineDash([])
+      ctx.stroke()
+      ctx.strokeStyle = '#fff'
+      ctx.setLineDash([5 * scale.value, 5 * scale.value])
+      ctx.lineDashOffset = -selection.antsOffset.value
+      ctx.stroke()
+    }
   }
 
   // The gesture in progress.
@@ -534,6 +556,7 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
   if (!mask || !props.visible) return
   const canvas = ctx.canvas
   const line = Math.max(1, scale.value)
+  const interactive = gradientChromeVisible.value
 
   ctx.save()
   ctx.beginPath()
@@ -542,6 +565,10 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
   // Teal accent. Canvas takes no design tokens, so this matches --accent the
   // way the ants above match plain white.
   ctx.strokeStyle = '#2dd4bf'
+  // A workspace selection remains legible after Paint takes the pointer, but
+  // quieter chrome plus no handles makes it clear that the pixels underneath
+  // are not being edited parametrically.
+  ctx.globalAlpha = interactive ? 1 : 0.48
   ctx.lineWidth = line
 
   if (mask.kind === 'linear') {
@@ -563,7 +590,7 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
     rail(mask.x1, mask.y1, false)
     rail(mask.x2, mask.y2, true)
     ctx.setLineDash([])
-    ctx.globalAlpha = 0.55
+    ctx.globalAlpha = interactive ? 0.55 : 0.28
     ctx.beginPath()
     ctx.moveTo(mask.x1, mask.y1)
     ctx.lineTo(mask.x2, mask.y2)
@@ -576,10 +603,73 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
     // The inner ring is where the feather starts, so the falloff is legible.
     const inner = 1 - Math.max(0.02, Math.min(1, mask.feather / 100))
     ctx.setLineDash([])
-    ctx.globalAlpha = 0.45
+    ctx.globalAlpha = interactive ? 0.45 : 0.24
     ctx.beginPath()
     ctx.ellipse(mask.cx, mask.cy, mask.rx * inner, mask.ry * inner, 0, 0, Math.PI * 2)
     ctx.stroke()
+  }
+  ctx.restore()
+}
+
+/**
+ * Preview coverage only while geometry is moving. Once the pointer is
+ * released, the wash drops away and the guides become the selection readout;
+ * after Paint takes the pointer those guides remain, without editable handles.
+ * Native canvas gradients keep pointer-move feedback cheap at full resolution.
+ */
+function drawGradientDragPreview(ctx: CanvasRenderingContext2D) {
+  const mask = shownGradient.value
+  if (
+    !mask
+    || props.gradientOwnsResult
+    || props.armed !== mask.kind
+    || (!draftGradient.value && !handleDraft.value)
+  ) return
+
+  const colorAt = (coverage: number) =>
+    `rgba(45, 212, 191, ${Math.max(0, Math.min(1, coverage)) * 0.22})`
+
+  ctx.save()
+  if (mask.kind === 'linear') {
+    if (Math.hypot(mask.x2 - mask.x1, mask.y2 - mask.y1) < 1) {
+      ctx.restore()
+      return
+    }
+    const gradient = ctx.createLinearGradient(mask.x1, mask.y1, mask.x2, mask.y2)
+    const ease = Math.max(0, Math.min(1, mask.softness / 100))
+    // Sample the eased ramp into native color stops. Canvas interpolates the
+    // short gaps on the GPU instead of rasterising the whole mask in JS.
+    for (let step = 0; step <= 12; step++) {
+      const t = step / 12
+      const smooth = t * t * (3 - 2 * t)
+      const ramp = smooth * ease + t * (1 - ease)
+      gradient.addColorStop(t, colorAt(1 - ramp))
+    }
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+  } else {
+    if (mask.rx < 1 || mask.ry < 1) {
+      ctx.restore()
+      return
+    }
+    const gradient = ctx.createRadialGradient(0, 0, 0, 0, 0, 1)
+    const feather = Math.max(0.02, Math.min(1, mask.feather / 100))
+    const inner = 1 - feather
+    for (let step = 0; step <= 12; step++) {
+      const distance = step / 12
+      const t = Math.max(0, Math.min(1, (distance - inner) / feather))
+      const inside = 1 - t * t * (3 - 2 * t)
+      gradient.addColorStop(distance, colorAt(mask.invert ? 1 - inside : inside))
+    }
+    ctx.translate(mask.cx, mask.cy)
+    ctx.scale(mask.rx, mask.ry)
+    ctx.fillStyle = gradient
+    ctx.fillRect(
+      -mask.cx / mask.rx,
+      -mask.cy / mask.ry,
+      ctx.canvas.width / mask.rx,
+      ctx.canvas.height / mask.ry,
+    )
   }
   ctx.restore()
 }
@@ -607,6 +697,12 @@ function invert() {
   publish(false)
 }
 
+/** Grow/contract the live workspace mask, then publish it like any gesture. */
+function morph(deltaPx: number) {
+  selection.morph(deltaPx)
+  publish(false)
+}
+
 /**
  * Land an externally produced mask (AI select) as this gesture's selection,
  * through the same combine-and-publish path a drawn gesture takes.
@@ -614,6 +710,16 @@ function invert() {
 function applyMask(mask: CanvasImageSource, mode: SelectionMode) {
   selection.applyMaskCanvas(mask, mode)
   publish()
+}
+
+/** Re-rasterize a live workspace gradient after a handle or slider edit. */
+function replaceGradient(mask: GradientMask) {
+  if (!props.source) return
+  selection.applyMaskCanvas(
+    gradientMaskCanvas(mask, props.source.width, props.source.height),
+    'new',
+  )
+  publish(false)
 }
 
 function resize() {
@@ -630,7 +736,9 @@ function resize() {
 defineExpose({
   clear,
   invert,
+  morph,
   applyMask,
+  replaceGradient,
   redraw: draw,
   selectionCanvas: () => (selection.hasSelection() ? selection.getSelectionMask() : null),
 })
@@ -650,10 +758,17 @@ watch(() => props.armed, armed => {
 // The saved gradient is the host's value; its guides must follow it whether it
 // moved by handle, by slider, or by undo.
 watch(() => props.gradient, draw, { deep: true })
+watch(() => props.gradientOwnsResult, draw)
 watch(() => props.visible, draw)
 // Marching ants animate whenever there IS a selection, not only while drawing.
-watch([() => selection.marchingAntsPaths.value.length, () => props.visible], ([length, visible]) => {
-  if (length && visible) startAnts()
+watch([
+  () => selection.marchingAntsPaths.value.length,
+  () => props.visible,
+  () => !!props.gradient,
+], ([length, visible, hasGradient]) => {
+  // Gradient selections have stationary guides/coverage instead of ants, so
+  // they should not keep an otherwise invisible 11fps animation timer alive.
+  if (length && visible && !hasGradient) startAnts()
   else stopAnts()
 }, { immediate: true })
 onMounted(resize)

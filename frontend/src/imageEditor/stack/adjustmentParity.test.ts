@@ -36,10 +36,9 @@ function dependencyFor(key: string): Record<string, any> {
   return {}
 }
 
-test('every shared control reaches whole-image, masked and GPU render parameters', () => {
+test('every shared control reaches whole-image and masked render parameters', () => {
   for (const control of PHOTO_ADJUSTMENT_CONTROLS) {
     const dependency = dependencyFor(control.key)
-    const baseline = { ...dependency }
     const changed = { ...dependency, [control.key]: changedValue(control) }
     const whole = wholeImageAdjustmentParams(changed)
     const masked = maskedRetouchAdjustmentParams(changed)
@@ -54,11 +53,36 @@ test('every shared control reaches whole-image, masked and GPU render parameters
       changed[control.key],
       `${control.key} did not reach authoritative masked rendering`,
     )
-    assert.notDeepEqual(
-      buildLiveAdjustUniforms(changed, baseline),
-      buildLiveAdjustUniforms(baseline, baseline),
-      `${control.key} did not reach GPU drag preview`,
-    )
+  }
+})
+
+/**
+ * The GPU preview mirrors the photographic pipeline, not the effects one, so a
+ * handful of controls only appear when the drag commits. That is declared on
+ * the control as `commitOnly`, and asserted BOTH ways: an unflagged control
+ * must reach the shader, and a flagged one must not. The second direction is
+ * what keeps the list from rotting — teaching the shader vignette forces the
+ * flag off in the same change rather than leaving a stale exemption behind.
+ */
+test('the GPU drag preview covers exactly the controls not marked commit-only', () => {
+  for (const control of PHOTO_ADJUSTMENT_CONTROLS) {
+    const dependency = dependencyFor(control.key)
+    const baseline = { ...dependency }
+    const changed = { ...dependency, [control.key]: changedValue(control) }
+    const reaches = JSON.stringify(buildLiveAdjustUniforms(changed, baseline))
+      !== JSON.stringify(buildLiveAdjustUniforms(baseline, baseline))
+
+    if (control.kind !== 'curve' && control.commitOnly) {
+      assert.equal(
+        reaches, false,
+        `${control.key} is marked commit-only but reaches the GPU drag preview`,
+      )
+    } else {
+      assert.equal(
+        reaches, true,
+        `${control.key} did not reach GPU drag preview`,
+      )
+    }
   }
 })
 

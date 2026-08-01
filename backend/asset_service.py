@@ -195,6 +195,7 @@ async def commit_revision(
     note: Optional[str] = None,
     idempotency_key: Optional[str] = None,
     allow_inactive: bool = False,
+    autosave: bool = False,
 ) -> AssetRevision:
     """Save Media as a new immutable revision and make it current.
 
@@ -238,6 +239,7 @@ async def commit_revision(
         primary_media_id=media_id,
         revision_number=(highest_number or 0) + 1,
         note=note,
+        autosave=autosave,
     )
     session.add(revision)
     await session.flush()
@@ -253,6 +255,50 @@ async def commit_revision(
     asset.updated_at = datetime.utcnow()
     await session.flush()
     return revision
+
+
+async def retire_autosave_revision(
+    session: AsyncSession, revision: AssetRevision
+) -> None:
+    """Swallow an autosave Revision that a newer commit has replaced.
+
+    Autosaves are working state made visible, not history: at most one lives at
+    the head of a chain, so the next commit from the same parent retires it
+    along with its retention edges. The Media loses its revision owner and is
+    reaped like any other unowned payload; other owners (containers, exports)
+    keep it alive if they exist.
+    """
+    now = datetime.utcnow()
+    revision.deleted_at = now
+    owners = await session.scalars(
+        select(MediaOwner).where(
+            MediaOwner.root_kind == "asset_revision",
+            MediaOwner.root_id == str(revision.id),
+            MediaOwner.deleted_at.is_(None),
+        )
+    )
+    for owner in owners:
+        owner.deleted_at = now
+    snapshots = list(await session.scalars(
+        select(AssetSnapshot).where(
+            AssetSnapshot.owner_kind == "revision",
+            AssetSnapshot.owner_id == str(revision.id),
+            AssetSnapshot.deleted_at.is_(None),
+        )
+    ))
+    if snapshots:
+        snapshot_owners = await session.scalars(
+            select(MediaOwner).where(
+                MediaOwner.root_kind == "asset_snapshot",
+                MediaOwner.root_id.in_([str(s.id) for s in snapshots]),
+                MediaOwner.deleted_at.is_(None),
+            )
+        )
+        for owner in snapshot_owners:
+            owner.deleted_at = now
+        for snapshot in snapshots:
+            snapshot.deleted_at = now
+    await session.flush()
 
 
 async def commit_artifact_revision(

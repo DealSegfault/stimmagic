@@ -97,6 +97,13 @@ export interface SubmitRequest {
   sampledInputHash: string
   /** Complete affine from the submitted input frame into document space. */
   payloadToDocument?: number[]
+  /**
+   * Defaults true: a patch only composites on the pixel grid it was sampled
+   * from. Expand submits false — the outpaint tool computes its own (larger)
+   * output size from the percent params, and the mask's dimensions carry the
+   * expected size for the ingest check instead.
+   */
+  lockResolution?: boolean
 }
 
 /** A single run whose whole output is the result — the output stage's upscale. */
@@ -299,7 +306,7 @@ export function useStackCandidates(deps: {
         params: request.params,
         referenceImages: request.referenceImages,
         maskCanvas: request.maskCanvas,
-        lockResolution: true,
+        lockResolution: request.lockResolution ?? true,
       })
 
       for (let i = 0; i < count; i++) {

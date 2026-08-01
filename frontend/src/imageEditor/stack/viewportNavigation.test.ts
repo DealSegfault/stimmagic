@@ -3,8 +3,10 @@ import test from 'node:test'
 
 import {
   clampViewportPan,
+  isZoomWheelGesture,
   panForWheelDelta,
   panForZoomAtPoint,
+  wheelPanDelta,
 } from '../ported/viewportNavigation.ts'
 
 test('fit view is always centred', () => {
@@ -42,5 +44,29 @@ test('two-axis wheel scrolling pans the canvas', () => {
   assert.deepEqual(
     panForWheelDelta({ x: 25, y: -10 }, { x: 12, y: -8 }),
     { x: 13, y: -2 },
+  )
+})
+
+test('Lightroom-style zoom requires a pinch or keyboard modifier', () => {
+  assert.equal(isZoomWheelGesture({ ctrlKey: false, metaKey: false }), false)
+  assert.equal(isZoomWheelGesture({ ctrlKey: true, metaKey: false }), true)
+  assert.equal(isZoomWheelGesture({ ctrlKey: false, metaKey: true }), true)
+})
+
+test('wheel and two-finger deltas normalize as pan input', () => {
+  assert.deepEqual(
+    wheelPanDelta({ x: 2.5, y: 7 }, 0, { width: 800, height: 600 }),
+    { x: 2.5, y: 7 },
+  )
+  assert.deepEqual(
+    wheelPanDelta({ x: 0, y: 3 }, 1, { width: 800, height: 600 }),
+    { x: 0, y: 48 },
+  )
+})
+
+test('shift-wheel pans horizontally like Lightroom', () => {
+  assert.deepEqual(
+    wheelPanDelta({ x: 0, y: 3 }, 1, { width: 800, height: 600 }, true),
+    { x: 48, y: 0 },
   )
 })

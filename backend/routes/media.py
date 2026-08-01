@@ -1803,6 +1803,9 @@ async def create_set_from_media(
 # IMAGE EDITOR ENDPOINTS
 # ============================================================================
 
+IMAGE_EDITOR_TOOL_ID = "builtin:stimma:image-editor"
+
+
 class SaveEditResponse(BaseModel):
     """Response for saving an edited image."""
     media_id: int
@@ -1817,6 +1820,7 @@ async def save_edited_image(
     source_media_id: int = Form(...),
     asset_id: int = Form(...),
     save_as_new: bool = Form(False),
+    autosave: bool = Form(False),
     base_revision_id: Optional[int] = Form(None),
     working_document_id: int = Form(...),
     stack_summary: Optional[str] = Form(None),
@@ -1824,6 +1828,12 @@ async def save_edited_image(
 ):
     """
     Commit an edited image as a Revision, or as a new Asset for Save As New.
+
+    ``autosave`` commits are made on leaving the editor so the Asset always
+    shows its current edit state. Consecutive commits from the same base
+    coalesce — the previous autosave head is swallowed — and an autosave never
+    branches: if something else advanced the Asset past the stack's lineage,
+    it declines with 409 rather than silently taking the head.
 
     This endpoint:
     1. Validates the source media exists
@@ -1929,14 +1939,51 @@ async def save_edited_image(
                 raise HTTPException(status_code=400, detail="Invalid base Revision")
             parent_revision = requested_parent
 
+        swallowed_autosave = None
+        if not save_as_new:
+            head = source_revision
+            # Saves from a stack are siblings off the stack's base, so an
+            # editor-made head that shares this commit's parent (or IS the
+            # parent) is this document's own lineage. Anything else got there
+            # some other way.
+            same_lineage = head.id == parent_revision.id
+            if not same_lineage and head.parent_revision_id == parent_revision.id:
+                if head.autosave:
+                    same_lineage = True
+                else:
+                    head_media = await session.get(MediaItem, head.primary_media_id)
+                    same_lineage = (
+                        head_media is not None
+                        and head_media.tool_id == IMAGE_EDITOR_TOOL_ID
+                    )
+            if autosave and not same_lineage:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The Asset has newer changes",
+                )
+            if (
+                head.autosave
+                and head.id != parent_revision.id
+                and head.parent_revision_id == parent_revision.id
+            ):
+                # Another working document rooted at this head keeps it alive.
+                based_on_head = await session.scalar(
+                    select(WorkingDocument.id).where(
+                        WorkingDocument.base_revision_id == head.id,
+                        WorkingDocument.deleted_at.is_(None),
+                    )
+                )
+                if based_on_head is None:
+                    swallowed_autosave = head
+
         await record_lineage(
             session=session,
             media_id=db_media_item.id,
             source_media_ids=[source_media_id],
             task_type="image-to-image"
         )
-        db_media_item.tool_id = "builtin:stimma:image-editor"
-        await propagate_tool_lineage(session, db_media_item.id, [source_media_id], own_tool_id="builtin:stimma:image-editor")
+        db_media_item.tool_id = IMAGE_EDITOR_TOOL_ID
+        await propagate_tool_lineage(session, db_media_item.id, [source_media_id], own_tool_id=IMAGE_EDITOR_TOOL_ID)
 
         # Set generation_metadata for lineage display in frontend. The op-stack
         # editor also records which ops actually ran, following the chains
@@ -1946,7 +1993,7 @@ async def save_edited_image(
         db_media_item.generation_metadata = dump_generation_metadata(
             task_type="image-to-image",
             source="stimma",
-            tool_id="builtin:stimma:image-editor",
+            tool_id=IMAGE_EDITOR_TOOL_ID,
             parameters={"stack": parsed_stack_summary} if parsed_stack_summary else None,
             source_inputs=[{
                 "media_id": source_media_id,
@@ -1964,6 +2011,7 @@ async def save_edited_image(
             create_asset_from_media,
             create_asset_snapshot,
             create_working_document,
+            retire_autosave_revision,
         )
         if save_as_new:
             target_asset = await create_asset_from_media(
@@ -1982,10 +2030,13 @@ async def save_edited_image(
                 asset_id=source_asset.id,
                 media_id=db_media_item.id,
                 parent_revision_id=parent_revision.id,
-                note="Image editor save",
+                note="Edit autosave" if autosave else "Image editor save",
                 idempotency_key=f"editor-output:{db_media_item.id}:revision",
+                autosave=autosave,
             )
             target_asset = source_asset
+            if swallowed_autosave is not None:
+                await retire_autosave_revision(session, swallowed_autosave)
 
         if not save_as_new:
             # The stack keeps its own document AND its base.

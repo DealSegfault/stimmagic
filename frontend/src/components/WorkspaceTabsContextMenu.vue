@@ -38,7 +38,7 @@
         <svg class="w-4 h-4 flex-shrink-0 text-content-tertiary" fill="none" viewBox="0 0 24 24" stroke-width="1.75" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
         </svg>
-        <span>Close</span>
+        <span>{{ isEditorTab ? 'Remove' : 'Close' }}</span>
       </button>
 
       <div class="border-t border-edge-subtle my-1"></div>
@@ -49,7 +49,7 @@
         class="w-full px-3 py-2 text-left text-xs text-content hover:bg-overlay-subtle flex items-center gap-2"
       >
         <span class="w-4 h-4 flex-shrink-0"></span>
-        <span>Close Others</span>
+        <span>{{ isEditorTab ? 'Remove Others' : 'Close Others' }}</span>
       </button>
 
       <!-- Close All Unpinned -->
@@ -186,6 +186,10 @@ const { allTabs, findNextTab, removeTab, pinTab, unpinTab, closeOthers, closeAll
 const { getLastProjectRoute } = useProjectRoute()
 const { deleteBoard, restoreBoard, updateBoard } = useMediaApi()
 const { addToast } = useToasts()
+
+// An editor's op stack lives on its Asset, so its entry is a shortcut: taking
+// it off the shelf removes nothing. "Close" would promise otherwise.
+const isEditorTab = computed(() => contextMenu.state.value.tabType === 'editor')
 
 const showProjectSubmenu = ref(false)
 const projectSubmenuRef = ref<HTMLElement | null>(null)

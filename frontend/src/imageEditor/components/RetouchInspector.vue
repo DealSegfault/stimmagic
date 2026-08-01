@@ -7,9 +7,10 @@
  */
 import { computed } from 'vue'
 import type { GradientMask, RetouchRegion, RetouchRegionSettings } from '../stack/types'
-import { photoAdjustmentGroup } from '../stack/adjustSections'
+import { adjustControl, lookById, photoAdjustmentGroup } from '../stack/adjustSections'
 import { gradientSliderOf, isGradientMask, withGradientSlider } from '../stack/regionMask'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
+import LookControls from './LookControls.vue'
 import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
 import {
   FEATHER_SLIDER_MAX,
@@ -76,13 +77,32 @@ function setFeather(region: RetouchRegion, pixels: number) {
   }, `retouch-feather:${region.id}`)
 }
 
+/** A Looks tile scoped to a selection: many groups in one region. */
+const look = computed(() =>
+  props.region.kind === 'look'
+    ? lookById(props.region.settings?.look ?? '') ?? null
+    : null
+)
+
 const isAdjustment = computed(() =>
   props.region.kind === 'adjust'
+  || props.region.kind === 'look'
   || !!photoAdjustmentGroup(props.region.kind)
 )
 const adjustmentGroup = computed(() =>
   photoAdjustmentGroup(props.region.kind === 'adjust' ? 'light' : props.region.kind)
 )
+/**
+ * Blur renders through the photographic pipeline but is not a Detail-group
+ * slider; a Blur-brush region still needs its amount adjustable here.
+ */
+const adjustmentControls = computed(() => {
+  const group = adjustmentGroup.value
+  if (!group) return []
+  if (props.region.kind !== 'detail') return group.controls
+  const blur = adjustControl('blur')
+  return blur ? [...group.controls, blur] : group.controls
+})
 
 function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
   emit('settings', patch, coalesceKey)
@@ -92,12 +112,33 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
 
 <template>
   <div class="p-3">
+    <!-- A scoped Looks tile: the groups it moved, same surface as the
+         whole-image version — the mask is the only difference. -->
+    <section v-if="region.kind === 'look'" class="space-y-3">
+      <h3 class="text-xs font-semibold text-content-secondary">
+        {{ look?.label ?? 'Look' }}
+      </h3>
+      <LookControls
+        :values="region.settings"
+        :label="look?.label"
+        :histogram="histogram"
+        :picking="picking"
+        :clip-shadows="clipShadows"
+        :clip-highlights="clipHighlights"
+        :coalesce-prefix="`retouch:${region.id}`"
+        @change="setPhotoValue"
+        @commit="emit('settingsCommit')"
+        @pick="emit('pick')"
+        @clip="emit('clip', $event)"
+      />
+    </section>
+
     <section v-if="isAdjustment && adjustmentGroup" class="space-y-3">
       <h3 class="text-xs font-semibold text-content-secondary">
         {{ adjustmentGroup.label }}
       </h3>
       <PhotoAdjustmentControls
-        :controls="adjustmentGroup.controls"
+        :controls="adjustmentControls"
         :values="region.settings"
         :histogram="histogram"
         :presentation="adjustmentGroup.presentation"

@@ -1,8 +1,16 @@
 /**
  * Filter preset matrices ported from the retired editor.
  *
- * The color matrices behind the filter presets. Copied rather than imported
- * so every filter surface goes through the same numbers.
+ * Two consumers, and they are NOT the same feature:
+ *
+ * 1. The post-processing chain's `filter` step, whose enum is these ids and
+ *    whose pixel math is mirrored server-side in `backend/filters/defs.py`.
+ *    That contract is persisted in saved chains, so these ids are frozen.
+ * 2. Read compatibility for editor documents that still carry a `filter`
+ *    param. The editor's Looks strip no longer writes one — a look is a bundle
+ *    of ordinary adjustment params now (see `adjustSections.ts`), which is what
+ *    lets it scope to a selection and stay editable. The names are shared
+ *    because they name the same intent, not the same arithmetic.
  */
 export const FILTER_MATRICES: Record<string, number[]> = {
   none: [
@@ -134,3 +142,30 @@ export const FILTER_MATRICES: Record<string, number[]> = {
     0, 0, 0, 1, 0,
   ],
 };
+
+/**
+ * Display names for the presets above, in the order they are offered.
+ *
+ * `none` is excluded: it is the identity entry the matrix table needs, not a
+ * preset anyone picks.
+ */
+export const FILTER_PRESET_LABELS: Array<{ id: string; label: string }> = [
+  { id: 'chrome', label: 'Chrome' },
+  { id: 'vivid', label: 'Vivid' },
+  { id: 'dramatic', label: 'Dramatic' },
+  { id: 'cold', label: 'Cold' },
+  { id: 'warm', label: 'Warm' },
+  { id: 'pastel', label: 'Pastel' },
+  { id: 'fade', label: 'Fade' },
+  { id: 'vintage', label: 'Vintage' },
+  { id: 'mono', label: 'Mono' },
+  { id: 'noir', label: 'Noir' },
+  { id: 'stark', label: 'Stark' },
+  { id: 'tri-x-400', label: 'Tri-X 400' },
+  { id: 'sepia', label: 'Sepia' },
+  { id: 'portra-400', label: 'Portra 400' },
+  { id: 'velvia', label: 'Velvia' },
+  { id: 'kodachrome', label: 'Kodachrome' },
+  { id: 'cinestill-800t', label: 'Cinestill' },
+  { id: 'polaroid-600', label: 'Polaroid' },
+];

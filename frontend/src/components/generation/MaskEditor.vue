@@ -207,10 +207,7 @@
         class="flex-shrink-0 w-10 flex items-center justify-center border-r border-edge-subtle text-content-muted hover:bg-overlay-medium hover:text-content transition-colors disabled:opacity-30 disabled:pointer-events-none"
         :title="`Contract mask by ${expandContractPercent}%`"
       >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-          <rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2" />
-          <path stroke-linecap="round" d="M9 12h6" />
-        </svg>
+        <PaintToolIcon name="maskContract" />
       </button>
       <button
         @click="expandMask(expandContractPercent)"
@@ -218,10 +215,7 @@
         class="flex-shrink-0 w-10 flex items-center justify-center border-r border-edge-subtle text-content-muted hover:bg-overlay-medium hover:text-content transition-colors disabled:opacity-30 disabled:pointer-events-none"
         :title="`Expand mask by ${expandContractPercent}%`"
       >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-          <rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2" />
-          <path stroke-linecap="round" d="M12 9v6M9 12h6" />
-        </svg>
+        <PaintToolIcon name="maskExpand" />
       </button>
       <select
         v-model.number="expandContractPercent"

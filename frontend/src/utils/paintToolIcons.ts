@@ -37,6 +37,14 @@ export const PAINT_TOOL_ICONS: Record<string, PaintToolIconDef> = {
     viewBox: '0 0 24 24',
     inner: '<path stroke-linecap="round" stroke-linejoin="round" d="M15 15l6-6m0 0l-6-6m6 6H9a6 6 0 000 12h3"/>',
   },
+  maskContract: {
+    viewBox: '0 0 24 24',
+    inner: '<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2"/><path stroke-linecap="round" d="M9 12h6"/>',
+  },
+  maskExpand: {
+    viewBox: '0 0 24 24',
+    inner: '<rect x="4" y="4" width="16" height="16" rx="1" stroke-dasharray="3 2"/><path stroke-linecap="round" d="M12 9v6M9 12h6"/>',
+  },
   zoomIn: {
     viewBox: '0 0 24 24',
     inner: '<path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607ZM10.5 7.5v6m3-3h-6"/>',

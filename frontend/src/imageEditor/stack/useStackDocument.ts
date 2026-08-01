@@ -201,10 +201,14 @@ export function useStackDocument() {
    * Record the durable boundary between working persistence and an Asset
    * commit. Saving document.json or reloading the browser never calls this.
    */
-  function markCommitted(assetId?: number, revisionId?: number) {
+  function markCommitted(assetId?: number, revisionId?: number, autosave = false) {
     if (!doc.value) return
     if (assetId !== undefined && revisionId !== undefined) {
-      doc.value.last_commit = { asset_id: assetId, revision_id: revisionId }
+      doc.value.last_commit = {
+        asset_id: assetId,
+        revision_id: revisionId,
+        ...(autosave ? { autosave: true } : {}),
+      }
     }
     setUncommittedChanges(false)
     schedulePersist()

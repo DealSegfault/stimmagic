@@ -1,20 +1,22 @@
 /**
- * The control surface for the parametric adjustment families: Adjust and
- * Filters.
+ * The control surface for Adjust, the one parametric adjustment family.
  *
  * One rule everywhere: the sub-toolbar offers what you can ADD, clicking it
- * creates a focused step, and the step's controls live in its Properties.
- * Adjust offers small single-purpose edits — Light, Color, Detail, the Autos —
- * each its own step with its own controls. Filters offers the preset strip,
- * which also carries the discrete pixel looks (VHS, Glow, Vignette…) that
- * used to hide behind an Effects dropdown: they are picked-by-eye things with
- * one strength, which is exactly what the strip is for.
+ * creates a focused step, and the step's controls live in its Properties. The
+ * bar offers the Autos, the eight adjustment groups (Light, Color, Detail,
+ * Mixer, Point color, Grading, Effects, Stylize) and the Looks strip.
  *
- * All of these still execute as ONE op kind (`adjust`) through the same fixed
- * pixel pipeline; a step simply carries only the params its doorway set.
+ * Filters used to be a second top-level family, which was always a fiction:
+ * its steps executed as the same `adjust` op through the same pipeline. What
+ * it really held was two unlike things wearing one costume — picked-by-eye
+ * LOOKS, and single-param effect dials that had no business being tiles. They
+ * are separated here: the dials became the Effects and Stylize groups, and the
+ * looks became parameter bundles. Both are now selection-aware, because both
+ * are ordinary Adjust edits.
  */
 
 import type { IconName } from '../ported/icons'
+import { FILTER_PRESET_LABELS } from '../ported/filterMatrices.ts'
 import {
   DEFAULT_TONE_CURVE,
   toneCurveValueOf,
@@ -27,9 +29,6 @@ export {
   type ToneCurve,
 } from './toneCurve.ts'
 
-/** Which family a group belongs to — the doorway that shows it. */
-export type AdjustFamily = 'levels' | 'filters'
-
 export interface AdjustSliderControl {
   kind?: 'slider'
   key: string
@@ -40,6 +39,17 @@ export interface AdjustSliderControl {
   default: number
   /** Shown inline in the sub-toolbar rather than only in the inspector. */
   primary?: boolean
+  /**
+   * This control has no GPU drag preview: it renders when the drag COMMITS.
+   *
+   * The shader mirrors the photographic pipeline, not the effects one, so the
+   * synthetic looks (vignette, glow, halftone, VHS, glitch, fringing) can only
+   * appear on release. Declaring it here rather than leaving it implicit is
+   * what lets the parity test hold both directions — an unflagged control must
+   * reach the preview, and a flagged one must not, so adding shader support
+   * forces the flag off instead of letting the list rot.
+   */
+  commitOnly?: true
 }
 
 export interface AdjustCurveControl {
@@ -58,10 +68,12 @@ export function isAdjustSlider(control: AdjustControl): control is AdjustSliderC
 export type PhotoAdjustmentGroupId =
   | 'light' | 'color' | 'detail'
   | 'mixer' | 'point' | 'grade'
+  | 'effects' | 'stylize'
 
 export type PhotoAdjustmentSection =
   | 'tone' | 'tint' | 'detail'
   | 'mixer' | 'point' | 'grade'
+  | 'effects' | 'stylize'
 
 export interface PhotoAdjustmentGroup {
   id: PhotoAdjustmentGroupId
@@ -76,6 +88,13 @@ export interface PhotoAdjustmentGroup {
    * them as numbers — and only the rendering is specialised.
    */
   presentation?: 'mixer' | 'point' | 'grade'
+  /**
+   * This group ADDS something to the picture rather than correcting what is
+   * there. The Adjust bar keeps the two apart with a separator: the
+   * photographic groups are what a photographer reaches for, and the creative
+   * ones are the same neighbourhood as the Looks strip.
+   */
+  creative?: true
 }
 
 /**
@@ -146,6 +165,11 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'tint', label: 'Tint', min: -100, max: 100, step: 1, default: 0 },
       { key: 'vibrance', label: 'Vibrance', min: -100, max: 100, step: 1, default: 0 },
       { key: 'saturation', label: 'Saturation', min: -100, max: 100, step: 1, default: 0 },
+      // Tinting the whole frame one hue is a color edit, so it belongs to the
+      // Color group rather than to a strip tile of its own. Hue reads as dead
+      // weight until Colorize is up, which is why Amount leads.
+      { key: 'colorizeAmount', label: 'Colorize', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'colorizeHue', label: 'Colorize hue', min: 0, max: 360, step: 1, default: 0 },
     ],
   },
   {
@@ -218,37 +242,58 @@ export const PHOTO_ADJUSTMENT_GROUPS: PhotoAdjustmentGroup[] = [
       { key: 'gradeBalance', label: 'Balance', min: -100, max: 100, step: 1, default: 0 },
     ],
   },
+  /**
+   * Photographic finishing. These were filter-strip tiles, which is what made
+   * them unreachable from a selection: the strip never consulted one, and the
+   * step it made carried no `section`, so the inspector's "Limit to selection"
+   * could not appear either. As a group they are ordinary Adjust edits.
+   *
+   * Vignette and Glow are FRAME-relative — scoped to a selection they still
+   * darken (or bloom) from the frame's edges and merely show through the mask.
+   * Blur and Grain are local and behave as drawn.
+   */
+  {
+    id: 'effects',
+    section: 'effects',
+    label: 'Effects',
+    icon: 'effects',
+    creative: true,
+    controls: [
+      { key: 'vignette', label: 'Vignette', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+      { key: 'glow', label: 'Glow', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+      { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
+      { key: 'noise', label: 'Grain', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'grainSize', label: 'Grain size', min: 0, max: 100, step: 1, default: 0 },
+      { key: 'grainRoughness', label: 'Grain roughness', min: 0, max: 100, step: 1, default: 50 },
+    ],
+  },
+  /**
+   * The deliberately synthetic looks — same machinery as Effects, kept as
+   * their own group so a film emulation never sits beside a glitch dial again.
+   * Halftone and Glitch carry a second dial each: the thing you reach for once
+   * the effect is up is its scale, not its strength.
+   */
+  {
+    id: 'stylize',
+    section: 'stylize',
+    label: 'Stylize',
+    icon: 'stylize',
+    creative: true,
+    controls: [
+      { key: 'halftone', label: 'Halftone', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+      { key: 'halftoneAngle', label: 'Halftone angle', min: 0, max: 180, step: 1, default: 0, commitOnly: true },
+      { key: 'vhs', label: 'VHS', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+      { key: 'glitch', label: 'Glitch', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+      { key: 'glitchBlockSize', label: 'Glitch block', min: 4, max: 64, step: 1, default: 16, commitOnly: true },
+      // Adds fringing; Detail's `defringe` removes it. Two dials, opposite jobs.
+      { key: 'chromaticAberration', label: 'Fringing', min: 0, max: 100, step: 1, default: 0, commitOnly: true },
+    ],
+  },
 ]
 
 export function photoAdjustmentGroup(id: string): PhotoAdjustmentGroup | undefined {
   return PHOTO_ADJUSTMENT_GROUPS.find(group => group.id === id || group.section === id)
 }
-
-/** Colorize's two halves; the strip's Colorize look shows Hue under Amount. */
-const COLORIZE_HUE_CONTROL: AdjustSliderControl =
-  { key: 'colorizeHue', label: 'Hue', min: 0, max: 360, step: 1, default: 0 }
-const COLORIZE_AMOUNT_CONTROL: AdjustSliderControl =
-  { key: 'colorizeAmount', label: 'Colorize', min: 0, max: 100, step: 1, default: 0 }
-
-/** Grain's supporting dials, shown on the strip's Grain look. */
-const GRAIN_SIZE_CONTROL: AdjustSliderControl =
-  { key: 'grainSize', label: 'Size', min: 0, max: 100, step: 1, default: 0 }
-const GRAIN_ROUGHNESS_CONTROL: AdjustSliderControl =
-  { key: 'grainRoughness', label: 'Roughness', min: 0, max: 100, step: 1, default: 50 }
-
-/**
- * The strip looks' dials that are not group sliders: Colorize renders through
- * the photographic pipeline and Grain/Blur preview through the GPU drag path,
- * so all of them must be part of the projected render schema.
- */
-const STRIP_LOOK_CONTROLS: AdjustSliderControl[] = [
-  COLORIZE_HUE_CONTROL,
-  COLORIZE_AMOUNT_CONTROL,
-  { key: 'noise', label: 'Grain', min: 0, max: 100, step: 1, default: 0 },
-  GRAIN_SIZE_CONTROL,
-  GRAIN_ROUGHNESS_CONTROL,
-  { key: 'blur', label: 'Blur', min: 0, max: 40, step: 1, default: 0 },
-]
 
 /**
  * Brightness and gamma exist ONLY on migrated snapshot-editor blob steps (the
@@ -262,7 +307,6 @@ const LEGACY_BLOB_CONTROLS: AdjustSliderControl[] = [
 
 export const PHOTO_ADJUSTMENT_CONTROLS = [
   ...PHOTO_ADJUSTMENT_GROUPS.flatMap(group => group.controls),
-  ...STRIP_LOOK_CONTROLS,
   ...LEGACY_BLOB_CONTROLS,
 ]
 
@@ -356,10 +400,12 @@ export const ADJUST_SECTIONS: AdjustSection[] = [
   },
 ]
 
-/** Strip dials first, so a legacy section's own definition wins on clash. */
+/** Group dials first, so a legacy section's own definition wins on clash. */
 const CONTROLS_BY_KEY = new Map([
-  ...STRIP_LOOK_CONTROLS.map(
-    control => [control.key, control] as [string, AdjustSliderControl]
+  ...PHOTO_ADJUSTMENT_GROUPS.flatMap(
+    group => group.controls
+      .filter(isAdjustSlider)
+      .map(control => [control.key, control] as [string, AdjustSliderControl])
   ),
   ...ADJUST_SECTIONS.flatMap(
     section => section.controls.map(
@@ -383,6 +429,8 @@ export interface LevelEdit {
   icon: IconName
   controls: AdjustControl[]
   presentation?: PhotoAdjustmentGroup['presentation']
+  /** Adds rather than corrects; the bar separates these. */
+  creative?: true
   /** Params set at creation, beyond the marker — what makes the edit DO its thing. */
   seed?: Record<string, any>
 }
@@ -393,7 +441,12 @@ export const LEVEL_EDITS: LevelEdit[] = PHOTO_ADJUSTMENT_GROUPS.map(group => ({
   icon: group.icon,
   controls: group.controls,
   presentation: group.presentation,
+  creative: group.creative,
 }))
+
+/** The two runs the Adjust bar shows either side of a separator. */
+export const PHOTOGRAPHIC_LEVEL_EDITS = LEVEL_EDITS.filter(edit => !edit.creative)
+export const CREATIVE_LEVEL_EDITS = LEVEL_EDITS.filter(edit => edit.creative)
 
 export function levelEditById(id: string): LevelEdit | undefined {
   return LEVEL_EDITS.find(edit => edit.id === id)
@@ -409,132 +462,301 @@ export const AUTO_EDITS: Array<{
   label: string
   icon: IconName
 }> = [
-  // One glyph for all three: the icon says "automatic", the label says what.
-  { id: 'levels', label: 'Auto levels', icon: 'wand' },
-  { id: 'contrast', label: 'Auto contrast', icon: 'wand' },
-  { id: 'balance', label: 'Auto balance', icon: 'wand' },
+  // They sit together behind one Auto chip, so each needs a glyph that says
+  // which one it is: what it reads (the histogram), what it moves (contrast),
+  // what it corrects (temperature). One shared wand made the list unreadable.
+  { id: 'levels', label: 'Auto levels', icon: 'histogram' },
+  { id: 'contrast', label: 'Auto contrast', icon: 'contrast' },
+  { id: 'balance', label: 'Auto balance', icon: 'thermometer' },
 ]
 
 /**
- * The strip: the snapshot editor's filter presets by category, plus the
- * discrete pixel looks that used to be the Effects dropdown. An entry with
- * `effect` is not a color matrix — clicking it makes a step carrying that one
- * effect param, whose Amount is the param itself.
+ * The Looks strip: starting points, expressed in the editor's own vocabulary.
  *
- * No `None` entry: the strip is not a picker, it ADDS. Removing an edit is the
- * Edits list's job (or clicking the applied entry again).
+ * A look is a BUNDLE of ordinary adjustment params, not a private color
+ * matrix. Everything follows from that: it scopes to a selection like any
+ * other Adjust edit, its step stays editable afterwards on the real dials, and
+ * the numbers can be read and argued with instead of being twenty opaque
+ * matrix coefficients. The legacy matrices survive in `filterMatrices.ts` for
+ * documents that already carry a `filter` param; nothing new writes one.
+ *
+ * There is deliberately no Amount slider. A look is where you START, and the
+ * way to get less of it is to move the dials it set — which is the whole point
+ * of authoring them in the real schema.
+ *
+ * No `None` entry: the strip is not a picker, it ADDS. Removing a look is the
+ * Edits list's job (or clicking the applied tile again).
  */
-export interface StripEntry {
+export interface Look {
   id: string
   label: string
-  /** Present on pixel-look entries: the AdjustParams key and the value a click adds. */
-  effect?: { key: string; add: number }
-  /** Extra dials the look's inspector shows under Amount (Colorize hue, Grain size…). */
-  supporting?: AdjustSliderControl[]
-  /** Extra params set at creation, beyond the effect key itself. */
-  seed?: Record<string, number>
+  /** Adjustment keys, exactly as a step or a region's settings carry them. */
+  params: Record<string, number>
 }
 
-export const FILTER_CATEGORIES: Array<{ id: string; label: string; filters: StripEntry[] }> = [
+export const LOOK_CATEGORIES: Array<{ id: string; label: string; looks: Look[] }> = [
   {
     id: 'color',
     label: 'Color',
-    filters: [
-      { id: 'chrome', label: 'Chrome' }, { id: 'vivid', label: 'Vivid' },
-      { id: 'dramatic', label: 'Dramatic' }, { id: 'cold', label: 'Cold' },
-      { id: 'warm', label: 'Warm' }, { id: 'pastel', label: 'Pastel' },
-      { id: 'fade', label: 'Fade' }, { id: 'vintage', label: 'Vintage' },
+    looks: [
       {
-        id: 'colorize', label: 'Colorize',
-        effect: { key: 'colorizeAmount', add: 50 },
-        supporting: [COLORIZE_HUE_CONTROL],
-        // Seeded sepia-ish rather than the schema-default red: the tile and the
-        // first click should read as "tint the photo", not "paint it red".
-        seed: { colorizeHue: 30 },
+        id: 'chrome',
+        label: 'Chrome',
+        params: { contrast: 18, vibrance: 22, whites: 8, blacks: -12, clarity: 10 },
+      },
+      {
+        id: 'vivid',
+        label: 'Vivid',
+        params: { saturation: 30, vibrance: 15, contrast: 10 },
+      },
+      {
+        id: 'dramatic',
+        label: 'Dramatic',
+        // Deep, not clipped. Contrast alone is a straight gain about mid-grey
+        // with no shoulder, so it clips the ends on its own; the shadow dials
+        // are kept light enough that the tonal ramp stays close to the matrix
+        // this look replaces instead of flattening the low end to black.
+        params: {
+          saturation: 22, contrast: 18, shadows: -6, blacks: -4, clarity: 20,
+        },
+      },
+      {
+        id: 'cold',
+        label: 'Cold',
+        params: {
+          temperature: -28, tint: -6, vibrance: 8,
+          gradeShadowHue: 210, gradeShadowSat: 18,
+        },
+      },
+      {
+        id: 'warm',
+        label: 'Warm',
+        params: {
+          temperature: 28, tint: 6, vibrance: 8,
+          gradeHighlightHue: 40, gradeHighlightSat: 15,
+        },
+      },
+      {
+        id: 'pastel',
+        label: 'Pastel',
+        params: {
+          exposure: 12, contrast: -18, highlights: -10, blacks: 22,
+          saturation: -12, clarity: -12,
+        },
+      },
+      {
+        id: 'fade',
+        label: 'Fade',
+        params: {
+          blacks: 32, contrast: -22, highlights: -8, saturation: -18,
+          gradeShadowHue: 200, gradeShadowSat: 12,
+        },
+      },
+      {
+        id: 'vintage',
+        label: 'Vintage',
+        params: {
+          blacks: 25, contrast: -12, saturation: -20, temperature: 15,
+          gradeShadowHue: 60, gradeShadowSat: 20,
+          gradeHighlightHue: 35, gradeHighlightSat: 15,
+        },
       },
     ],
   },
   {
     id: 'bw',
     label: 'Black & white',
-    filters: [
-      { id: 'mono', label: 'Mono' }, { id: 'noir', label: 'Noir' },
-      { id: 'stark', label: 'Stark' }, { id: 'tri-x-400', label: 'Tri-X 400' },
-      { id: 'sepia', label: 'Sepia' },
+    // Saturation -100 is a true BT.709 luminance conversion, and it runs in
+    // the matrix pass ahead of the photographic one — so Sepia's colorize
+    // tints a grey frame rather than fighting the original hues.
+    looks: [
+      { id: 'mono', label: 'Mono', params: { saturation: -100 } },
+      {
+        id: 'noir',
+        label: 'Noir',
+        // Low-key: the highlights come DOWN as well as the shadows, which is
+        // what separates noir from plain high-contrast black and white.
+        params: {
+          saturation: -100, contrast: 18, highlights: -10, shadows: -6,
+          blacks: -6, clarity: 15,
+        },
+      },
+      {
+        id: 'stark',
+        label: 'Stark',
+        // The extreme of the three, and meant to be: blown highlights and a
+        // lifted midtone, close to the matrix it replaces.
+        params: {
+          saturation: -100, contrast: 45, exposure: 6, whites: 25, blacks: -20,
+          clarity: 25,
+        },
+      },
+      {
+        id: 'tri-x-400',
+        label: 'Tri-X 400',
+        // The one thing a Tri-X frame actually has that a grey-mix does not.
+        params: {
+          saturation: -100, contrast: 20, shadows: 8, blacks: -10,
+          noise: 22, grainSize: 45, grainRoughness: 60,
+        },
+      },
+      {
+        id: 'sepia',
+        label: 'Sepia',
+        params: {
+          saturation: -100, contrast: 8, colorizeHue: 32, colorizeAmount: 55,
+        },
+      },
     ],
   },
   {
     id: 'film',
     label: 'Film',
-    filters: [
-      { id: 'portra-400', label: 'Portra 400' }, { id: 'velvia', label: 'Velvia' },
-      { id: 'kodachrome', label: 'Kodachrome' }, { id: 'cinestill-800t', label: 'Cinestill' },
-      { id: 'polaroid-600', label: 'Polaroid' },
-    ],
-  },
-  {
-    id: 'analog',
-    label: 'Analog',
-    filters: [
-      { id: 'vhs', label: 'VHS', effect: { key: 'vhs', add: 60 } },
-      { id: 'glitch', label: 'Glitch', effect: { key: 'glitch', add: 50 } },
-      { id: 'halftone', label: 'Halftone', effect: { key: 'halftone', add: 50 } },
-      { id: 'fringing', label: 'Fringing', effect: { key: 'chromaticAberration', add: 50 } },
-    ],
-  },
-  {
-    id: 'light',
-    label: 'Light',
-    filters: [
-      { id: 'glow', label: 'Glow', effect: { key: 'glow', add: 50 } },
-      { id: 'vignette', label: 'Vignette', effect: { key: 'vignette', add: 50 } },
+    // Emulations, not measurements: each is the stock's reputation written as
+    // dials — the matrices they replace were no more faithful and could not be
+    // edited afterwards.
+    looks: [
       {
-        id: 'grain', label: 'Grain',
-        effect: { key: 'noise', add: 40 },
-        supporting: [GRAIN_SIZE_CONTROL, GRAIN_ROUGHNESS_CONTROL],
+        id: 'portra-400',
+        label: 'Portra 400',
+        params: {
+          temperature: 12, tint: 4, contrast: -8, highlights: -12, blacks: 18,
+          vibrance: -8, saturation: -5,
+          [mixerKey('Sat', 'Green')]: -25, [mixerKey('Sat', 'Yellow')]: -12,
+          [mixerKey('Hue', 'Orange')]: 6,
+          gradeShadowHue: 200, gradeShadowSat: 8,
+          gradeHighlightHue: 40, gradeHighlightSat: 12,
+        },
       },
-      { id: 'blur', label: 'Blur', effect: { key: 'blur', add: 10 } },
+      {
+        id: 'velvia',
+        label: 'Velvia',
+        params: {
+          saturation: 25, vibrance: 15, contrast: 22, shadows: -12, blacks: -20,
+          clarity: 12,
+          [mixerKey('Sat', 'Green')]: 20, [mixerKey('Sat', 'Blue')]: 25,
+          [mixerKey('Lum', 'Blue')]: -10,
+        },
+      },
+      {
+        id: 'kodachrome',
+        label: 'Kodachrome',
+        params: {
+          contrast: 18, saturation: 10, blacks: -12,
+          [mixerKey('Sat', 'Red')]: 25, [mixerKey('Sat', 'Orange')]: 15,
+          [mixerKey('Hue', 'Red')]: -5, [mixerKey('Sat', 'Blue')]: 10,
+          gradeShadowHue: 195, gradeShadowSat: 18,
+          gradeHighlightHue: 45, gradeHighlightSat: 12,
+        },
+      },
+      {
+        id: 'cinestill-800t',
+        label: 'Cinestill',
+        // Tungsten balance plus the halation the stock is bought for.
+        params: {
+          temperature: -22, tint: 6, blacks: 12, saturation: 5, glow: 25,
+          gradeShadowHue: 25, gradeShadowSat: 15,
+          gradeHighlightHue: 185, gradeHighlightSat: 20,
+        },
+      },
+      {
+        id: 'polaroid-600',
+        label: 'Polaroid',
+        params: {
+          exposure: 6, contrast: -20, highlights: -10, blacks: 30,
+          saturation: -12,
+          gradeShadowHue: 190, gradeShadowSat: 18,
+          gradeHighlightHue: 55, gradeHighlightSat: 18,
+        },
+      },
     ],
   },
 ]
 
 /** Flat, in the order the strip shows them. */
-export const FILTER_STRIP = FILTER_CATEGORIES.flatMap(category => category.filters)
+export const LOOKS = LOOK_CATEGORIES.flatMap(category => category.looks)
 
-export const FILTER_LABELS = new Map(
-  FILTER_CATEGORIES.flatMap(category => category.filters.map(f => [f.id, f.label]))
-)
+export function lookById(id: string): Look | undefined {
+  return LOOKS.find(look => look.id === id)
+}
 
-export function stripEntryById(id: string): StripEntry | undefined {
-  return FILTER_STRIP.find(entry => entry.id === id)
+/** The groups a look (or any params object) actually moves off default. */
+export function touchedGroups(
+  values: Record<string, any> | null | undefined,
+): PhotoAdjustmentGroup[] {
+  if (!values) return []
+  return PHOTO_ADJUSTMENT_GROUPS.filter(group => group.controls.some(control => {
+    const value = values[control.key]
+    if (value === undefined) return false
+    if (control.kind === 'curve') {
+      return JSON.stringify(value) !== JSON.stringify(control.default)
+    }
+    return value !== control.default
+  }))
 }
 
 /**
- * The pixel-look this step carries, if it is a single-effect step from the
- * strip — what gives its inspector an Amount slider instead of a blob surface.
+ * Read compatibility only: the strip's old single-effect tiles.
+ *
+ * Those params are group sliders now, so nothing new writes a step shaped like
+ * this. A document that already holds one keeps its Amount-and-supporting
+ * inspector rather than falling through to the legacy everything-surface.
  */
-export function effectLookOf(params: Record<string, any>): StripEntry | undefined {
-  return FILTER_STRIP.find(
-    entry => entry.effect && params[entry.effect.key] !== undefined
-  )
+export interface LegacyEffectLook {
+  id: string
+  label: string
+  effect: { key: string }
+  supporting?: AdjustSliderControl[]
+  seedKeys?: string[]
+}
+
+const GRAIN_SUPPORTING: AdjustSliderControl[] = [
+  { key: 'grainSize', label: 'Size', min: 0, max: 100, step: 1, default: 0 },
+  { key: 'grainRoughness', label: 'Roughness', min: 0, max: 100, step: 1, default: 50 },
+]
+
+const LEGACY_EFFECT_LOOKS: LegacyEffectLook[] = [
+  {
+    id: 'colorize',
+    label: 'Colorize',
+    effect: { key: 'colorizeAmount' },
+    supporting: [{ key: 'colorizeHue', label: 'Hue', min: 0, max: 360, step: 1, default: 0 }],
+    seedKeys: ['colorizeHue'],
+  },
+  { id: 'vhs', label: 'VHS', effect: { key: 'vhs' } },
+  { id: 'glitch', label: 'Glitch', effect: { key: 'glitch' } },
+  { id: 'halftone', label: 'Halftone', effect: { key: 'halftone' } },
+  { id: 'fringing', label: 'Fringing', effect: { key: 'chromaticAberration' } },
+  { id: 'glow', label: 'Glow', effect: { key: 'glow' } },
+  { id: 'vignette', label: 'Vignette', effect: { key: 'vignette' } },
+  { id: 'grain', label: 'Grain', effect: { key: 'noise' }, supporting: GRAIN_SUPPORTING },
+  { id: 'blur', label: 'Blur', effect: { key: 'blur' } },
+]
+
+export function effectLookOf(params: Record<string, any>): LegacyEffectLook | undefined {
+  return LEGACY_EFFECT_LOOKS.find(entry => params[entry.effect.key] !== undefined)
 }
 
 /**
- * The strip look this step IS, if it is one: its effect key is present and it
- * carries nothing beyond that look's own surface (Amount + supporting dials).
- * A migrated blob that happens to include the key carries other params too and
- * must never match — clicking the strip would delete a whole legacy adjustment.
+ * The legacy strip look this step IS: its effect key is present and it carries
+ * nothing beyond that look's own surface. A migrated blob that happens to
+ * include the key carries other params too and must never match.
  */
-export function effectLookStepOf(params: Record<string, any>): StripEntry | undefined {
+export function effectLookStepOf(params: Record<string, any>): LegacyEffectLook | undefined {
   const look = effectLookOf(params)
-  if (!look?.effect) return undefined
+  if (!look) return undefined
   const allowed = new Set([
     look.effect.key,
     ...(look.supporting ?? []).map(control => control.key),
-    ...Object.keys(look.seed ?? {}),
+    ...(look.seedKeys ?? []),
   ])
   return Object.keys(params).every(key => allowed.has(key)) ? look : undefined
 }
+
+/** Names for the `filter` presets, for documents that still carry one. */
+export const LEGACY_FILTER_LABELS = new Map(
+  FILTER_PRESET_LABELS.map(preset => [preset.id, preset.label]),
+)
 
 /** Groups this op has actually touched — what the row subtitle names. */
 export function touchedSections(params: Record<string, any>): string[] {
@@ -545,7 +767,7 @@ export function touchedSections(params: Record<string, any>): string[] {
     )
   }).map(section => section.label)
   if (params.filter && params.filter !== 'none') {
-    touched.unshift(FILTER_LABELS.get(params.filter) ?? 'Filter')
+    touched.unshift(LEGACY_FILTER_LABELS.get(params.filter) ?? 'Filter')
   }
   return touched
 }
@@ -567,7 +789,7 @@ export function touchedSections(params: Record<string, any>): string[] {
 export function adjustLabel(params: Record<string, any>): string {
   const parts: string[] = []
   if (params.filter && params.filter !== 'none') {
-    parts.push(FILTER_LABELS.get(params.filter) ?? 'Filter')
+    parts.push(LEGACY_FILTER_LABELS.get(params.filter) ?? 'Filter')
   }
   for (const section of ADJUST_SECTIONS) {
     const touched = section.controls.filter(

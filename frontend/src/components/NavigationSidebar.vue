@@ -242,7 +242,7 @@
           </button>
 
           <!-- ==================== ZONE 2: Workspace Tabs ==================== -->
-          <div v-if="pinnedTabs.length > 0 || openTabs.length > 0" class="mt-3">
+          <div v-if="pinnedTabs.length > 0 || openTabs.length > 0 || editorTabs.length > 0" class="mt-3">
             <div class="mx-3 mb-2 border-t border-edge-subtle"></div>
 
             <!-- Pinned/open micro-labels replace the old dashed separator -->
@@ -283,8 +283,7 @@
               >
                 <!-- Inline rename -->
                 <template v-if="editingItem?.tabId === tab.id">
-                  <MediaImage v-if="tab.type === 'editor' && tab.editorMediaId" :media-id="Number(tab.editorMediaId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
-                  <MediaImage v-else-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
+                  <MediaImage v-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
                   <div v-else-if="tab.type === 'board'" class="w-8 h-8 overflow-hidden rounded-media border border-edge-subtle bg-overlay-faint p-0.5 flex-shrink-0">
                     <div v-if="getBoardPreviewItems(tab.entityId).length > 0" class="flex h-full items-start gap-0.5">
                       <div
@@ -339,8 +338,7 @@
                 </template>
                 <!-- Normal display -->
                 <template v-else>
-                  <MediaImage v-if="tab.type === 'editor' && tab.editorMediaId" :media-id="Number(tab.editorMediaId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
-                  <MediaImage v-else-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
+                  <MediaImage v-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
                   <div v-else-if="tab.type === 'board'" class="w-8 h-8 overflow-hidden rounded-media border border-edge-subtle bg-overlay-faint p-0.5 flex-shrink-0">
                     <div v-if="getBoardPreviewItems(tab.entityId).length > 0" class="flex h-full items-start gap-0.5">
                       <div
@@ -532,14 +530,6 @@
                     class="self-center"
                     :title="unseenKindFor(tab.id) === 'error' ? 'Finished with errors since you last looked' : 'Finished since you last looked'"
                   />
-                  <!-- The op-stack editor saves explicitly, so its entry says
-                       when the head is behind the stack. -->
-                  <StatusDot
-                    v-if="hasUnsavedEdits(tab)"
-                    bucket="warning"
-                    class="self-center"
-                    title="Unsaved edits"
-                  />
                 </template>
               </button>
               <!-- Unavailable indicator (warning triangle), same slot a close X would use -->
@@ -567,9 +557,22 @@
               ></div>
             </div>
 
-            <!-- Separator + micro-label between pinned and open tabs -->
-            <div v-if="pinnedTabs.length > 0 && openTabs.length > 0" class="mx-3 my-1 border-t border-edge-subtle"></div>
-            <div v-if="openTabs.length > 0" class="px-3 pt-3 pb-1 text-xs font-semibold text-content-secondary">Open</div>
+            <!-- One rule, in the place it always was: below the durable pins.
+                 Everything under it is current work — the editing shelf and
+                 the open rows — so the chips need no rule of their own, and
+                 the trailing group needs no label. -->
+            <div v-if="pinnedTabs.length > 0 && (editorTabs.length > 0 || openTabs.length > 0)" class="mx-3 my-1 border-t border-edge-subtle"></div>
+
+            <!-- Open editors are a working set, not documents with names. -->
+            <EditorShelf
+              :tabs="editorTabs"
+              @open="navigateToTabId"
+              @remove="closeTab"
+              @contextmenu="onShelfContextMenu"
+              @media-drop="handleShelfMediaDrop"
+            />
+
+            <div v-if="openTabs.length > 0 && editorTabs.length === 0" class="pt-1"></div>
 
             <!-- Open (unpinned) tabs -->
             <div
@@ -607,8 +610,7 @@
               >
                 <!-- Inline rename -->
                 <template v-if="editingItem?.tabId === tab.id">
-                  <MediaImage v-if="tab.type === 'editor' && tab.editorMediaId" :media-id="Number(tab.editorMediaId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
-                  <MediaImage v-else-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
+                  <MediaImage v-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
                   <div v-else-if="tab.type === 'board'" class="w-8 h-8 overflow-hidden rounded-media border border-edge-subtle bg-overlay-faint p-0.5 flex-shrink-0">
                     <div v-if="getBoardPreviewItems(tab.entityId).length > 0" class="flex h-full items-start gap-0.5">
                       <div
@@ -663,8 +665,7 @@
                 </template>
                 <!-- Normal display -->
                 <template v-else>
-                  <MediaImage v-if="tab.type === 'editor' && tab.editorMediaId" :media-id="Number(tab.editorMediaId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
-                  <MediaImage v-else-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
+                  <MediaImage v-if="tab.type === 'lineage'" :media-id="Number(tab.editorMediaId || tab.entityId)" thumbnail :thumbnail-size="64" :draggable="false" :enable-context-menu="false" container-class="w-8 h-8 rounded-media flex-shrink-0" img-class="w-full h-full object-cover" />
                   <div v-else-if="tab.type === 'board'" class="w-8 h-8 overflow-hidden rounded-media border border-edge-subtle bg-overlay-faint p-0.5 flex-shrink-0">
                     <div v-if="getBoardPreviewItems(tab.entityId).length > 0" class="flex h-full items-start gap-0.5">
                       <div
@@ -856,14 +857,6 @@
                     class="self-center"
                     :title="unseenKindFor(tab.id) === 'error' ? 'Finished with errors since you last looked' : 'Finished since you last looked'"
                   />
-                  <!-- The op-stack editor saves explicitly, so its entry says
-                       when the head is behind the stack. -->
-                  <StatusDot
-                    v-if="hasUnsavedEdits(tab)"
-                    bucket="warning"
-                    class="self-center"
-                    title="Unsaved edits"
-                  />
                 </template>
               </button>
               <!-- Unavailable indicator (warning triangle); hidden on hover so the close X
@@ -1036,9 +1029,8 @@ import { useAgentActivity } from '../composables/useAgentActivity'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useSendToTool } from '../composables/useSendToTool'
-import { useWorkspaceTabs, toolTabRoute, editorTabRoute, editorRouteTabId, editorAssetId, type WorkspaceTab } from '../composables/useWorkspaceTabs'
+import { useWorkspaceTabs, toolTabRoute, editorTabRoute, editorRouteTabId, type WorkspaceTab } from '../composables/useWorkspaceTabs'
 import { openImageEditor } from '../imageEditor/stack/openImageEditor'
-import { isEditorDirty } from '../imageEditor/stack/editorDirtyState'
 import { removeRecentEntity } from '../composables/useRecentEntities'
 import { useProjectRoute } from '../composables/useProjectRoute'
 import { useWorkspaceTabsContextMenu } from '../composables/useWorkspaceTabsContextMenu'
@@ -1056,6 +1048,7 @@ import StatusDot from './ui/StatusDot.vue'
 import Spinner from './ui/Spinner.vue'
 import Tooltip from './ui/Tooltip.vue'
 import WorkspaceTabsContextMenu from './WorkspaceTabsContextMenu.vue'
+import EditorShelf from './EditorShelf.vue'
 // @ts-expect-error - distribution-aliased Vue component (see vite.config.js)
 import FeedbackFooterButton from '@stimma/feedback-footer-button'
 
@@ -1156,7 +1149,7 @@ const { sendToTool } = useSendToTool()
 
 // Workspace tabs
 const {
-  pinnedTabs, openTabs, allTabs, addTab, addEditorTab, updateEditorMedia,
+  pinnedTabs, openTabs, editorTabs, allTabs, addTab, addEditorTab, updateEditorMedia,
   findNextTab, removeTab, updateTabName, removeTabByEntity,
   reconcileToolPins, moveTab, setLastLibraryRoute, getLastLibraryRoute,
   markTabActivated, updateTabCustomName
@@ -1543,11 +1536,6 @@ function getTabIcon(tab: WorkspaceTab) {
   if (tab.type === 'project') {
     return ArchiveBoxIcon
   }
-  if (tab.type === 'editor') {
-    return h('svg', { class: 'w-3.5 h-3.5 text-blue-500', xmlns: 'http://www.w3.org/2000/svg', viewBox: '0 0 20 20', fill: 'currentColor' }, [
-      h('path', { d: 'M2.695 14.763l-1.262 3.154a.5.5 0 00.65.65l3.155-1.262a4 4 0 001.343-.885L17.5 5.5a2.121 2.121 0 00-3-3L3.58 13.42a4 4 0 00-.885 1.343z' })
-    ])
-  }
   if (tab.type === 'lineage') {
     // Git-branch-like icon for lineage
     return h('svg', { class: 'w-3.5 h-3.5', fill: 'none', viewBox: '0 0 24 24', 'stroke-width': '2', stroke: 'currentColor' }, [
@@ -1576,11 +1564,6 @@ function isTabActive(tab: WorkspaceTab): boolean {
   if (tab.type === 'lineage') return route.name === 'lineage' && String(route.params.mediaId) === tab.entityId
   if (tab.type === 'flow') return route.name === 'flow' && String(route.params.id) === tab.entityId
   return false
-}
-
-function hasUnsavedEdits(tab: WorkspaceTab): boolean {
-  const assetId = editorAssetId(tab)
-  return assetId !== null && isEditorDirty(assetId)
 }
 
 function isTabGenerating(tab: WorkspaceTab): boolean {
@@ -1617,6 +1600,17 @@ function closeTab(tabId: string) {
     }
   }
   removeTab(tabId)
+}
+
+/** Shelf chips hand back a tab id; navigation stays in one place. */
+function navigateToTabId(tabId: string) {
+  const tab = allTabs.value.find(t => t.id === tabId)
+  if (tab) navigateToTab(tab)
+}
+
+function onShelfContextMenu(payload: { tabId: string, event: MouseEvent }) {
+  const tab = allTabs.value.find(t => t.id === payload.tabId)
+  if (tab) showTabContextMenu(tab, payload.event)
 }
 
 function showTabContextMenu(tab: WorkspaceTab, event: MouseEvent) {
@@ -1791,11 +1785,20 @@ async function handleTabMediaDrop(tab: WorkspaceTab, e: DragEvent) {
     } catch (error) {
       console.error('Failed to add media to board:', error)
     }
-  } else if (tab.type === 'editor') {
-    // An editor tab IS its Asset's document — another image can't be loaded
-    // into it. Open that image's own editor instead.
-    void openImageEditor(router, mediaId)
   }
+}
+
+/**
+ * Media dropped on the editing shelf. An editor is its Asset's document —
+ * another image can't be loaded into one — so a drop opens that image's own
+ * editor, which puts a chip on the shelf.
+ */
+function handleShelfMediaDrop(e: DragEvent) {
+  const mediaIds = getDroppedMediaIds(e.dataTransfer)
+  if (mediaIds.length === 0) return
+  e.preventDefault()
+  e.stopPropagation()
+  void openImageEditor(router, mediaIds[0])
 }
 
 // ==================== Flow-tab drop targets ====================
@@ -2615,6 +2618,8 @@ watch(
       // and name come from the asset's head revision.
       const assetId = String(params.assetId)
       const tab = addEditorTab(assetId)
+      // The shelf ranks by recency, so every visit counts as a touch.
+      markTabActivated(tab.id)
       fetch(`/api/assets/${assetId}`).then(r => r.ok ? r.json() : null).then(data => {
         if (!data) return
         if (data.media?.id != null) updateEditorMedia(tab.id, String(data.media.id))

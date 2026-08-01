@@ -20,7 +20,11 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRasterPaintLayer } from '../ported/useRasterPaintLayer'
 import { getSelectionBounds } from '../ported/selection'
+import { tabletPressureFor } from '../../composables/useTabletInput'
 import type { BrushSettings, Point } from '../ported/geometry'
+import type { GradientPaint } from '../ported/shapeTypes'
+import type { PaintGradientType } from '../stack/paintEngineSettings'
+import { constrainedGradientEnd } from '../stack/rasterGradient'
 
 interface RasterGestureMetadata {
   tool: string
@@ -50,6 +54,9 @@ const props = withDefaults(defineProps<{
   engineId?: string
   brush?: BrushSettings
   color?: { r: number; g: number; b: number; a?: number }
+  gradient?: GradientPaint
+  gradientType?: PaintGradientType
+  gradientReverse?: boolean
   /** Dodge/burn strength and range. */
   exposure?: number
   range?: 'shadows' | 'midtones' | 'highlights'
@@ -64,6 +71,8 @@ const props = withDefaults(defineProps<{
   range: 'midtones',
   strength: 20,
   saturate: true,
+  gradientType: 'linear',
+  gradientReverse: false,
 })
 
 const emit = defineEmits<{
@@ -90,11 +99,18 @@ const cursor = ref<{ x: number; y: number } | null>(null)
  * once a revision lands in the stack, removing its delta cannot reveal or
  * double-composite older strokes.
  */
-let pendingPreviews: Array<{ revision: number; canvas: HTMLCanvasElement }> = []
+let pendingPreviews: Array<{
+  revision: number
+  canvas: HTMLCanvasElement
+  /** An erase delta: drawn as a translucent wash, not as pixels that landed. */
+  wash?: boolean
+}> = []
 /** Frozen visual input for the current stroke, including any pending previews. */
 let strokeSource: HTMLCanvasElement | null = null
 /** First destination point, retained for source/destination repair feedback. */
 let strokeStart: Point | null = null
+/** The editable guide while a Gradient gesture is under the pointer. */
+let gradientGesture: { start: Point; end: Point } | null = null
 /** Where clone samples from, set by alt-click and kept across strokes. */
 const cloneAnchor = ref<Point | null>(null)
 let drawing = false
@@ -161,6 +177,29 @@ function scaledBrush(): BrushSettings {
   }
 }
 
+/** At zero pressure a dab shrinks to this fraction, never to nothing. */
+const PRESSURE_MIN_SIZE = 0.15
+
+/**
+ * The brush for one dab batch under the given stylus pressure. Null pressure
+ * means a mouse stroke: the settings apply untouched, exactly as before.
+ * Pressure is applied per pointer sample, not per stroke — that is what makes
+ * a stroke swell and fade along its path.
+ */
+function pressuredBrush(pressure: number | null): BrushSettings {
+  const brush = scaledBrush()
+  if (pressure == null) return brush
+  if (brush.pressureSize) {
+    brush.size = Math.max(1, Math.round(
+      brush.size * (PRESSURE_MIN_SIZE + (1 - PRESSURE_MIN_SIZE) * pressure),
+    ))
+  }
+  if (brush.pressureOpacity) {
+    brush.flow = brush.flow * pressure
+  }
+  return brush
+}
+
 function prepareStroke() {
   const source = props.source
   if (!source) return
@@ -173,14 +212,19 @@ function prepareStroke() {
   working.height = source.height
   const ctx = working.getContext('2d')!
   ctx.drawImage(source, 0, 0)
-  for (const pending of pendingPreviews) ctx.drawImage(pending.canvas, 0, 0)
+  for (const pending of pendingPreviews) {
+    // An erase delta is an alpha mask wearing white pixels; drawing it here
+    // would feed the wash to sampling engines as real content.
+    if (pending.wash) continue
+    ctx.drawImage(pending.canvas, 0, 0)
+  }
   strokeSource = working
 }
 
-function stamp(point: Point) {
+function stamp(point: Point, pressure: number | null = null) {
   const source = strokeSource ?? props.source
   if (!source) return
-  const brush = scaledBrush()
+  const brush = pressuredBrush(pressure)
 
   switch (props.engineId) {
     case 'clone':
@@ -204,18 +248,48 @@ function stamp(point: Point) {
     case 'sharpen':
       liveStroke.applySharpenBrush(source, point, brush, props.strength)
       break
+    // Fill is flat and selection-scoped: the selection tools own finding a
+    // region; a click lays the color into it (or the whole layer without one).
     case 'fill':
-      liveStroke.applyFloodFill(
-        source,
-        point,
-        props.color ?? { r: 0, g: 0, b: 0, a: 1 },
-        32,
-      )
+      liveStroke.applyFlatFill(props.color ?? { r: 0, g: 0, b: 0, a: 1 })
+      break
+    // The stroke's ALPHA is the erase strength; the white is never shown at
+    // full strength — the overlay draws erase deltas as a translucent wash,
+    // and the commit consumes only the alpha (destination-out on the layer).
+    case 'erase':
+      liveStroke.applyPaintBrush(point, brush, { r: 255, g: 255, b: 255, a: 1 })
       break
     default:
       liveStroke.applyPaintBrush(point, brush, props.color ?? { r: 0, g: 0, b: 0, a: 1 })
   }
   drawOverlay()
+}
+
+const DEFAULT_GRADIENT: GradientPaint = {
+  type: 'gradient',
+  colors: [
+    { r: 0, g: 0, b: 0, a: 1 },
+    { r: 255, g: 255, b: 255, a: 1 },
+  ],
+  direction: 'horizontal',
+}
+
+/** Re-render the one live Gradient gesture; unlike a brush, moves replace it. */
+function updateGradient(point: Point, constrain: boolean, preview = true): boolean {
+  if (!gradientGesture) return false
+  const end = constrainedGradientEnd(gradientGesture.start, point, constrain)
+  gradientGesture.end = end
+  liveStroke.clearLayer()
+  liveStroke.applyGradientFill(
+    props.gradient ?? DEFAULT_GRADIENT,
+    gradientGesture.start,
+    end,
+    props.gradientType,
+    props.gradientReverse,
+    preview,
+  )
+  drawOverlay()
+  return Math.hypot(end.x - gradientGesture.start.x, end.y - gradientGesture.start.y) >= 0.5
 }
 
 function finishStroke(
@@ -228,8 +302,22 @@ function finishStroke(
 
   // Paint merges the delta into its persistent layer. Retouch emits the delta
   // itself, making one gesture one independently editable region.
-  if (props.accumulate) layer.layerCtx.value?.drawImage(preview, 0, 0)
-  pendingPreviews.push({ revision: layerRevision, canvas: preview })
+  const layerCtx = layer.layerCtx.value
+  if (props.accumulate && layerCtx) {
+    if (props.engineId === 'erase') {
+      layerCtx.save()
+      layerCtx.globalCompositeOperation = 'destination-out'
+      layerCtx.drawImage(preview, 0, 0)
+      layerCtx.restore()
+    } else {
+      layerCtx.drawImage(preview, 0, 0)
+    }
+  }
+  pendingPreviews.push({
+    revision: layerRevision,
+    canvas: preview,
+    wash: props.engineId === 'erase',
+  })
 
   const snapshot = props.accumulate ? layer.toSnapshot() : preview
   liveStroke.clearLayer()
@@ -245,9 +333,53 @@ function drawOverlay() {
   if (!canvas) return
   const ctx = canvas.getContext('2d')!
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  for (const pending of pendingPreviews) ctx.drawImage(pending.canvas, 0, 0)
+  for (const pending of pendingPreviews) {
+    if (pending.wash) {
+      ctx.save()
+      ctx.globalAlpha = 0.35
+      ctx.drawImage(pending.canvas, 0, 0)
+      ctx.restore()
+    } else {
+      ctx.drawImage(pending.canvas, 0, 0)
+    }
+  }
   if (drawing && liveStroke.layerCanvas.value) {
-    ctx.drawImage(liveStroke.layerCanvas.value, 0, 0)
+    if (props.engineId === 'erase') {
+      ctx.save()
+      ctx.globalAlpha = 0.35
+      ctx.drawImage(liveStroke.layerCanvas.value, 0, 0)
+      ctx.restore()
+    } else {
+      ctx.drawImage(liveStroke.layerCanvas.value, 0, 0)
+    }
+  }
+
+  // The authored line stays visible for the duration of the drag. Its handles
+  // explain which end owns the first and last colors without covering them.
+  if (drawing && gradientGesture) {
+    const { start, end } = gradientGesture
+    const width = Math.max(1, scale.value)
+    ctx.save()
+    ctx.lineCap = 'round'
+    ctx.lineWidth = width * 3
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)'
+    ctx.beginPath()
+    ctx.moveTo(start.x, start.y)
+    ctx.lineTo(end.x, end.y)
+    ctx.stroke()
+    ctx.lineWidth = width
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+    ctx.stroke()
+    for (const point of [start, end]) {
+      ctx.beginPath()
+      ctx.arc(point.x, point.y, width * 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(15,15,15,0.9)'
+      ctx.fill()
+      ctx.lineWidth = width
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+      ctx.stroke()
+    }
+    ctx.restore()
   }
 
   // Patch drag: preview the donor pixels IN the destination — what will land,
@@ -274,8 +406,37 @@ function drawOverlay() {
   }
 }
 
+/** End the live stroke and hand it to the stack, keeping every dab drawn. */
+function commitActiveStroke() {
+  drawing = false
+  finishStroke(PIXEL_READING.has(props.engineId), {
+    tool: props.engineId,
+    ...(props.engineId === 'clone' && cloneAnchor.value && strokeStart
+      ? { source: cloneAnchor.value, target: strokeStart }
+      : {}),
+  })
+}
+
 function onPointerDown(event: PointerEvent) {
   if (!props.source) return
+
+  // Only the pen tip (or left button) draws. A pen's barrel buttons arrive as
+  // middle/right presses on the SAME pointer, so without this they read as the
+  // start of another stroke and prepareStroke() would wipe the live one — a
+  // bumped button silently discarded everything drawn before it.
+  //
+  // Bumping a barrel button mid-stroke instead ends the stroke and keeps the
+  // pixels, matching Photoshop. That is also what makes the front button's
+  // middle-drag pan usable: the stroke closes, then the canvas moves.
+  if (event.button !== 0) {
+    if (drawing) {
+      releasePointer(event.pointerId)
+      activePointerId = null
+      commitActiveStroke()
+    }
+    return
+  }
+
   const point = pointFrom(event)
 
   // Patch is a drag of the selection, not a stroke. No selection or a grab
@@ -316,7 +477,12 @@ function onPointerDown(event: PointerEvent) {
   activePointerId = event.pointerId
   overlay.value?.setPointerCapture(event.pointerId)
   drawing = true
-  stamp(point)
+  if (props.engineId === 'gradient') {
+    gradientGesture = { start: point, end: point }
+    drawOverlay()
+    return
+  }
+  stamp(point, tabletPressureFor(event))
 }
 
 function onPointerMove(event: PointerEvent) {
@@ -328,9 +494,20 @@ function onPointerMove(event: PointerEvent) {
     drawOverlay()
     return
   }
-  // Fill is a click operation. Re-running a flood fill for every move event
-  // wastes a full-image traversal and makes its result depend on pointer noise.
-  if (drawing && props.engineId !== 'fill') stamp(pointFrom(event))
+  // Fill is a click operation: one click, one flat fill of the selection or
+  // layer. Dragging adds nothing to that.
+  if (drawing && props.engineId === 'gradient') {
+    updateGradient(pointFrom(event), event.shiftKey)
+  } else if (drawing && props.engineId !== 'fill') {
+    // Chromium throttles pointermove to the frame rate and parks the full-rate
+    // samples in getCoalescedEvents; WKWebView may not have the method.
+    const coalesced = typeof event.getCoalescedEvents === 'function'
+      ? event.getCoalescedEvents()
+      : []
+    for (const sample of coalesced.length ? coalesced : [event]) {
+      stamp(pointFrom(sample), tabletPressureFor(sample))
+    }
+  }
 }
 
 function releasePointer(pointerId: number) {
@@ -339,6 +516,9 @@ function releasePointer(pointerId: number) {
 }
 
 function onPointerUp(event: PointerEvent) {
+  // Releasing a barrel button is not the end of the gesture: the pen tip is
+  // still down. Landing a patch here would apply it mid-drag.
+  if (event.button !== 0) return
   if (activePointerId === null || event.pointerId !== activePointerId) return
   releasePointer(event.pointerId)
   activePointerId = null
@@ -381,13 +561,22 @@ function onPointerUp(event: PointerEvent) {
   }
 
   if (!drawing) return
-  drawing = false
-  finishStroke(PIXEL_READING.has(props.engineId), {
-    tool: props.engineId,
-    ...(props.engineId === 'clone' && cloneAnchor.value && strokeStart
-      ? { source: cloneAnchor.value, target: strokeStart }
-      : {}),
-  })
+  if (props.engineId === 'gradient') {
+    // The release position is authoritative even when the final move was
+    // coalesced. A click is not a gradient and must not create an empty layer.
+    if (!updateGradient(pointFrom(event), event.shiftKey, false)) {
+      drawing = false
+      gradientGesture = null
+      liveStroke.endStroke()
+      liveStroke.clearLayer()
+      strokeSource = null
+      strokeStart = null
+      drawOverlay()
+      return
+    }
+  }
+  commitActiveStroke()
+  gradientGesture = null
 }
 
 /**
@@ -414,6 +603,7 @@ function onPointerCancel(event: PointerEvent) {
   activePointerId = null
   drawing = false
   patchDrag = null
+  gradientGesture = null
   liveStroke.endStroke()
   liveStroke.clearLayer()
   strokeSource = null
@@ -432,6 +622,7 @@ function reset() {
   pendingPreviews = []
   strokeSource = null
   strokeStart = null
+  gradientGesture = null
   liveStroke.clearLayer()
   layer.clearLayer()
   drawOverlay()
@@ -455,6 +646,22 @@ function resize() {
 
 defineExpose({
   reset,
+  /**
+   * End the live stroke on the host's word.
+   *
+   * The viewport's middle-drag pan claims that pointerdown in the capture
+   * phase and stops it, so this canvas never sees the barrel press that starts
+   * a pan. Without being told, the stroke would stay open across the pan and
+   * close with a jump in it.
+   */
+  commitStroke() {
+    if (!drawing) return
+    if (activePointerId !== null) {
+      releasePointer(activePointerId)
+      activePointerId = null
+    }
+    commitActiveStroke()
+  },
   /**
    * Remove only the preview revisions the freshly rendered composite now owns.
    * A newer live stroke is a separate canvas, so an older async handoff can
@@ -500,10 +707,11 @@ onBeforeUnmount(() => {
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
+      @contextmenu.prevent
       @pointerleave="cursor = null"
     />
     <div
-      v-if="cursor && brush && engineId !== 'patch'"
+      v-if="cursor && brush && !['patch', 'fill', 'gradient'].includes(engineId)"
       class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
       :style="{
         left: cursor.x - brush.size / 2 + 'px',

@@ -22,11 +22,14 @@ const props = withDefaults(defineProps<{
   ariaLabel?: string
   /** Close when a descendant marked data-close-popover is activated. */
   closeOnSelect?: boolean
+  /** Icon-only triggers drop the ▾ — the icon is the whole affordance. */
+  chevron?: boolean
 }>(), {
   width: 248,
   disabled: false,
   ariaLabel: undefined,
   closeOnSelect: false,
+  chevron: true,
 })
 
 const open = ref(false)
@@ -164,7 +167,7 @@ onBeforeUnmount(() => {
     >
       <slot name="trigger" />
       <span v-if="label">{{ label }}</span>
-      <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
+      <svg v-if="chevron" viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
         <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </button>

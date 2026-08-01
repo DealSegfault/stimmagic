@@ -7,23 +7,30 @@
  * inspector, which is what lets a 40-knob tool exist without a second layout
  * system. Nobody gets forty controls in a toolbar; nobody loses them either.
  */
-import { computed } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   AdjustmentsHorizontalIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
   ClockIcon,
   XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import Button from '../../components/ui/Button.vue'
+import ScrubValue from '../../components/ui/ScrubValue.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import ToolbarPopover from './ToolbarPopover.vue'
 import ToolIcon from './ToolIcon.vue'
 import BrushPicker from '../ported/BrushPicker.vue'
 import ColorPicker from '../ported/ColorPicker.vue'
 import PaintPicker from './PaintPicker.vue'
+import PaintFillGroup from './PaintFillGroup.vue'
 import ReferenceImageStrip from './ReferenceImageStrip.vue'
-import ToolAdvancedParams from './ToolAdvancedParams.vue'
+import ToolAdvancedParams, { filterScalarGroups } from './ToolAdvancedParams.vue'
+import ExpandEdgesControl from './ExpandEdgesControl.vue'
+import { useToolSchemaFeatures } from '../../composables/useToolSchemaFeatures'
+import { DEFAULT_MASK_EXPAND_PERCENT } from '../stack/maskMorphology'
+import { OUTPAINT_EXPAND_FIELDS } from '../../utils/taskTypeValidation'
+
+/** Mutable copy: the readonly tuple can't feed a `string[]` prop. */
+const OUTPAINT_EXPAND_FIELDS_LIST = [...OUTPAINT_EXPAND_FIELDS]
 import {
   CROP_ASPECTS,
 } from '../stack/adjustSections'
@@ -31,16 +38,21 @@ import {
   PAINT_ENGINES, TEXT_STYLES,
   familyById,
 } from '../stack/toolFamilies'
-import { FILTER_CATEGORIES, LEVEL_EDITS, AUTO_EDITS } from '../stack/adjustSections'
+import {
+  LOOK_CATEGORIES, AUTO_EDITS,
+  PHOTOGRAPHIC_LEVEL_EDITS, CREATIVE_LEVEL_EDITS,
+} from '../stack/adjustSections'
 import type { FamilyId } from '../stack/toolFamilies'
 import type { Paint } from '../ported/shapeTypes'
+import type { IconName } from '../ported/icons'
+import type { PaintGradientType } from '../stack/paintEngineSettings'
 import { paintCss, paintSolid } from '../stack/paints'
 
 const props = defineProps<{
   family: FamilyId
   sub: string | null
   state: Record<string, any>
-  /** The catalog tool that will run the active model-backed Retouch sub-tool. */
+  /** The catalog tool that will run the active Generate sub-tool. */
   toolLabel?: string | null
   busy?: boolean
   canRun?: boolean
@@ -80,14 +92,26 @@ const fillSubs = ['rectangle', 'ellipse']
 // Sharpie strokes take their glow from the brush, not the shape style, so the
 // effect menu would lie on Draw.
 const effectSubs = ['arrow', 'rectangle', 'ellipse', 'line']
-/** The subs whose surface is the model compose card. */
-const retouchModelSubs = ['remove', 'repaint', 'cutout']
-/**
- * The model-backed half of the Retouch bar. The bar is two jobs — manual
- * repair on the left with its brush, generative verbs grouped on the right —
- * so membership here is by what runs the edit, not by card shape.
- */
-const retouchGenerativeSubs = ['remove', 'repaint', 'cutout']
+/** Retouch brushes whose engine takes a strength/direction beyond the brush. */
+const dodgeBurnSubs = ['dodge', 'burn']
+const strengthSubs = ['sponge', 'blur', 'sharpen']
+
+const standalonePaintEngines = PAINT_ENGINES.filter(engine =>
+  engine.id !== 'fill' && engine.id !== 'gradient',
+)
+
+/** Photoshop's five gradient geometries, in its familiar order. */
+const paintGradientTypes: Array<{
+  id: PaintGradientType
+  label: string
+  icon: IconName
+}> = [
+  { id: 'linear', label: 'Linear', icon: 'gradientLinear' },
+  { id: 'radial', label: 'Radial', icon: 'gradientRadial' },
+  { id: 'angle', label: 'Angle', icon: 'gradientAngle' },
+  { id: 'reflected', label: 'Reflected', icon: 'gradientReflected' },
+  { id: 'diamond', label: 'Diamond', icon: 'gradientDiamond' },
+]
 
 /**
  * A SELECTED shape overrides the sub-tool: the controls shown are the ones the
@@ -129,6 +153,38 @@ function wellCss(paint: Paint | null) {
   return paintCss(paint)
 }
 
+/**
+ * Whether the active model tool has any parameters the Advanced popover would
+ * show. When it wouldn't, the ⚙ does not render at all — an affordance that
+ * opens "this tool has no additional parameters" is a broken promise.
+ */
+const activeToolRef = computed(() => props.state.activeTool ?? null)
+const { groupedGenericParams } = useToolSchemaFeatures({
+  tool: activeToolRef,
+  availableLoras: computed(() => []),
+})
+const hasAdvancedParams = computed(() => filterScalarGroups(
+  groupedGenericParams.value,
+  props.sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined,
+).length > 0)
+
+/**
+ * The prompt is one quiet line that grows with its content (capped at ~4
+ * lines) so the bar holds its 1-row height until somebody actually writes.
+ */
+const promptEl = ref<HTMLTextAreaElement | null>(null)
+function resizePrompt() {
+  const el = promptEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, 96)}px`
+}
+watch(
+  () => [props.state.prompt, props.sub],
+  () => nextTick(resizePrompt),
+  { immediate: true },
+)
+
 function chipClass(active: boolean, pending = false) {
   if (pending) return 'text-content-tertiary/60 cursor-not-allowed'
   return active
@@ -139,8 +195,7 @@ function chipClass(active: boolean, pending = false) {
 
 <template>
   <div
-    class="flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface/80 backdrop-blur-sm"
-    :class="family.id === 'filters' ? 'pt-2' : 'px-4 py-2'"
+    class="flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface px-4 py-2"
   >
     <!-- Sub-tools, for the families that have them. Retouch lays its own out:
          its bar is two jobs, not one list. -->
@@ -168,13 +223,12 @@ function chipClass(active: boolean, pending = false) {
       <span class="w-px h-5 bg-edge-subtle mx-1" />
     </template>
 
-    <!-- Retouch's chip row: the manual repair tools with their brush beside
-         them on the left, the model-backed verbs as their own group on the
-         right. The picker belongs to Heal/Clone/Patch, so it sits with them
-         instead of trailing the whole bar. -->
+    <!-- Retouch's chip row: every tool is a brush; the picker sits with the
+         chips because it belongs to whichever brush is armed. Patch is
+         selection-driven, so it alone has no brush. -->
     <template v-if="family.id === 'retouch'">
       <template
-        v-for="option in family.subTools.filter(tool => !retouchGenerativeSubs.includes(tool.id))"
+        v-for="option in family.subTools"
         :key="option.id"
       >
         <Tooltip :text="option.pending ? 'Not built yet' : option.hint ?? option.label">
@@ -192,11 +246,10 @@ function chipClass(active: boolean, pending = false) {
         </Tooltip>
       </template>
 
-      <!-- The sub-tool chip beside this says what manual repair is being
-           authored. The brush only defines its region; it is not itself a
-           Paint stroke. Patch is selection-driven, so it has no brush. -->
+      <!-- The sub-tool chip beside this says what work is being authored.
+           The brush only defines its region; it is not itself a Paint stroke. -->
       <ToolbarPopover
-        v-if="sub !== 'patch' && !retouchGenerativeSubs.includes(sub ?? '')"
+        v-if="sub !== 'patch'"
         :label="`${Math.round(state.retouchBrush.size)}px`"
       >
         <template #trigger>
@@ -215,25 +268,62 @@ function chipClass(active: boolean, pending = false) {
         />
       </ToolbarPopover>
 
-      <div class="flex-1" />
-
-      <template
-        v-for="option in family.subTools.filter(tool => retouchGenerativeSubs.includes(tool.id))"
-        :key="option.id"
-      >
-        <Tooltip :text="option.pending ? 'Not built yet' : option.hint ?? option.label">
+      <!-- Strength for the photographic brushes. These seed the region the
+           next gesture creates; the landed region's own values then live in
+           its Properties, where they stay adjustable. -->
+      <template v-if="dodgeBurnSubs.includes(sub ?? '')">
+        <label class="flex items-center gap-2 text-xs text-content-tertiary">
+          Exposure
+          <input
+            type="range" min="1" max="100" class="w-20"
+            :value="state.retouchExposure"
+            @input="emit('set', { retouchExposure: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
+            {{ state.retouchExposure }}%
+          </span>
+        </label>
+        <button
+          v-for="range in ['shadows', 'midtones', 'highlights']"
+          :key="range"
+          type="button"
+          class="px-2 py-1.5 text-xs rounded-md capitalize"
+          :class="chipClass(state.retouchRange === range)"
+          @click="emit('set', { retouchRange: range })"
+        >
+          {{ range }}
+        </button>
+      </template>
+      <template v-else-if="strengthSubs.includes(sub ?? '')">
+        <label class="flex items-center gap-2 text-xs text-content-tertiary">
+          Strength
+          <input
+            type="range" min="1" max="100" class="w-20"
+            :value="state.retouchStrength"
+            @input="emit('set', { retouchStrength: Number(($event.target as HTMLInputElement).value) })"
+          />
+          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
+            {{ state.retouchStrength }}%
+          </span>
+        </label>
+        <template v-if="sub === 'sponge'">
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
-            :class="chipClass(sub === option.id, option.pending)"
-            :disabled="option.pending"
-            :aria-label="option.label"
-            @click="emit('sub', option.id)"
+            class="px-2 py-1.5 text-xs rounded-md"
+            :class="chipClass(state.retouchSaturate)"
+            @click="emit('set', { retouchSaturate: true })"
           >
-            <ToolIcon v-if="option.icon" :name="option.icon" />
-            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
+            Saturate
           </button>
-        </Tooltip>
+          <button
+            type="button"
+            class="px-2 py-1.5 text-xs rounded-md"
+            :class="chipClass(!state.retouchSaturate)"
+            @click="emit('set', { retouchSaturate: false })"
+          >
+            Desaturate
+          </button>
+        </template>
       </template>
     </template>
 
@@ -287,200 +377,193 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
-    <!-- Retouch --------------------------------------------------------- -->
-    <template v-else-if="family.id === 'retouch'">
-      <!-- Remove/Repaint are one explicit model run over the shared selection,
-           not a stream of brush gestures. Everything about that one run — model,
-           Advanced, prompt, Count, Run — lives in a single compose card, so the
-           action sits directly under its input instead of a row away. Repaint
-           leads with the prompt and docks the run controls into the card's
-           footer; Remove has no prompt, so the card collapses to that one row.
-           Every provider parameter still lives behind Advanced. -->
+    <!-- Generate --------------------------------------------------------- -->
+    <template v-else-if="family.id === 'generate'">
+      <!-- Remove/Repaint/Cutout/Expand are one explicit model run over the
+           shared selection. The bar itself is the surface — no card floating
+           inside it. One invariant grammar: the SUBJECT on the left (prompt,
+           hint sentence, or the four edges — the only part that changes per
+           tool), the control cluster on the right in fixed order: model ·
+           advanced · hot params · Run. Slots disappear per tool;
+           they never reorder. Every provider parameter still lives behind
+           Advanced. -->
       <div
-        v-if="retouchModelSubs.includes(sub ?? '')"
-        class="w-full"
+        v-if="sub"
+        class="w-full flex items-center gap-2.5"
       >
-        <!-- Both states share one card shell so they read as the same panel.
-             Repaint's input is the prompt; Remove has none, so where the prompt
-             would be it names the gesture instead — the two stay parallel and
-             neither feels cramped. -->
+        <!-- Subject: Repaint's prompt — the one input that IS an input.
+             References ride inside it as attachment chips, like a chat
+             composer, instead of claiming a second full-width row. -->
         <div
-          class="rounded-lg border border-edge-subtle bg-surface-raised overflow-hidden"
-          :class="sub === 'repaint'
-            ? 'focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/30'
-            : ''"
+          v-if="sub === 'repaint'"
+          class="flex-1 min-w-0 flex items-center gap-2 px-2.5 rounded-md bg-overlay-subtle
+                 border border-transparent focus-within:border-accent"
         >
           <textarea
-            v-if="sub === 'repaint'"
-            rows="2"
-            class="w-full px-3 py-2.5 text-sm bg-transparent text-content resize-none
-                   placeholder:text-content-muted focus-visible:outline-none"
+            ref="promptEl"
+            rows="1"
+            class="flex-1 min-w-0 py-1.5 text-sm bg-transparent text-content resize-none
+                   overflow-y-auto placeholder:text-content-muted focus-visible:outline-none"
             placeholder="Describe what should replace the selected area"
             :value="state.prompt"
             @input="emit('set', { prompt: ($event.target as HTMLTextAreaElement).value })"
             @keydown.enter.meta="emit('run')"
           />
           <ReferenceImageStrip
-            v-if="sub === 'repaint' && (state.referenceMax > 0 || state.referenceImages?.length)"
+            v-if="state.referenceMax > 0 || state.referenceImages?.length"
+            inline
             :model-value="state.referenceImages || []"
             :min-items="state.referenceMin || 0"
             :max-items="state.referenceMax || 0"
             :disabled="busy"
             @update:model-value="emit('set', { referenceImages: $event })"
           />
-          <p v-if="sub !== 'repaint'" class="px-3 py-2.5 text-sm text-content-muted">
-            {{ sub === 'cutout'
-              ? 'Makes the background transparent.'
-              : 'Select the area to remove, then Run.' }}
-          </p>
 
-          <!-- The run controls, docked into the card's footer under the input. -->
-          <div class="flex items-center gap-1.5 px-2 py-1.5 border-t border-edge-subtle">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
-                     border border-edge-subtle text-content-secondary
-                     hover:text-content hover:bg-overlay-subtle"
-              @click="emit('openToolPicker', $event)"
-            >
-              {{ toolLabel || 'No tool' }}
-              <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </button>
-
-            <ToolbarPopover
-              label=""
-              :width="360"
-              :disabled="!state.activeTool"
-              aria-label="Advanced settings"
-            >
-              <template #trigger>
-                <AdjustmentsHorizontalIcon class="w-4 h-4" />
-              </template>
-              <ToolAdvancedParams
-                v-if="state.activeTool"
-                :tool="state.activeTool"
-                :values="state.toolParams || {}"
-                @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
-              />
-            </ToolbarPopover>
-
-            <ToolbarPopover
-              v-if="sub === 'repaint'"
-              label=""
-              :width="320"
-              :disabled="!state.recentRepaintPrompts?.length"
-              close-on-select
-              aria-label="Recent Regenerate prompts"
-            >
-              <template #trigger>
-                <ClockIcon class="w-3.5 h-3.5" />
-              </template>
-              <div class="space-y-1">
-                <p class="px-2 pb-1 text-xs font-semibold text-content-secondary">
-                  Recent prompts
-                </p>
-                <!-- The row is the container so the whole strip highlights and
-                     reveals its remove control; the prompt and the × are
-                     siblings, not nested buttons. Only the prompt closes the
-                     popover, so removing several in a row keeps it open. -->
-                <div
-                  v-for="recent in state.recentRepaintPrompts"
-                  :key="recent"
-                  class="group/recent flex items-center gap-1 rounded-md pr-1
-                         hover:bg-overlay-subtle"
-                >
-                  <button
-                    type="button"
-                    data-close-popover
-                    class="min-w-0 flex-1 rounded-md px-2 py-2 text-left text-xs leading-5
-                           text-content-secondary group-hover/recent:text-content
-                           focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-                    @click="emit('set', { prompt: recent })"
-                  >
-                    {{ recent }}
-                  </button>
-                  <button
-                    type="button"
-                    class="grid h-6 w-6 shrink-0 place-items-center rounded-md
-                           text-content-tertiary opacity-0 transition-opacity
-                           group-hover/recent:opacity-100 hover:text-content
-                           focus-visible:opacity-100 focus-visible:outline-none
-                           focus-visible:ring-2 ring-accent/60"
-                    aria-label="Remove from recent prompts"
-                    @click="emit('set', { removeRecentPrompt: recent })"
-                  >
-                    <XMarkIcon class="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            </ToolbarPopover>
-
-            <div class="flex-1" />
-            <!-- A cutout is whole-image and deterministic: no mask to grow,
-                 no variations to pick between. -->
-            <label
-              v-if="sub !== 'cutout'"
-              class="flex items-center gap-1.5 text-xs text-content-tertiary"
-              title="Grow the mask past the selection edge before the model runs — a mask that hugs the object leaves its outline behind. Negative shrinks."
-            >
-              Expand mask
-              <span
-                class="flex items-center gap-0.5 pl-2 pr-1 py-1 rounded-md bg-overlay-subtle focus-within:ring-1 focus-within:ring-accent/50"
+          <!-- Prompt history lives with the prompt. Rendered only when there
+               IS history — inside the field a permanently disabled clock
+               would be clutter, not an affordance. -->
+          <ToolbarPopover
+            v-if="state.recentRepaintPrompts?.length"
+            label=""
+            :width="320"
+            :chevron="false"
+            close-on-select
+            aria-label="Recent Regenerate prompts"
+          >
+            <template #trigger>
+              <ClockIcon class="w-3.5 h-3.5" />
+            </template>
+            <div class="space-y-1">
+              <p class="px-2 pb-1 text-xs font-semibold text-content-secondary">
+                Recent prompts
+              </p>
+              <!-- The row is the container so the whole strip highlights and
+                   reveals its remove control; the prompt and the × are
+                   siblings, not nested buttons. Only the prompt closes the
+                   popover, so removing several in a row keeps it open. -->
+              <div
+                v-for="recent in state.recentRepaintPrompts"
+                :key="recent"
+                class="group/recent flex items-center gap-1 rounded-md pr-1
+                       hover:bg-overlay-subtle"
               >
-                <input
-                  type="number"
-                  min="-50"
-                  max="50"
-                  class="w-6 bg-transparent border-0 p-0 outline-none text-right font-mono tabular-nums text-content [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  :value="state.maskExpandPercent"
-                  @input="emit('set', {
-                    maskExpandPercent: Number(($event.target as HTMLInputElement).value),
-                  })"
-                />
-                <span class="font-mono text-content">%</span>
-                <span class="flex flex-col ml-0.5 -my-0.5">
-                  <button
-                    type="button"
-                    class="flex items-center justify-center w-4 h-3 text-content-tertiary hover:text-content"
-                    aria-label="Increase expand mask"
-                    @click="emit('set', { maskExpandPercent: Math.min(50, state.maskExpandPercent + 1) })"
-                  >
-                    <ChevronUpIcon class="w-3 h-3" />
-                  </button>
-                  <button
-                    type="button"
-                    class="flex items-center justify-center w-4 h-3 text-content-tertiary hover:text-content"
-                    aria-label="Decrease expand mask"
-                    @click="emit('set', { maskExpandPercent: Math.max(-50, state.maskExpandPercent - 1) })"
-                  >
-                    <ChevronDownIcon class="w-3 h-3" />
-                  </button>
-                </span>
-              </span>
-            </label>
-            <label
-              v-if="sub !== 'cutout'"
-              class="flex items-center gap-1.5 text-xs text-content-tertiary"
-            >
-              Variations
-              <input
-                type="number"
-                min="1"
-                max="8"
-                class="w-12 px-2 py-1 rounded-md font-mono tabular-nums text-content bg-overlay-subtle"
-                :value="state.candidateCount"
-                @input="emit('set', {
-                  candidateCount: Number(($event.target as HTMLInputElement).value),
-                })"
-              />
-            </label>
-            <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
-              Run
-            </Button>
-          </div>
+                <button
+                  type="button"
+                  data-close-popover
+                  class="min-w-0 flex-1 rounded-md px-2 py-2 text-left text-xs leading-5
+                         text-content-secondary group-hover/recent:text-content
+                         focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                  @click="emit('set', { prompt: recent })"
+                >
+                  {{ recent }}
+                </button>
+                <button
+                  type="button"
+                  class="grid h-6 w-6 shrink-0 place-items-center rounded-md
+                         text-content-tertiary opacity-0 transition-opacity
+                         group-hover/recent:opacity-100 hover:text-content
+                         focus-visible:opacity-100 focus-visible:outline-none
+                         focus-visible:ring-2 ring-accent/60"
+                  aria-label="Remove from recent prompts"
+                  @click="emit('set', { removeRecentPrompt: recent })"
+                >
+                  <XMarkIcon class="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </ToolbarPopover>
         </div>
+
+        <!-- Subject: Expand's four edges, inline — they ARE the tool's input. -->
+        <ExpandEdgesControl
+          v-else-if="sub === 'expand'"
+          class="flex-1 min-w-0"
+          :edges="state.expandEdges"
+          :frame-width="state.frameWidth"
+          :frame-height="state.frameHeight"
+          :disabled="busy"
+          @update="emit('set', { expandEdges: $event })"
+        />
+
+        <!-- Subject: no prompt, no fake input — the hint is just a sentence. -->
+        <p v-else class="flex-1 min-w-0 truncate text-sm text-content-muted">
+          {{ sub === 'cutout'
+            ? 'Makes the background transparent.'
+            : 'Select the area to remove, then Run.' }}
+        </p>
+
+        <!-- The invariant cluster. -->
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                 whitespace-nowrap text-content-secondary
+                 hover:text-content hover:bg-overlay-subtle"
+          @click="emit('openToolPicker', $event)"
+        >
+          {{ toolLabel || 'No tool' }}
+          <svg viewBox="0 0 24 24" class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m6 9 6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <ToolbarPopover
+          v-if="state.activeTool && hasAdvancedParams"
+          label=""
+          :width="360"
+          :chevron="false"
+          aria-label="Advanced settings"
+        >
+          <template #trigger>
+            <AdjustmentsHorizontalIcon class="w-4 h-4" />
+          </template>
+          <ToolAdvancedParams
+            :tool="state.activeTool"
+            :values="state.toolParams || {}"
+            :exclude="sub === 'expand' ? OUTPAINT_EXPAND_FIELDS_LIST : undefined"
+            @update="(name, value) => emit('set', { toolParamPatch: { [name]: value } })"
+          />
+        </ToolbarPopover>
+
+        <span v-if="sub !== 'cutout'" class="w-px h-5 bg-edge-subtle" />
+
+        <!-- The hot params, as scrub values — mono, drag to adjust, accent
+             when off-default. A cutout is whole-image and deterministic: no
+             mask to grow, no variations to pick between. Expand has no
+             selection mask at all — its region is the border the percents
+             define. -->
+        <label
+          v-if="sub !== 'cutout' && sub !== 'expand'"
+          class="flex items-center gap-1.5 text-xs text-content-tertiary whitespace-nowrap"
+          title="Grow the mask past the selection edge before the model runs — a mask that hugs the object leaves its outline behind. Negative shrinks."
+        >
+          Expand mask
+          <ScrubValue
+            :model-value="state.maskExpandPercent"
+            :min="-50"
+            :max="50"
+            :step="1"
+            :non-default="state.maskExpandPercent !== DEFAULT_MASK_EXPAND_PERCENT"
+            :format="v => `${v}%`"
+            @update:model-value="emit('set', { maskExpandPercent: $event })"
+          />
+        </label>
+        <label
+          v-if="sub !== 'cutout'"
+          class="flex items-center gap-1.5 text-xs text-content-tertiary whitespace-nowrap"
+        >
+          Variations
+          <ScrubValue
+            :model-value="state.candidateCount"
+            :min="1"
+            :max="8"
+            :step="1"
+            :non-default="state.candidateCount !== 4"
+            @update:model-value="emit('set', { candidateCount: $event })"
+          />
+        </label>
+        <Button size="sm" :disabled="!canRun" :loading="busy" @click="emit('run')">
+          Run
+        </Button>
       </div>
 
     </template>
@@ -488,15 +571,9 @@ function chipClass(active: boolean, pending = false) {
     <!-- Paint ----------------------------------------------------------- -->
     <template v-else-if="family.id === 'paint'">
       <Tooltip
-        v-for="engine in PAINT_ENGINES"
+        v-for="engine in standalonePaintEngines"
         :key="engine.id"
-        :text="engine.pending
-          ? 'Not built yet'
-          : engine.id === 'clone'
-            ? 'Clone — alt-click to set the source, then paint'
-            : engine.id === 'patch'
-            ? 'Patch — select the flawed area, then drag it over clean pixels'
-            : engine.label"
+        :text="engine.pending ? 'Not built yet' : engine.hint ?? engine.label"
       >
         <button
           type="button"
@@ -508,10 +585,18 @@ function chipClass(active: boolean, pending = false) {
           <ToolIcon :name="engine.icon" />
         </button>
       </Tooltip>
+      <PaintFillGroup
+        :active="state.engineId"
+        :current="state.paintFillEngineId"
+        @select="emit('set', { engineId: $event })"
+      />
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <!-- A brush is not a property of the layer it painted, so it hangs off
            the toolbar rather than appearing in the Edits inspector. -->
-      <ToolbarPopover :label="`${Math.round(state.paintBrush.size)}px`">
+      <ToolbarPopover
+        v-if="state.engineId === 'paint' || state.engineId === 'erase'"
+        :label="`${Math.round(state.paintBrush.size)}px`"
+      >
         <template #trigger>
           <span
             class="w-4 h-4 rounded-full bg-content"
@@ -527,76 +612,9 @@ function chipClass(active: boolean, pending = false) {
           @update:model-value="emit('set', { paintBrush: $event })"
         />
       </ToolbarPopover>
-      <!-- What the engine does with the stroke, for the engines that take a
-           direction or a strength. -->
-      <template v-if="state.engineId === 'dodge' || state.engineId === 'burn'">
-        <label class="flex items-center gap-2 text-xs text-content-tertiary">
-          Exposure
-          <input
-            type="range" min="1" max="100" class="w-20"
-            :value="state.paintExposure"
-            @input="emit('set', { paintExposure: Number(($event.target as HTMLInputElement).value) })"
-          />
-          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
-            {{ state.paintExposure }}%
-          </span>
-        </label>
-        <button
-          v-for="range in ['shadows', 'midtones', 'highlights']"
-          :key="range"
-          type="button"
-          class="px-2 py-1.5 text-xs rounded-md capitalize"
-          :class="chipClass(state.paintRange === range)"
-          @click="emit('set', { paintRange: range })"
-        >
-          {{ range }}
-        </button>
-      </template>
-      <template v-else-if="state.engineId === 'sponge'">
-        <label class="flex items-center gap-2 text-xs text-content-tertiary">
-          Strength
-          <input
-            type="range" min="1" max="100" class="w-20"
-            :value="state.paintStrength"
-            @input="emit('set', { paintStrength: Number(($event.target as HTMLInputElement).value) })"
-          />
-          <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
-            {{ state.paintStrength }}%
-          </span>
-        </label>
-        <button
-          type="button"
-          class="px-2 py-1.5 text-xs rounded-md"
-          :class="chipClass(state.paintSaturate)"
-          @click="emit('set', { paintSaturate: true })"
-        >
-          Saturate
-        </button>
-        <button
-          type="button"
-          class="px-2 py-1.5 text-xs rounded-md"
-          :class="chipClass(!state.paintSaturate)"
-          @click="emit('set', { paintSaturate: false })"
-        >
-          Desaturate
-        </button>
-      </template>
-      <label
-        v-else-if="state.engineId === 'blur' || state.engineId === 'sharpen'"
-        class="flex items-center gap-2 text-xs text-content-tertiary"
-      >
-        Strength
-        <input
-          type="range" min="1" max="100" class="w-20"
-          :value="state.paintStrength"
-          @input="emit('set', { paintStrength: Number(($event.target as HTMLInputElement).value) })"
-        />
-        <span class="w-8 text-right font-mono tabular-nums text-content-secondary">
-          {{ state.paintStrength }}%
-        </span>
-      </label>
+      <!-- Erase has no color: its stroke is an alpha mask. -->
       <ToolbarPopover
-        v-if="state.engineId === 'paint' || state.engineId === 'fill'"
+        v-if="state.engineId !== 'erase' && state.engineId !== 'gradient'"
         label="Color"
         :width="292"
       >
@@ -613,6 +631,52 @@ function chipClass(active: boolean, pending = false) {
           @update:model-value="emit('set', { paintColor: $event })"
         />
       </ToolbarPopover>
+      <template v-if="state.engineId === 'gradient'">
+        <ToolbarPopover label="Gradient" :width="292">
+          <template #trigger>
+            <span
+              class="w-16 h-4 rounded-md border border-edge-subtle"
+              :style="{ background: wellCss(state.paintGradient) }"
+            />
+          </template>
+          <PaintPicker
+            :model-value="state.paintGradient"
+            :image-palette="state.imagePalette"
+            gradient-only
+            @update:model-value="emit('set', { paintGradient: $event })"
+          />
+        </ToolbarPopover>
+
+        <Tooltip
+          v-for="option in paintGradientTypes"
+          :key="option.id"
+          :text="`${option.label} gradient`"
+        >
+          <button
+            type="button"
+            class="inline-flex items-center px-2 py-1.5 text-xs rounded-md transition-colors"
+            :class="chipClass(state.paintGradientType === option.id)"
+            :aria-label="`${option.label} gradient`"
+            :aria-pressed="state.paintGradientType === option.id"
+            @click="emit('set', { paintGradientType: option.id })"
+          >
+            <ToolIcon :name="option.icon" />
+          </button>
+        </Tooltip>
+
+        <Tooltip text="Reverse gradient colors">
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+            :class="chipClass(state.paintGradientReverse)"
+            :aria-pressed="state.paintGradientReverse"
+            @click="emit('set', { paintGradientReverse: !state.paintGradientReverse })"
+          >
+            <ToolIcon name="arrowsSwap" />
+            Reverse
+          </button>
+        </Tooltip>
+      </template>
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <button
         type="button"
@@ -623,74 +687,47 @@ function chipClass(active: boolean, pending = false) {
       </button>
     </template>
 
-    <!-- Filters: picking one IS applying it, so the strip belongs where the
-         decision is made rather than behind a selected step. -->
-    <template v-else-if="family.id === 'filters'">
-      <!-- One row that scrolls, rather than wrapping: the strip is a strip,
-           and wrapping it would push the canvas down every time it grew. It
-           runs edge to edge — the lead-in padding lives INSIDE the overflow
-           region so the first tile doesn't touch the edge but the scroll
-           track still spans the full bar. -->
-      <div class="w-full min-w-0 flex items-start gap-1.5 overflow-x-auto custom-scrollbar px-3">
-        <template v-for="category in FILTER_CATEGORIES" :key="category.id">
-          <span v-if="category.label" class="w-px h-10 bg-edge-subtle mx-1 shrink-0" />
-          <Tooltip
-            v-for="preset in category.filters"
-            :key="preset.id"
-            :text="category.label ? `${category.label} · ${preset.label}` : preset.label"
-          >
-            <button
-              type="button"
-              class="w-20 shrink-0 rounded-md p-0.5 transition-colors"
-              :class="state.appliedStripIds?.includes(preset.id)
-                ? 'bg-selection/25 text-content'
-                : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
-              @click="emit('set', { applyFilter: preset.id })"
-            >
-              <img
-                v-if="state.filterThumbs?.[preset.id]"
-                :src="state.filterThumbs[preset.id]"
-                class="w-full h-16 rounded-media object-cover"
-                alt=""
-              />
-              <div v-else class="w-full h-16 rounded-media bg-matte" />
-              <span class="block text-[10px] leading-tight truncate">{{ preset.label }}</span>
-            </button>
-          </Tooltip>
-        </template>
-      </div>
-    </template>
-
     <!-- Adjust: the addable edits. Each click makes its own focused step —
-         an Auto (a Light edit seeded from the histogram), a Light, a Color,
-         a Detail — whose controls live in its Properties. Same rule as the
-         strip: the bar offers what you can ADD. With a workspace selection
-         live, an added edit is scoped to it (the tooltips say so). The Autos
-         lead: they are the most-reached-for actions here, and frequency owns
-         the left edge. -->
+         an Auto, a group edit, a look — whose controls live in its Properties.
+         One rule for the whole bar: it offers what you can ADD. With a
+         workspace selection live, an added edit is scoped to it (the tooltips
+         say so).
+
+         Three runs, separated: what the picture can be given automatically,
+         the photographic corrections, and the things that ADD a look. Eleven
+         labelled chips in one undifferentiated line is what made this wrap. -->
     <template v-else-if="family.id === 'levels'">
-      <!-- The Autos stay whole-image even while a selection exists: their seeds
-           come from the full-frame histogram, and scoping the result of a
-           global computation would be quietly wrong (plan §14, Q15). -->
-      <Tooltip
-        v-for="auto in AUTO_EDITS"
-        :key="auto.id"
-        :text="state.hasSelection ? `${auto.label} — applies to the whole image` : auto.label"
-      >
+      <!-- The Autos behind one chip. They are three variants of a single act —
+           let the histogram decide — and spelled out across the bar they took a
+           third of its width for the least specific thing on it.
+
+           They stay whole-image even while a selection exists: their seeds come
+           from the full-frame histogram, and scoping the result of a global
+           computation would be quietly wrong (plan §14, Q15). -->
+      <ToolbarPopover label="Auto" :width="196" close-on-select>
+        <template #trigger>
+          <ToolIcon name="wand" />
+        </template>
         <button
+          v-for="auto in AUTO_EDITS"
+          :key="auto.id"
           type="button"
-          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+          data-close-popover
+          class="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-left transition-colors
                  text-content-secondary hover:text-content hover:bg-overlay-subtle"
-          :aria-label="auto.label"
           @click="emit('set', { auto: auto.id })"
         >
           <ToolIcon :name="auto.icon" />
-          {{ auto.label }}
+          <span class="text-xs">{{ auto.label }}</span>
         </button>
-      </Tooltip>
+        <p v-if="state.hasSelection" class="px-2 pt-2 text-[11px] text-content-tertiary">
+          Autos read the whole frame, so they apply to the whole image.
+        </p>
+      </ToolbarPopover>
+
       <span class="w-px h-5 bg-edge-subtle mx-1" />
       <Tooltip
-        v-for="edit in LEVEL_EDITS"
+        v-for="edit in PHOTOGRAPHIC_LEVEL_EDITS"
         :key="edit.id"
         :text="state.hasSelection ? `${edit.label} — applies to the selection` : edit.label"
       >
@@ -705,6 +742,82 @@ function chipClass(active: boolean, pending = false) {
           {{ edit.label }}
         </button>
       </Tooltip>
+
+      <!-- Effects, Stylize and Looks: the run that ADDS rather than corrects. -->
+      <span class="w-px h-5 bg-edge-subtle mx-1" />
+      <Tooltip
+        v-for="edit in CREATIVE_LEVEL_EDITS"
+        :key="edit.id"
+        :text="state.hasSelection ? `${edit.label} — applies to the selection` : edit.label"
+      >
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          :aria-label="edit.label"
+          @click="emit('set', { addLevel: edit.id })"
+        >
+          <ToolIcon :name="edit.icon" />
+          {{ edit.label }}
+        </button>
+      </Tooltip>
+      <!-- Looks closes the same run: a starting point rather than a dial, and
+           the only entry whose tiles have to be LOOKED at to be chosen — which
+           is why it toggles a strip instead of adding a step outright. -->
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md transition-colors"
+        :class="chipClass(!!state.looksOpen)"
+        :aria-expanded="!!state.looksOpen"
+        @click="emit('set', { looksOpen: !state.looksOpen })"
+      >
+        <ToolIcon name="image" />
+        Looks
+      </button>
+
+      <!-- One row that scrolls, rather than wrapping: the strip is a strip,
+           and wrapping it would push the canvas down every time it grew.
+
+           It runs edge to edge. The negative margins cancel the bar's own
+           padding so the scroll TRACK spans the full width and sits on the
+           bar's bottom border, and the lead-in padding lives INSIDE the
+           overflow region so the first tile still clears the edge. Leaving the
+           bar's padding on instead insets the track on three sides, which
+           reads as a stray scrollbar floating in the middle of the bar. -->
+      <div
+        v-if="state.looksOpen"
+        class="w-[calc(100%+2rem)] min-w-0 mt-2 -mx-4 -mb-2 px-4
+               flex items-start gap-1.5 overflow-x-auto custom-scrollbar"
+      >
+        <template v-for="(category, index) in LOOK_CATEGORIES" :key="category.id">
+          <span v-if="index" class="w-px h-10 bg-edge-subtle mx-1 shrink-0" />
+          <Tooltip
+            v-for="look in category.looks"
+            :key="look.id"
+            :text="state.hasSelection
+              ? `${category.label} · ${look.label} — applies to the selection`
+              : `${category.label} · ${look.label}`"
+          >
+            <button
+              type="button"
+              class="w-20 shrink-0 rounded-md p-0.5 transition-colors"
+              :class="state.appliedLookIds?.includes(look.id)
+                ? 'bg-selection/25 text-content'
+                : 'text-content-tertiary hover:text-content hover:bg-overlay-subtle'"
+              @click="emit('set', { applyLook: look.id })"
+            >
+              <img
+                v-if="state.lookThumbs?.[look.id]"
+                :src="state.lookThumbs[look.id]"
+                class="w-full h-16 rounded-media object-cover"
+                alt=""
+              />
+              <div v-else class="w-full h-16 rounded-media bg-matte" />
+              <span class="block text-[10px] leading-tight truncate">{{ look.label }}</span>
+            </button>
+          </Tooltip>
+        </template>
+      </div>
     </template>
 
     <!-- Annotate: the latent shape's full initial conditions, compact — every

@@ -21,7 +21,7 @@
       <!-- Parameters list (settings-style: label+desc on left, control on right) -->
       <!-- Atelier: ONE hairline under the group label; rows separate by
            whitespace (per-row rules read as a wall of <hr>s on two-line rows). -->
-      <div v-show="disableCollapse || !paramGroup.collapsible || !isCollapsed(paramGroup.group)" class="divide-y divide-edge-subtle">
+      <div v-show="disableCollapse || !paramGroup.collapsible || !isCollapsed(paramGroup.group)" :class="dividers === false ? '' : 'divide-y divide-edge-subtle'">
         <template v-for="param in paramGroup.params" :key="param.name">
           <!-- Skip if visibleWhen condition not met, or a hide constraint is active -->
           <template v-if="(!param.visibleWhen || values[param.visibleWhen.param] === param.visibleWhen.value) && !constraintState(param).hidden">
@@ -181,6 +181,9 @@ const props = defineProps<{
       label. One chevron per surface is enough — drop this prop to restore the
       per-group disclosure behavior. */
   disableCollapse?: boolean
+  /** Separate rows with hairlines (default). Popover hosts pass false so the
+      short run of rows groups by whitespace instead (separator law). */
+  dividers?: boolean
   /** Optional external collapse persistence (ToolView persists per tool). */
   isGroupCollapsed?: (groupLabel: string | null) => boolean
   onToggleGroupCollapsed?: (groupLabel: string | null) => void

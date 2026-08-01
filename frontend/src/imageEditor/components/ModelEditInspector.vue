@@ -47,9 +47,10 @@ const blend = computed(() => ({
 const toolParams = computed(() =>
   sanitizeModelToolParams(props.tool, props.op.params)
 )
-const supportsReferences = computed(() =>
-  props.op.operation === 'repaint' || props.op.operation === 'expand'
-)
+// Only Regenerate: outpaint-image tools take the original and the four
+// percents, nothing else — the old inpaint-backed Expand's references are gone
+// with it.
+const supportsReferences = computed(() => props.op.operation === 'repaint')
 const referenceLimits = computed(() => modelReferenceLimits(props.tool))
 const referencesValid = computed(() => {
   const count = props.op.reference_images?.length ?? 0

@@ -12,6 +12,7 @@ import {
   radialMaskFromDrag,
   regionHasCoverage,
   regionMaskOf,
+  shouldShowGradientChrome,
   transformGradientMask,
   withGradientSlider,
 } from './regionMask.ts'
@@ -243,4 +244,17 @@ test('coverage belongs in the alpha channel, not just RGB', () => {
 test('rasterising is safe at zero size', () => {
   const mask = linearMaskFromDrag({ x: 0, y: 0 }, { x: 0, y: 10 })
   assert.equal(gradientAlpha(mask, 0, 0).length, 0)
+})
+
+test('workspace gradient chrome appears only for its matching selection tool', () => {
+  const linear = linearMaskFromDrag({ x: 0, y: 0 }, { x: 10, y: 0 })
+  assert.equal(shouldShowGradientChrome(linear, null, false), false)
+  assert.equal(shouldShowGradientChrome(linear, 'radial', false), false)
+  assert.equal(shouldShowGradientChrome(linear, 'linear', false), true)
+})
+
+test('an adjustment-owned gradient keeps its chrome without an armed selection tool', () => {
+  const radial = radialMaskFromDrag({ x: 5, y: 5 }, { x: 10, y: 10 })
+  assert.equal(shouldShowGradientChrome(radial, null, true), true)
+  assert.equal(shouldShowGradientChrome(radial, 'linear', true), true)
 })

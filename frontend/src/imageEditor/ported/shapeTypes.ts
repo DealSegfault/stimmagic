@@ -19,6 +19,9 @@ export interface BrushSettings {
   glow?: number;      // 0-100 (neon glow intensity - 0=none, 100=max glow)
   jitter?: number;    // 0-100 (position randomness for chalk/spatter effects)
   scatter?: number;   // 0-100 (additional random stamps for spatter effect)
+  // Stylus dynamics; ignored for mouse strokes (pressure is null there)
+  pressureSize?: boolean;     // pen pressure scales dab size
+  pressureOpacity?: boolean;  // pen pressure scales dab flow
 }
 
 /**

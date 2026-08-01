@@ -22,6 +22,7 @@
 import type { Op, StackDocument } from './types'
 import { pickedCandidate } from './types'
 import { canonicalOp, stackHashes } from './stackHashes'
+import { expandEdgesFromParams, expandedFrame } from './expandGeometry'
 import {
   geometryBelow, isIdentity, multiply, payloadToDocument,
   rewritePayload, transformShapes, translate,
@@ -856,6 +857,84 @@ export class StackCompositor {
     if (op.class === 'patch') {
       // No pick yet — the op is staged, and a staged op contributes nothing.
       if (!picked?.patch_ref || !anyOp.mask_ref) return input
+      // Expand is the one patch that GROWS the frame. Its candidate is the
+      // whole outpainted frame at the grown size (the tool grew the canvas
+      // itself), so it becomes the new working canvas and the input is drawn
+      // back over the region where the source sits — the original pixels stay
+      // authoritative, and the model's seam blending lives outside that rect.
+      // The render loop carries the new size forward, exactly as it does for
+      // crop; geometryBelow mirrors this branch (picked + enabled) so payloads
+      // above anchor into the grown frame.
+      if (anyOp.operation === 'expand') {
+        const frame = expandedFrame(
+          expandEdgesFromParams(anyOp.params), width, height,
+        )
+        const patch = await this.deps.loadPayload(
+          picked.patch_ref, anyOp._revision ?? 0,
+        )
+        const grown = makeCanvas(frame.width, frame.height)
+        const ctx = grown.getContext('2d')!
+        // The candidate is CROPPED to the border mask's bounds (a single-edge
+        // expand's "ring" is just a strip), positioned by its origin. Drawn at
+        // natural size — scaling it to the canvas smeared a ~250px seam strip
+        // across the whole frame. Coverage is complete regardless: the patch
+        // spans every expanded band plus the ingest margin, and the original
+        // overlay below covers the interior.
+        const origin = picked.patch_origin ?? [0, 0]
+        ctx.drawImage(patch as any, origin[0], origin[1])
+
+        // The original overdraw, feathered on the EXPANDED edges only. The
+        // model's border content often comes back softer than the source (a
+        // working-resolution round trip), and a hard crisp-against-soft
+        // boundary reads as a seam even when the content continues. Fading
+        // the overdraw into the candidate over the blend feather hides that
+        // discontinuity; near the seam the candidate is the tool's own blend
+        // of the original, so nothing of consequence is given up. Un-expanded
+        // edges stay hard — they are the image boundary.
+        const overlay = makeCanvas(frame.width, frame.height)
+        const octx = overlay.getContext('2d')!
+        octx.drawImage(input, frame.left, frame.top)
+        const featherPx = Math.min(
+          Math.max(0, anyOp.blend?.feather_px ?? 0),
+          Math.floor(Math.min(width, height) / 4),
+        )
+        if (featherPx > 0) {
+          octx.globalCompositeOperation = 'destination-out'
+          const fade = (
+            x0: number, y0: number, x1: number, y1: number,
+            rx: number, ry: number, rw: number, rh: number,
+          ) => {
+            const gradient = octx.createLinearGradient(x0, y0, x1, y1)
+            gradient.addColorStop(0, 'rgba(0,0,0,1)')
+            gradient.addColorStop(1, 'rgba(0,0,0,0)')
+            octx.fillStyle = gradient
+            octx.fillRect(rx, ry, rw, rh)
+          }
+          const rightPad = frame.width - frame.left - width
+          const bottomPad = frame.height - frame.top - height
+          if (frame.left > 0) {
+            fade(frame.left, 0, frame.left + featherPx, 0,
+              frame.left, frame.top, featherPx, height)
+          }
+          if (rightPad > 0) {
+            fade(frame.left + width, 0, frame.left + width - featherPx, 0,
+              frame.left + width - featherPx, frame.top, featherPx, height)
+          }
+          if (frame.top > 0) {
+            fade(0, frame.top, 0, frame.top + featherPx,
+              frame.left, frame.top, width, featherPx)
+          }
+          if (bottomPad > 0) {
+            fade(0, frame.top + height, 0, frame.top + height - featherPx,
+              frame.left, frame.top + height - featherPx, width, featherPx)
+          }
+          octx.globalCompositeOperation = 'source-over'
+        }
+        ctx.globalAlpha = anyOp.blend?.opacity ?? 1
+        ctx.drawImage(overlay, 0, 0)
+        ctx.globalAlpha = 1
+        return grown
+      }
       // A cutout's candidate is a matte, not a patch: its alpha cuts the
       // composite instead of its pixels drawing over it.
       if (anyOp.operation === 'cutout') {
@@ -972,6 +1051,9 @@ export class StackCompositor {
             || region.kind === 'mixer'
             || region.kind === 'point'
             || region.kind === 'grade'
+            || region.kind === 'effects'
+            || region.kind === 'stylize'
+            || region.kind === 'look'
           ) {
             const settings = region.settings ?? {}
             const adjusted = applyAdjust(

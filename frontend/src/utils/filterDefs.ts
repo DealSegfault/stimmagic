@@ -12,8 +12,7 @@
  * backend/postprocessing/builtin_filters.py (server).
  */
 
-import { FILTER_CATEGORIES } from '../imageEditor/stack/adjustSections';
-import { FILTER_MATRICES } from '../imageEditor/ported/filterMatrices';
+import { FILTER_MATRICES, FILTER_PRESET_LABELS } from '../imageEditor/ported/filterMatrices';
 
 export interface ChainFilterParam {
   name: string;
@@ -41,11 +40,16 @@ export interface ChainFilterDef {
   params: ChainFilterParam[];
 }
 
-/** Color preset choices come from the editor's filter categories. */
-export const COLOR_FILTER_OPTIONS = FILTER_CATEGORIES
-  .flatMap(cat => cat.filters)
-  .filter(f => f.id !== 'none' && !f.effect)
-  .map(f => ({ value: f.id, label: f.label }));
+/**
+ * Color preset choices: exactly the color matrices the backend implements.
+ *
+ * Taken from the matrix table rather than from the editor's Looks strip. They
+ * were the same list when a look WAS a matrix; now that a look is a bundle of
+ * adjustment params, the strip is free to change and this enum is not — it is
+ * persisted in saved chains and mirrored in `backend/filters/defs.py`.
+ */
+export const COLOR_FILTER_OPTIONS = FILTER_PRESET_LABELS
+  .map(preset => ({ value: preset.id, label: preset.label }));
 
 /**
  * The chain's built-in filter registry. Terminology mirrors the editor's

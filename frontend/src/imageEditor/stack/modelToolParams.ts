@@ -87,7 +87,15 @@ export function modelToolDefaults(tool: any): Record<string, any> {
   const result: Record<string, any> = {}
   for (const name of editableModelParamNames(tool)) {
     const value = properties[name]?.default
-    if (value !== undefined) result[name] = structuredClone(value)
+    // JSON round-trip, not structuredClone: the catalog lives in a deep
+    // reactive ref, so an object/array default arrives as a Vue proxy, which
+    // structuredClone rejects (DataCloneError). Schema defaults are JSON by
+    // definition, so nothing is lost.
+    if (value !== undefined) {
+      result[name] = typeof value === 'object' && value !== null
+        ? JSON.parse(JSON.stringify(value))
+        : value
+    }
   }
   return result
 }

@@ -9,6 +9,8 @@ use tauri::Manager;
 use tokio::sync::RwLock;
 
 mod embed;
+#[cfg(target_os = "macos")]
+mod tablet;
 mod voice;
 mod windows;
 
@@ -393,6 +395,12 @@ pub fn run() {
             }
 
             log::info!("[stimma] Browser data dir: {:?}", browser_data_dir);
+
+            // Forward stylus pressure/tilt to the webview; WKWebView's own
+            // pointer events never carry it. Setup runs on the main thread,
+            // which installing the NSEvent monitor requires.
+            #[cfg(target_os = "macos")]
+            tablet::install(app.handle());
 
             // macOS keeps the app in the Dock with no windows (like Music.app);
             // the default app menu already binds Quit to Cmd-Q. Windows/Linux

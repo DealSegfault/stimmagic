@@ -30,20 +30,25 @@ export interface ToolPrefs {
   selectTool?: string
   /** Paint family engine chip — Brush, Patch, Clone… */
   paintEngineId?: string
+  /** Last member shown in the Paint Bucket / Gradient shared slot. */
+  paintFillEngineId?: 'fill' | 'gradient'
   /** Brush and engine controls, remembered independently for each Paint engine. */
   paintEngines?: Record<string, Partial<PaintEngineSettings>>
-  /** Brush used to author region-based Retouch repairs. */
+  /** @deprecated Superseded by `retouchEngines`; read as a seed for the repair brushes. */
   retouchBrush?: Partial<PaintEngineSettings['brush']>
-  /** @deprecated Read only as a migration fallback for Expand/Repaint. */
+  /** Brush and strength controls, remembered independently per Retouch sub-tool. */
+  retouchEngines?: Record<string, Partial<PaintEngineSettings>>
+  /** @deprecated Read only as a migration fallback for Repaint. */
   inpaintToolId?: string
-  /** Catalog tool used to fill an expanded canvas border. */
-  /** Catalog tool used by Retouch → Repaint (`inpaint-image`). */
+  /** Catalog tool used by Generate → Regenerate (`inpaint-image`). */
   repaintToolId?: string
+  /** Catalog tool used by Generate → Expand (`outpaint-image`). */
+  expandToolId?: string
   /** @deprecated Read only as a migration fallback for Remove. */
   eraseToolId?: string
-  /** Catalog tool used by Retouch → Remove (`erase-image` or inpaint fallback). */
+  /** Catalog tool used by Generate → Remove object (`erase-image` or inpaint fallback). */
   removeToolId?: string
-  /** Catalog tool used by Retouch → Remove background (`remove-background`). */
+  /** Catalog tool used by Generate → Remove background (`remove-background`). */
   cutoutToolId?: string
   /** Sticky model prompts, separate because Expand and Repaint are different jobs. */
   repaintPrompt?: string
@@ -98,8 +103,18 @@ export function rememberSubTool(familyId: string, subId: string | null): void {
 }
 
 export function rememberedSubTool(familyId: string): string | undefined {
-  const value = readToolPrefs().sub?.[familyId]
-  return familyId === 'retouch' && value === 'erase' ? 'remove' : value
+  const subs = readToolPrefs().sub
+  const value = subs?.[familyId]
+  if (familyId === 'retouch' && value === 'erase') return 'remove'
+  // The model verbs moved from Retouch to Generate; honour a pick made before
+  // the split until Generate has one of its own.
+  if (familyId === 'generate' && !value) {
+    const legacy = subs?.retouch
+    if (legacy && ['remove', 'repaint', 'cutout', 'expand', 'erase'].includes(legacy)) {
+      return legacy === 'erase' ? 'remove' : legacy
+    }
+  }
+  return value
 }
 
 /**

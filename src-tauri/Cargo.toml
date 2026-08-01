@@ -40,6 +40,9 @@ sherpa-onnx = "1.13.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 uuid = { version = "=1.19.0", features = ["v4"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSEvent"] }
+block2 = "0.6"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

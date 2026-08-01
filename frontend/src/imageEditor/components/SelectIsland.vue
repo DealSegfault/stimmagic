@@ -11,17 +11,19 @@
  * setting has exactly one home and the bar itself never reflows. Idle shows
  * no panel at all.
  *
- * Kin tools share a slot with a hover flyout (the two marquees, the two
- * lassos, the two gradients); the slot shows whichever member was used last,
- * so the common case stays one click.
+ * Kin tools share a slot with a press-and-hold flyout (the two marquees, the
+ * two lassos, the two gradients). A quick press selects the last-used member;
+ * holding opens the flyout and releasing over a member selects it, matching
+ * the standard graphics-editor gesture without making hover change the tool.
  *
  * Selection is workspace state, not a mode: clicking a tool arms it (the
  * pointer goes to the selection overlay, the open family is suspended, not
- * left); clicking the armed tool — or reaching for any family control that
- * wants the canvas back — disarms it.
+ * left). Grouped picks are idempotent; the pointer or a family control hands
+ * the canvas back explicitly, while ungrouped tools retain their old toggle.
  */
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
+import PaintToolIcon from '../../components/generation/PaintToolIcon.vue'
 import ToolIcon from './ToolIcon.vue'
 import { SELECT_TOOLS, SELECT_TOOL_GROUPS, SELECTION_MODES } from '../stack/toolFamilies'
 import type { SelectToolId, SelectionMode } from '../stack/toolFamilies'
@@ -33,6 +35,8 @@ import {
 
 const props = defineProps<{
   armed: SelectToolId | null
+  /** Most recently used selection tool, including while the rail is idle. */
+  lastUsed?: SelectToolId | null
   hasSelection: boolean
   combine: SelectionMode
   featherPx: number
@@ -58,10 +62,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   arm: [SelectToolId]
+  /** Grouped-tool picks are idempotent: choosing the selected variant keeps it armed. */
+  choose: [SelectToolId]
   pointer: []
   set: [Record<string, any>]
   invert: []
   clear: []
+  morph: [number]
   aiSelect: [string]
 }>()
 
@@ -72,11 +79,116 @@ const armedTool = computed(() => (props.armed ? toolById[props.armed] : null))
 const groupCurrent = ref<Record<string, SelectToolId>>(
   Object.fromEntries(SELECT_TOOL_GROUPS.map(group => [group.id, group.members[0]]))
 )
-watch(() => props.armed, armed => {
-  if (!armed) return
-  const group = SELECT_TOOL_GROUPS.find(g => g.members.includes(armed))
-  if (group) groupCurrent.value[group.id] = armed
+watch([() => props.armed, () => props.lastUsed], ([armed, lastUsed]) => {
+  const current = armed ?? lastUsed
+  if (!current) return
+  const group = SELECT_TOOL_GROUPS.find(g => g.members.includes(current))
+  if (group) groupCurrent.value[group.id] = current
 }, { immediate: true })
+
+/** Photoshop-style grouped tools: click uses the visible tool; hold opens the
+ * menu, then release over a row to choose it in the same gesture. */
+const GROUP_HOLD_MS = 350
+const openGroup = ref<string | null>(null)
+let holdTimer: ReturnType<typeof setTimeout> | null = null
+let groupPress: {
+  groupId: string
+  current: SelectToolId
+  pointerId: number
+  opened: boolean
+} | null = null
+
+function clearHoldTimer() {
+  if (holdTimer) clearTimeout(holdTimer)
+  holdTimer = null
+}
+
+function removePressListeners() {
+  window.removeEventListener('pointerup', finishGroupPress, true)
+  window.removeEventListener('pointercancel', cancelGroupPress, true)
+}
+
+function startGroupPress(
+  groupId: string,
+  current: SelectToolId,
+  event: PointerEvent,
+) {
+  if (event.button !== 0) return
+  event.preventDefault()
+  event.stopPropagation()
+  clearHoldTimer()
+  removePressListeners()
+  groupPress = { groupId, current, pointerId: event.pointerId, opened: false }
+  holdTimer = setTimeout(() => {
+    if (!groupPress || groupPress.pointerId !== event.pointerId) return
+    groupPress.opened = true
+    openGroup.value = groupId
+  }, GROUP_HOLD_MS)
+  window.addEventListener('pointerup', finishGroupPress, true)
+  window.addEventListener('pointercancel', cancelGroupPress, true)
+}
+
+function finishGroupPress(event: PointerEvent) {
+  const press = groupPress
+  if (!press || event.pointerId !== press.pointerId) return
+  clearHoldTimer()
+  removePressListeners()
+  groupPress = null
+  if (!press.opened) {
+    chooseGroupTool(press.current)
+    return
+  }
+
+  // elementFromPoint follows the pointer even though the press began on the
+  // slot button, so press-drag-release selects a row in one continuous move.
+  const target = document.elementFromPoint(event.clientX, event.clientY)
+    ?.closest<HTMLElement>('[data-select-tool]')
+  const id = target?.dataset.selectTool as SelectToolId | undefined
+  const group = SELECT_TOOL_GROUPS.find(candidate => candidate.id === press.groupId)
+  if (id && group?.members.includes(id)) chooseGroupTool(id)
+  // Releasing on the original slot leaves the menu open for an ordinary click.
+}
+
+function cancelGroupPress(event?: PointerEvent) {
+  if (event && groupPress && event.pointerId !== groupPress.pointerId) return
+  clearHoldTimer()
+  removePressListeners()
+  groupPress = null
+}
+
+function chooseGroupTool(id: SelectToolId) {
+  const group = SELECT_TOOL_GROUPS.find(candidate => candidate.members.includes(id))
+  if (group) groupCurrent.value[group.id] = id
+  openGroup.value = null
+  emit('choose', id)
+}
+
+/** Native keyboard activation has no pointer sequence; keep it one-step. */
+function onGroupButtonClick(id: SelectToolId, event: MouseEvent) {
+  if (event.detail === 0) chooseGroupTool(id)
+}
+
+function onOutsidePointerDown(event: PointerEvent) {
+  if (!openGroup.value) return
+  const target = event.target as HTMLElement | null
+  if (!target?.closest(`[data-select-group="${openGroup.value}"]`)) {
+    openGroup.value = null
+  }
+}
+
+function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') openGroup.value = null
+}
+
+onMounted(() => {
+  window.addEventListener('pointerdown', onOutsidePointerDown)
+  window.addEventListener('keydown', onWindowKeydown)
+})
+onBeforeUnmount(() => {
+  cancelGroupPress()
+  window.removeEventListener('pointerdown', onOutsidePointerDown)
+  window.removeEventListener('keydown', onWindowKeydown)
+})
 
 /** Combine describes how the next gesture meets the visible selection, so its
  * state remains visible/editable after a one-shot workflow disarms the tool. */
@@ -144,6 +256,8 @@ const panelSliders = computed<PanelSlider[]>(() => {
  * are the common follow-ups.
  */
 const aiPrompt = ref('')
+/** One-shot distance used by the Expand/Contract selection actions. */
+const edgeAmount = ref(8)
 const shownAiError = ref<string | null>(null)
 const aiInput = ref<HTMLInputElement | null>(null)
 watch(() => props.aiError, value => { shownAiError.value = value ?? null })
@@ -156,6 +270,12 @@ function submitAiPrompt() {
   const prompt = aiPrompt.value.trim()
   if (!prompt || props.aiBusy) return
   emit('aiSelect', prompt)
+}
+
+function morphSelection(direction: 1 | -1) {
+  const amount = Math.max(1, Math.min(100, Math.round(Number(edgeAmount.value) || 1)))
+  edgeAmount.value = amount
+  emit('morph', amount * direction)
 }
 
 function buttonClass(active: boolean, enabled = true) {
@@ -281,7 +401,8 @@ function buttonClass(active: boolean, enabled = true) {
     <span
       v-for="group in SELECT_TOOL_GROUPS"
       :key="group.id"
-      class="relative group/fly"
+      class="relative"
+      :data-select-group="group.id"
     >
       <Tooltip
         v-if="group.members.length === 1"
@@ -299,15 +420,19 @@ function buttonClass(active: boolean, enabled = true) {
         </button>
       </Tooltip>
       <template v-else>
-        <!-- The slot arms its last-used member; the corner tick marks a group.
-             No tooltip here — the flyout itself names the members. -->
+        <!-- Quick press arms the visible member. Hold opens the menu; the
+             corner tick is the quiet affordance that more tools live here. -->
         <button
           type="button"
           class="relative p-1.5 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
           :class="buttonClass(armed === groupCurrent[group.id])"
           :aria-label="`Select — ${toolById[groupCurrent[group.id]].label}`"
           :aria-pressed="armed === groupCurrent[group.id]"
-          @click="emit('arm', groupCurrent[group.id])"
+          aria-haspopup="menu"
+          :aria-expanded="openGroup === group.id"
+          @pointerdown="startGroupPress(group.id, groupCurrent[group.id], $event)"
+          @click.prevent="onGroupButtonClick(groupCurrent[group.id], $event)"
+          @keydown.down.prevent="openGroup = group.id"
         >
           <ToolIcon :name="toolById[groupCurrent[group.id]].icon" />
           <svg
@@ -315,19 +440,26 @@ function buttonClass(active: boolean, enabled = true) {
             class="absolute right-[3px] bottom-[3px] w-1.5 h-1.5 text-content-tertiary pointer-events-none"
           ><path d="M6 0v6H0z" fill="currentColor" /></svg>
         </button>
-        <!-- pb-1 keeps the hover unbroken across the gap to the flyout. -->
+        <!-- The padding is a bridge for a held pointer moving into the menu. -->
         <div
-          class="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 hidden group-hover/fly:block z-menu"
+          v-if="openGroup === group.id"
+          class="absolute bottom-full left-1/2 -translate-x-1/2 pb-1 z-menu"
         >
-          <div class="flex flex-col gap-0.5 p-1 bg-surface border border-edge-subtle rounded-lg shadow-lg">
+          <div
+            class="flex flex-col gap-0.5 p-1 bg-surface border border-edge-subtle rounded-lg shadow-lg"
+            role="menu"
+          >
             <button
               v-for="id in group.members"
               :key="id"
               type="button"
+              role="menuitemradio"
+              :aria-checked="armed === id"
+              :data-select-tool="id"
               class="flex items-center gap-2 px-2 py-1.5 rounded-md text-xs whitespace-nowrap transition-colors"
               :class="buttonClass(armed === id)"
               :title="toolById[id].hint"
-              @click="emit('arm', id)"
+              @click.stop="chooseGroupTool(id)"
             >
               <ToolIcon :name="toolById[id].icon" />
               {{ toolById[id].label }}
@@ -354,6 +486,46 @@ function buttonClass(active: boolean, enabled = true) {
     </Tooltip>
 
     <span class="w-px h-5 bg-edge-subtle mx-1" />
+
+    <span v-if="hasSelection" class="flex items-center gap-1.5">
+      <Tooltip :text="`Contract selection by ${edgeAmount} pixels`">
+        <button
+          type="button"
+          class="p-1.5 rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          :aria-label="`Contract selection by ${edgeAmount} pixels`"
+          @click="morphSelection(-1)"
+        >
+          <PaintToolIcon name="maskContract" />
+        </button>
+      </Tooltip>
+      <Tooltip :text="`Expand selection by ${edgeAmount} pixels`">
+        <button
+          type="button"
+          class="p-1.5 rounded-md text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          :aria-label="`Expand selection by ${edgeAmount} pixels`"
+          @click="morphSelection(1)"
+        >
+          <PaintToolIcon name="maskExpand" />
+        </button>
+      </Tooltip>
+      <label class="flex items-center gap-0.5 text-xs text-content-tertiary">
+        <input
+          v-model.number="edgeAmount"
+          type="number"
+          min="1"
+          max="100"
+          aria-label="Selection edge amount in pixels"
+          class="w-9 px-1.5 py-1 text-right font-mono tabular-nums text-content bg-overlay-subtle
+                 rounded-md border border-transparent outline-none focus:border-accent
+                 focus-visible:ring-2 ring-accent/40 [appearance:textfield]
+                 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          @change="edgeAmount = Math.max(1, Math.min(100, Math.round(Number(edgeAmount) || 1)))"
+        />
+        <span class="font-mono">px</span>
+      </label>
+    </span>
+
+    <span v-if="hasSelection" class="w-px h-5 bg-edge-subtle mx-1" />
 
     <button
       type="button"

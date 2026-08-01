@@ -336,6 +336,9 @@ class AssetRevision(Base):
     primary_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='RESTRICT'), nullable=False, index=True)
     revision_number = Column(Integer, nullable=False)
     note = Column(String, nullable=True)
+    # Committed automatically on leaving the editor. At most one lives at the
+    # head of a chain: the next commit sharing its parent swallows it.
+    autosave = Column(Boolean, nullable=False, default=False, server_default='0')
     missing_parent = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     deleted_at = Column(DateTime, nullable=True, index=True)
@@ -354,6 +357,7 @@ class AssetRevision(Base):
             "primary_media_id": self.primary_media_id,
             "revision_number": self.revision_number,
             "note": self.note,
+            "autosave": self.autosave,
             "missing_parent": self.missing_parent,
             "created_at": self.created_at.isoformat(),
         }

@@ -110,6 +110,7 @@ export const icons = {
   bandage: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18.9 5.1a8 8 0 0 0-11.3 0L3 9.7a4 4 0 0 0 0 5.7l5.7 5.7a4 4 0 0 0 5.7 0l4.6-4.6a8 8 0 0 0 0-11.4Z"/><path d="m9.5 14.5 5-5"/><circle cx="10" cy="10" r="0.5" fill="currentColor"/><circle cx="14" cy="14" r="0.5" fill="currentColor"/><circle cx="12" cy="12" r="0.5" fill="currentColor"/></svg>`,
 
   // A kept subject inside a dashed frame — the frame is what gets cut away.
+  expand: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="7" height="7" rx="1"/><path d="M5 8V5h3M16 5h3v3M19 16v3h-3M8 19H5v-3"/></svg>`,
   cutout: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2.5" stroke-dasharray="3 2.5"/><circle cx="12" cy="10.5" r="3"/><path d="M6.5 19c1.1-2.6 3.1-4 5.5-4s4.4 1.4 5.5 4"/></svg>`,
 
   // Fabric patch: a square with stitch threads poking out on every side.
@@ -134,6 +135,19 @@ export const icons = {
   // Three overlapping wheels: shadows, midtones, highlights.
   grading: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="9" r="5"/><circle cx="16.5" cy="9" r="5"/><circle cx="12" cy="16" r="5"/></svg>`,
 
+  // A tonal distribution: what Auto levels reads to choose its numbers.
+  histogram: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20h18"/><path d="M5.5 20v-4"/><path d="M9 20v-8"/><path d="M12.5 20v-13"/><path d="M16 20v-6"/><path d="M19.5 20v-3"/></svg>`,
+
+  // A thermometer: Auto balance is temperature and tint.
+  thermometer: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0Z"/><path d="M12 17.5v-3"/></svg>`,
+
+  // A frame that darkens toward its corners, with grain in it: vignette, glow,
+  // blur and grain are what this group holds.
+  effects: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><defs><radialGradient id="fx-vignette"><stop offset="0.45" stop-color="currentColor" stop-opacity="0"/><stop offset="1" stop-color="currentColor" stop-opacity="0.7"/></radialGradient></defs><rect x="3" y="3" width="18" height="18" rx="2.5" fill="url(#fx-vignette)" stroke="none"/><rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="10" cy="10.5" r="0.6" fill="currentColor" stroke="none"/><circle cx="13.5" cy="13" r="0.6" fill="currentColor" stroke="none"/><circle cx="14" cy="9.5" r="0.6" fill="currentColor" stroke="none"/></svg>`,
+
+  // Scanlines knocked out of register: the synthetic looks.
+  stylize: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h13"/><path d="M8 9h13"/><path d="M3 13h13"/><path d="M8 17h13"/><path d="M3 21h9"/></svg>`,
+
   contrast: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2v20" fill="currentColor"/><path d="M12 2a10 10 0 0 1 0 20" fill="currentColor"/></svg>`,
 
   squareDashed: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/></svg>`,
@@ -146,6 +160,12 @@ export const icons = {
   gradientLinear: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><defs><linearGradient id="grad-linear-icon" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".85"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs><rect x="3" y="3" width="18" height="18" rx="2" fill="url(#grad-linear-icon)" stroke="none"/><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 8.5h18"/><path d="M3 15h18" stroke-dasharray="3 2.5"/></svg>`,
 
   gradientRadial: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><defs><radialGradient id="grad-radial-icon"><stop offset="0" stop-color="currentColor" stop-opacity=".85"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></radialGradient></defs><rect x="3" y="3" width="18" height="18" rx="2" fill="url(#grad-radial-icon)" stroke="none"/><rect x="3" y="3" width="18" height="18" rx="2"/><ellipse cx="12" cy="12" rx="7" ry="5.5" stroke-dasharray="3 2.5"/></svg>`,
+
+  gradientAngle: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 12V3"/><path d="M12 12 18.4 5.6" stroke-dasharray="2.5 2"/><path d="M12 12a5.5 5.5 0 0 1 5.5 5.5"/></svg>`,
+
+  gradientReflected: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/><path d="M7 4v16M17 4v16" stroke-dasharray="3 2.5"/></svg>`,
+
+  gradientDiamond: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 10 10-10 10L2 12 12 2Z"/><path d="m12 7 5 5-5 5-5-5 5-5Z" stroke-dasharray="3 2.5"/></svg>`,
 
   // Lucide `lasso`: the rope loop with its cinch ring.
   lasso: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 22a5 5 0 0 1-2-4"/><path d="M3.3 14A6.8 6.8 0 0 1 2 10c0-4.4 4.5-8 10-8s10 3.6 10 8-4.5 8-10 8a12 12 0 0 1-5-1"/><circle cx="5" cy="18" r="3"/></svg>`,

@@ -25,11 +25,14 @@ const props = withDefaults(defineProps<{
   modelValue: Paint | null
   /** Whether this slot can hold a gradient at all. */
   allowGradient?: boolean
+  /** Gradient-tool picker: no Solid tab, and the drag owns direction. */
+  gradientOnly?: boolean
   /** Whether "no fill" is a legal value. */
   allowNull?: boolean
   imagePalette?: Color[]
 }>(), {
   allowGradient: false,
+  gradientOnly: false,
   allowNull: false,
 })
 
@@ -114,7 +117,7 @@ const showingColor = computed(() => mode.value === 'solid' || editing.value !== 
   <div class="space-y-2.5">
     <!-- One navigation per screen: the mode tabs on the gradient screen, the
          back arrow on the color screen. -->
-    <div v-if="allowGradient && editing === null" class="flex gap-0.5 p-0.5 bg-surface-overlay rounded-lg">
+    <div v-if="allowGradient && !gradientOnly && editing === null" class="flex gap-0.5 p-0.5 bg-surface-overlay rounded-lg">
       <button
         v-for="option in MODES"
         :key="option.id"
@@ -155,8 +158,9 @@ const showingColor = computed(() => mode.value === 'solid' || editing.value !== 
     </div>
 
     <GradientEditor
-      v-if="allowGradient && isGradient(modelValue) && editing === null"
+      v-if="(allowGradient || gradientOnly) && isGradient(modelValue) && editing === null"
       :paint="modelValue"
+      :show-directions="!gradientOnly"
       @update:paint="onGradientChange"
       @edit="editing = $event"
     />

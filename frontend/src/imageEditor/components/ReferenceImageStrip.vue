@@ -6,6 +6,7 @@ import {
   ArrowRightIcon,
   PlusIcon,
   TrashIcon,
+  XMarkIcon,
 } from '@heroicons/vue/24/outline'
 import MediaImage from '../../components/media/MediaImage.vue'
 import MediaPickerPopover from '../../components/generation/MediaPickerPopover.vue'
@@ -18,10 +19,17 @@ const props = withDefaults(defineProps<{
   minItems?: number
   maxItems: number
   disabled?: boolean
+  /**
+   * Compact in-field variant: small thumbs + a quiet add chip, living INSIDE
+   * the prompt field like a chat attachment. The block variant (default) is
+   * the inspector's thumbnail workspace with reorder controls.
+   */
+  inline?: boolean
 }>(), {
   modelValue: () => [],
   minItems: 0,
   disabled: false,
+  inline: false,
 })
 
 const emit = defineEmits<{
@@ -111,13 +119,71 @@ async function uploadFiles(event: Event) {
 
 <template>
   <div
-    class="border-t border-edge-subtle"
-    :class="items.length ? 'px-3 py-1.5 bg-overlay-faint' : 'px-2 py-1'"
+    :class="inline
+      ? 'flex items-center gap-1.5 flex-none'
+      : ['border-t border-edge-subtle', items.length ? 'px-3 py-1.5 bg-overlay-faint' : 'px-2 py-1']"
   >
+    <!-- Inline: attachment chips inside the prompt field. -->
+    <template v-if="inline">
+      <div
+        v-for="(item, index) in items"
+        :key="`${item.media_id}:${index}`"
+        class="group/reference relative flex-none w-6 h-6 rounded-media overflow-hidden bg-matte"
+        :title="item.filename || `Reference ${index + 1}`"
+      >
+        <MediaImage
+          :media-id="item.media_id"
+          :file-hash="item.file_hash"
+          :thumbnail="true"
+          :thumbnail-size="64"
+          :draggable="false"
+          :enable-context-menu="false"
+          container-class="w-full h-full"
+          img-class="w-full h-full object-cover"
+        />
+        <button
+          type="button"
+          class="absolute inset-0 grid place-items-center bg-black/60 text-white
+                 opacity-0 group-hover/reference:opacity-100 focus-visible:opacity-100
+                 transition-opacity disabled:opacity-0"
+          :disabled="disabled"
+          aria-label="Remove reference"
+          @click="remove(index)"
+        >
+          <XMarkIcon class="w-3 h-3" />
+        </button>
+      </div>
+      <button
+        v-if="items.length < maxItems"
+        ref="addButton"
+        type="button"
+        class="grid h-6 w-6 flex-none place-items-center rounded-md
+               transition-colors disabled:opacity-40"
+        :class="belowMinimum
+          ? 'text-amber-400 hover:text-amber-300'
+          : 'text-content-tertiary hover:text-content-secondary hover:bg-overlay-subtle'"
+        :disabled="disabled || uploading"
+        aria-label="Add reference image"
+        :title="uploading
+          ? 'Adding…'
+          : belowMinimum ? 'Add required reference image' : 'Add reference image'"
+        @click="pickerOpen = true"
+      >
+        <PlusIcon class="w-3.5 h-3.5" />
+      </button>
+      <span
+        v-if="overCapacity"
+        class="text-[10px] font-mono tabular-nums text-amber-400"
+        :title="`This model accepts ${maxItems} reference image${maxItems === 1 ? '' : 's'}. Remove extras to run.`"
+      >
+        {{ items.length }}/{{ maxItems }}
+      </span>
+    </template>
+
     <!-- Optional references start as one quiet affordance. The thumbnail
          workspace does not claim compose space until somebody opts into it. -->
     <button
-      v-if="items.length === 0"
+      v-else-if="items.length === 0"
       ref="addButton"
       type="button"
       class="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md
@@ -215,7 +281,7 @@ async function uploadFiles(event: Event) {
       </div>
     </template>
 
-    <template v-if="items.length">
+    <template v-if="!inline && items.length">
       <p v-if="overCapacity" class="mt-1 text-[10px] text-amber-400">
         This model accepts {{ maxItems }} reference image{{ maxItems === 1 ? '' : 's' }}. Remove extras to run.
       </p>

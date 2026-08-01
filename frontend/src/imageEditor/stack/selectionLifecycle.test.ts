@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   combineAfterSelectionChange,
+  emptySelectionCombine,
   selectionMatteAction,
 } from './selectionLifecycle.ts'
 
@@ -17,6 +18,12 @@ test('an explicitly chosen combine mode survives while a selection exists', () =
 
 test('an empty selection resets the next gesture to New', () => {
   assert.equal(combineAfterSelectionChange('add', false), 'new')
+})
+
+test('the selection brush implicitly uses union mode', () => {
+  assert.equal(emptySelectionCombine('brush'), 'add')
+  assert.equal(combineAfterSelectionChange('subtract', false, 'brush'), 'add')
+  assert.equal(emptySelectionCombine('rect'), 'new')
 })
 
 test('an empty-matte click clears a selection before changing tools', () => {

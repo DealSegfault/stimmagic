@@ -1,4 +1,9 @@
-import type { SelectionMode } from './toolFamilies'
+import type { SelectionMode, SelectToolId } from './toolFamilies'
+
+/** A brush is additive by nature; an empty canvas still starts in union mode. */
+export function emptySelectionCombine(tool: SelectToolId | null): SelectionMode {
+  return tool === 'brush' ? 'add' : 'new'
+}
 
 /**
  * Combine is explicit while a selection exists. Publishing a mask must never
@@ -8,8 +13,9 @@ import type { SelectionMode } from './toolFamilies'
 export function combineAfterSelectionChange(
   current: SelectionMode,
   hasSelection: boolean,
+  tool: SelectToolId | null = null,
 ): SelectionMode {
-  return hasSelection ? current : 'new'
+  return hasSelection ? current : emptySelectionCombine(tool)
 }
 
 export type SelectionMatteAction = 'clear-selection' | 'disarm-tool' | 'none'

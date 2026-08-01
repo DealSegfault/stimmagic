@@ -12,9 +12,13 @@ import type { Color } from '../ported/geometry'
 import type { GradientDirection, GradientPaint } from '../ported/shapeTypes'
 import { paintCss, colorCss, makeGradient, presetGradients, cssAngle } from '../stack/paints'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   paint: GradientPaint
-}>()
+  /** Canvas gradient drags own their direction, so that picker hides these. */
+  showDirections?: boolean
+}>(), {
+  showDirections: true,
+})
 
 const emit = defineEmits<{
   'update:paint': [GradientPaint]
@@ -53,7 +57,7 @@ function addStop() {
 
 <template>
   <div>
-    <span class="block mt-3 first:mt-0 mb-1.5 text-[10.5px] tracking-wide uppercase text-content-tertiary">Gradient</span>
+    <span class="block mt-3 first:mt-0 mb-1.5 text-xs font-semibold text-content-secondary">Gradient</span>
     <div
       class="h-[26px] rounded-md border border-edge-strong"
       :style="{ background: paintCss(paint, '90deg') }"
@@ -84,7 +88,7 @@ function addStop() {
 
       <span class="flex-1" />
 
-      <div class="flex items-center gap-1">
+      <div v-if="showDirections" class="flex items-center gap-1">
         <button
           v-for="option in DIRECTIONS"
           :key="option.id"
@@ -107,7 +111,7 @@ function addStop() {
 
     <!-- Presets are how a gradient STARTS, so they sit below the thing they
          would replace rather than above it. -->
-    <span class="block mt-3 first:mt-0 mb-1.5 text-[10.5px] tracking-wide uppercase text-content-tertiary">Presets</span>
+    <span class="block mt-3 first:mt-0 mb-1.5 text-xs font-semibold text-content-secondary">Presets</span>
     <div class="grid grid-cols-6 gap-1">
       <button
         v-for="preset in presets"

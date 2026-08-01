@@ -12,6 +12,8 @@
 
 import type { CropParams } from './opExecutors'
 import type { StackDocument } from './types'
+import { pickedCandidate } from './types.ts'
+import { expandEdgesFromParams, expandedFrame } from './expandGeometry.ts'
 
 /** 2D affine as [a, b, c, d, e, f] — the argument order of setTransform. */
 export type Affine = [number, number, number, number, number, number]
@@ -131,6 +133,21 @@ export function geometryBelow(
   for (let i = 0; i < index && i < doc.edits.length; i++) {
     const op = doc.edits[i]
     if (!op.enabled) continue
+    // Expand grows the frame and translates everything by the new top-left
+    // margins. It counts only once a candidate is picked — a staged expand
+    // composites as a no-op, and the mirror law (geometry must agree with the
+    // compositor branch for branch) therefore requires it contributes no
+    // geometry either.
+    if (op.class === 'patch' && (op as any).operation === 'expand') {
+      if (!pickedCandidate(op)) continue
+      const frame = expandedFrame(
+        expandEdgesFromParams((op as any).params), width, height,
+      )
+      matrix = multiply(translate(frame.left, frame.top), matrix)
+      width = frame.width
+      height = frame.height
+      continue
+    }
     if (op.class !== 'parametric' || (op as any).exec?.kind !== 'crop') continue
     const stage = cropAffine((op as any).params || {}, width, height)
     matrix = multiply(stage.matrix, matrix)

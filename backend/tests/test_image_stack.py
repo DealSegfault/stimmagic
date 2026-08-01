@@ -575,6 +575,174 @@ class TestSaveEdit:
         )
         assert response.status_code == 422
 
+class TestAutosave:
+    """Leaving the editor commits the applied stack; autosaves coalesce."""
+
+    async def _save(self, client, *, media_id, asset_id, base_revision_id,
+                    document_id, autosave, color=(0, 128, 255)):
+        return await client.post(
+            "/api/media/save-edit",
+            files={"file": ("c.png", _png_bytes((256, 128), color), "image/png")},
+            data={
+                "source_media_id": str(media_id),
+                "asset_id": str(asset_id),
+                "base_revision_id": str(base_revision_id),
+                "working_document_id": str(document_id),
+                **({"autosave": "true"} if autosave else {}),
+            },
+        )
+
+    async def test_autosave_commits_and_coalesces(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="autosave-coalesce")
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+
+        first = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=True,
+        )
+        assert first.status_code == 200, first.text
+        second = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=True, color=(0, 255, 0),
+        )
+        assert second.status_code == 200, second.text
+
+        async with db_session() as session:
+            asset = await session.get(Asset, asset_id)
+            assert asset.current_revision_id == second.json()["revision_id"]
+
+            replaced = await session.get(AssetRevision, first.json()["revision_id"])
+            assert replaced.deleted_at is not None
+
+            head = await session.get(AssetRevision, second.json()["revision_id"])
+            assert head.autosave is True
+            assert head.note == "Edit autosave"
+            assert head.parent_revision_id == base_revision_id
+
+            from database import MediaOwner
+            replaced_owner = await session.scalar(
+                select(MediaOwner).where(
+                    MediaOwner.root_kind == "asset_revision",
+                    MediaOwner.root_id == str(replaced.id),
+                    MediaOwner.deleted_at.is_(None),
+                )
+            )
+            assert replaced_owner is None
+
+            live = (await session.execute(
+                select(AssetRevision).where(
+                    AssetRevision.asset_id == asset_id,
+                    AssetRevision.deleted_at.is_(None),
+                )
+            )).scalars().all()
+            assert {r.id for r in live} == {base_revision_id, head.id}
+
+    async def test_explicit_save_swallows_the_autosave_head(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="autosave-promote")
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+
+        auto = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=True,
+        )
+        saved = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=False, color=(255, 255, 0),
+        )
+        assert saved.status_code == 200, saved.text
+
+        async with db_session() as session:
+            swallowed = await session.get(AssetRevision, auto.json()["revision_id"])
+            assert swallowed.deleted_at is not None
+            head = await session.get(AssetRevision, saved.json()["revision_id"])
+            assert head.autosave is False
+            assert head.note == "Image editor save"
+            assert head.parent_revision_id == base_revision_id
+
+    async def test_autosave_after_explicit_save_keeps_the_version(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        """A user version is history; only autosave heads get swallowed."""
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="autosave-keeps")
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+
+        saved = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=False,
+        )
+        auto = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=True, color=(0, 255, 0),
+        )
+        assert auto.status_code == 200, auto.text
+
+        async with db_session() as session:
+            version = await session.get(AssetRevision, saved.json()["revision_id"])
+            assert version.deleted_at is None
+            asset = await session.get(Asset, asset_id)
+            assert asset.current_revision_id == auto.json()["revision_id"]
+
+    async def test_autosave_declines_when_the_head_moved(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        """An autosave never branches past changes made outside the editor."""
+        asset_id, media_id, _ = await _asset(db_session, tmp_path, name="autosave-stale")
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+
+        # Something else — a tool, the agent — advances the Asset.
+        from asset_service import commit_revision
+        async with db_session() as session:
+            source = tmp_path / "outside.png"
+            file_hash = generate_test_image(source, width=256, height=128)
+            outside = await create_media_item(
+                session, file_path=source, file_hash=file_hash, width=256, height=128
+            )
+            head = await commit_revision(
+                session, asset_id=asset_id, media_id=outside.id
+            )
+            outside_head_id = head.id
+            await session.commit()
+
+        # The tool's revision parents the OLD head, so the stack's lineage no
+        # longer reaches the current one.
+        auto = await self._save(
+            client, media_id=media_id, asset_id=asset_id,
+            base_revision_id=base_revision_id, document_id=document_id,
+            autosave=True,
+        )
+        assert auto.status_code == 409
+
+        async with db_session() as session:
+            asset = await session.get(Asset, asset_id)
+            assert asset.current_revision_id == outside_head_id
+
+
 class TestStepNaming:
     """A generative step is named after what it did, or keeps its verb.
 

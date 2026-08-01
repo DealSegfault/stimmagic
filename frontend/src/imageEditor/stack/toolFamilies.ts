@@ -15,8 +15,8 @@
 import type { IconName } from '../ported/icons'
 
 export type FamilyId =
-  | 'crop' | 'retouch' | 'paint'
-  | 'levels' | 'filters'
+  | 'crop' | 'retouch' | 'generate' | 'paint'
+  | 'levels'
   | 'annotate'
 
 export interface SubTool {
@@ -53,18 +53,20 @@ export const FAMILY_ICONS: Record<FamilyId | 'select', string> = {
   retouch:
     '<path d="m8.4 4.2 11.4 11.4a3 3 0 0 1-4.2 4.2L4.2 8.4a3 3 0 0 1 4.2-4.2Z"/>'
     + '<path d="m9 9 6 6"/><path d="m12 6-6 6"/><path d="m18 12-6 6"/>',
+  // Sparkles: the same glyph the rest of the app uses for model-backed work.
+  generate:
+    '<path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/>'
+    + '<path d="M12 8.5 13.6 10.9 16 12l-2.4 1.1L12 15.5l-1.6-2.4L8 12l2.4-1.1Z"/>'
+    + '<path d="m5.5 5.5 1.8 1.8"/><path d="m16.7 16.7 1.8 1.8"/>'
+    + '<path d="m18.5 5.5-1.8 1.8"/><path d="m7.3 16.7-1.8 1.8"/>',
   paint:
     '<path d="M9.1 11.9l8.1-8.1a2.85 2.85 0 1 1 4 4l-8.1 8.1"/>'
     + '<path d="M7.1 14.9c-1.7 0-3 1.4-3 3 0 1.3-1.5 2-2 2 1.1 1.1 2.5 2 4 2 2.2 0 4-1.8 4-4a3 3 0 0 0-3-3z"/>',
-  // Sliders for Adjust, a stack of frames for Filters — the two doorways read
-  // as two different jobs at a glance.
+  // Sliders: every parametric adjustment enters here, looks included.
   levels:
     '<line x1="4" y1="7" x2="20" y2="7"/><circle cx="14" cy="7" r="2.2"/>'
     + '<line x1="4" y1="12" x2="20" y2="12"/><circle cx="8" cy="12" r="2.2"/>'
     + '<line x1="4" y1="17" x2="20" y2="17"/><circle cx="16" cy="17" r="2.2"/>',
-  filters:
-    '<rect x="3" y="3" width="13" height="13" rx="2"/>'
-    + '<path d="M8 21h11a2 2 0 0 0 2-2V8"/>',
   annotate:
     '<path d="M4 7V5h16v2"/><path d="M9 19h6"/><path d="M12 5v14"/>',
 }
@@ -78,6 +80,12 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     defaultSub: null,
     subTools: [],
   },
+  // Retouch is the non-generative photo-prep family: every tool here is a
+  // brush whose gesture becomes an editable REGION of the retouch-regions
+  // container. Heal/Clone/Patch store repair pixels; the photographic brushes
+  // (dodge, burn, sponge, blur, sharpen) store a mask plus seeded adjustment
+  // settings and re-render parametrically — strength stays adjustable after
+  // the stroke, Lightroom-style, instead of baking dabs.
   {
     id: 'retouch',
     label: 'Retouch',
@@ -88,10 +96,24 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'heal', label: 'Heal', icon: 'bandage' },
       { id: 'clone', label: 'Clone', icon: 'stamp', hint: 'Clone — alt-click a source, then brush' },
       { id: 'patch', label: 'Patch', icon: 'patch', hint: 'Patch — select an area, then drag to its source' },
-      // Model-backed region edits keep their text: unlike the manual repair
-      // glyphs, their names communicate the semantic job and cost. Their icons
-      // say what the model does with the region — erase it, or invent new
-      // content for it — rather than repeating one generic magic glyph.
+      { id: 'dodge', label: 'Dodge', icon: 'sun', hint: 'Dodge — brush to lighten' },
+      { id: 'burn', label: 'Burn', icon: 'moon', hint: 'Burn — brush to darken' },
+      { id: 'sponge', label: 'Sponge', icon: 'sponge', hint: 'Sponge — brush saturation up or down' },
+      { id: 'blur', label: 'Blur', icon: 'droplet', hint: 'Blur — brush to soften' },
+      { id: 'sharpen', label: 'Sharpen', icon: 'focus', hint: 'Sharpen — brush to sharpen' },
+    ],
+  },
+  // Every model-backed verb lives here; the family name carries the cost
+  // meaning. The chips keep their text: their names communicate the semantic
+  // job, and their icons say what the model does with the region — erase it,
+  // or invent new content for it — rather than repeating one magic glyph.
+  {
+    id: 'generate',
+    label: 'Generate',
+    key: 'g',
+    icon: FAMILY_ICONS.generate,
+    defaultSub: 'remove',
+    subTools: [
       // The two removals sit together — parallel names, parallel jobs — and
       // Regenerate, the open-ended directed edit, closes the group.
       { id: 'remove', label: 'Remove object', icon: 'eraser', labeled: true, hint: 'Remove an object or distraction' },
@@ -101,8 +123,11 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       { id: 'cutout', label: 'Remove background', icon: 'cutout', labeled: true, hint: 'Make the background transparent' },
       // "Regenerate": the base is a generated image, and this generates the
       // selection again under new instructions — not "Repaint", which read as
-      // manual brushwork with a Paint family two buttons away.
+      // manual brushwork with a Paint family nearby.
       { id: 'repaint', label: 'Regenerate', icon: 'sparkles', labeled: true, hint: 'Regenerate — replace the selection with what you describe' },
+      // Whole-frame like cutout, no selection: outpaint-image tools take the
+      // original and grow the canvas themselves from the four edge percents.
+      { id: 'expand', label: 'Expand', icon: 'expand', labeled: true, hint: 'Expand — grow the canvas outward' },
     ],
   },
   {
@@ -113,24 +138,18 @@ export const TOOL_FAMILIES: ToolFamily[] = [
     defaultSub: null,
     subTools: [],
   },
-  // Adjust and Filters are two doorways into the same adjust pipeline. Adjust
-  // offers the dial edits (Light, Color, Detail, the Autos); Filters offers the
-  // strip of picked-by-eye looks, including the pixel looks that used to be a
-  // separate Effects family. Every entry in both is an ADD: click, get a
-  // focused step, edit it in Properties.
+  // Every parametric adjustment lives here: the Autos, the eight group edits
+  // (Light, Color, Detail, Mixer, Point color, Grading, Effects, Stylize) and
+  // the Looks strip. Filters used to be a second family beside this one, which
+  // was always a fiction — its steps executed as the same `adjust` op through
+  // the same pipeline, but the separate doorway kept them from ever consulting
+  // a selection. Every entry here is an ADD: click, get a focused step, edit it
+  // in Properties; with a selection live, the step is scoped to it.
   {
     id: 'levels',
     label: 'Adjust',
     key: 'l',
     icon: FAMILY_ICONS.levels,
-    defaultSub: null,
-    subTools: [],
-  },
-  {
-    id: 'filters',
-    label: 'Filters',
-    key: 'f',
-    icon: FAMILY_ICONS.filters,
     defaultSub: null,
     subTools: [],
   },
@@ -161,19 +180,19 @@ export function familyById(id: FamilyId): ToolFamily {
 }
 
 /**
- * Raster Paint engines as chips, Krita-style. Some of the inherited engines
- * read pixels, but they still bake their result into the active Paint layer.
- * Retouch owns editable repair regions; nothing in this Paint catalog creates
- * one of those regions.
- *
- * The pixel-reading engines (heal, clone, dodge, burn, blur) sample the
- * composite below, which is why their layers carry an advisory hash like
- * patches do.
+ * Raster Paint engines as chips, Krita-style. Paint is the illustration
+ * family: engines lay down marks on a raster layer. The photographic
+ * pixel-reading engines (heal, clone, patch, dodge, burn, sponge, blur,
+ * sharpen) moved to Retouch, where a gesture becomes an editable region
+ * instead of baked dabs; legacy layers painted with them still render — a
+ * raster layer is just pixels.
  */
 export interface PaintEngine {
   id: string
   label: string
   icon: IconName
+  /** Optional interaction help shown in the tooltip instead of the label. */
+  hint?: string
   /** Reads the composite below rather than laying down the color. */
   readsPixels?: boolean
   /** Not yet implemented. */
@@ -186,18 +205,18 @@ export const PAINT_ENGINES: PaintEngine[] = [
   // per shape. What is listed here is what the engine DOES, which is the part
   // the picker cannot express.
   { id: 'paint', label: 'Brush', icon: 'paintbrush' },
-  { id: 'fill', label: 'Fill', icon: 'fill' },
-  { id: 'blur', label: 'Blur', icon: 'droplet', readsPixels: true },
-  { id: 'sharpen', label: 'Sharpen', icon: 'focus', readsPixels: true },
-  { id: 'dodge', label: 'Dodge', icon: 'sun', readsPixels: true },
-  { id: 'burn', label: 'Burn', icon: 'moon', readsPixels: true },
-  { id: 'sponge', label: 'Sponge', icon: 'sponge', readsPixels: true },
-  { id: 'heal', label: 'Heal', icon: 'bandage', readsPixels: true },
-  // Patch is selection-driven, not stroke-driven: select the flaw, drag it
-  // over clean pixels. Picking it with no selection arms the lasso.
-  { id: 'patch', label: 'Patch', icon: 'patch', readsPixels: true },
-  { id: 'clone', label: 'Clone', icon: 'stamp', readsPixels: true },
+  // Erase punches through the layer's own pixels (destination-out), never the
+  // composite below — a raster layer without an eraser is not a layer.
+  { id: 'erase', label: 'Erase', icon: 'eraser', hint: 'Erase — brush away this layer\'s paint' },
+  // Flat and selection-scoped: region-finding belongs to the selection rail.
+  { id: 'fill', label: 'Fill', icon: 'fill', hint: 'Fill — fills the selection, or the whole layer' },
+  // Shares Fill's slot, Photoshop-style. The drag supplies direction and
+  // extent; the picker in the subbar supplies the color spectrum.
+  { id: 'gradient', label: 'Gradient', icon: 'gradientLinear', hint: 'Gradient — drag across the selection or layer' },
 ]
+
+/** Paint tools that share the bucket slot and its press-and-hold flyout. */
+export const PAINT_FILL_ENGINES = ['fill', 'gradient'] as const
 
 export const PAINT_SWATCHES = [
   '#ffffff', '#000000', '#c9a276', '#5d4128', '#b0342c', '#2a4a6b', '#3f7a4f',

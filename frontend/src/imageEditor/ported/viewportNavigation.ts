@@ -8,6 +8,38 @@ export interface ViewportSize {
   height: number
 }
 
+export interface WheelModifiers {
+  ctrlKey: boolean
+  metaKey: boolean
+}
+
+/** Lightroom-style zoom is explicit; plain wheel/two-finger input is pan. */
+export function isZoomWheelGesture(input: WheelModifiers): boolean {
+  return input.ctrlKey || input.metaKey
+}
+
+/**
+ * Normalize Lightroom-style pan input into CSS pixels. Shift turns a vertical
+ * mouse wheel into horizontal movement; a trackpad's native two-axis deltas
+ * pass through untouched.
+ */
+export function wheelPanDelta(
+  delta: ViewportPoint,
+  deltaMode: number,
+  viewport: ViewportSize,
+  shiftKey = false,
+): ViewportPoint {
+  const horizontal = shiftKey && delta.x === 0 ? delta.y : delta.x
+  const vertical = shiftKey && delta.x === 0 ? 0 : delta.y
+  if (deltaMode === 1) {
+    return { x: horizontal * 16, y: vertical * 16 }
+  }
+  if (deltaMode === 2) {
+    return { x: horizontal * viewport.width, y: vertical * viewport.height }
+  }
+  return { x: horizontal, y: vertical }
+}
+
 /**
  * Keep a zoomed image centred on axes where it is smaller than the viewport,
  * and keep its edges flush with the viewport on axes where it is larger.

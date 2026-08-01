@@ -151,6 +151,9 @@ export type RetouchRegionKind =
   | 'adjust' // read compatibility for the first local-adjustment build
   | 'light' | 'color' | 'detail'
   | 'mixer' | 'point' | 'grade'
+  | 'effects' | 'stylize'
+  /** A Looks tile scoped to a selection: many groups at once, one region. */
+  | 'look'
 
 /**
  * Finishing controls for one repair region.
@@ -199,6 +202,21 @@ export interface RetouchRegionSettings {
   noise: number
   grainSize: number
   grainRoughness: number
+  /**
+   * The Effects and Stylize groups. Vignette and Glow are frame-relative: in a
+   * scoped region they are computed over the whole frame and then shown only
+   * through the mask.
+   */
+  vignette: number
+  glow: number
+  halftone: number
+  halftoneAngle: number
+  vhs: number
+  glitch: number
+  glitchBlockSize: number
+  chromaticAberration: number
+  /** Set when this region came from a Looks tile; names which one. */
+  look?: string
   /** Mixer: `mixer{Hue|Sat|Lum}{Band}` sliders, -100..100. */
   [key: `mixer${string}`]: number
   pointHue: number
@@ -400,7 +418,7 @@ export interface StackDocument {
    */
   has_uncommitted_changes?: boolean
   /** The last Asset Revision this working state was committed to. */
-  last_commit?: { asset_id: number; revision_id: number }
+  last_commit?: { asset_id: number; revision_id: number; autosave?: boolean }
 }
 
 /**
