@@ -41,8 +41,20 @@ export function wheelPanDelta(
 }
 
 /**
- * Keep a zoomed image centred on axes where it is smaller than the viewport,
- * and keep its edges flush with the viewport on axes where it is larger.
+ * Leave enough bounded workspace around the content to move it out from under
+ * floating editor chrome. A quarter of each axis feels natural on compact
+ * viewports; the cap keeps a large display from turning into an infinite
+ * canvas by accident.
+ */
+function panSlack(viewportSpan: number): number {
+  return Math.min(viewportSpan / 4, 160)
+}
+
+/**
+ * Keep pan bounded by the content edges, with a small overscroll allowance on
+ * every axis. The allowance intentionally remains available at and below fit:
+ * toolbars and selection controls float over the viewport, so a fitted image
+ * still needs to be movable out from underneath them.
  */
 export function clampViewportPan(
   pan: ViewportPoint,
@@ -50,10 +62,10 @@ export function clampViewportPan(
   content: ViewportSize,
   viewport: ViewportSize,
 ): ViewportPoint {
-  if (zoom <= 1) return { x: 0, y: 0 }
-
   const maxX = Math.max(0, (content.width * zoom - viewport.width) / 2)
+    + panSlack(viewport.width)
   const maxY = Math.max(0, (content.height * zoom - viewport.height) / 2)
+    + panSlack(viewport.height)
   return {
     x: Math.max(-maxX, Math.min(maxX, pan.x)),
     y: Math.max(-maxY, Math.min(maxY, pan.y)),

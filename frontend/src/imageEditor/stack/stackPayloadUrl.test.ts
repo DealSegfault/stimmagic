@@ -2,15 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { stackPayloadUrl } from './stackPayloadUrl.ts'
 
-test('packaged payload URLs point directly at the sidecar', () => {
+test('packaged payload URLs point directly at the sidecar with profile PIN auth', () => {
   assert.equal(
     stackPayloadUrl(
       'http://127.0.0.1:49152/api',
       3,
       'payloads/cand-42-patch.png',
       'profile-one',
+      undefined,
+      '12& 34',
     ),
-    'http://127.0.0.1:49152/api/image-stack/3/payloads/cand-42-patch.png?subdir=payloads&profile=profile-one',
+    'http://127.0.0.1:49152/api/image-stack/3/payloads/cand-42-patch.png?subdir=payloads&profile=profile-one&pin=12%26+34',
   )
 })
 

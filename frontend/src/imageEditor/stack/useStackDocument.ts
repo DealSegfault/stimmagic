@@ -15,6 +15,7 @@
 import { ref, computed, shallowRef } from 'vue'
 import axios from 'axios'
 import { getCurrentProfileId } from '../../composables/useProfile'
+import { getCachedPin } from '../../composables/usePinLock'
 import { getApiBase } from '../../apiConfig'
 import { newOpId } from './opId'
 import type {
@@ -736,17 +737,19 @@ export function useStackDocument() {
   // -- payloads ------------------------------------------------------------
 
   /**
-   * Payloads are fetched by <img>, which cannot send the X-Profile-ID header
-   * the profile middleware requires — so the profile rides the query string,
-   * the same fallback the media file routes use.
+   * Payloads are fetched by <img>, which cannot send the X-Profile-* headers
+   * the profile middleware requires — so the profile and cached PIN ride the
+   * query string, matching reference-file and other direct image URLs.
    */
   function payloadUrl(ref: string, revision?: number | string): string {
+    const profileId = getCurrentProfileId()
     return stackPayloadUrl(
       getApiBase(),
       documentId.value!,
       ref,
-      getCurrentProfileId(),
+      profileId,
       revision,
+      getCachedPin(profileId),
     )
   }
 

@@ -9,7 +9,7 @@ import {
   wheelPanDelta,
 } from '../ported/viewportNavigation.ts'
 
-test('fit view is always centred', () => {
+test('fit view retains bounded workspace slack for floating controls', () => {
   assert.deepEqual(
     clampViewportPan(
       { x: 120, y: -80 },
@@ -17,19 +17,40 @@ test('fit view is always centred', () => {
       { width: 800, height: 600 },
       { width: 800, height: 600 },
     ),
-    { x: 0, y: 0 },
+    { x: 120, y: -80 },
+  )
+  assert.deepEqual(
+    clampViewportPan(
+      { x: 500, y: -500 },
+      1,
+      { width: 800, height: 600 },
+      { width: 800, height: 600 },
+    ),
+    { x: 160, y: -150 },
   )
 })
 
 test('pan clamps independently on each viewport axis', () => {
   assert.deepEqual(
     clampViewportPan(
-      { x: 500, y: 500 },
+      { x: 1000, y: 1000 },
       2,
       { width: 800, height: 300 },
       { width: 800, height: 600 },
     ),
-    { x: 400, y: 0 },
+    { x: 560, y: 150 },
+  )
+})
+
+test('zoomed-out content can still be panned within workspace slack', () => {
+  assert.deepEqual(
+    clampViewportPan(
+      { x: -500, y: 500 },
+      0.5,
+      { width: 800, height: 600 },
+      { width: 800, height: 600 },
+    ),
+    { x: -160, y: 150 },
   )
 })
 

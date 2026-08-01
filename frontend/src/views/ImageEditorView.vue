@@ -1199,12 +1199,14 @@ const displayBox = computed(() => {
 // -- viewport navigation ---------------------------------------------------
 
 /**
- * Zoom is relative to the fitted view, matching the slideshow: 100% means
- * "fit/actual size, whichever is smaller". The image and every interactive
- * overlay share the zoomed display box, so their coordinate systems stay
- * locked; pan is the one CSS transform shared by the whole stage.
+ * Zoom is relative to the fitted view: 100% means "fit/actual size, whichever
+ * is smaller" and the user can zoom farther out to make working room around
+ * floating controls. The image and every interactive overlay share the zoomed
+ * display box, so their coordinate systems stay locked; pan is the one CSS
+ * transform shared by the whole stage.
  */
-const MIN_VIEW_ZOOM = 1
+const FIT_VIEW_ZOOM = 1
+const MIN_VIEW_ZOOM = 0.5
 const MAX_VIEW_ZOOM = 10
 const viewZoom = ref(1)
 const viewPan = ref({ x: 0, y: 0 })
@@ -1237,7 +1239,7 @@ function clampViewPan() {
 }
 
 function resetView() {
-  viewZoom.value = MIN_VIEW_ZOOM
+  viewZoom.value = FIT_VIEW_ZOOM
   viewPan.value = { x: 0, y: 0 }
 }
 
