@@ -11,8 +11,6 @@
         ? 'text-content-muted opacity-60 cursor-not-allowed'
         : currentUnavailable
         ? 'text-content-muted opacity-70 hover:text-content-secondary hover:bg-overlay-subtle'
-        : isCloudModel
-        ? 'text-teal-500 hover:text-teal-400 hover:bg-teal-500/10'
         : 'text-content-muted hover:text-content-secondary hover:bg-overlay-subtle'"
       :title="currentTitle"
     >
@@ -22,18 +20,8 @@
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" />
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z" />
       </svg>
-      <!-- Cloud icon for cloud models, server icon for local -->
-      <svg v-else-if="isCloudModel" class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 0 0 4.5 4.5H18a3.75 3.75 0 0 0 1.332-7.257 3 3 0 0 0-3.758-3.848 5.25 5.25 0 0 0-10.233 2.33A4.502 4.502 0 0 0 2.25 15Z" />
-      </svg>
-      <svg v-else-if="!currentUnavailable && selectableModels.length > 0" class="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z" />
-      </svg>
-      <span
-        v-if="modelReady"
-        class="truncate max-w-[150px]"
-        :class="isCloudModel && !currentUnavailable ? 'stimma-cloud-text' : ''"
-      >
+      <ModelVendorIcon v-else-if="currentIconModel" :model="currentIconModel" size="sm" />
+      <span v-if="modelReady" class="truncate max-w-[150px]">
         {{ currentDisplayName }}<span v-if="currentReasoningLabel" class="text-content-muted"> · {{ currentReasoningLabel }}</span>
       </span>
       <svg
@@ -290,6 +278,7 @@ const triggerDisabled = computed(() => props.disabled || (
 
 const selectedModel = computed(() => selectableModels.value.find(m => m.slug === effectiveSlug.value))
 const resolvedModel = computed(() => getSelectableModel(effectiveSlug.value))
+const currentIconModel = computed(() => resolvedModel.value || selectedModel.value)
 const resolvedEffectiveSlug = computed(() => selectedModel.value?.resolved_slug || effectiveSlug.value)
 const reasoningModel = computed(() => resolvedModel.value || selectedModel.value)
 const reasoningOptions = computed(() => reasoningModel.value?.reasoning?.levels || [])
@@ -330,11 +319,6 @@ const currentTitle = computed(() => {
   if (!model) return display
   const description = model.description
   return description ? `${display}: ${description}` : display
-})
-
-const isCloudModel = computed(() => {
-  const model = resolvedModel.value || selectedModel.value
-  return model?.source === 'stimma_cloud'
 })
 
 const autoModels = computed(() => selectableModels.value.filter(m => m.source === 'auto'))
