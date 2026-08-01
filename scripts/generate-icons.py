@@ -22,7 +22,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 SCRIPT_DIR = Path(__file__).parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -40,8 +40,8 @@ APP_ICON_NAME = "Stimma"
 # One colour per separately-installable channel, so a glance at the Dock says
 # which build you're looking at.
 CHANNEL_BADGES = {
-    "canary": {"color": (168, 85, 247), "label": "CANARY"},  # Purple
-    "beta":   {"color": (59, 130, 246),  "label": "BETA"},    # Blue
+    "canary": {"color": (234, 179, 8),   "label": "CANARY"},  # Yellow, by tradition
+    "beta":   {"color": (147, 51, 234),  "label": "BETA"},    # Purple
     "debug":  {"color": (220, 38, 38),   "label": "DEBUG"},   # Red
 }
 
@@ -82,81 +82,69 @@ def _get_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 def add_badge(img: Image.Image, channel: str) -> Image.Image:
-    """Composite a channel badge onto the bottom of the icon.
+    """Composite the channel ribbon onto a raster icon.
 
-    For HIG icons (with padding/squircle), the badge is positioned within the
-    visible content area, not at the absolute canvas edge.
+    Clipped to the artwork's own alpha so the ribbon follows the plate edge
+    instead of running off the canvas corner.
     """
-    badge_info = CHANNEL_BADGES.get(channel)
-    if not badge_info:
+    if channel not in CHANNEL_BADGES:
         return img
-
     img = img.copy()
-    _draw_badge(img, channel, inset_frac=0.10)
-    return img
+    ribbon = render_channel_ribbon(channel, img.size[0])
+    ribbon.putalpha(ImageChops.multiply(ribbon.split()[3], img.split()[3]))
+    return Image.alpha_composite(img, ribbon)
 
 
 def render_badge_layer(channel: str, size: int = 1024) -> Image.Image:
-    """Render the channel badge alone on a transparent canvas.
+    """The channel ribbon alone, for use as an Icon Composer layer.
 
-    Used as a standalone layer in the Icon Composer document, where the squircle
-    and its padding are drawn by the system rather than baked into the artwork.
+    Unclipped: the system masks layers to the icon shape, which trims the
+    ribbon to the squircle edge exactly as the raster clip does.
     """
-    # Smaller than the legacy badge: here the canvas is the full squircle rather
-    # than the ~80% content box, so the same fraction would read much larger.
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    _draw_badge(img, channel, inset_frac=0.10, font_frac=0.068)
-    return img
+    return render_channel_ribbon(channel, size)
 
 
-def _draw_badge(img: Image.Image, channel: str, inset_frac: float, font_frac: float = 0.09) -> None:
-    """Draw the channel badge in-place, centered `inset_frac` up from the bottom."""
-    badge_info = CHANNEL_BADGES[channel]
+def render_channel_ribbon(channel: str, size: int) -> Image.Image:
+    """Draw a diagonal channel ribbon across the upper-right corner.
 
-    draw = ImageDraw.Draw(img)
-    w, h = img.size
+    One renderer for every icon variant. Geometry is expressed as fractions of
+    `size`, so the ribbon lands in the same place at any resolution and looks
+    the same whether it is baked into a raster or layered by Icon Composer.
+    """
+    info = CHANNEL_BADGES[channel]
+    label, color = info["label"], info["color"]
 
-    label = badge_info["label"]
-    bg_color = badge_info["color"]
+    # Distance from the corner to the band's centre line, along the diagonal.
+    offset = size * 0.30
+    band_h = size * 0.155
+    band_w = size * 1.6  # overshoots the canvas; clipping trims it
 
-    # Scale badge relative to icon size
-    font_size = max(int(h * font_frac), 12)
+    band = Image.new("RGBA", (int(band_w), int(band_h)), (*color, 255))
+    draw = ImageDraw.Draw(band)
+
+    # Largest font that fits the band height with breathing room.
+    font_size = max(int(band_h * 0.56), 10)
     font = _get_font(font_size)
-
-    # Measure text
     bbox = draw.textbbox((0, 0), label, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-
-    # Badge dimensions with padding
-    pad_x = int(text_w * 0.4)
-    pad_y = int(text_h * 0.25)
-    badge_w = text_w + pad_x * 2
-    badge_h = text_h + pad_y * 2
-
-    # Position: bottom-center of the visible icon area
-    inset = int(h * inset_frac)
-    bx = (w - badge_w) // 2
-    by = h - inset - badge_h - int(h * 0.02)
-
-    # Draw rounded rectangle badge
-    badge_rect = [bx, by, bx + badge_w, by + badge_h]
-    radius = int(badge_h * 0.3)
-
-    # Draw badge background with dark border for contrast
-    border = max(int(h * 0.005), 1)
-    draw.rounded_rectangle(
-        [badge_rect[0] - border, badge_rect[1] - border,
-         badge_rect[2] + border, badge_rect[3] + border],
-        radius=radius + border,
-        fill=(0, 0, 0, 180),
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    # Pick ink by band luminance — white is unreadable on the yellow canary band.
+    luma = 0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]
+    ink = (26, 26, 26, 255) if luma > 150 else (255, 255, 255, 255)
+    draw.text(
+        ((band_w - tw) / 2 - bbox[0], (band_h - th) / 2 - bbox[1]),
+        label,
+        font=font,
+        fill=ink,
     )
-    draw.rounded_rectangle(badge_rect, radius=radius, fill=(*bg_color, 255))
 
-    # Draw text centered in badge
-    text_x = bx + (badge_w - text_w) // 2
-    text_y = by + (badge_h - text_h) // 2 - bbox[1]  # Adjust for font baseline
-    draw.text((text_x, text_y), label, fill=(255, 255, 255, 255), font=font)
+    # Rotate into the corner diagonal; expand so nothing is cropped.
+    rot = band.rotate(-45, resample=Image.BICUBIC, expand=True)
+
+    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    cx = size - offset / (2 ** 0.5)
+    cy = offset / (2 ** 0.5)
+    layer.paste(rot, (int(cx - rot.width / 2), int(cy - rot.height / 2)), rot)
+    return layer
 
 
 def generate_icns(source_img: Image.Image, output_path: Path) -> None:
@@ -233,8 +221,10 @@ def generate_assets_car(channel: str, output_path: Path) -> bool:
         if channel in CHANNEL_BADGES:
             render_badge_layer(channel).save(doc / "Assets" / "badge.png", "PNG")
             spec = json.loads((doc / "icon.json").read_text())
-            spec["groups"].append({
-                "layers": [{"image-name": "badge.png", "name": "Channel badge"}],
+            # Prepended, not appended: Icon Composer draws groups front-to-back,
+            # so the last group renders behind the mark.
+            spec["groups"].insert(0, {
+                "layers": [{"image-name": "badge.png", "name": "Channel ribbon"}],
                 "shadow": {"kind": "neutral", "opacity": 0.0},
                 "translucency": {"enabled": False, "value": 0.5},
             })
