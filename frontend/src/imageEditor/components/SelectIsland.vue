@@ -74,6 +74,8 @@ const emit = defineEmits<{
   invert: []
   clear: []
   morph: [number]
+  /** The active gradient's falloff slider started or ended a gesture. */
+  gradientAdjusting: [boolean]
   aiSelect: [{ prompt: string } | { intent: 'subject' | 'background' }]
   aiCancel: []
 }>()
@@ -91,6 +93,7 @@ watch([() => props.armed, () => props.lastUsed], ([armed, lastUsed]) => {
   const group = SELECT_TOOL_GROUPS.find(g => g.members.includes(current))
   if (group) groupCurrent.value[group.id] = current
 }, { immediate: true })
+watch(() => props.armed, () => emit('gradientAdjusting', false))
 
 /** Photoshop-style grouped tools: click uses the visible tool; hold opens the
  * menu, then release over a row to choose it in the same gesture. */
@@ -225,6 +228,7 @@ interface PanelSlider {
   value: number
   readout: number
   set: (value: number) => void
+  previewsGradient?: boolean
 }
 
 const featherSlider = (): PanelSlider => ({
@@ -236,11 +240,26 @@ const featherSlider = (): PanelSlider => ({
 })
 
 const plainSlider = (
-  label: string, key: string, value: number, min: number, max: number, unit: string
+  label: string, key: string, value: number, min: number, max: number, unit: string,
+  previewsGradient = false,
 ): PanelSlider => ({
   label, min, max, unit, value, readout: value,
   set: v => emit('set', { [key]: v }),
+  previewsGradient,
 })
+
+function beginSliderAdjustment(slider: PanelSlider) {
+  if (slider.previewsGradient) emit('gradientAdjusting', true)
+}
+
+function setSliderValue(slider: PanelSlider, value: number) {
+  beginSliderAdjustment(slider)
+  slider.set(value)
+}
+
+function finishSliderAdjustment(slider: PanelSlider) {
+  if (slider.previewsGradient) emit('gradientAdjusting', false)
+}
 
 const panelSliders = computed<PanelSlider[]>(() => {
   switch (props.armed) {
@@ -255,10 +274,10 @@ const panelSliders = computed<PanelSlider[]>(() => {
       featherSlider(),
     ]
     case 'linear': return [
-      plainSlider('Softness', 'gradientSoftness', props.gradientSoftness, 0, 100, ''),
+      plainSlider('Softness', 'gradientSoftness', props.gradientSoftness, 0, 100, '', true),
     ]
     case 'radial': return [
-      plainSlider('Feather', 'gradientFeather', props.gradientFeather, 2, 100, ''),
+      plainSlider('Feather', 'gradientFeather', props.gradientFeather, 2, 100, '', true),
     ]
     case 'rect': case 'ellipse': case 'lasso': case 'magnetic': return [featherSlider()]
     default: return []
@@ -460,7 +479,12 @@ function buttonClass(active: boolean, enabled = true) {
             type="range" class="w-24"
             :min="slider.min" :max="slider.max"
             :value="slider.value"
-            @input="slider.set(Number(($event.target as HTMLInputElement).value))"
+            @pointerdown="beginSliderAdjustment(slider)"
+            @input="setSliderValue(slider, Number(($event.target as HTMLInputElement).value))"
+            @change="finishSliderAdjustment(slider)"
+            @pointerup="finishSliderAdjustment(slider)"
+            @pointercancel="finishSliderAdjustment(slider)"
+            @blur="finishSliderAdjustment(slider)"
           />
           <span class="tabular-nums w-10 text-content-secondary">{{ slider.readout }}{{ slider.unit }}</span>
         </label>

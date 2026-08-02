@@ -31,7 +31,11 @@ import {
   normalizeDocumentTerminology,
   normalizeJournalTerminology,
 } from './documentTerminology'
-import { hasUncommittedChanges } from './commitState'
+import {
+  captureCommittedState,
+  ensureCommittedState,
+  hasUncommittedChanges,
+} from './commitState'
 import { stackPayloadUrl } from './stackPayloadUrl'
 
 // Re-exported so callers keep one import for the document surface.
@@ -130,6 +134,7 @@ export function useStackDocument() {
       }
     }
 
+    ensureCommittedState(doc.value)
     dirtySinceSave.value = hasUncommittedChanges(doc.value)
 
     return {
@@ -195,8 +200,13 @@ export function useStackDocument() {
     persistTimer = setTimeout(() => { void flush() }, PERSIST_DEBOUNCE_MS)
   }
 
-  function setUncommittedChanges(dirty: boolean) {
-    if (doc.value) doc.value.has_uncommitted_changes = dirty
+  function refreshUncommittedChanges() {
+    if (!doc.value) {
+      dirtySinceSave.value = false
+      return
+    }
+    const dirty = hasUncommittedChanges(doc.value)
+    doc.value.has_uncommitted_changes = dirty
     dirtySinceSave.value = dirty
   }
 
@@ -213,7 +223,8 @@ export function useStackDocument() {
         ...(autosave ? { autosave: true } : {}),
       }
     }
-    setUncommittedChanges(false)
+    captureCommittedState(doc.value)
+    dirtySinceSave.value = false
     schedulePersist()
   }
 
@@ -293,7 +304,7 @@ export function useStackDocument() {
     }
 
     cursor.value = journal.value.length
-    setUncommittedChanges(true)
+    refreshUncommittedChanges()
     schedulePersist()
   }
 
@@ -493,7 +504,7 @@ export function useStackDocument() {
     const op = opById(opId) as any
     if (!op) return
     op._revision = (op._revision || 0) + 1
-    setUncommittedChanges(true)
+    refreshUncommittedChanges()
     schedulePersist()
   }
 
@@ -720,7 +731,7 @@ export function useStackDocument() {
     // The undo is itself journaled: the log is a record of what happened, and
     // a truncating undo would make prior states unrecoverable.
     pendingJournal.push({ seq: allocateSeq(), action: 'undo', forward: { undid: entry.seq } })
-    setUncommittedChanges(true)
+    refreshUncommittedChanges()
     schedulePersist()
   }
 
@@ -730,7 +741,7 @@ export function useStackDocument() {
     applyForward(entry)
     cursor.value += 1
     pendingJournal.push({ seq: allocateSeq(), action: 'redo', forward: { redid: entry.seq } })
-    setUncommittedChanges(true)
+    refreshUncommittedChanges()
     schedulePersist()
   }
 

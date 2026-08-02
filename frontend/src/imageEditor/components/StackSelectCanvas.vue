@@ -67,6 +67,8 @@ const props = withDefaults(defineProps<{
   gradient?: GradientMask | null
   /** True when the selected Adjust region owns the rendered result. */
   gradientOwnsResult?: boolean
+  /** A gradient falloff slider is being adjusted; show its coverage wash. */
+  gradientPreviewing?: boolean
   /** Falloff a newly dragged ramp starts with, from the island's slider. */
   gradientSoftness?: number
   gradientFeather?: number
@@ -82,6 +84,7 @@ const props = withDefaults(defineProps<{
   visible: true,
   gradient: null,
   gradientOwnsResult: false,
+  gradientPreviewing: false,
   gradientSoftness: DEFAULT_LINEAR_SOFTNESS,
   gradientFeather: DEFAULT_RADIAL_FEATHER,
 })
@@ -612,19 +615,24 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
 }
 
 /**
- * Preview coverage only while geometry is moving. Once the pointer is
+ * Preview coverage while geometry or falloff is moving. Once the gesture is
  * released, the wash drops away and the guides become the selection readout;
  * after Paint takes the pointer those guides remain, without editable handles.
  * Native canvas gradients keep pointer-move feedback cheap at full resolution.
  */
 function drawGradientDragPreview(ctx: CanvasRenderingContext2D) {
   const mask = shownGradient.value
-  if (
-    !mask
-    || props.gradientOwnsResult
-    || props.armed !== mask.kind
-    || (!draftGradient.value && !handleDraft.value)
-  ) return
+  if (!mask) return
+
+  // Geometry previews are tool-local: a persisted adjustment already renders
+  // its result, and inactive tools do not paint a workspace wash. A falloff
+  // slider is explicit, though, and needs the same coverage readout even when
+  // it lives in the selected region's inspector and no gradient tool is armed.
+  const geometryMoving = !!draftGradient.value || !!handleDraft.value
+  const showGeometry = geometryMoving
+    && !props.gradientOwnsResult
+    && props.armed === mask.kind
+  if (!showGeometry && !props.gradientPreviewing) return
 
   const colorAt = (coverage: number) =>
     `rgba(45, 212, 191, ${Math.max(0, Math.min(1, coverage)) * 0.22})`
@@ -759,6 +767,7 @@ watch(() => props.armed, armed => {
 // moved by handle, by slider, or by undo.
 watch(() => props.gradient, draw, { deep: true })
 watch(() => props.gradientOwnsResult, draw)
+watch(() => props.gradientPreviewing, draw)
 watch(() => props.visible, draw)
 // Marching ants animate whenever there IS a selection, not only while drawing.
 watch([

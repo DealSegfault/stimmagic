@@ -124,6 +124,7 @@ import {
 } from '../imageEditor/stack/regionMask'
 import {
   combineAfterSelectionChange,
+  editorEscapeAction,
   selectionMatteAction,
 } from '../imageEditor/stack/selectionLifecycle'
 import {
@@ -469,6 +470,8 @@ const selectBrushSize = ref(80)
  */
 const selectGradientSoftness = ref(DEFAULT_LINEAR_SOFTNESS)
 const selectGradientFeather = ref(DEFAULT_RADIAL_FEATHER)
+/** True only for the live gesture on a gradient falloff slider. */
+const gradientAdjustmentPreview = ref(false)
 /**
  * The selection as created, anchored directly into permanent document space.
  * Its bitmap may be compact/current-frame storage, but every pixel has one
@@ -595,10 +598,6 @@ const retouchSaturate = computed({
 
 /** Retouch location feedback may be dismissed; a live selection may not. */
 const selectedRetouchFeedbackVisible = ref(false)
-const hasDismissibleCanvasFeedback = computed(() =>
-  !!armedSelectTool.value || selectedRetouchFeedbackVisible.value
-)
-
 function dismissCanvasFeedback() {
   selectedRetouchFeedbackVisible.value = false
   disarmSelect()
@@ -5975,7 +5974,9 @@ function setOutputParams(patch: Record<string, any>) {
 const savedCursor = ref(0)
 const confirmingRevert = ref(false)
 
-const canRevert = computed(() => stack.cursor.value > savedCursor.value)
+const canRevert = computed(() =>
+  stack.dirtySinceSave.value && stack.cursor.value > savedCursor.value
+)
 
 const revertCount = computed(() => stack.cursor.value - savedCursor.value)
 
@@ -6104,6 +6105,50 @@ async function save(asNew = false) {
  */
 const autosaving = ref(false)
 
+function hasAppliedEditorState() {
+  const doc = stack.doc.value
+  return !!doc && (
+    doc.edits.length > 0
+    || !!doc.output?.enabled
+    || !!doc.base.payload_ref
+  )
+}
+
+/**
+ * An autosave is a mutable working layer, not history. If its stack returns to
+ * the untouched base and no explicit version exists, remove that layer so the
+ * Asset projects the original Media again and loses the Edited marker. The
+ * server declines this when a saved version exists; in that case the normal
+ * autosave below commits the now-empty stack as the current working state.
+ */
+let emptyAutosaveDiscardPromise: Promise<boolean> | null = null
+
+async function discardEmptyAutosaveIfPossible(): Promise<boolean> {
+  const doc = stack.doc.value
+  if (!doc?.last_commit?.autosave || hasAppliedEditorState()) return false
+  if (emptyAutosaveDiscardPromise) return emptyAutosaveDiscardPromise
+  emptyAutosaveDiscardPromise = (async () => {
+    const { data } = await axios.post('/api/media/discard-edit-autosave', {
+      asset_id: doc.base.asset_id,
+      base_revision_id: doc.base.revision_id,
+      working_document_id: stack.documentId.value,
+    })
+    if (!data.discarded) return false
+
+    savedRevisionId.value = data.revision_id
+    stack.markCommitted(data.asset_id, data.revision_id)
+    void stack.flush().catch((persistError) => {
+      console.error('[imageStack] could not persist cleared autosave boundary', persistError)
+    })
+    return true
+  })()
+  try {
+    return await emptyAutosaveDiscardPromise
+  } finally {
+    emptyAutosaveDiscardPromise = null
+  }
+}
+
 async function autosaveEdits(force = false) {
   if (autosaving.value || saving.value) return
   try {
@@ -6111,7 +6156,17 @@ async function autosaveEdits(force = false) {
   } catch {
     return // The recipe itself did not persist; the next leave retries.
   }
-  if (!stack.doc.value || !composite.value) return
+  if (!stack.doc.value) return
+  try {
+    if (await discardEmptyAutosaveIfPossible()) return
+  } catch (discardError) {
+    // Do not replace a removable autosave with another editor-authored copy of
+    // the original just because the cleanup request failed. The next leave
+    // retries the smaller, lossless operation.
+    console.error('[imageEditor] could not clear empty autosave', discardError)
+    return
+  }
+  if (!composite.value) return
   if (!force && !stack.dirtySinceSave.value) return
   autosaving.value = true
   try {
@@ -6258,18 +6313,25 @@ function onKeydown(event: KeyboardEvent) {
   if (annotateRef.value?.isEditingText()) return
   if (event.key === 'Escape') {
     event.preventDefault()
-    // First Esc releases whichever canvas tool or Retouch diagnostic owns the
-    // interaction. A live pixel selection stays visible; at idle, Esc
-    // explicitly deselects it.
-    if (hasDismissibleCanvasFeedback.value) {
-      dismissCanvasFeedback()
-    } else if (family.value) {
+    // Escape resolves canvas content. An armed selection tool and the
+    // parameter palette that expresses it are persistent tool state: clearing
+    // the pixels must not silently change the selected tool.
+    const action = editorEscapeAction({
+      hasSelection: !!selection.value,
+      hasRetouchFeedback: selectedRetouchFeedbackVisible.value,
+      hasArmedSelectionTool: !!armedSelectTool.value,
+      hasFamily: !!family.value,
+      hasSelectedShape: !!selectedShapeId.value,
+    })
+    if (action === 'clear-selection') {
+      clearSelection()
+    } else if (action === 'dismiss-retouch-feedback') {
+      selectedRetouchFeedbackVisible.value = false
+    } else if (action === 'leave-family') {
       leaveMode()
-    } else if (selectedShapeId.value) {
+    } else if (action === 'clear-shape') {
       selectedShapeId.value = null
       selectedOpId.value = null
-    } else if (selection.value) {
-      clearSelection()
     }
     return
   }
@@ -6480,6 +6542,12 @@ onMounted(async () => {
   void initMarkers()
   try {
     const opened = await stack.open(Number(props.assetId), props.revisionId ? Number(props.revisionId) : undefined)
+    // Repair an older sticky autosave as soon as its empty document opens;
+    // waiting to leave would keep the Asset badged Edited throughout the
+    // session even though the sidebar contains only Original image.
+    void discardEmptyAutosaveIfPossible().catch((discardError) => {
+      console.warn('[imageEditor] could not clear empty autosave', discardError)
+    })
     // A saved Asset head and a working document base are different things.
     // The recipe owns the latter and is authoritative whenever it exists.
     baseInfo.value = stack.doc.value?.base
@@ -7004,6 +7072,7 @@ watch(
             :brush-size="selectBrushSize"
             :gradient="canvasGradient"
             :gradient-owns-result="canvasGradientOwnsResult"
+            :gradient-previewing="gradientAdjustmentPreview"
             :gradient-softness="selectGradientSoftness"
             :gradient-feather="selectGradientFeather"
             @change="onSelectionChange"
@@ -7073,6 +7142,7 @@ watch(
           @invert="invertSelection"
           @clear="clearSelection"
           @morph="morphSelection"
+          @gradient-adjusting="gradientAdjustmentPreview = $event"
           @ai-select="runAiSelect"
           @ai-cancel="cancelAiSelect"
         />
@@ -7257,6 +7327,7 @@ watch(
               @clip="setClipIndicators"
               @gradient="onInspectorGradient"
               @gradient-commit="commitInspectorGradient"
+              @gradient-adjusting="gradientAdjustmentPreview = $event"
               @edit-mask="armScopedMaskEditing"
               @unscope="unscopeSelectedRegion"
             />

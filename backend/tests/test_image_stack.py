@@ -776,6 +776,118 @@ class TestAutosave:
             assert head.note == "Image editor save"
             assert head.parent_revision_id == base_revision_id
 
+    async def test_empty_stack_discards_autosave_on_an_untouched_branch(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(
+            db_session, tmp_path, name="autosave-discard-empty"
+        )
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+
+        autosaved = await self._save(
+            client,
+            media_id=media_id,
+            asset_id=asset_id,
+            base_revision_id=base_revision_id,
+            document_id=document_id,
+            autosave=True,
+        )
+        autosave_revision_id = autosaved.json()["revision_id"]
+
+        discarded = await client.post(
+            "/api/media/discard-edit-autosave",
+            json={
+                "asset_id": asset_id,
+                "base_revision_id": base_revision_id,
+                "working_document_id": document_id,
+            },
+        )
+        assert discarded.status_code == 200, discarded.text
+        assert discarded.json() == {
+            "discarded": True,
+            "reason": None,
+            "asset_id": asset_id,
+            "revision_id": base_revision_id,
+            "media_id": media_id,
+        }
+        browser_item = (await client.get(
+            f"/api/assets/item/{asset_id}/browser"
+        )).json()
+        assert browser_item["revision_count"] == 1
+        assert browser_item["markers"] == []
+
+        async with db_session() as session:
+            asset = await session.get(Asset, asset_id)
+            autosave_revision = await session.get(
+                AssetRevision, autosave_revision_id
+            )
+            assert asset.current_revision_id == base_revision_id
+            assert autosave_revision.deleted_at is not None
+
+    async def test_empty_stack_keeps_autosave_when_a_saved_version_exists(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(
+            db_session, tmp_path, name="autosave-discard-keeps-version"
+        )
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        document_id = opened["document_id"]
+        base_revision_id = opened["base"]["revision_id"]
+        saved = await self._save(
+            client,
+            media_id=media_id,
+            asset_id=asset_id,
+            base_revision_id=base_revision_id,
+            document_id=document_id,
+            autosave=False,
+        )
+        autosaved = await self._save(
+            client,
+            media_id=media_id,
+            asset_id=asset_id,
+            base_revision_id=base_revision_id,
+            document_id=document_id,
+            autosave=True,
+            color=(0, 255, 0),
+        )
+
+        kept = await client.post(
+            "/api/media/discard-edit-autosave",
+            json={
+                "asset_id": asset_id,
+                "base_revision_id": base_revision_id,
+                "working_document_id": document_id,
+            },
+        )
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["discarded"] is False
+        assert kept.json()["reason"] == "saved_versions"
+        browser_item = (await client.get(
+            f"/api/assets/item/{asset_id}/browser"
+        )).json()
+        assert browser_item["revision_count"] == 3
+        assert [marker["id"] for marker in browser_item["markers"]] == [
+            "implicit:edited"
+        ]
+
+        async with db_session() as session:
+            asset = await session.get(Asset, asset_id)
+            saved_revision = await session.get(
+                AssetRevision, saved.json()["revision_id"]
+            )
+            autosave_revision = await session.get(
+                AssetRevision, autosaved.json()["revision_id"]
+            )
+            assert asset.current_revision_id == autosave_revision.id
+            assert autosave_revision.deleted_at is None
+            assert saved_revision.deleted_at is None
+
     async def test_autosave_after_explicit_save_keeps_the_version(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):

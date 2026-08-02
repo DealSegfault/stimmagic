@@ -5,7 +5,7 @@
  * These controls alter how the selected child's retained repair is composited.
  * They belong to the region, never the parent Retouch row.
  */
-import { computed } from 'vue'
+import { computed, onBeforeUnmount } from 'vue'
 import type { GradientMask, RetouchRegion, RetouchRegionSettings } from '../stack/types'
 import { adjustControl, lookById, photoAdjustmentGroup } from '../stack/adjustSections'
 import { gradientSliderOf, isGradientMask, withGradientSlider } from '../stack/regionMask'
@@ -33,6 +33,8 @@ const emit = defineEmits<{
   /** New geometry for this region's gradient mask. */
   gradient: [GradientMask]
   gradientCommit: []
+  /** The gradient falloff slider started or ended a gesture. */
+  gradientAdjusting: [boolean]
   /** Route the next selection gestures into this region's mask. */
   editMask: []
   /** Convert this scoped step to a whole-image one, keeping its values. */
@@ -57,8 +59,16 @@ const gradientLabel = computed(() =>
 
 function setGradientSlider(value: number) {
   if (!gradient.value) return
+  emit('gradientAdjusting', true)
   emit('gradient', withGradientSlider(gradient.value, Math.round(value)))
 }
+
+function finishGradientSlider() {
+  emit('gradientCommit')
+  emit('gradientAdjusting', false)
+}
+
+onBeforeUnmount(() => emit('gradientAdjusting', false))
 
 function setGradientInvert(invert: boolean) {
   const mask = gradient.value
@@ -193,8 +203,12 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
           max="100"
           step="1"
           :value="gradientSlider.value"
+          @pointerdown="emit('gradientAdjusting', true)"
           @input="setGradientSlider(Number(($event.target as HTMLInputElement).value))"
-          @change="emit('gradientCommit')"
+          @change="finishGradientSlider"
+          @pointerup="emit('gradientAdjusting', false)"
+          @pointercancel="emit('gradientAdjusting', false)"
+          @blur="emit('gradientAdjusting', false)"
         />
         <span class="font-mono tabular-nums text-right text-content-secondary">
           {{ Math.round(gradientSlider.value) }}

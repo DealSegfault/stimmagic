@@ -1814,6 +1814,112 @@ class SaveEditResponse(BaseModel):
     revision_id: int
 
 
+class DiscardEditAutosaveRequest(BaseModel):
+    asset_id: int
+    base_revision_id: int
+    working_document_id: int
+
+
+class DiscardEditAutosaveResponse(BaseModel):
+    discarded: bool
+    reason: Optional[str] = None
+    asset_id: int
+    revision_id: int
+    media_id: int
+
+
+@router.post(
+    "/api/media/discard-edit-autosave",
+    response_model=DiscardEditAutosaveResponse,
+)
+async def discard_empty_edit_autosave(
+    request: DiscardEditAutosaveRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Remove a provisional editor head when the stack returns to its base.
+
+    The client only asks for this when no applied stack state remains. The
+    server owns the historical half of the decision: a user-saved version is
+    never swallowed, while an autosave on an otherwise untouched branch can be
+    retired so merely entering (or fully undoing) the editor does not make the
+    Asset appear edited.
+    """
+    import image_stack_service as stack_service
+    from asset_service import retire_autosave_revision
+    from database import WorkingDocument
+
+    asset = await session.get(Asset, request.asset_id)
+    if (
+        asset is None
+        or asset.deleted_at is not None
+        or asset.state != "active"
+        or asset.current_revision_id is None
+    ):
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    document = await session.get(WorkingDocument, request.working_document_id)
+    if (
+        document is None
+        or document.deleted_at is not None
+        or document.editor_type != stack_service.EDITOR_TYPE
+        or document.asset_id != asset.id
+    ):
+        raise HTTPException(status_code=404, detail="Stack document not found")
+
+    base = await session.get(AssetRevision, request.base_revision_id)
+    if (
+        base is None
+        or base.deleted_at is not None
+        or base.asset_id != asset.id
+        or document.base_revision_id != base.id
+    ):
+        raise HTTPException(status_code=400, detail="Invalid base Revision")
+
+    head = await session.get(AssetRevision, asset.current_revision_id)
+    if head is None or head.deleted_at is not None:
+        raise HTTPException(status_code=409, detail="The Asset head is unavailable")
+    if not head.autosave or head.parent_revision_id != base.id:
+        raise HTTPException(status_code=409, detail="The Asset has newer changes")
+
+    saved_version_id = await session.scalar(
+        select(AssetRevision.id).where(
+            AssetRevision.asset_id == asset.id,
+            AssetRevision.id != base.id,
+            AssetRevision.id != head.id,
+            AssetRevision.autosave.is_(False),
+            AssetRevision.deleted_at.is_(None),
+        ).limit(1)
+    )
+    if saved_version_id is not None:
+        return DiscardEditAutosaveResponse(
+            discarded=False,
+            reason="saved_versions",
+            asset_id=asset.id,
+            revision_id=head.id,
+            media_id=head.primary_media_id,
+        )
+
+    asset.current_revision_id = base.id
+    asset.updated_at = datetime.utcnow()
+    await retire_autosave_revision(session, head)
+    await session.commit()
+
+    await ws_manager.broadcast(
+        "asset_current_revision_changed",
+        {
+            "asset_id": asset.id,
+            "revision_id": base.id,
+            "media_id": base.primary_media_id,
+        },
+    )
+    return DiscardEditAutosaveResponse(
+        discarded=True,
+        asset_id=asset.id,
+        revision_id=base.id,
+        media_id=base.primary_media_id,
+    )
+
+
 @router.post("/api/media/save-edit", response_model=SaveEditResponse)
 async def save_edited_image(
     file: UploadFile,

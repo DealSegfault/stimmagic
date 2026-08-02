@@ -18,6 +18,37 @@ export function combineAfterSelectionChange(
   return hasSelection ? current : emptySelectionCombine(tool)
 }
 
+export type EditorEscapeAction =
+  | 'clear-selection'
+  | 'dismiss-retouch-feedback'
+  | 'leave-family'
+  | 'clear-shape'
+  | 'none'
+
+/**
+ * Resolve Escape against canvas CONTENT, not the tool chrome around it.
+ *
+ * An armed selection tool's raised parameter palette is the visible expression
+ * of the selected tool, not a transient popup. Escape may clear the pixels that
+ * tool selected, but only a different tool choice or an explicit pointer
+ * handoff may disarm the tool. It also must not tunnel through the armed tool
+ * and close a suspended family underneath it.
+ */
+export function editorEscapeAction(state: {
+  hasSelection: boolean
+  hasRetouchFeedback: boolean
+  hasArmedSelectionTool: boolean
+  hasFamily: boolean
+  hasSelectedShape: boolean
+}): EditorEscapeAction {
+  if (state.hasSelection) return 'clear-selection'
+  if (state.hasRetouchFeedback) return 'dismiss-retouch-feedback'
+  if (state.hasArmedSelectionTool) return 'none'
+  if (state.hasFamily) return 'leave-family'
+  if (state.hasSelectedShape) return 'clear-shape'
+  return 'none'
+}
+
 export type SelectionMatteAction = 'clear-selection' | 'disarm-tool' | 'none'
 
 /**

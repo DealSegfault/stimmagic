@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { hasUncommittedChanges } from './commitState.ts'
+import {
+  captureCommittedState,
+  ensureCommittedState,
+  hasUncommittedChanges,
+} from './commitState.ts'
 import type { StackDocument } from './types.ts'
 
 function document(overrides: Partial<StackDocument> = {}): StackDocument {
@@ -40,4 +44,43 @@ test('legacy authored documents conservatively require a commit', () => {
     edits: [{ enabled: true } as any],
   })), true)
   assert.equal(hasUncommittedChanges(document()), false)
+})
+
+test('adding and then removing an edit returns to the committed state', () => {
+  const doc = document()
+  captureCommittedState(doc)
+
+  doc.edits.push({
+    id: 'temporary',
+    class: 'container',
+    enabled: true,
+    label: 'Crop',
+    exec: { kind: 'crop' },
+    params: { rect: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 } },
+  } as any)
+  assert.equal(hasUncommittedChanges(doc), true)
+
+  doc.edits = []
+  assert.equal(hasUncommittedChanges(doc), false)
+})
+
+test('removing an edit from a committed version remains a pending change', () => {
+  const doc = document({ edits: [{
+    id: 'saved',
+    class: 'container',
+    enabled: true,
+    label: 'Crop',
+    exec: { kind: 'crop' },
+    params: { rect: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 } },
+  } as any] })
+  captureCommittedState(doc)
+
+  doc.edits = []
+  assert.equal(hasUncommittedChanges(doc), true)
+})
+
+test('a legacy pristine branch without a commit repairs sticky dirty state', () => {
+  const doc = document({ has_uncommitted_changes: true })
+  ensureCommittedState(doc)
+  assert.equal(hasUncommittedChanges(doc), false)
 })

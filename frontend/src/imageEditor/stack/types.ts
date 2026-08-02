@@ -419,6 +419,8 @@ export interface StackDocument {
    * change this boundary.
    */
   has_uncommitted_changes?: boolean
+  /** Hash of the image-producing document state represented by last_commit. */
+  committed_state_hash?: string
   /** The last Asset Revision this working state was committed to. */
   last_commit?: { asset_id: number; revision_id: number; autosave?: boolean }
 }
