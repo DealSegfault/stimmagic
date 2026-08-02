@@ -41,6 +41,7 @@ from database import (
 from container_service import create_container_asset_from_media
 from cleanup_service import CleanupService
 from tests.helpers.media import create_media_item
+from implicit_markers import EDITED_MARKER_ID, IMAGE_EDITOR_TOOL_ID
 
 
 @pytest.mark.asyncio
@@ -1046,6 +1047,149 @@ async def test_asset_tool_facets_resolve_builtins_history_and_legacy_aliases(
     excluded_ids = {item["asset_id"] for item in excluded.json()["items"]}
     assert current_asset.id not in excluded_ids
     assert legacy_asset.id not in excluded_ids
+
+
+@pytest.mark.asyncio
+async def test_edited_implicit_marker_projects_filters_and_counts(client, db_session):
+    caption = f"implicit-edited-{time.time_ns()}"
+    async with db_session() as session:
+        edited_media = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id=IMAGE_EDITOR_TOOL_ID,
+        )
+        plain_media = await create_media_item(session, vlm_caption=caption)
+        edited_asset = await create_asset_from_media(
+            session, media_id=edited_media.id
+        )
+        plain_asset = await create_asset_from_media(session, media_id=plain_media.id)
+        session.add(
+            MediaToolLineage(
+                media_id=edited_media.id,
+                full_tool_id=IMAGE_EDITOR_TOOL_ID,
+            )
+        )
+        await session.commit()
+        edited_asset_id = edited_asset.id
+        plain_asset_id = plain_asset.id
+
+    browse = await client.get(
+        "/api/assets/browse", params={"caption_query": caption}
+    )
+    assert browse.status_code == 200, browse.text
+    items = {item["asset_id"]: item for item in browse.json()["items"]}
+    edited_markers = items[edited_asset_id]["markers"]
+    assert [marker["id"] for marker in edited_markers] == [EDITED_MARKER_ID]
+    assert edited_markers[0]["implicit"] is True
+    assert edited_markers[0]["name"] == "edited"
+    assert 'fill="currentColor"' in edited_markers[0]["icon_svg"]
+    assert "stroke=" not in edited_markers[0]["icon_svg"]
+    assert items[plain_asset_id]["markers"] == []
+
+    available = await client.get("/api/assets/implicit-markers")
+    assert available.status_code == 200, available.text
+    available_markers = available.json()["markers"]
+    assert [marker["id"] for marker in available_markers] == [EDITED_MARKER_ID]
+    assert 'fill="currentColor"' in available_markers[0]["icon_svg"]
+
+    included = await client.get(
+        "/api/assets/browse",
+        params={"caption_query": caption, "marker_ids": EDITED_MARKER_ID},
+    )
+    assert included.status_code == 200, included.text
+    assert [item["asset_id"] for item in included.json()["items"]] == [
+        edited_asset_id
+    ]
+
+    excluded = await client.get(
+        "/api/assets/browse",
+        params={
+            "caption_query": caption,
+            "excluded_marker_ids": EDITED_MARKER_ID,
+        },
+    )
+    assert excluded.status_code == 200, excluded.text
+    assert [item["asset_id"] for item in excluded.json()["items"]] == [
+        plain_asset_id
+    ]
+
+    counts = await client.get(
+        "/api/assets/filter-counts", params={"caption_query": caption}
+    )
+    assert counts.status_code == 200, counts.text
+    assert counts.json()["implicit_markers"] == {"edited": 1}
+
+    configured_markers = (await client.get("/api/markers")).json()
+    assert EDITED_MARKER_ID not in {marker["id"] for marker in configured_markers}
+
+
+@pytest.mark.asyncio
+async def test_recently_edited_sort_uses_edit_date_then_import_fallback(
+    client, db_session
+):
+    caption = f"recently-edited-sort-{time.time_ns()}"
+    async with db_session() as session:
+        edited_one_source = await create_media_item(session)
+        edited_one_asset = await create_asset_from_media(
+            session, media_id=edited_one_source.id
+        )
+        edited_one = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id=IMAGE_EDITOR_TOOL_ID,
+        )
+        edited_one.indexed_date = datetime(2025, 1, 10)
+        edited_one_revision = await commit_revision(
+            session, asset_id=edited_one_asset.id, media_id=edited_one.id
+        )
+        edited_one_revision.created_at = datetime(2025, 1, 2)
+        session.add(
+            MediaToolLineage(
+                media_id=edited_one.id,
+                full_tool_id=IMAGE_EDITOR_TOOL_ID,
+            )
+        )
+
+        edited_two_source = await create_media_item(session)
+        edited_two_asset = await create_asset_from_media(
+            session, media_id=edited_two_source.id
+        )
+        edited_two = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id=IMAGE_EDITOR_TOOL_ID,
+        )
+        edited_two.indexed_date = datetime(2025, 1, 1)
+        edited_two_revision = await commit_revision(
+            session, asset_id=edited_two_asset.id, media_id=edited_two.id
+        )
+        edited_two_revision.created_at = datetime(2025, 1, 3)
+        session.add(
+            MediaToolLineage(
+                media_id=edited_two.id,
+                full_tool_id=IMAGE_EDITOR_TOOL_ID,
+            )
+        )
+
+        plain = await create_media_item(session, vlm_caption=caption)
+        plain.indexed_date = datetime(2025, 1, 4)
+        plain_asset = await create_asset_from_media(session, media_id=plain.id)
+        await session.commit()
+        expected = [plain_asset.id, edited_two_asset.id, edited_one_asset.id]
+
+    response = await client.get(
+        "/api/assets/browse",
+        params={"caption_query": caption, "sort_by": "edited_desc"},
+    )
+    assert response.status_code == 200, response.text
+    assert [item["asset_id"] for item in response.json()["items"]] == expected
+
+    ids = await client.get(
+        "/api/assets/browse/ids",
+        params={"caption_query": caption, "sort_by": "edited_desc"},
+    )
+    assert ids.status_code == 200, ids.text
+    assert ids.json()["ids"] == expected
 
 
 @pytest.mark.asyncio

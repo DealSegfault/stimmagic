@@ -23,6 +23,7 @@ from database import (
     ProjectAsset,
 )
 from tool_display import expand_tool_id_aliases
+from implicit_markers import implicit_marker_predicates, split_marker_filter_tokens
 
 
 # =============================================================================
@@ -368,7 +369,7 @@ def build_filtered_query(
 
     Args:
         query: SQLAlchemy query to apply filters to
-        exclude_category: Category to exclude from filtering ('media_types', 'resolutions', 'keywords', 'folders', 'tags', 'projects', 'tools', 'imported')
+        exclude_category: Category to exclude from filtering ('media_types', 'resolutions', 'keywords', 'folders', 'tags', 'projects', 'tools', 'markers', 'imported')
         project_ids: Comma-separated project IDs; item must belong to at least one (OR logic).
         excluded_project_ids: Comma-separated project IDs; item must NOT belong to any of them.
         has_project: Tri-state membership predicate — True = in at least one (non-deleted) project,
@@ -578,31 +579,41 @@ def build_filtered_query(
         imported_predicate = media_is_imported()
         query = query.where(imported_predicate if is_imported else ~imported_predicate)
 
-    # Marker filter (OR logic - item must have at least one of the specified markers)
-    # Excludes suppressed markers (source != 'suppressed')
-    if marker_ids:
-        marker_id_list = [int(mid.strip()) for mid in marker_ids.split(',') if mid.strip()]
-        if marker_id_list:
-            marker_exists = select(1).select_from(AssetMarker).where(
-                AssetMarker.asset_id == organization_asset_id,
-                AssetMarker.marker_id.in_(marker_id_list),
-                AssetMarker.source != 'suppressed',
-                AssetMarker.deleted_at.is_(None),
-            ).correlate_except(AssetMarker).exists()
-            query = query.where(marker_exists)
+    # Marker filters share one OR category across configurable and implicit
+    # marker identities. Implicit markers are computed from provenance and are
+    # never rows in AssetMarker.
+    if exclude_category != 'markers':
+        if marker_ids:
+            marker_id_list, implicit_keys = split_marker_filter_tokens(marker_ids)
+            marker_predicates = implicit_marker_predicates(implicit_keys, MediaItem.id)
+            if marker_id_list:
+                marker_predicates.append(
+                    select(1).select_from(AssetMarker).where(
+                        AssetMarker.asset_id == organization_asset_id,
+                        AssetMarker.marker_id.in_(marker_id_list),
+                        AssetMarker.source != 'suppressed',
+                        AssetMarker.deleted_at.is_(None),
+                    ).correlate_except(AssetMarker).exists()
+                )
+            query = query.where(or_(*marker_predicates) if marker_predicates else false())
 
-    # Excluded marker filter (item must NOT have any of the specified markers)
-    # Only considers visible markers (not suppressed)
-    if excluded_marker_ids:
-        excluded_marker_id_list = [int(mid.strip()) for mid in excluded_marker_ids.split(',') if mid.strip()]
-        if excluded_marker_id_list:
-            marker_exists = select(1).select_from(AssetMarker).where(
-                AssetMarker.asset_id == organization_asset_id,
-                AssetMarker.marker_id.in_(excluded_marker_id_list),
-                AssetMarker.source != 'suppressed',
-                AssetMarker.deleted_at.is_(None),
-            ).correlate_except(AssetMarker).exists()
-            query = query.where(~marker_exists)
+        # Exclusion means the item must have none of the selected marker types.
+        if excluded_marker_ids:
+            excluded_marker_id_list, implicit_keys = split_marker_filter_tokens(
+                excluded_marker_ids
+            )
+            marker_predicates = implicit_marker_predicates(implicit_keys, MediaItem.id)
+            if excluded_marker_id_list:
+                marker_predicates.append(
+                    select(1).select_from(AssetMarker).where(
+                        AssetMarker.asset_id == organization_asset_id,
+                        AssetMarker.marker_id.in_(excluded_marker_id_list),
+                        AssetMarker.source != 'suppressed',
+                        AssetMarker.deleted_at.is_(None),
+                    ).correlate_except(AssetMarker).exists()
+                )
+            if marker_predicates:
+                query = query.where(~or_(*marker_predicates))
 
     # Tag filter (OR logic - item must have at least one of the specified tags)
     if exclude_category != 'tags':

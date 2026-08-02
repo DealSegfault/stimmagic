@@ -54,6 +54,8 @@ export interface ToolPrefs {
   repaintPrompt?: string
   /** Most recently submitted Repaint prompts, newest first. */
   recentRepaintPrompts?: string[]
+  /** Markers applied when Save As New forks the current edit into a new Asset. */
+  newAssetMarkerIds?: number[]
   /** Last real sub-tool pick per family, keyed by family id. */
   sub?: Record<string, string>
 }

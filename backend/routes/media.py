@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, or_, and_, func, literal, Integer, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import Asset, AssetRevision, Board, BoardAssetItem, BoardSection, MediaItem, Keyword, MediaKeyword, MediaToolLineage, Face, Project, ProjectAsset, ProjectMedia
+from database import Asset, AssetRevision, Board, BoardAssetItem, BoardSection, Marker, MediaItem, Keyword, MediaKeyword, MediaToolLineage, Face, Project, ProjectAsset, ProjectMedia
 from asset_association_service import media_compatibility_projections
 from core.dependencies import get_db_session
 from models.api_models import BoardSummaryResponse, MediaListResponse, MediaItemResponse, MediaIndexResponse, SimilaritySearchRequest, StructuredContentUpdateRequest
@@ -1820,6 +1820,7 @@ async def save_edited_image(
     source_media_id: int = Form(...),
     asset_id: int = Form(...),
     save_as_new: bool = Form(False),
+    marker_ids: Optional[str] = Form(None),
     autosave: bool = Form(False),
     base_revision_id: Optional[int] = Form(None),
     working_document_id: int = Form(...),
@@ -1848,7 +1849,11 @@ async def save_edited_image(
     the stack is a recipe over the Revision it was authored against.
     """
     from upload_service import UploadService, UploadError
-    from utils.lineage import record_lineage, propagate_tool_lineage
+    from utils.lineage import (
+        build_inherited_lineage_trace,
+        propagate_tool_lineage,
+        record_lineage,
+    )
     import json
 
     # Verify source media exists
@@ -1858,6 +1863,28 @@ async def save_edited_image(
     source_item = result.scalars().first()
     if not source_item:
         raise HTTPException(status_code=404, detail=f"Source asset {source_media_id} not found")
+
+    selected_marker_ids: list[int] = []
+    if marker_ids:
+        if not save_as_new:
+            raise HTTPException(
+                status_code=400,
+                detail="Markers can only be applied when saving as a new Asset",
+            )
+        try:
+            selected_marker_ids = list(dict.fromkeys(
+                int(value.strip())
+                for value in marker_ids.split(",")
+                if value.strip()
+            ))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid marker IDs") from exc
+        if selected_marker_ids:
+            existing_marker_ids = set(await session.scalars(
+                select(Marker.id).where(Marker.id.in_(selected_marker_ids))
+            ))
+            if existing_marker_ids != set(selected_marker_ids):
+                raise HTTPException(status_code=400, detail="Invalid marker IDs")
 
     parsed_stack_summary = None
     if stack_summary:
@@ -1988,11 +2015,7 @@ async def save_edited_image(
                 "media_id": source_media_id,
                 "role": "source_image",
             }],
-            lineage_trace=[{
-                "media_id": db_media_item.id,
-                "task_type": "image-to-image",
-                "source_media_ids": [source_media_id],
-            }],
+            lineage_trace=build_inherited_lineage_trace(source_item),
         )
 
         from asset_service import (
@@ -2013,6 +2036,15 @@ async def save_edited_image(
             committed_revision = await session.get(
                 AssetRevision, target_asset.current_revision_id
             )
+            if selected_marker_ids:
+                from asset_association_service import set_asset_marker
+                for marker_id in selected_marker_ids:
+                    await set_asset_marker(
+                        session,
+                        asset_id=target_asset.id,
+                        marker_id=marker_id,
+                        add=True,
+                    )
         else:
             if mutable_autosave is not None:
                 committed_revision = await update_autosave_revision(

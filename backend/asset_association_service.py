@@ -22,6 +22,7 @@ from database import (
     Tag,
     WorkingDocument,
 )
+from implicit_markers import implicit_markers_by_media
 
 
 async def classify_media_assets(
@@ -146,6 +147,7 @@ async def media_compatibility_projections(
     markers: dict[int, list[dict]] = defaultdict(list)
     tags: dict[int, list[dict]] = defaultdict(list)
     working_document_assets: set[int] = set()
+    implicit_markers = await implicit_markers_by_media(session, media_ids)
     if asset_ids:
         marker_rows = (
             await session.execute(
@@ -214,7 +216,7 @@ async def media_compatibility_projections(
                         else None
                     ),
                     "title": asset.title,
-                    "markers": markers[asset.id],
+                    "markers": [*markers[asset.id], *implicit_markers[media.id]],
                     "tags": tags[asset.id],
                     "has_working_document": asset.id in working_document_assets,
                 }

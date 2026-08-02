@@ -4,10 +4,13 @@ from pydantic import BaseModel, Field
 
 
 class MediaMarkerInfo(BaseModel):
-    id: int
+    id: int | str
     name: str
     icon_svg: str
     color: str
+    key: Optional[str] = None
+    implicit: bool = False
+    source: Optional[str] = None
 
 
 class TagResponse(BaseModel):

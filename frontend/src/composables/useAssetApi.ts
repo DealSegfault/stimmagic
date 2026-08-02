@@ -80,6 +80,10 @@ export function useAssetApi() {
     return (await axios.get(`${api()}/assets/filter-counts`, { params })).data
   }
 
+  async function getAvailableImplicitMarkers(params: Record<string, unknown> = {}) {
+    return (await axios.get(`${api()}/assets/implicit-markers`, { params })).data
+  }
+
   async function findAssetIndex(assetId: number, params: Record<string, unknown> = {}) {
     const { ids } = await fetchAssetIds(params)
     const index = ids.indexOf(assetId)
@@ -241,6 +245,7 @@ export function useAssetApi() {
     getTags,
     getTopKeywords,
     getFilterCounts,
+    getAvailableImplicitMarkers,
     findAssetIndex,
     addMarker,
     removeMarker,

@@ -87,6 +87,7 @@
       v-model:similarityThreshold="filters.similarityThreshold"
       :totalCount="totalCount"
       :markers="markers"
+      :implicit-markers="implicitMarkers"
       :similarSearchActive="similarSearchActive"
       :similarSearchSourceItem="similarSearchSourceItem"
       :similarSearchSourceItems="similarSearchSourceItems"
@@ -380,6 +381,7 @@ const {
   emptyTrash: apiEmptyTrash,
   getTrashSourceFileCount,
   getDeletionPreview,
+  getAvailableImplicitMarkers,
 } = useAssetApi()
 
 const getMediaItem = (assetId, options = {}) => (
@@ -609,6 +611,25 @@ const showEmptyLibraryState = computed(() => !hasActiveFilterCriteria.value || l
 
 // Library management state
 const markers = ref([])
+const implicitMarkers = ref([])
+let implicitMarkersRequestId = 0
+
+async function loadImplicitMarkers() {
+  const requestId = ++implicitMarkersRequestId
+  try {
+    const response = await getAvailableImplicitMarkers({
+      state: props.isTrashMode ? 'trashed' : 'active',
+      project_id: props.projectId ?? undefined,
+    })
+    if (requestId === implicitMarkersRequestId) {
+      implicitMarkers.value = response.markers || []
+    }
+  } catch (error) {
+    if (requestId === implicitMarkersRequestId) {
+      console.error('Failed to load implicit markers:', error)
+    }
+  }
+}
 const showBoardPicker = ref(false)
 const showExportModal = ref(false)
 const exportMediaIds = ref([])
@@ -1113,7 +1134,10 @@ async function loadMedia(options = {}) {
 // the total to 0 — blanking the grid / leaving unresolved spinners on large or
 // cascading deletes.
 async function reconcileRemoval(removedIds) {
-  if (!mediaList) return
+  if (!mediaList) {
+    await loadImplicitMarkers()
+    return
+  }
   if (removedIds?.length) {
     mediaList.removeFromCache(removedIds.map(id => parseInt(id)))
   }
@@ -1123,19 +1147,18 @@ async function reconcileRemoval(removedIds) {
   // The virtual scroller doesn't recompute its geometry on a count shrink until
   // it sees a scroll event, so explicitly rebuild + reload the visible region.
   await virtualGridRef.value?.refreshAfterRemoval?.()
+  await loadImplicitMarkers()
 }
 
 // Soft reload - updates data without showing loading state or unmounting the grid
 // Used for live updates (websocket events) where we want seamless visual updates
 async function softReloadMedia() {
-  if (mediaList) {
-    // Use shared mediaList's silentReload which properly invalidates the cache
-    // and triggers grid rebuild via cacheVersion
-    // Note: Don't manually update totalCount.value here - the grid uses
-    // mediaList.effectiveTotal for display, and updating totalCount would
-    // trigger the grid's watcher causing a redundant reload/blink
-    await mediaList.silentReload()
-  }
+  // silentReload invalidates the media cache without blinking the grid. Do not
+  // update totalCount here; the grid reads mediaList.effectiveTotal directly.
+  await Promise.all([
+    mediaList?.silentReload(),
+    loadImplicitMarkers(),
+  ])
 }
 
 async function searchSimilar(mediaIds) {
@@ -1757,9 +1780,11 @@ const browseFilterQueryKeys = new Set([
   'mt', 'xmt',
   'r', 'xr',
   's', 'k', 'xk',
+  'mk', 'xmk',
   'f', 'xf',
   'tl', 'xtl',
   'prj', 'xprj',
+  'imp', 'unu',
   'sim', 'fsim',
   'st', 'rs'
 ])
@@ -1895,8 +1920,12 @@ watch(filterChangeCounter, async () => {
 watch(wsConnected, async (connected, wasConnected) => {
   if (connected && wasConnected === false && !initializing.value) {
     console.log('[BrowseGridView] WebSocket reconnected, reloading media')
-    await loadMedia()
+    await Promise.all([loadMedia(), loadImplicitMarkers()])
   }
+})
+
+watch(() => props.projectId, () => {
+  void loadImplicitMarkers()
 })
 
 // Handle markers config change
@@ -1909,11 +1938,12 @@ async function handleMarkersChanged() {
 }
 
 onMounted(async () => {
-  try {
-    markers.value = await getMarkers()
-  } catch (error) {
-    console.error('Failed to load markers:', error)
-  }
+  await Promise.all([
+    getMarkers()
+      .then(response => { markers.value = response })
+      .catch(error => { console.error('Failed to load markers:', error) }),
+    loadImplicitMarkers(),
+  ])
 
   // Listen for markers config changes
   window.addEventListener('markers-changed', handleMarkersChanged)
@@ -1972,6 +2002,7 @@ onMounted(async () => {
 
   // Setup WebSocket event listeners
   wsUnsubscribers.push(wsOn('asset_created', async (data) => {
+    void loadImplicitMarkers()
     const count = data.count || 1
     if (count > 0) {
       // Check if we can do a soft update (prepend items in place)
@@ -2195,6 +2226,7 @@ async function handleProfileChanged() {
   } catch (error) {
     console.error('Failed to load markers for new profile:', error)
   }
+  await loadImplicitMarkers()
 
   // Force FilterBar to reload its data (tags, keywords, etc.)
   filterKey.value++

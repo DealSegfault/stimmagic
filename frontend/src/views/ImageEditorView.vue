@@ -32,6 +32,7 @@ import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import Spinner from '../components/ui/Spinner.vue'
 import StatusDot from '../components/ui/StatusDot.vue'
 import ImageCompareSlider from '../components/ImageCompareSlider.vue'
+import { AutoMarkPicker } from '../components/generation'
 import BaseRow from '../imageEditor/components/BaseRow.vue'
 import { DROP_LINE } from '../imageEditor/components/rowLayout'
 import EditRow from '../imageEditor/components/EditRow.vue'
@@ -66,6 +67,7 @@ import {
 import { applyAdjust, applyAnnotations } from '../imageEditor/stack/opExecutors'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
+import { useMarkers } from '../composables/useMarkers'
 import {
   nameStepFromCrop,
   regionCropBase64,
@@ -199,6 +201,7 @@ const {
   uploadToTool,
 } = useProvidersApi()
 const loraPool = useLoraPool()
+const { availableMarkers, init: initMarkers } = useMarkers()
 // <img> cannot send the X-Profile-ID header the profile middleware requires,
 // which is why media URLs carry their database in the path.
 const { getMediaFileUrl } = useMediaApi()
@@ -207,6 +210,15 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const baseInfo = ref<any>(null)
 const initialToolPrefs = readToolPrefs()
+const newAssetMarkerIds = ref<number[]>(
+  Array.isArray(initialToolPrefs.newAssetMarkerIds)
+    ? initialToolPrefs.newAssetMarkerIds.filter(Number.isInteger)
+    : [],
+)
+
+watch(newAssetMarkerIds, markerIds => {
+  writeToolPrefs({ newAssetMarkerIds: [...markerIds] })
+})
 
 const candidateCount = ref(4)
 const selectedOpId = ref<string | null>(null)
@@ -5972,7 +5984,16 @@ async function save(asNew = false) {
     form.append('base_revision_id', String(stack.doc.value.base.revision_id))
     form.append('working_document_id', String(stack.documentId.value))
     form.append('stack_summary', JSON.stringify(stack.executedStackSummary()))
-    if (asNew) form.append('save_as_new', 'true')
+    if (asNew) {
+      form.append('save_as_new', 'true')
+      const availableMarkerIds = new Set(availableMarkers.value.map(marker => marker.id))
+      const selectedMarkerIds = newAssetMarkerIds.value.filter(
+        markerId => availableMarkerIds.has(markerId),
+      )
+      if (selectedMarkerIds.length) {
+        form.append('marker_ids', selectedMarkerIds.join(','))
+      }
+    }
 
     const { data } = await axios.post('/api/media/save-edit', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -6384,6 +6405,7 @@ async function hydrateEditorExtras() {
 }
 
 onMounted(async () => {
+  void initMarkers()
   try {
     const opened = await stack.open(Number(props.assetId), props.revisionId ? Number(props.revisionId) : undefined)
     // A saved Asset head and a working document base are different things.
@@ -7339,9 +7361,9 @@ watch(
         </Button>
       </Tooltip>
 
-      <!-- Split: saving to this asset is the act; forking to a new one is rare
-           enough that giving it equal weight made the pair read as a choice
-           every time. -->
+      <!-- Save itself always commits a version. The menu exposes both save
+           destinations at equal weight; only the new-Asset section carries
+           the marker strip because those markers belong to the fork. -->
       <div ref="saveMenuRef" class="relative flex items-stretch">
         <Button
           size="sm"
@@ -7351,7 +7373,7 @@ watch(
           @click="save(false)"
         >
           <i v-if="savingNote">{{ savingNote }}</i>
-          <template v-else>Save version</template>
+          <template v-else>Save</template>
         </Button>
         <button
           type="button"
@@ -7368,24 +7390,35 @@ watch(
         <!-- Opens upward: the bar is the last row of the window. -->
         <div
           v-if="saveMenuOpen"
-          class="absolute bottom-full right-0 mb-1 w-56 py-1 z-menu
+          class="absolute bottom-full right-0 mb-1 w-72 p-1.5 z-menu
                  rounded-lg border border-edge-subtle bg-surface-overlay shadow-xl"
         >
-          <button
-            type="button"
-            class="w-full flex items-center gap-3 px-3 py-2 text-left text-[13px] text-content hover:bg-overlay-light transition-colors"
+          <Button
+            variant="ghost"
+            size="sm"
+            class="w-full !justify-start"
+            :disabled="saving"
             @click="saveMenuOpen = false; save(false)"
           >
-            <span class="flex-1">Save a new version</span>
-            <span class="text-[11px] text-content-tertiary">Default</span>
-          </button>
-          <button
-            type="button"
-            class="w-full px-3 py-2 text-left text-[13px] text-content hover:bg-overlay-light transition-colors"
-            @click="saveMenuOpen = false; save(true)"
-          >
-            Save as new asset
-          </button>
+            Save a new version of this asset
+          </Button>
+          <div class="mt-1 pt-1 border-t border-edge-subtle">
+            <div v-if="availableMarkers.length" class="px-0.5 pb-1">
+              <AutoMarkPicker
+                :markers="availableMarkers"
+                v-model="newAssetMarkerIds"
+              />
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="w-full !justify-start"
+              :disabled="saving"
+              @click="saveMenuOpen = false; save(true)"
+            >
+              Save as new asset
+            </Button>
+          </div>
         </div>
       </div>
     </footer>

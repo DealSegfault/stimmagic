@@ -14,7 +14,7 @@ from PIL import Image
 from sqlalchemy import select
 
 import image_stack_service as stack
-from database import Asset, AssetRevision, MediaItem, WorkingDocument
+from database import Asset, AssetMarker, AssetRevision, Marker, MediaItem, WorkingDocument
 from tests.helpers.media import create_media_item, generate_test_image
 
 
@@ -467,6 +467,62 @@ class TestSaveEdit:
         after = (await client.get(f"/api/image-stack/{document_id}")).json()["document"]
         assert after == document
 
+    async def test_save_inherits_the_base_generation_history(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        """An editor save adds one step above the generated base Media."""
+        from generation_metadata import dump_generation_metadata
+
+        asset_id, media_id, _ = await _asset(
+            db_session, tmp_path, name="save-generated-lineage"
+        )
+        async with db_session() as session:
+            generated = await session.get(MediaItem, media_id)
+            generated.generation_metadata = dump_generation_metadata(
+                task_type="text-to-image",
+                source="test",
+                tool_id="test:portrait-generator",
+                model="portrait-model",
+                prompt="portrait in natural light",
+                parameters={"seed": 4165798563, "steps": 12},
+            )
+            generated.tool_id = "test:portrait-generator"
+            await session.commit()
+
+        opened = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()
+        response = await client.post(
+            "/api/media/save-edit",
+            files={"file": ("edited.png", _png_bytes((256, 128)), "image/png")},
+            data={
+                "source_media_id": str(media_id),
+                "asset_id": str(asset_id),
+                "base_revision_id": str(opened["base"]["revision_id"]),
+                "working_document_id": str(opened["document_id"]),
+            },
+        )
+        assert response.status_code == 200, response.text
+
+        async with db_session() as session:
+            edited = await session.get(MediaItem, response.json()["media_id"])
+            metadata = json.loads(edited.generation_metadata)
+
+        assert metadata["task_type"] == "image-to-image"
+        assert metadata["tool_id"] == "builtin:stimma:image-editor"
+        assert metadata["source_inputs"] == [{
+            "media_id": media_id,
+            "role": "source_image",
+        }]
+        assert [entry["media_id"] for entry in metadata["lineage_trace"]] == [media_id]
+        assert metadata["lineage_trace"][0]["task_type"] == "text-to-image"
+        assert metadata["lineage_trace"][0]["tool_id"] == "test:portrait-generator"
+        assert metadata["lineage_trace"][0]["prompt"] == "portrait in natural light"
+        assert metadata["lineage_trace"][0]["parameters"] == {
+            "seed": 4165798563,
+            "steps": 12,
+        }
+
     async def test_reopen_after_save_reports_the_working_document_base(
         self, client: httpx.AsyncClient, db_session, tmp_path
     ):
@@ -548,6 +604,54 @@ class TestSaveEdit:
             # The original stack is untouched by a fork.
             original = await session.get(WorkingDocument, document_id)
             assert original.asset_id == asset_id
+
+    async def test_save_as_new_applies_markers_only_to_the_fork(
+        self, client: httpx.AsyncClient, db_session, tmp_path
+    ):
+        asset_id, media_id, _ = await _asset(
+            db_session, tmp_path, name="save-fork-markers"
+        )
+        document_id = (await client.post(
+            "/api/image-stack/open", json={"asset_id": asset_id}
+        )).json()["document_id"]
+        async with db_session() as session:
+            markers = [
+                Marker(name="Editor fork one", icon_svg="<svg />", color="#fff"),
+                Marker(name="Editor fork two", icon_svg="<svg />", color="#000"),
+            ]
+            session.add_all(markers)
+            await session.commit()
+            marker_ids = [marker.id for marker in markers]
+
+        response = await client.post(
+            "/api/media/save-edit",
+            files={"file": ("marked.png", _png_bytes((256, 128)), "image/png")},
+            data={
+                "source_media_id": str(media_id),
+                "asset_id": str(asset_id),
+                "working_document_id": str(document_id),
+                "save_as_new": "true",
+                "marker_ids": ",".join(str(marker_id) for marker_id in marker_ids),
+            },
+        )
+        assert response.status_code == 200, response.text
+        fork_asset_id = response.json()["asset_id"]
+
+        async with db_session() as session:
+            fork_marker_ids = set(await session.scalars(
+                select(AssetMarker.marker_id).where(
+                    AssetMarker.asset_id == fork_asset_id,
+                    AssetMarker.deleted_at.is_(None),
+                )
+            ))
+            source_marker_ids = set(await session.scalars(
+                select(AssetMarker.marker_id).where(
+                    AssetMarker.asset_id == asset_id,
+                    AssetMarker.deleted_at.is_(None),
+                )
+            ))
+        assert fork_marker_ids == set(marker_ids)
+        assert source_marker_ids == set()
 
     async def test_unknown_stack_document_is_rejected(
         self, client: httpx.AsyncClient, db_session, tmp_path

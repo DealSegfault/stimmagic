@@ -21,7 +21,7 @@
              with an explicit red "−" sitting left of the icon inside the halo.
              Off = gray ghost. The icon itself is never recolored. -->
         <button
-          v-for="marker in markers"
+          v-for="marker in filterMarkers"
           :key="marker.id"
           :class="[
             'inline-flex items-center justify-center h-9 rounded-md transition-colors cursor-pointer',
@@ -280,6 +280,7 @@
               { value: 'created_desc', label: 'Newest First' },
               { value: 'created_asc', label: 'Oldest First' },
               { value: 'indexed_desc', label: 'Recently Imported' },
+              { value: 'edited_desc', label: 'Recently edited' },
               { value: 'random', label: 'Random' },
             ]"
           />
@@ -711,6 +712,7 @@ import {
   getFilterCountWatchValues,
 } from '../utils/filterFacetState'
 import { captioningEnabledRef } from '../appConfig'
+import { EDITED_MARKER, EDITED_MARKER_ID } from '../constants/implicitMarkers'
 import { useTelemetry } from '../composables/useTelemetry'
 import { MediaImage } from './media'
 
@@ -744,6 +746,7 @@ const props = defineProps({
   selectedMarkers: Array,         // New: selected markers (by ID)
   excludedMarkers: Array,         // New: excluded markers (by ID)
   markers: { type: Array, default: () => [] },  // Available markers from backend
+  implicitMarkers: { type: Array, default: () => [] }, // Available system-owned markers
   isImported: { type: Boolean, default: null }, // null | true | false provenance filter
   isUnused: { type: Boolean, default: null },   // null | true | false dead-end filter
   showExpiring: Boolean,          // New: filter for expiring images (positive)
@@ -869,7 +872,8 @@ const filterCounts = ref({
   date_ranges: {},
   imported: 0,
   expiring: 0,
-  unused: 0
+  unused: 0,
+  implicit_markers: { edited: 0 }
 })
 const showKeywordModal = ref(false)
 const showTagModal = ref(false)
@@ -964,6 +968,19 @@ const canSaveView = computed(() => {
   if (props.savedViewId) return false
   // Show if any filters are active or sort is not default
   return hasActiveFilters.value || localSortBy.value !== 'created_desc'
+})
+
+// System markers are absent from the editable marker catalog. Their browser-
+// scope availability is loaded independently of the lazily opened facet panel.
+// Keep an active marker visible so a stale/saved filter can always be cleared.
+const filterMarkers = computed(() => {
+  const configured = props.markers || []
+  const implicit = props.implicitMarkers || []
+  const editedActive = selectedMarkers.value.includes(EDITED_MARKER_ID)
+    || excludedMarkers.value.includes(EDITED_MARKER_ID)
+  const editedAvailable = implicit.some(marker => marker.id === EDITED_MARKER_ID)
+  const activeFallback = editedActive && !editedAvailable ? [EDITED_MARKER] : []
+  return [...configured, ...implicit, ...activeFallback]
 })
 
 // Display text for item count

@@ -46,6 +46,14 @@ from database import (
     ProjectAsset,
 )
 from tool_display import resolve_tool_display_metadata
+from implicit_markers import (
+    EDITED_MARKER,
+    EDITED_MARKER_KEY,
+    EDITED_TOOL_IDS,
+    implicit_markers_by_media,
+    latest_direct_edit_at,
+    media_has_implicit_marker,
+)
 from core.dependencies import get_db_session
 from utils.query_builder import (
     AUDIO_FORMATS,
@@ -100,6 +108,9 @@ async def _browser_projections(session: AsyncSession, rows) -> list[dict]:
     markers: dict[int, list[dict]] = defaultdict(list)
     tags: dict[int, list[dict]] = defaultdict(list)
     revision_counts: dict[int, int] = {}
+    implicit_markers = await implicit_markers_by_media(
+        session, [media.id for _, _, media in rows]
+    )
     if asset_ids:
         revision_counts = dict(
             (
@@ -164,7 +175,7 @@ async def _browser_projections(session: AsyncSession, rows) -> list[dict]:
                 "media_deleted_at": item.get("deleted_at"),
                 "deleted_at": asset.deleted_at.isoformat() if asset.deleted_at else None,
                 "expires_at": asset.expires_at.isoformat() if asset.expires_at else None,
-                "markers": markers[asset.id],
+                "markers": [*markers[asset.id], *implicit_markers[media.id]],
                 "tags": tags[asset.id],
             }
         )
@@ -245,6 +256,14 @@ def _apply_asset_browser_sort(query, sort_by: str, random_seed: int | None):
         return query.order_by(MediaItem.indexed_date.desc(), Asset.id.desc())
     if sort_by == "indexed_asc":
         return query.order_by(MediaItem.indexed_date.asc(), Asset.id.asc())
+    if sort_by == "edited_desc":
+        # Direct editor revisions carry the true edit time. Assets that only
+        # inherit editor lineage, plus wholly unedited Assets, fall back to the
+        # same timestamp used by Recently imported.
+        edit_or_import_at = func.coalesce(
+            latest_direct_edit_at(Asset.id), MediaItem.indexed_date
+        )
+        return query.order_by(edit_or_import_at.desc(), Asset.id.desc())
     if sort_by == "deleted_desc":
         return query.order_by(Asset.deleted_at.desc(), Asset.id.desc())
     if sort_by == "deleted_asc":
@@ -332,7 +351,7 @@ async def browse_assets(
     max_mp: float | None = None,
     sort_by: str = Query(
         "created_desc",
-        pattern="^(created_desc|created_asc|indexed_desc|indexed_asc|deleted_desc|deleted_asc|random|similarity)$",
+        pattern="^(created_desc|created_asc|indexed_desc|indexed_asc|edited_desc|deleted_desc|deleted_asc|random|similarity)$",
     ),
     random_seed: int | None = None,
     session: AsyncSession = Depends(get_db_session),
@@ -475,6 +494,26 @@ async def browse_assets(
         elif sort_by == "created_desc":
             rows.sort(
                 key=lambda row: row[2].created_date or row[2].indexed_date,
+                reverse=True,
+            )
+        elif sort_by == "edited_desc":
+            asset_ids = [row[0].id for row in rows]
+            edit_rows = (
+                await session.execute(
+                    select(AssetRevision.asset_id, func.max(AssetRevision.created_at))
+                    .join(MediaItem, MediaItem.id == AssetRevision.primary_media_id)
+                    .where(
+                        AssetRevision.asset_id.in_(asset_ids),
+                        AssetRevision.deleted_at.is_(None),
+                        MediaItem.deleted_at.is_(None),
+                        MediaItem.tool_id.in_(EDITED_TOOL_IDS),
+                    )
+                    .group_by(AssetRevision.asset_id)
+                )
+            ).all()
+            edited_at = dict(edit_rows)
+            rows.sort(
+                key=lambda row: edited_at.get(row[0].id) or row[2].indexed_date,
                 reverse=True,
             )
         else:
@@ -1081,7 +1120,35 @@ async def get_asset_filter_counts(
             session,
             facet("unused").where(asset_unused_predicate(Asset.id)),
         ),
+        "implicit_markers": {
+            EDITED_MARKER_KEY: await _count_assets(
+                session,
+                facet("markers").where(
+                    media_has_implicit_marker(EDITED_MARKER_KEY, MediaItem.id)
+                ),
+            )
+        },
     }
+
+
+@router.get("/implicit-markers")
+async def get_available_implicit_markers(
+    state: str = Query("active", pattern="^(active|trashed)$"),
+    project_id: int | None = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """System markers present anywhere in the current browser scope."""
+    query = _asset_browser_base(state).where(
+        media_has_implicit_marker(EDITED_MARKER_KEY, MediaItem.id)
+    )
+    if project_id is not None:
+        query = _apply_asset_filters(
+            query,
+            project_ids=str(project_id),
+            state=state,
+        )
+    has_edited = bool(await session.scalar(select(query.exists())))
+    return {"markers": [dict(EDITED_MARKER)] if has_edited else []}
 
 
 async def _live_asset_or_404(session: AsyncSession, asset_id: int) -> Asset:
@@ -1103,7 +1170,18 @@ async def _asset_markers(session: AsyncSession, asset_id: int) -> list[dict]:
             )
         )
     ).all()
-    return [{**marker.to_dict(), "source": row.source} for row, marker in rows]
+    configured = [
+        {**marker.to_dict(), "source": row.source} for row, marker in rows
+    ]
+    current_media_id = await session.scalar(
+        select(AssetRevision.primary_media_id)
+        .join(Asset, Asset.current_revision_id == AssetRevision.id)
+        .where(Asset.id == asset_id, AssetRevision.deleted_at.is_(None))
+    )
+    if current_media_id is None:
+        return configured
+    implicit = await implicit_markers_by_media(session, [current_media_id])
+    return [*configured, *implicit[current_media_id]]
 
 
 @router.get("/item/{asset_id}/markers")

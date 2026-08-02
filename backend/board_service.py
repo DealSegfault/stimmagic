@@ -13,6 +13,7 @@ from database import (
     MediaItem,
 )
 from models.api_models import BoardResponse, BoardSectionResponse
+from implicit_markers import implicit_markers_by_media
 
 
 async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
@@ -42,6 +43,9 @@ async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
             .order_by(BoardAssetItem.display_order.asc(), BoardAssetItem.added_at.asc())
         )
         asset_rows = asset_items_result.all()
+        implicit_markers = await implicit_markers_by_media(
+            session, [media.id for _, _, media, _ in asset_rows]
+        )
         projected_items = []
         for asset, revision, media, _ in asset_rows:
             item = media.to_dict()
@@ -50,6 +54,7 @@ async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
                 "asset_id": asset.id,
                 "media_id": media.id,
                 "revision_id": revision.id,
+                "markers": implicit_markers[media.id],
             })
             projected_items.append(item)
         items = projected_items

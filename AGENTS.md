@@ -217,4 +217,5 @@ Most of the config file surface area is mirrored in the settings UI. The correct
 - **Managed Storage**: Private per-profile content-addressed storage owned by Stimma. Generated and uploaded payloads pass through private staging before ingestion; clients do not select its location.
 - **Browser Screens**: This includes All Assets, saved views, board screens, and Trash. These are Asset browsers and never list bare Media. They share substantial infrastructure, treatment, functionality, and behavior, and should be kept in sync.
 - **Selection Bar**: The controls that appear at the bottom of the browser screen when the user selects an asset
+- **Implicit Marker**: A read-only, system-owned marker computed from an Asset's current Media provenance. It appears and filters like a marker in browser screens, but is not part of the user-configurable marker catalog and cannot be manually assigned or removed.
 - <If you encounter new terms, add them here.>

@@ -11,6 +11,7 @@ from core.profile_context import get_current_profile
 from models.api_models import MarkerResponse, BulkMarkerRequest
 from utils.websocket import ws_manager
 from asset_association_service import media_compatibility_projections
+from implicit_markers import implicit_markers_by_media
 
 
 async def _get_active_markers(session, media_id: int) -> list:
@@ -31,10 +32,12 @@ async def _get_active_markers(session, media_id: int) -> list:
             )
         )
     ).all()
-    return [
+    configured = [
         {**MarkerResponse(**marker.to_dict()).dict(), "source": association.source}
         for association, marker in rows
     ]
+    implicit = await implicit_markers_by_media(session, [media_id])
+    return [*configured, *implicit[media_id]]
 
 router = APIRouter(prefix="/api", tags=["markers"])
 
