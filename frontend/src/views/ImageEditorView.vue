@@ -58,6 +58,7 @@ import { useStackCandidates } from '../imageEditor/stack/useStackCandidates'
 import { StackCompositor, stackHashes, canvasToBlob } from '../imageEditor/stack/useStackCompositor'
 import {
   LiveAdjustPreview,
+  maskedAdjustmentNeedsCompositorPreview,
 } from '../imageEditor/stack/liveAdjustPreview'
 import type { AdjustmentValues } from '../imageEditor/stack/liveAdjustPreview'
 import {
@@ -88,6 +89,10 @@ import type {
 } from '../imageEditor/stack/paintEngineSettings'
 import { flattenWholeOps, hasWholeOps } from '../imageEditor/stack/flattenWholeOps'
 import { blastRadius, deriveStackState, moveTargetForGap } from '../imageEditor/stack/stackState'
+import {
+  reusableRepaintOp,
+  type RepaintSession,
+} from '../imageEditor/stack/repaintSession'
 import {
   directEditRowId,
   editRowKeyboardCommand,
@@ -432,6 +437,16 @@ const selModel = useSelection()
 const selectRef = ref<InstanceType<typeof StackSelectCanvas> | null>(null)
 /** The published mask: what consumers scope to. Kept in step with selModel. */
 const selection = ref<HTMLCanvasElement | null>(null)
+/**
+ * Identity for the live select-then-Regenerate loop.
+ *
+ * This advances only when the user publishes a different selection (including
+ * clear), not when render geometry merely reprojects the same master mask.
+ * That makes clearing the explicit boundary even if the same pixels are later
+ * selected again.
+ */
+let selectionRevision = 0
+let repaintSession: RepaintSession | null = null
 const armedSelectTool = ref<SelectToolId | null>(null)
 const lastSelectTool = ref<SelectToolId>(
   (rememberedIfValid(
@@ -2262,6 +2277,7 @@ async function run() {
 
   busy.value = true
   error.value = null
+  let reusedRepaintOpId: string | null = null
   try {
     const action = sub.value === 'remove'
       ? 'remove'
@@ -2294,26 +2310,44 @@ async function run() {
     const submittedReferences = action === 'repaint'
       ? copyModelReferenceImages(referenceImages.value)
       : []
+    const submittedSelectionRevision = selectionRevision
+    let submitMask = selectionAsMask()
 
-    // The op's input is the current head composite: Phase 1 appends on top,
-    // so its input hash is the head hash.
-    const { head } = stackHashes(stack.doc.value)
-
-    const opId = newOpId()
+    // Regenerate is an iterative session while its original selection remains
+    // live and its step remains the head. Another Run appends a candidate batch
+    // to that step and samples the same composite BELOW it — never the rejected
+    // candidate currently picked by the step itself.
+    const reusableOp = action === 'repaint'
+      ? reusableRepaintOp(
+          stack.doc.value,
+          repaintSession,
+          submittedSelectionRevision,
+          toolId,
+          taskType,
+        )
+      : null
+    const reusableIndex = reusableOp
+      ? stack.doc.value.edits.length - 1
+      : -1
+    const opId = reusableOp?.id ?? newOpId()
+    reusedRepaintOpId = reusableOp?.id ?? null
+    const sampledInputHash = reusableOp
+      ? stackHashes(stack.doc.value).inputs[reusableIndex]
+      : stackHashes(stack.doc.value).head
 
     // What a tool is given is the real head composite, not the stage: the
     // stage can be holding a layer out while an overlay draws it (see
     // displayDoc), and a model must never be handed pixels the document does
-    // not have.
-    const headComposite = await compositor.render(stack.doc.value)
-
-    const submitInput = headComposite
-    let submitMask = selectionAsMask()
+    // not have. A continued Regenerate session instead renders only the ops
+    // below its existing step, keeping every candidate batch on one base.
+    const submitInput = reusableOp
+      ? await compositor.renderUpTo(stack.doc.value, reusableIndex)
+      : await compositor.render(stack.doc.value)
     // A cutout has no drawn region — its "mask" is the whole frame. It exists
     // for the patch machinery (crop bounds, resample), not the wire:
     // remove-background tools declare no mask input, so none is uploaded.
     if (action === 'cutout') {
-      submitMask = fullFrameMask(headComposite.width, headComposite.height)
+      submitMask = fullFrameMask(submitInput.width, submitInput.height)
     }
     // Expand's mask is the border ring at the GROWN size. Also never uploaded
     // (outpaint tools declare no mask input; the tool grows the canvas itself
@@ -2324,15 +2358,11 @@ async function run() {
     if (action === 'expand') {
       expandParams = expandParamsFromEdges(expandEdges.value)
       const frame = expandedFrame(
-        expandEdges.value, headComposite.width, headComposite.height,
+        expandEdges.value, submitInput.width, submitInput.height,
       )
-      submitMask = expandBorderMask(headComposite.width, headComposite.height, frame)
+      submitMask = expandBorderMask(submitInput.width, submitInput.height, frame)
     }
     if (!submitMask) throw new Error('There is nothing selected to work on.')
-
-    const maskPayloadRef = await stack.uploadPayload(
-      `${opId}-mask.png`, await canvasToBlob(submitMask)
-    )
 
     const label = action === 'remove'
       ? 'Remove object'
@@ -2342,40 +2372,65 @@ async function run() {
           ? 'Expand'
           : 'Remove background'
 
-    const authoredFrame = payloadFrame()
-    const authoredToDocument = payloadTransform()
-    const op: GenerativeOp = {
-      id: opId,
-      class: 'patch',
-      enabled: true,
-      label,
-      exec: { kind: 'tool', tool_id: toolId, task_type: taskType },
-      operation: action,
-      params: {
+    let authoredToDocument = payloadTransform()
+    if (reusableOp) {
+      authoredToDocument = payloadTransform(reusableIndex)
+      // The step's inspector and future explicit Resample use the latest
+      // settings. Existing candidates remain intact and independently
+      // selectable; only the recipe for the next batch moves forward.
+      stack.setParams(opId, {
         ...toolParams,
-        ...(expandParams ?? {}),
-        ...(submittedPrompt ? { prompt: submittedPrompt } : {}),
-      },
-      reference_images: submittedReferences,
-      mask_ref: maskPayloadRef,
-      // The mask, and the candidates generated for it, are anchored to the
-      // frame they were made in.
-      payload_to_document: authoredToDocument,
-      payload_frame: authoredFrame,
-      // A cutout matte is already soft where the model made it soft; a default
-      // feather would eat the subject's edge. Expand's overdraw of the
-      // original fades into the candidate over this feather (expanded edges
-      // only) — model border content is often softer than the source, and a
-      // hard crisp-against-soft boundary reads as a seam. Tunable in Blend.
-      blend: {
-        feather_px: action === 'cutout' ? 0 : action === 'expand' ? 24 : 6,
-        opacity: 1,
-      },
-      picked: null,
-      candidates: [],
+        prompt: submittedPrompt,
+      })
+      stack.setReferenceImages(opId, submittedReferences)
+      selectedOpId.value = opId
+      // The first result from the new row replaces the disliked current pick;
+      // every older pick stays available in its original candidate row.
+      resampledOpIds.value = new Set(resampledOpIds.value).add(opId)
+    } else {
+      const maskPayloadRef = await stack.uploadPayload(
+        `${opId}-mask.png`, await canvasToBlob(submitMask)
+      )
+      const authoredFrame = payloadFrame()
+      const op: GenerativeOp = {
+        id: opId,
+        class: 'patch',
+        enabled: true,
+        label,
+        exec: { kind: 'tool', tool_id: toolId, task_type: taskType },
+        operation: action,
+        params: {
+          ...toolParams,
+          ...(expandParams ?? {}),
+          ...(submittedPrompt ? { prompt: submittedPrompt } : {}),
+        },
+        reference_images: submittedReferences,
+        mask_ref: maskPayloadRef,
+        // The mask, and the candidates generated for it, are anchored to the
+        // frame they were made in.
+        payload_to_document: authoredToDocument,
+        payload_frame: authoredFrame,
+        // A cutout matte is already soft where the model made it soft; a default
+        // feather would eat the subject's edge. Expand's overdraw of the
+        // original fades into the candidate over this feather (expanded edges
+        // only) — model border content is often softer than the source, and a
+        // hard crisp-against-soft boundary reads as a seam. Tunable in Blend.
+        blend: {
+          feather_px: action === 'cutout' ? 0 : action === 'expand' ? 24 : 6,
+          opacity: 1,
+        },
+        picked: null,
+        candidates: [],
+      }
+      stack.addOp(op)
+      selectedOpId.value = opId
+      if (
+        action === 'repaint'
+        && selectionRevision === submittedSelectionRevision
+      ) {
+        repaintSession = { opId, selectionRevision: submittedSelectionRevision }
+      }
     }
-    stack.addOp(op)
-    selectedOpId.value = opId
 
     // Cut the naming crop HERE, while the mask and the composite it was sampled
     // against are still this step's. The request itself is fire-and-forget: a
@@ -2400,7 +2455,7 @@ async function run() {
       count: action === 'cutout' ? 1 : candidateCount.value,
       params: { ...toolParams, ...(expandParams ?? {}) },
       referenceImages: submittedReferences,
-      sampledInputHash: head,
+      sampledInputHash,
       // Expand's candidate is the whole grown frame; the compositor's expand
       // branch places it by the percent math, not by an anchored transform.
       payloadToDocument: action === 'expand' ? undefined : authoredToDocument,
@@ -2424,6 +2479,11 @@ async function run() {
     // judge the result, revise the prompt or settings, and run the same region
     // again without rebuilding the selection.
   } catch (err: any) {
+    if (reusedRepaintOpId) {
+      const next = new Set(resampledOpIds.value)
+      next.delete(reusedRepaintOpId)
+      resampledOpIds.value = next
+    }
     error.value = apiErrorMessage(err, 'Could not start the edit.')
   } finally {
     busy.value = false
@@ -4845,9 +4905,9 @@ function resetRetouchSession() {
 }
 
 /**
- * Blend and mask drags render the document at fitted display resolution.
- * Masked photographic adjustments use the GPU delta preview above instead;
- * expensive source pixels are touched only once on pointer-up.
+ * Blend, mask, and spatial blur drags render the document at fitted display
+ * resolution. Other masked photographic adjustments use the GPU delta preview
+ * above; expensive source pixels are touched only once on pointer-up.
  */
 let retouchPreviewFrame: number | null = null
 let retouchPreviewInFlight = false
@@ -4983,8 +5043,12 @@ function setRetouchRegionSettings(
     coalesceKey,
   )
   const updated = retouchRegionLocation(location.region.id)?.region.settings
-  const changesMaskBlend = 'opacity' in patch || 'feather_px' in patch
-  if (updated && isMaskedAdjustmentKind(location.region.kind) && !changesMaskBlend) {
+  const needsCompositorPreview = maskedAdjustmentNeedsCompositorPreview(patch)
+  if (
+    updated
+    && isMaskedAdjustmentKind(location.region.kind)
+    && !needsCompositorPreview
+  ) {
     void previewAdjustment(
       `retouch:${location.region.id}`,
       before,
@@ -5405,7 +5469,13 @@ function clearSelection() {
   // straight at the model when crop has the display box (overlay unmounted) —
   // otherwise the ants would come back the moment crop closes.
   if (selectRef.value) selectRef.value.clear()
-  else selModel.clearSelection()
+  else {
+    selModel.clearSelection()
+    // With no overlay there is no published `change`, but clear is still the
+    // explicit end of a Regenerate session.
+    selectionRevision += 1
+    repaintSession = null
+  }
   selection.value = null
   selectionMaster = null
   selectionToDocument = null
@@ -5664,6 +5734,8 @@ function frameAdjust(
 /** Every gesture end republishes: the mask consumers copy, and the master the
  *  geometry sync re-derives from. */
 function onSelectionChange(mask: HTMLCanvasElement | null) {
+  selectionRevision += 1
+  repaintSession = null
   // Any change the Object tool didn't publish itself (a drawn gesture, clear,
   // invert) makes its granularity stack stale — cycling would resurrect the
   // pre-click selection over the user's newer edits.

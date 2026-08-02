@@ -110,25 +110,27 @@ async def implicit_markers_by_media(
     return result
 
 
-def latest_direct_edit_at(asset_id_column):
-    """Latest direct editor Revision timestamp for an Asset.
+def latest_edited_revision_at(asset_id_column):
+    """Latest Revision timestamp that satisfies the edited-marker criteria.
 
-    Descendants that merely inherit image-editor lineage have no direct edit
-    event on their own Asset. Browser sorting deliberately lets those fall back
-    to the current payload's import date.
+    The marker is lineage-based, so the sort timestamp must be lineage-based as
+    well. This keeps inherited editor provenance and direct editor output under
+    the same definition instead of independently consulting ``MediaItem.tool_id``.
     """
     revision = aliased(AssetRevision)
     media = aliased(MediaItem)
+    tool_lineage = aliased(MediaToolLineage)
     return (
         select(func.max(revision.created_at))
         .select_from(revision)
         .join(media, media.id == revision.primary_media_id)
+        .join(tool_lineage, tool_lineage.media_id == media.id)
         .where(
             revision.asset_id == asset_id_column,
             revision.deleted_at.is_(None),
             media.deleted_at.is_(None),
-            media.tool_id.in_(EDITED_TOOL_IDS),
+            tool_lineage.full_tool_id.in_(EDITED_TOOL_IDS),
         )
-        .correlate_except(revision, media)
+        .correlate_except(revision, media, tool_lineage)
         .scalar_subquery()
     )

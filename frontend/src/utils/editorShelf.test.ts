@@ -83,6 +83,7 @@ test('display order ignores activation, so clicking a chip never moves it', () =
     entry('third', { createdOrder: 3, touchedAt: 30 }),
   ]
   const before = orderForDisplay(entries).map(e => e.tabId)
+  assert.deepEqual(before, ['third', 'second', 'first'])
 
   // Activate the oldest chip: its rank jumps to the top...
   entries[0].touchedAt = 99
@@ -101,7 +102,22 @@ test('pinning is the one interaction that moves a chip', () => {
     entry('b', { createdOrder: 2 }),
     entry('c', { createdOrder: 3, pinned: true }),
   ]
-  assert.deepEqual(orderForDisplay(entries).map(e => e.tabId), ['c', 'a', 'b'])
+  assert.deepEqual(orderForDisplay(entries).map(e => e.tabId), ['c', 'b', 'a'])
+})
+
+test('a newly opened editor enters at the front of the unpinned shelf', () => {
+  const entries = [
+    entry('oldest', { createdOrder: 1 }),
+    entry('middle', { createdOrder: 2 }),
+  ]
+
+  assert.deepEqual(orderForDisplay(entries).map(e => e.tabId), ['middle', 'oldest'])
+
+  entries.push(entry('newest', { createdOrder: 3 }))
+  assert.deepEqual(
+    orderForDisplay(entries).map(e => e.tabId),
+    ['newest', 'middle', 'oldest'],
+  )
 })
 
 test('the flyout is plain recency order, newest first', () => {

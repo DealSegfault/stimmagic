@@ -49,9 +49,8 @@ from tool_display import resolve_tool_display_metadata
 from implicit_markers import (
     EDITED_MARKER,
     EDITED_MARKER_KEY,
-    EDITED_TOOL_IDS,
     implicit_markers_by_media,
-    latest_direct_edit_at,
+    latest_edited_revision_at,
     media_has_implicit_marker,
 )
 from core.dependencies import get_db_session
@@ -257,11 +256,17 @@ def _apply_asset_browser_sort(query, sort_by: str, random_seed: int | None):
     if sort_by == "indexed_asc":
         return query.order_by(MediaItem.indexed_date.asc(), Asset.id.asc())
     if sort_by == "edited_desc":
-        # Direct editor revisions carry the true edit time. Assets that only
-        # inherit editor lineage, plus wholly unedited Assets, fall back to the
-        # same timestamp used by Recently imported.
+        # Classification must exactly match the marker shown on the current
+        # browser item. Marked Assets sort by their latest marker-bearing
+        # revision; everything else uses the Recently imported timestamp.
         edit_or_import_at = func.coalesce(
-            latest_direct_edit_at(Asset.id), MediaItem.indexed_date
+            case(
+                (
+                    media_has_implicit_marker(EDITED_MARKER_KEY, MediaItem.id),
+                    latest_edited_revision_at(Asset.id),
+                )
+            ),
+            MediaItem.indexed_date,
         )
         return query.order_by(edit_or_import_at.desc(), Asset.id.desc())
     if sort_by == "deleted_desc":
@@ -497,21 +502,24 @@ async def browse_assets(
                 reverse=True,
             )
         elif sort_by == "edited_desc":
-            asset_ids = [row[0].id for row in rows]
-            edit_rows = (
-                await session.execute(
-                    select(AssetRevision.asset_id, func.max(AssetRevision.created_at))
-                    .join(MediaItem, MediaItem.id == AssetRevision.primary_media_id)
-                    .where(
-                        AssetRevision.asset_id.in_(asset_ids),
-                        AssetRevision.deleted_at.is_(None),
-                        MediaItem.deleted_at.is_(None),
-                        MediaItem.tool_id.in_(EDITED_TOOL_IDS),
-                    )
-                    .group_by(AssetRevision.asset_id)
+            markers_by_media = await implicit_markers_by_media(
+                session, [row[2].id for row in rows]
+            )
+            edited_asset_ids = [
+                row[0].id for row in rows if markers_by_media[row[2].id]
+            ]
+            edited_at = {}
+            if edited_asset_ids:
+                edited_at = dict(
+                    (
+                        await session.execute(
+                            select(
+                                Asset.id,
+                                latest_edited_revision_at(Asset.id),
+                            ).where(Asset.id.in_(edited_asset_ids))
+                        )
+                    ).all()
                 )
-            ).all()
-            edited_at = dict(edit_rows)
             rows.sort(
                 key=lambda row: edited_at.get(row[0].id) or row[2].indexed_date,
                 reverse=True,

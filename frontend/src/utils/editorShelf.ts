@@ -32,7 +32,7 @@ export interface ShelfEntry {
    * relative order and sorts them below anything actually touched since.
    */
   touchedAt: number
-  /** When the editor was opened. Fixes where the chip sits. */
+  /** When the editor was opened. Newer chips sit before older chips. */
   createdOrder: number
 }
 
@@ -79,15 +79,15 @@ export function splitShelf<T extends { pinned: boolean }>(
 }
 
 /**
- * Display order — separate from ranking on purpose. Chips sit where they were
- * opened, so clicking one never moves it: activation changes an entry's rank,
- * and rank only decides what's behind the +N chip. A chip moves when the shelf
- * membership actually changes, or when the user pins it. Nothing else.
+ * Display order — separate from ranking on purpose. New editors enter at the
+ * front, while clicking an existing one never moves it: activation changes an
+ * entry's rank, and rank only decides what's behind the +N chip. A chip moves
+ * when shelf membership changes, or when the user pins it. Nothing else.
  */
 export function orderForDisplay(entries: ShelfEntry[]): ShelfEntry[] {
   return [...entries].sort((a, b) => (
     Number(b.pinned) - Number(a.pinned) ||
-    a.createdOrder - b.createdOrder
+    b.createdOrder - a.createdOrder
   ))
 }
 

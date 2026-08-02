@@ -20,6 +20,7 @@ from asset_service import (
 from database import (
     Asset,
     AssetMarker,
+    AssetRevision,
     AssetSnapshot,
     AssetTag,
     Chat,
@@ -1171,11 +1172,52 @@ async def test_recently_edited_sort_uses_edit_date_then_import_fallback(
             )
         )
 
+        inherited_edit_source = await create_media_item(session)
+        inherited_edit_asset = await create_asset_from_media(
+            session, media_id=inherited_edit_source.id
+        )
+        inherited_edit = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id="test:post-edit-transform",
+        )
+        inherited_edit.indexed_date = datetime(2025, 1, 1)
+        inherited_edit_revision = await commit_revision(
+            session, asset_id=inherited_edit_asset.id, media_id=inherited_edit.id
+        )
+        inherited_edit_revision.created_at = datetime(2025, 1, 5)
+        session.add(
+            MediaToolLineage(
+                media_id=inherited_edit.id,
+                full_tool_id=IMAGE_EDITOR_TOOL_ID,
+            )
+        )
+
+        unmarked_editor_output = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id=IMAGE_EDITOR_TOOL_ID,
+        )
+        unmarked_editor_output.indexed_date = datetime(2025, 1, 2)
+        unmarked_editor_asset = await create_asset_from_media(
+            session, media_id=unmarked_editor_output.id
+        )
+        unmarked_editor_revision = await session.get(
+            AssetRevision, unmarked_editor_asset.current_revision_id
+        )
+        unmarked_editor_revision.created_at = datetime(2025, 1, 6)
+
         plain = await create_media_item(session, vlm_caption=caption)
         plain.indexed_date = datetime(2025, 1, 4)
         plain_asset = await create_asset_from_media(session, media_id=plain.id)
         await session.commit()
-        expected = [plain_asset.id, edited_two_asset.id, edited_one_asset.id]
+        expected = [
+            inherited_edit_asset.id,
+            plain_asset.id,
+            edited_two_asset.id,
+            unmarked_editor_asset.id,
+            edited_one_asset.id,
+        ]
 
     response = await client.get(
         "/api/assets/browse",
@@ -1183,6 +1225,11 @@ async def test_recently_edited_sort_uses_edit_date_then_import_fallback(
     )
     assert response.status_code == 200, response.text
     assert [item["asset_id"] for item in response.json()["items"]] == expected
+    items = {item["asset_id"]: item for item in response.json()["items"]}
+    assert [marker["id"] for marker in items[inherited_edit_asset.id]["markers"]] == [
+        EDITED_MARKER_ID
+    ]
+    assert items[unmarked_editor_asset.id]["markers"] == []
 
     ids = await client.get(
         "/api/assets/browse/ids",

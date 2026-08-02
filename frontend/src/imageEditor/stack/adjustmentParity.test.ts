@@ -6,7 +6,10 @@ import {
   maskedRetouchAdjustmentParams,
   wholeImageAdjustmentParams,
 } from './adjustSections.ts'
-import { buildLiveAdjustUniforms } from './liveAdjustPreview.ts'
+import {
+  buildLiveAdjustUniforms,
+  maskedAdjustmentNeedsCompositorPreview,
+} from './liveAdjustPreview.ts'
 
 function changedValue(control: (typeof PHOTO_ADJUSTMENT_CONTROLS)[number]) {
   if (control.kind === 'curve') {
@@ -84,6 +87,13 @@ test('the GPU drag preview covers exactly the controls not marked commit-only', 
       )
     }
   }
+})
+
+test('masked blur uses the authoritative compositor preview path', () => {
+  assert.equal(maskedAdjustmentNeedsCompositorPreview({ blur: 12 }), true)
+  assert.equal(maskedAdjustmentNeedsCompositorPreview({ opacity: 0.5 }), true)
+  assert.equal(maskedAdjustmentNeedsCompositorPreview({ feather_px: 8 }), true)
+  assert.equal(maskedAdjustmentNeedsCompositorPreview({ exposure: 12 }), false)
 })
 
 test('documents saved before advanced detail controls retain compatibility defaults', () => {

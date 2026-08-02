@@ -149,8 +149,8 @@ onBeforeUnmount(() => observer?.disconnect())
 
 const capacity = computed(() => shelfColumns(shelfWidth.value) * SHELF_ROWS)
 const split = computed(() => splitShelf(ranked.value, capacity.value))
-// Membership from rank, position from when it was opened — so activating a
-// chip never makes the shelf rearrange under the cursor.
+// Membership comes from rank; position is newest-opened first. Activating an
+// existing chip therefore never makes the shelf rearrange under the cursor.
 const visible = computed(() => orderForDisplay(split.value.visible))
 const overflow = computed(() => split.value.overflow)
 

@@ -21,6 +21,18 @@ import {
 
 export type AdjustmentValues = Record<string, any>
 
+/**
+ * Masked blur cannot use the GPU delta approximation without changing scope
+ * semantics: the shader samples across the whole viewport before its final
+ * mask mix, while the authoritative renderer composites an adjusted region.
+ * Route spatial blur drags through the scaled document compositor instead.
+ */
+export function maskedAdjustmentNeedsCompositorPreview(
+  patch: Record<string, unknown>,
+): boolean {
+  return 'opacity' in patch || 'feather_px' in patch || 'blur' in patch
+}
+
 const VERTEX_SHADER = `
 attribute vec2 a_position;
 varying vec2 v_uv;
