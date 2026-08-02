@@ -37,7 +37,7 @@
 
       <!-- Tool name -->
       <h4 v-if="genStep?.tool_id" class="m-0 text-sm font-semibold text-content">
-        {{ humanizeToolName(getToolDisplayName(genStep)) }}
+        {{ toolHeading }}
       </h4>
 
       <!-- Input Assets (source images used to create this) -->
@@ -93,6 +93,9 @@
           </button>
         </div>
       </div>
+
+      <!-- What the editor did, when this came out of the editor -->
+      <EditStackSummary :stack="editStack" />
 
       <!-- Prompt: read-only prose is typeset, never boxed like a form field -->
       <div v-if="genStep?.prompt">
@@ -187,8 +190,11 @@
 import { computed, watch, onMounted } from 'vue'
 import { MediaImage } from './index'
 import KeyValueList from '../ui/KeyValueList.vue'
+import EditStackSummary from './EditStackSummary.vue'
 import { useMarkers } from '../../composables/useMarkers'
+import { useProvidersApi } from '../../composables/useProvidersApi'
 import { getFilterDisplayLabel } from '../../utils/filterDefs'
+import { toolDisplayName } from '../../utils/toolDisplay'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 
 const props = defineProps({
@@ -217,6 +223,7 @@ const props = defineProps({
 defineEmits(['navigate', 'open-flow'])
 
 const { availableMarkers, hasMarker, toggleMarker: toggleMarkerFn, init: initMarkers, loadMarkersForMedia } = useMarkers()
+const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
 
 const mediaId = computed(() => props.media.id)
 
@@ -252,6 +259,18 @@ const genStep = computed(() => {
     tool_id: meta.tool_id || null
   }
 })
+
+/**
+ * The tool's durable display name. Provenance outlives registration, so a
+ * disconnected or retired tool still reads as itself (see utils/toolDisplay).
+ */
+const toolHeading = computed(() => {
+  if (genStep.value?.task_type === 'agent_edit') return 'Edited by Agent'
+  return toolDisplayName(genStep.value?.tool_id, cachedTools.value)
+})
+
+/** The editor's recipe, recorded on the Media it saved. */
+const editStack = computed(() => genStep.value?.parameters?.stack ?? null)
 
 // Flow lineage (pulled from generation_metadata when source=flow)
 const flowLineage = computed(() => {
@@ -372,20 +391,6 @@ function sourceTitle(source) {
   return source.preprocessor ? `${role} · ${source.preprocessor}` : role
 }
 
-function humanizeToolName(name) {
-  return name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-}
-
-function getToolDisplayName(step) {
-  if (step?.task_type === 'agent_edit') return 'Edited by Agent'
-  if (step?.tool_id) {
-    const colonIndex = step.tool_id.indexOf(':')
-    if (colonIndex !== -1) return step.tool_id.substring(colonIndex + 1)
-    return step.tool_id
-  }
-  return step?.task_type || 'Imported'
-}
-
 function formatDate(dateStr) {
   if (!dateStr) return ''
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
@@ -424,6 +429,10 @@ async function loadMarkers(id) {
   await loadMarkersForMedia([id])
 }
 
-onMounted(() => loadMarkers(mediaId.value))
+onMounted(() => {
+  loadMarkers(mediaId.value)
+  // Cached and shared; a failure leaves the humanized tool id in place.
+  fetchProvidersAndTools().catch(() => {})
+})
 watch(mediaId, (id) => loadMarkers(id))
 </script>

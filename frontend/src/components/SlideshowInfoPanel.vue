@@ -375,6 +375,9 @@
                 </div>
               </div>
 
+              <!-- What the editor did, when this step came out of the editor -->
+              <EditStackSummary :stack="step.parameters?.stack" />
+
               <!-- Prompt: typeset in full; clicking it copies (easter egg,
                    skipped when the click is really a text selection) -->
               <p
@@ -739,6 +742,7 @@ import SendToToolMenu from './SendToToolMenu.vue'
 import SendToChatMenu from './SendToChatMenu.vue'
 import InspireMenu from './InspireMenu.vue'
 import { AppImage, MediaImage } from './media'
+import EditStackSummary from './media/EditStackSummary.vue'
 import KeyValueList from './ui/KeyValueList.vue'
 import StatusDot from './ui/StatusDot.vue'
 import Modal from './ui/Modal.vue'
@@ -753,6 +757,7 @@ import { useMediaContextMenu } from '../composables/useMediaContextMenu'
 import { copyToClipboard } from '../utils/clipboard'
 import { addToast } from '../composables/useToasts'
 import { getFilterDisplayLabel } from '../utils/filterDefs'
+import { toolDisplayName } from '../utils/toolDisplay'
 import { isImage as isImageType, hasVisualContent, getMediaType } from '../utils/mediaTypes'
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import { useAssetApi } from '../composables/useAssetApi'
@@ -1496,13 +1501,7 @@ function getToolDisplayName(step) {
   if (step.task_type === 'agent_edit') {
     return 'Edited by Agent'
   }
-  if (step.tool_id) {
-    const tool = cachedTools.value.find(t => t.full_tool_id === step.tool_id)
-    if (tool) return tool.name
-    const colonIndex = step.tool_id.indexOf(':')
-    if (colonIndex !== -1) return step.tool_id.substring(colonIndex + 1)
-    return step.tool_id
-  }
+  if (step.tool_id) return toolDisplayName(step.tool_id, cachedTools.value)
   if (step.task_type === 'filter') return 'Filter'
   return step.task_type || 'imported'
 }

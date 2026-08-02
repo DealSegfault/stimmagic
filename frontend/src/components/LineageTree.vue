@@ -267,6 +267,7 @@ import { useMarkers } from '../composables/useMarkers'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import { formatTaskTypeLabel } from '../utils/taskTypeIcons'
+import { toolDisplayName as resolveToolDisplayName } from '../utils/toolDisplay'
 
 const router = useRouter()
 const props = defineProps({
@@ -283,10 +284,7 @@ const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
 
 // Resolve a tool_id (full "provider:tool" or bare) to its human display name.
 function toolDisplayName(toolId) {
-  if (!toolId) return ''
-  const tool = cachedTools.value.find(t => t.full_tool_id === toolId || t.tool_id === toolId)
-  if (tool?.name) return tool.name
-  return formatToolId(toolId)
+  return resolveToolDisplayName(toolId, cachedTools.value)
 }
 
 // Layout constants
@@ -707,14 +705,6 @@ function formatNodeLabel(taskType) {
   if (!taskType) return ''
   const labels = { 'image-to-image': 'Edited', 'video-to-video': 'Video Edited', 'text-to-image': 'Generated', 'upscale': 'Upscaled', 'upscale-image': 'Upscaled', 'upscale-video': 'Upscaled', 'video-extend': 'Extended', 'video-stitch': 'Stitched', 'grid-creation': 'Grid', 'set-creation': 'Set', 'image-editor': 'Edited' }
   return labels[taskType] || formatTaskTypeLabel(taskType.replace(/^.*:/, ''))
-}
-
-function formatToolId(toolId) {
-  if (!toolId) return ''
-  const parts = toolId.split(':')
-  if (parts.length >= 3) return parts[parts.length - 2]
-  if (parts.length === 2) return parts[1]
-  return toolId
 }
 
 function formatDateShort(dateStr) {

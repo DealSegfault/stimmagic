@@ -787,10 +787,14 @@ export function useStackDocument() {
       class: op.class,
       label: op.label,
       exec: op.exec,
+      // The editor verb, which the provider task type does not carry: an
+      // erase, a repaint and a cutout can all be fulfilled by one task.
+      operation: op.operation ?? undefined,
       params: op.params ?? (op.exec?.kind === 'retouch-regions'
         ? {
             regions: (op.regions ?? []).filter((region: any) => region.enabled).map((region: any) => ({
               kind: region.kind,
+              label: region.label ?? undefined,
               settings: region.settings,
             })),
           }
