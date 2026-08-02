@@ -381,8 +381,14 @@ const previewTint = computed(() =>
           <div
             v-for="n in candidateRow.pendingCount"
             :key="`pending-${candidateRow.id}-${n}`"
-            class="w-10 h-10 rounded-media bg-surface-raised animate-pulse"
-          />
+            class="relative w-10 h-10 shrink-0 rounded-media overflow-hidden bg-matte"
+            aria-hidden="true"
+          >
+            <span
+              class="absolute inset-0 animate-shimmer bg-gradient-to-r from-transparent
+                     via-content/15 to-transparent bg-[length:300%_100%]"
+            />
+          </div>
         </div>
       </div>
       <p v-if="staged" class="mt-1 text-xs text-content-tertiary">Pick one to apply it.</p>
