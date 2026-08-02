@@ -23,6 +23,12 @@
  */
 import { isTauri } from '../apiConfig'
 import { listen } from '@tauri-apps/api/event'
+import {
+  claimTabletWheelGesture,
+  createTabletWheelGestureState,
+  noteTabletPointForWheelGesture,
+  releaseTabletWheelGesture,
+} from './tabletWheelGesture'
 
 type TabletInputPayload =
   | {
@@ -31,15 +37,36 @@ type TabletInputPayload =
       pressure: number
       tiltX: number
       tiltY: number
+      x: number
+      y: number
+      absoluteX: number
+      absoluteY: number
+      deltaX: number
+      deltaY: number
+      buttons: number
     }
   | { kind: 'proximity'; entering: boolean; eraser: boolean }
   | { kind: 'mouseStroke'; down: boolean }
+  | {
+      kind: 'pan'
+      phase: 'down' | 'move' | 'up'
+      x: number
+      y: number
+    }
+
+export interface NativeTabletPanSample {
+  phase: 'down' | 'move' | 'up'
+  deltaX: number
+  deltaY: number
+  source: 'middle'
+}
 
 /** How recent a native sample must be to speak for the current DOM event. */
 const SAMPLE_FRESH_MS = 150
 
 const native = {
   penDown: false,
+  penInProximity: false,
   mouseStroke: false,
   pressure: 0,
   tiltX: 0,
@@ -47,19 +74,61 @@ const native = {
   eraser: false,
   lastSampleAt: 0,
 }
+const wheelGesture = createTabletWheelGestureState()
 
 let started = false
+let stopNativeListening: (() => void) | null = null
+let listeningGeneration = 0
+const panListeners = new Set<(sample: NativeTabletPanSample) => void>()
+
+const pan = {
+  active: false,
+  middlePoint: null as { x: number; y: number } | null,
+}
+
+function emitPan(sample: NativeTabletPanSample): void {
+  for (const listener of panListeners) listener(sample)
+}
+
+function handleMiddlePan(
+  payload: Extract<TabletInputPayload, { kind: 'pan' }>,
+): void {
+  if (payload.phase === 'down') {
+    pan.active = true
+    pan.middlePoint = { x: payload.x, y: payload.y }
+    emitPan({ phase: 'down', deltaX: 0, deltaY: 0, source: 'middle' })
+    return
+  }
+  if (!pan.active || !pan.middlePoint) return
+  if (payload.phase === 'up') {
+    emitPan({ phase: 'up', deltaX: 0, deltaY: 0, source: 'middle' })
+    pan.active = false
+    pan.middlePoint = null
+    return
+  }
+  emitPan({
+    phase: 'move',
+    deltaX: payload.x - pan.middlePoint.x,
+    deltaY: pan.middlePoint.y - payload.y,
+    source: 'middle',
+  })
+  pan.middlePoint = { x: payload.x, y: payload.y }
+}
 
 function ensureListening(): void {
   if (started) return
   started = true
   if (!isTauri()) return
+  const generation = ++listeningGeneration
   listen<TabletInputPayload>('tablet-input', ({ payload }) => {
     if (payload.kind === 'point') {
+      const now = performance.now()
       native.pressure = Math.max(0, Math.min(1, payload.pressure))
       native.tiltX = payload.tiltX
       native.tiltY = payload.tiltY
-      native.lastSampleAt = performance.now()
+      native.penInProximity = true
+      native.lastSampleAt = now
+      noteTabletPointForWheelGesture(wheelGesture, payload.phase, now)
       if (payload.phase === 'down') {
         native.penDown = true
         native.mouseStroke = false
@@ -69,30 +138,112 @@ function ensureListening(): void {
         native.pressure = 0
       }
     } else if (payload.kind === 'proximity') {
+      native.penInProximity = payload.entering
       native.eraser = payload.entering && payload.eraser
       if (!payload.entering) {
+        releaseTabletWheelGesture(wheelGesture)
         native.penDown = false
         native.pressure = 0
         native.lastSampleAt = 0
       }
-    } else {
+    } else if (payload.kind === 'mouseStroke') {
       native.mouseStroke = payload.down
-      if (payload.down) native.penDown = false
+      if (payload.down) {
+        releaseTabletWheelGesture(wheelGesture)
+        native.penDown = false
+      }
+    } else {
+      handleMiddlePan(payload)
     }
+  }).then((unlisten) => {
+    // HMR can dispose this module before Tauri resolves the asynchronous
+    // subscription. Never leave that stale native listener attached.
+    if (generation !== listeningGeneration) unlisten()
+    else stopNativeListening = unlisten
   }).catch(() => {
     // Not fatal: strokes fall back to mouse behavior.
   })
 }
 
 /**
+ * Claim a wheel event as Wacom Pan/Scroll.
+ *
+ * The driver stops tablet-point delivery after it takes over the gesture, so
+ * this deliberately latches beyond the normal pressure sample freshness window.
+ */
+export function tabletWheelPanActive(): boolean {
+  ensureListening()
+  return claimTabletWheelGesture(
+    wheelGesture,
+    performance.now(),
+    native.penInProximity,
+    native.mouseStroke,
+  )
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    listeningGeneration += 1
+    stopNativeListening?.()
+    stopNativeListening = null
+    panListeners.clear()
+    started = false
+  })
+}
+
+/** Subscribe to the complete native macOS middle/barrel drag stream. */
+export function subscribeTabletPan(
+  listener: (sample: NativeTabletPanSample) => void,
+): () => void {
+  ensureListening()
+  panListeners.add(listener)
+  return () => panListeners.delete(listener)
+}
+
+/**
  * Pressure for a pointer event, in [0, 1] — or null when no stylus is
  * involved and the stroke should behave exactly as a mouse stroke.
  */
-export function tabletPressureFor(event: PointerEvent): number | null {
+export interface TabletInputAxes {
+  pressure: number
+  tiltX: number
+  tiltY: number
+  rotation: number
+  tangentialPressure: number
+  eraser: boolean
+}
+
+/**
+ * All axes available for this DOM event. Null still means a real mouse event;
+ * callers must not mistake a mouse button's synthetic pressure for a pen.
+ */
+export function tabletInputFor(event: PointerEvent): TabletInputAxes | null {
   ensureListening()
-  if (event.pointerType === 'pen') return event.pressure
+  if (event.pointerType === 'pen') {
+    return {
+      pressure: Math.max(0, Math.min(1, event.pressure)),
+      tiltX: event.tiltX,
+      tiltY: event.tiltY,
+      rotation: event.twist,
+      tangentialPressure: event.tangentialPressure,
+      // Pointer Events uses button 5 for the eraser end where supported.
+      eraser: event.button === 5 || native.eraser,
+    }
+  }
   if (native.mouseStroke) return null
-  if (native.penDown) return native.pressure
-  if (performance.now() - native.lastSampleAt < SAMPLE_FRESH_MS) return native.pressure
+  if (native.penDown || performance.now() - native.lastSampleAt < SAMPLE_FRESH_MS) {
+    return {
+      pressure: native.pressure,
+      tiltX: native.tiltX,
+      tiltY: native.tiltY,
+      rotation: 0,
+      tangentialPressure: 0,
+      eraser: native.eraser,
+    }
+  }
   return null
+}
+
+export function tabletPressureFor(event: PointerEvent): number | null {
+  return tabletInputFor(event)?.pressure ?? null
 }

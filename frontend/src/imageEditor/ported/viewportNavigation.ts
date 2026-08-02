@@ -41,20 +41,34 @@ export function wheelPanDelta(
 }
 
 /**
- * Leave enough bounded workspace around the content to move it out from under
- * floating editor chrome. A quarter of each axis feels natural on compact
- * viewports; the cap keeps a large display from turning into an infinite
- * canvas by accident.
+ * Tame Wacom Pan/Scroll's driver-generated velocity spikes.
+ *
+ * The driver has already chosen an axis and converted pen displacement into
+ * scrolling speed, so exact positional recovery is impossible. A modest gain
+ * plus a hard per-event ceiling keeps the generic behavior controllable and
+ * prevents one late vertical sample from flinging the canvas across the view.
  */
-function panSlack(viewportSpan: number): number {
-  return Math.min(viewportSpan / 4, 160)
+export function stabilizeWacomWheelDelta(delta: ViewportPoint): ViewportPoint {
+  const stabilize = (value: number) => {
+    const scaled = value * 0.12
+    return Math.max(-4, Math.min(4, scaled))
+  }
+  return { x: stabilize(delta.x), y: stabilize(delta.y) }
+}
+
+/** Keep this much content reachable when it is pushed toward a viewport edge. */
+const PAN_GRIP = 64
+
+function panLimit(contentSpan: number, viewportSpan: number): number {
+  const grip = Math.min(PAN_GRIP, contentSpan / 2)
+  return Math.max(0, (viewportSpan + contentSpan) / 2 - grip)
 }
 
 /**
- * Keep pan bounded by the content edges, with a small overscroll allowance on
- * every axis. The allowance intentionally remains available at and below fit:
- * toolbars and selection controls float over the viewport, so a fitted image
- * still needs to be movable out from underneath them.
+ * Let the image move throughout the workspace while keeping a recoverable grip
+ * visible at every edge. This deliberately permits much more movement than a
+ * small overscroll allowance: a hand-tool drag should feel like pushing the
+ * canvas, including at fit and on the viewport's shorter axis.
  */
 export function clampViewportPan(
   pan: ViewportPoint,
@@ -62,14 +76,34 @@ export function clampViewportPan(
   content: ViewportSize,
   viewport: ViewportSize,
 ): ViewportPoint {
-  const maxX = Math.max(0, (content.width * zoom - viewport.width) / 2)
-    + panSlack(viewport.width)
-  const maxY = Math.max(0, (content.height * zoom - viewport.height) / 2)
-    + panSlack(viewport.height)
+  const maxX = panLimit(content.width * zoom, viewport.width)
+  const maxY = panLimit(content.height * zoom, viewport.height)
   return {
     x: Math.max(-maxX, Math.min(maxX, pan.x)),
     y: Math.max(-maxY, Math.min(maxY, pan.y)),
   }
+}
+
+/**
+ * Apply one drag sample to the already-clamped pan position.
+ *
+ * Keeping the pointer origin out of this calculation is important at an edge:
+ * movement beyond the bound is discarded, so reversing the pen moves the
+ * viewport immediately instead of first retracing an invisible overshoot.
+ */
+export function panForDragDelta(
+  pan: ViewportPoint,
+  delta: ViewportPoint,
+  zoom: number,
+  content: ViewportSize,
+  viewport: ViewportSize,
+): ViewportPoint {
+  return clampViewportPan(
+    { x: pan.x + delta.x, y: pan.y + delta.y },
+    zoom,
+    content,
+    viewport,
+  )
 }
 
 /** Preserve the image point under the cursor while changing zoom. */

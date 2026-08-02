@@ -20,11 +20,16 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRasterPaintLayer } from '../ported/useRasterPaintLayer'
 import { getSelectionBounds } from '../ported/selection'
-import { tabletPressureFor } from '../../composables/useTabletInput'
+import { tabletInputFor } from '../../composables/useTabletInput'
 import type { BrushSettings, Point } from '../ported/geometry'
 import type { GradientPaint } from '../ported/shapeTypes'
 import type { PaintGradientType } from '../stack/paintEngineSettings'
 import { constrainedGradientEnd } from '../stack/rasterGradient'
+import { applyAdjust } from '../stack/opExecutors'
+import { retouchBrushAdjustmentParams } from '../stack/retouchBrushAdjustment'
+import { BrushStrokeRuntime } from '../brush/brushRuntime'
+import { brushPreset } from '../brush/brushPresets'
+import type { BrushInputSample, BrushPresetDefinition } from '../brush/types'
 
 interface RasterGestureMetadata {
   tool: string
@@ -107,6 +112,8 @@ let pendingPreviews: Array<{
 }> = []
 /** Frozen visual input for the current stroke, including any pending previews. */
 let strokeSource: HTMLCanvasElement | null = null
+/** Exact parametric result sampled by adjustment brushes during this stroke. */
+let strokeAdjustedSource: HTMLCanvasElement | null = null
 /** First destination point, retained for source/destination repair feedback. */
 let strokeStart: Point | null = null
 /** The editable guide while a Gradient gesture is under the pointer. */
@@ -115,6 +122,8 @@ let gradientGesture: { start: Point; end: Point } | null = null
 const cloneAnchor = ref<Point | null>(null)
 let drawing = false
 let activePointerId: number | null = null
+/** Phase-2 sample→dab runtime, used by color paint and erase. */
+let brushRuntime: BrushStrokeRuntime | null = null
 /**
  * Monotonic ownership token for the overlay.
  *
@@ -150,6 +159,12 @@ function pointInMask(point: Point): boolean {
 
 const brushSettings = computed<BrushSettings>(() => props.brush ?? {
   size: 26, hardness: 60, opacity: 100, flow: 100, spacing: 25,
+})
+const cursorTip = computed(() => {
+  const preset = props.brush?.presetId
+    ? brushPreset(props.brush.presetId, props.engineId === 'erase')
+    : null
+  return preset?.tip ?? { kind: 'ellipse' as const, aspect: 1, rotation: 0 }
 })
 const scale = computed(() =>
   props.source ? props.source.width / Math.max(1, props.displayWidth) : 1
@@ -200,6 +215,83 @@ function pressuredBrush(pressure: number | null): BrushSettings {
   return brush
 }
 
+/** Old saved settings have no preset id; retain their exact round-brush behavior. */
+function legacyPreset(brush: BrushSettings, eraser: boolean): BrushPresetDefinition {
+  return {
+    ...brushPreset(undefined, eraser),
+    id: eraser ? 'stimma.legacy.eraser' : 'stimma.legacy.paint',
+    base: {
+      size: brush.size,
+      hardness: brush.hardness,
+      opacity: brush.opacity,
+      flow: brush.flow,
+      spacing: brush.spacing,
+    },
+    dynamics: [],
+    stabilization: { mode: 'raw' },
+  }
+}
+
+function inputSample(event: PointerEvent): BrushInputSample {
+  const point = pointFrom(event)
+  const tablet = tabletInputFor(event)
+  return {
+    ...point,
+    time: event.timeStamp,
+    pressure: tablet?.pressure ?? 1,
+    tiltX: tablet?.tiltX ?? 0,
+    tiltY: tablet?.tiltY ?? 0,
+    rotation: tablet?.rotation ?? 0,
+    tangentialPressure: tablet?.tangentialPressure ?? 0,
+    pointer: tablet ? 'pen' : 'mouse',
+    eraser: tablet?.eraser ?? false,
+    velocity: 0,
+    direction: 0,
+    distance: 0,
+  }
+}
+
+function beginBrushRuntime() {
+  const settings = scaledBrush()
+  const eraser = props.engineId === 'erase'
+  const preset = settings.presetId
+    ? brushPreset(settings.presetId, eraser)
+    : legacyPreset(settings, eraser)
+  brushRuntime = new BrushStrokeRuntime(
+    settings,
+    preset,
+    undefined,
+    preset.previewSeed ^ layerRevision,
+  )
+}
+
+function applyResolvedDabs(dabs: ReturnType<BrushStrokeRuntime['push']>) {
+  const color = props.engineId === 'erase'
+    ? { r: 255, g: 255, b: 255, a: 1 }
+    : props.color ?? { r: 0, g: 0, b: 0, a: 1 }
+  for (const dab of dabs) {
+    liveStroke.applyPaintDab(
+      { x: dab.x, y: dab.y },
+      {
+        ...scaledBrush(),
+        size: dab.size,
+        hardness: dab.hardness,
+        opacity: dab.opacity,
+        flow: dab.flow,
+        aspect: dab.aspect,
+        rotation: dab.rotation,
+        tipAssetId: dab.tipAssetId,
+      },
+      color,
+    )
+  }
+  if (dabs.length) drawOverlay()
+}
+
+function pushBrushSample(event: PointerEvent) {
+  if (brushRuntime) applyResolvedDabs(brushRuntime.push(inputSample(event)))
+}
+
 function prepareStroke() {
   const source = props.source
   if (!source) return
@@ -219,6 +311,15 @@ function prepareStroke() {
     ctx.drawImage(pending.canvas, 0, 0)
   }
   strokeSource = working
+  const adjustment = retouchBrushAdjustmentParams(props.engineId, {
+    exposure: props.exposure,
+    range: props.range,
+    strength: props.strength,
+    saturate: props.saturate,
+  })
+  strokeAdjustedSource = adjustment
+    ? applyAdjust(working, working.width, working.height, adjustment)
+    : null
 }
 
 function stamp(point: Point, pressure: number | null = null) {
@@ -234,19 +335,13 @@ function stamp(point: Point, pressure: number | null = null) {
       liveStroke.applySpotHeal(source, point, brush)
       break
     case 'dodge':
-      liveStroke.applyDodgeBurn(source, point, brush, props.exposure, props.range, true)
-      break
     case 'burn':
-      liveStroke.applyDodgeBurn(source, point, brush, props.exposure, props.range, false)
-      break
     case 'sponge':
-      liveStroke.applySaturationBrush(source, point, brush, props.strength, props.saturate)
-      break
     case 'blur':
-      liveStroke.applyBlurBrush(source, point, brush, props.strength)
-      break
     case 'sharpen':
-      liveStroke.applySharpenBrush(source, point, brush, props.strength)
+      if (strokeAdjustedSource) {
+        liveStroke.applyAdjustedSourceBrush(strokeAdjustedSource, point, brush)
+      }
       break
     // Fill is flat and selection-scoped: the selection tools own finding a
     // region; a click lays the color into it (or the whole layer without one).
@@ -322,6 +417,7 @@ function finishStroke(
   const snapshot = props.accumulate ? layer.toSnapshot() : preview
   liveStroke.clearLayer()
   strokeSource = null
+  strokeAdjustedSource = null
   drawOverlay()
   if (snapshot) emit('stroke', snapshot, readsPixels, layerRevision, metadata)
   strokeStart = null
@@ -408,6 +504,8 @@ function drawOverlay() {
 
 /** End the live stroke and hand it to the stack, keeping every dab drawn. */
 function commitActiveStroke() {
+  if (brushRuntime) applyResolvedDabs(brushRuntime.finish())
+  brushRuntime = null
   drawing = false
   finishStroke(PIXEL_READING.has(props.engineId), {
     tool: props.engineId,
@@ -482,7 +580,12 @@ function onPointerDown(event: PointerEvent) {
     drawOverlay()
     return
   }
-  stamp(point, tabletPressureFor(event))
+  if (props.engineId === 'paint' || props.engineId === 'erase') {
+    beginBrushRuntime()
+    pushBrushSample(event)
+  } else {
+    stamp(point, tabletInputFor(event)?.pressure ?? null)
+  }
 }
 
 function onPointerMove(event: PointerEvent) {
@@ -505,7 +608,11 @@ function onPointerMove(event: PointerEvent) {
       ? event.getCoalescedEvents()
       : []
     for (const sample of coalesced.length ? coalesced : [event]) {
-      stamp(pointFrom(sample), tabletPressureFor(sample))
+      if (props.engineId === 'paint' || props.engineId === 'erase') {
+        pushBrushSample(sample)
+      } else {
+        stamp(pointFrom(sample), tabletInputFor(sample)?.pressure ?? null)
+      }
     }
   }
 }
@@ -552,6 +659,7 @@ function onPointerUp(event: PointerEvent) {
         liveStroke.endStroke()
         liveStroke.clearLayer()
         strokeSource = null
+        strokeAdjustedSource = null
       }
     } finally {
       // Never strand the deliberately crisp drag preview if blending throws.
@@ -570,10 +678,14 @@ function onPointerUp(event: PointerEvent) {
       liveStroke.endStroke()
       liveStroke.clearLayer()
       strokeSource = null
+      strokeAdjustedSource = null
       strokeStart = null
       drawOverlay()
       return
     }
+  } else if (props.engineId === 'paint' || props.engineId === 'erase') {
+    // Release is authoritative when pointer capture dropped the last move.
+    pushBrushSample(event)
   }
   commitActiveStroke()
   gradientGesture = null
@@ -602,11 +714,13 @@ function onPointerCancel(event: PointerEvent) {
   releasePointer(event.pointerId)
   activePointerId = null
   drawing = false
+  brushRuntime = null
   patchDrag = null
   gradientGesture = null
   liveStroke.endStroke()
   liveStroke.clearLayer()
   strokeSource = null
+  strokeAdjustedSource = null
   strokeStart = null
   drawOverlay()
 }
@@ -621,8 +735,10 @@ function reset() {
   loadedInitialLayer = null
   pendingPreviews = []
   strokeSource = null
+  strokeAdjustedSource = null
   strokeStart = null
   gradientGesture = null
+  brushRuntime = null
   liveStroke.clearLayer()
   layer.clearLayer()
   drawOverlay()
@@ -715,9 +831,10 @@ onBeforeUnmount(() => {
       class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
       :style="{
         left: cursor.x - brush.size / 2 + 'px',
-        top: cursor.y - brush.size / 2 + 'px',
+        top: cursor.y - brush.size * cursorTip.aspect / 2 + 'px',
         width: brush.size + 'px',
-        height: brush.size + 'px',
+        height: brush.size * cursorTip.aspect + 'px',
+        transform: `rotate(${cursorTip.rotation}deg)`,
       }"
     />
   </div>

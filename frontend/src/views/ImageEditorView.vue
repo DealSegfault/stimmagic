@@ -15,7 +15,7 @@
  * belong to the version chain. The one operation that legitimately produces one
  * is the output stage's upscale, which runs at save.
  */
-import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, onUpdated, watch, nextTick } from 'vue'
 import axios from 'axios'
 import {
   ArrowUturnLeftIcon,
@@ -37,6 +37,8 @@ import { DROP_LINE } from '../imageEditor/components/rowLayout'
 import EditRow from '../imageEditor/components/EditRow.vue'
 import EditorToolbar from '../imageEditor/components/EditorToolbar.vue'
 import EditorSubbar from '../imageEditor/components/EditorSubbar.vue'
+import CursorPopover from '../imageEditor/components/CursorPopover.vue'
+import BrushPicker from '../imageEditor/ported/BrushPicker.vue'
 import StackPaintCanvas from '../imageEditor/components/StackPaintCanvas.vue'
 import StackRetouchFeedback from '../imageEditor/components/StackRetouchFeedback.vue'
 import StackSelectCanvas from '../imageEditor/components/StackSelectCanvas.vue'
@@ -78,12 +80,19 @@ import { addRecentPrompt } from '../imageEditor/stack/promptHistory'
 import {
   paintEngineSettings,
 } from '../imageEditor/stack/paintEngineSettings'
+import { retouchBrushAdjustmentParams } from '../imageEditor/stack/retouchBrushAdjustment'
 import type {
   PaintEngineSettings, PaintGradientType, PaintRange,
 } from '../imageEditor/stack/paintEngineSettings'
 import { flattenWholeOps, hasWholeOps } from '../imageEditor/stack/flattenWholeOps'
 import { blastRadius, deriveStackState, moveTargetForGap } from '../imageEditor/stack/stackState'
+import {
+  directEditRowId,
+  editRowKeyboardCommand,
+  rowCandidateIndex,
+} from '../imageEditor/stack/editListKeyboard'
 import { annotationBlockOrder } from '../imageEditor/stack/annotationBlockOrder'
+import { implicitPaintLayer } from '../imageEditor/stack/paintLayerTarget'
 import {
   finalResolutionFor, outputDimensions, outputLabel, outputOf, resampleLanczos,
 } from '../imageEditor/stack/outputStage'
@@ -110,6 +119,12 @@ import {
   combineAfterSelectionChange,
   selectionMatteAction,
 } from '../imageEditor/stack/selectionLifecycle'
+import {
+  captureAdjustmentScope,
+} from '../imageEditor/stack/adjustmentScope'
+import type {
+  AdjustmentScopeSnapshot,
+} from '../imageEditor/stack/adjustmentScope'
 import { FragileEntryTracker } from '../imageEditor/stack/fragileEntries'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
@@ -136,8 +151,10 @@ import type { CropRect } from '../imageEditor/ported/useCropInteraction'
 import {
   clampViewportPan,
   isZoomWheelGesture,
+  panForDragDelta,
   panForWheelDelta,
   panForZoomAtPoint,
+  stabilizeWacomWheelDelta,
   wheelPanDelta,
 } from '../imageEditor/ported/viewportNavigation'
 import { autoLevels, autoContrast, autoBalance } from '../imageEditor/ported/autoLevels'
@@ -148,6 +165,12 @@ import {
 import type { LevelEdit, Look } from '../imageEditor/stack/adjustSections'
 import { rgbToHslColor } from '../imageEditor/stack/pointColorMatch'
 import type { BrushSettings } from '../imageEditor/ported/geometry'
+import {
+  subscribeTabletPan,
+  tabletInputFor,
+  tabletWheelPanActive,
+} from '../composables/useTabletInput'
+import type { NativeTabletPanSample } from '../composables/useTabletInput'
 import {
   copyModelReferenceImages,
   modelReferenceLimits,
@@ -583,6 +606,10 @@ function onViewportMatteMouseDown(event: MouseEvent) {
 // Paint
 const paintRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
 const paintOpId = ref<string | null>(null)
+/** Existing pixels must be loaded before this layer can accept another stroke. */
+const paintLayerReady = ref(true)
+/** Invalidates a layer decode when selection, mode, or document changes first. */
+let paintLayerLoadRevision = 0
 const paintEngineId = ref(
   rememberedIfValid(
     initialToolPrefs.paintEngineId,
@@ -1209,13 +1236,99 @@ const viewZoom = ref(1)
 const viewPan = ref({ x: 0, y: 0 })
 const viewPanning = ref(false)
 const spacePanHeld = ref(false)
-let viewPanStart = { pointerX: 0, pointerY: 0, panX: 0, panY: 0 }
+let viewPanStart = { pointerX: 0, pointerY: 0 }
+
+/**
+ * The stage element a pan moves, so a drag can write its transform directly.
+ *
+ * `viewPan` is a ref on a view this large: changing it re-runs this component's
+ * whole render and diff. At pointer rates that saturates the main thread, and
+ * the moves that pile up behind it land together — the drag reads as dead, then
+ * as a jump. A pan touches nothing but one transform, so during the gesture it
+ * bypasses reactivity entirely and the ref is written once, at the end.
+ */
+const stageTransform = ref<HTMLElement | null>(null)
+/** Authoritative pan while a gesture owns it; `viewPan` is stale until commit. */
+let livePan = { x: 0, y: 0 }
+let panFrame = 0
+
+function panTransform(pan: { x: number; y: number }): string {
+  // A static -50% plus a 3D translate: the offset stays on the compositor
+  // instead of resolving a calc() against the stage's size on every frame.
+  return `translate(-50%, -50%) translate3d(${pan.x}px, ${pan.y}px, 0)`
+}
+
+function scheduleLivePan() {
+  if (panFrame) return
+  panFrame = requestAnimationFrame(() => {
+    panFrame = 0
+    const element = stageTransform.value
+    if (element) element.style.transform = panTransform(livePan)
+  })
+}
+
+function beginLivePan() {
+  livePan = { ...viewPan.value }
+  const element = stageTransform.value
+  if (element) element.style.willChange = 'transform'
+}
+
+/**
+ * Pan by the movement since the LAST event, re-anchoring on every one.
+ *
+ * Panning from the gesture's origin instead lets the raw offset run away past
+ * whatever the clamp allows, while the applied pan sits pinned at the edge.
+ * Reversing then does nothing until the drag has retraced the whole overshoot
+ * — a dead zone as long as however far past the edge you pushed, ended by an
+ * abrupt jump when the raw value finally re-enters range. It bites on the axis
+ * with the least room: on a wide viewport the vertical range is only the
+ * overscroll slack, so vertical pans stick while horizontal ones feel fine.
+ */
+function applyViewPanDeltaValue(delta: { x: number; y: number }) {
+  livePan = panForDragDelta(
+    livePan,
+    delta,
+    viewZoom.value,
+    viewContentSize.value,
+    viewportSize.value,
+  )
+  scheduleLivePan()
+}
+
+function applyViewPanDelta(event: PointerEvent) {
+  applyViewPanDeltaValue({
+    x: event.clientX - viewPanStart.pointerX,
+    y: event.clientY - viewPanStart.pointerY,
+  })
+  viewPanStart.pointerX = event.clientX
+  viewPanStart.pointerY = event.clientY
+}
+
+/**
+ * A render triggered by anything else mid-drag would write the pre-drag pan
+ * back over the stage's transform, snapping it and undoing the gesture until
+ * the next pointer move. The live pan is authoritative while it owns the stage.
+ */
+onUpdated(() => {
+  // Both pan gestures raise `viewPanning` for the duration of the drag.
+  if (!viewPanning.value) return
+  const element = stageTransform.value
+  if (element) element.style.transform = panTransform(livePan)
+})
+
+/** Hand the gesture's result back to reactive state in a single write. */
+function commitLivePan() {
+  if (panFrame) {
+    cancelAnimationFrame(panFrame)
+    panFrame = 0
+  }
+  const element = stageTransform.value
+  if (element) element.style.willChange = ''
+  viewPan.value = { ...livePan }
+}
 
 const viewZoomLabel = computed(() => `${Math.round(viewZoom.value * 100)}%`)
-const viewTransformStyle = computed(() => ({
-  transform:
-    `translate(calc(-50% + ${viewPan.value.x}px), calc(-50% + ${viewPan.value.y}px))`,
-}))
+const viewTransformStyle = computed(() => ({ transform: panTransform(viewPan.value) }))
 const zoomedDisplayBox = computed(() => ({
   width: Math.round(displayBox.value.width * viewZoom.value),
   height: Math.round(displayBox.value.height * viewZoom.value),
@@ -1256,18 +1369,20 @@ function zoomViewBy(direction: 1 | -1) {
 }
 
 function onViewportWheel(event: WheelEvent) {
+  if (nativeTabletPanActive) return
   const element = viewport.value
   if (!element) return
 
   // Lightroom's contract is explicit rather than device-detected: plain
   // wheel/two-finger input pans, while pinch or modifier+wheel zooms.
   if (!isZoomWheelGesture(event)) {
-    const delta = wheelPanDelta(
+    let delta = wheelPanDelta(
       { x: event.deltaX, y: event.deltaY },
       event.deltaMode,
       { width: element.clientWidth, height: element.clientHeight },
       event.shiftKey,
     )
+    if (tabletWheelPanActive()) delta = stabilizeWacomWheelDelta(delta)
     viewPan.value = panForWheelDelta(viewPan.value, delta)
     clampViewPan()
     return
@@ -1293,57 +1408,85 @@ function startViewPan(event: PointerEvent) {
   if (!isSpaceDrag) return
 
   viewPanning.value = true
-  viewPanStart = {
-    pointerX: event.clientX,
-    pointerY: event.clientY,
-    panX: viewPan.value.x,
-    panY: viewPan.value.y,
-  }
+  viewPanStart = { pointerX: event.clientX, pointerY: event.clientY }
+  beginLivePan()
   viewport.value?.setPointerCapture(event.pointerId)
   event.preventDefault()
   event.stopPropagation()
 }
 
 let middleMousePointerId: number | null = null
+let nativeTabletPanActive = false
+let stopTabletPan: (() => void) | null = null
+
+function onNativeTabletPan(sample: NativeTabletPanSample) {
+  if (sample.phase === 'down') {
+    if (nativeTabletPanActive) return
+    const element = viewport.value
+    if (!element?.matches(':hover')) return
+    nativeTabletPanActive = true
+    paintRef.value?.commitStroke()
+    retouchRef.value?.commitStroke()
+    if (middleMousePointerId === null) {
+      viewPanning.value = true
+      beginLivePan()
+    }
+    return
+  }
+  if (!nativeTabletPanActive) return
+  if (sample.phase === 'up') {
+    nativeTabletPanActive = false
+    if (middleMousePointerId !== null) {
+      endMiddleMousePan()
+    } else {
+      viewPanning.value = false
+      commitLivePan()
+    }
+    return
+  }
+  applyViewPanDeltaValue({
+    x: sample.deltaX,
+    y: sample.deltaY,
+  })
+}
 
 function startMiddleMousePan(event: PointerEvent) {
   const element = viewport.value
+  const isMiddleMouse = event.button === 1
   if (
-    event.button !== 1
+    !isMiddleMouse
     || !element?.contains(event.target as Node)
   ) return
-  // A pen's front barrel button lands here as a middle press, often mid-stroke.
-  // This handler runs in the capture phase and stops the event, so the paint
-  // canvas never sees it: close the stroke — keeping its pixels — before the
-  // canvas starts moving underneath it.
+  // Pen barrel switches are handled by their explicit physical assignments:
+  // front pans through native tablet points; back reaches the brush picker.
+  // This path is only for an actual middle mouse button.
   paintRef.value?.commitStroke()
   retouchRef.value?.commitStroke()
 
   middleMousePointerId = event.pointerId
   viewPanning.value = true
-  viewPanStart = {
-    pointerX: event.clientX,
-    pointerY: event.clientY,
-    panX: viewPan.value.x,
-    panY: viewPan.value.y,
-  }
+  viewPanStart = { pointerX: event.clientX, pointerY: event.clientY }
+  beginLivePan()
   event.preventDefault()
   event.stopPropagation()
 }
 
 function moveMiddleMousePan(event: PointerEvent) {
   if (event.pointerId !== middleMousePointerId) return
+  if (nativeTabletPanActive) {
+    // The native AppKit stream is complete; consuming both it and WebKit's
+    // synthetic movement would double-count whichever sparse DOM samples land.
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
   // Mouseup can be lost when the window itself loses capture. `buttons` is the
   // authoritative held-state on every later move.
   if ((event.buttons & 4) === 0) {
     endMiddleMousePan(event)
     return
   }
-  viewPan.value = {
-    x: viewPanStart.panX + event.clientX - viewPanStart.pointerX,
-    y: viewPanStart.panY + event.clientY - viewPanStart.pointerY,
-  }
-  clampViewPan()
+  applyViewPanDelta(event)
   event.preventDefault()
   event.stopPropagation()
 }
@@ -1352,18 +1495,16 @@ function endMiddleMousePan(event?: PointerEvent) {
   if (event && event.pointerId !== middleMousePointerId) return
   if (middleMousePointerId === null) return
   middleMousePointerId = null
+  nativeTabletPanActive = false
   viewPanning.value = false
+  commitLivePan()
   event?.preventDefault()
   event?.stopPropagation()
 }
 
 function moveViewPan(event: PointerEvent) {
   if (!viewPanning.value) return
-  viewPan.value = {
-    x: viewPanStart.panX + event.clientX - viewPanStart.pointerX,
-    y: viewPanStart.panY + event.clientY - viewPanStart.pointerY,
-  }
-  clampViewPan()
+  applyViewPanDelta(event)
   event.preventDefault()
   event.stopPropagation()
 }
@@ -1374,8 +1515,68 @@ function endViewPan(event: PointerEvent) {
     viewport.value.releasePointerCapture(event.pointerId)
   }
   viewPanning.value = false
+  commitLivePan()
   event.preventDefault()
   event.stopPropagation()
+}
+
+// -- pen quick brush picker ------------------------------------------------
+
+/**
+ * A stylus side button mapped to Back/Forward arrives as a pointer event with
+ * button 3/4 — macOS synthesizes a plain mouse press at the hover position,
+ * so it works without the pen touching down. It toggles the same brush picker
+ * the toolbar chip opens, popped beside the cursor.
+ */
+const brushHud = ref<{ x: number; y: number } | null>(null)
+
+/** Which brush the picker edits — null when the active family has none. */
+const brushHudTarget = computed(() => {
+  if (
+    family.value === 'paint'
+    && (paintEngineId.value === 'paint' || paintEngineId.value === 'erase')
+  ) return 'paint' as const
+  if (family.value === 'retouch' && sub.value && sub.value !== 'patch') return 'retouch' as const
+  return null
+})
+
+// Tool changes invalidate the popup's subject; close instead of retargeting.
+watch(brushHudTarget, target => {
+  if (!target) brushHud.value = null
+})
+
+function onBrushHudPointerDown(event: PointerEvent) {
+  const isPenRightClick = event.button === 2 && tabletInputFor(event) !== null
+  if (event.button !== 3 && event.button !== 4 && !isPenRightClick) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (brushHud.value) {
+    brushHud.value = null
+    return
+  }
+  if (!brushHudTarget.value) return
+  if (!viewport.value?.contains(event.target as Node)) return
+  brushHud.value = { x: event.clientX, y: event.clientY }
+}
+
+/** Buttons 3/4 can mean history navigation to WebKit; never let that through. */
+function swallowBrushHudButton(event: MouseEvent) {
+  if (event.button === 3 || event.button === 4) {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+
+function addBrushHudListeners() {
+  window.addEventListener('pointerdown', onBrushHudPointerDown, true)
+  window.addEventListener('pointerup', swallowBrushHudButton, true)
+  window.addEventListener('auxclick', swallowBrushHudButton, true)
+}
+
+function removeBrushHudListeners() {
+  window.removeEventListener('pointerdown', onBrushHudPointerDown, true)
+  window.removeEventListener('pointerup', swallowBrushHudButton, true)
+  window.removeEventListener('auxclick', swallowBrushHudButton, true)
 }
 
 function paint() {
@@ -1429,14 +1630,36 @@ const pendingByOp = computed(() => {
   return counts
 })
 
+const pendingBatchesByOp = computed(() => {
+  const grouped: Record<string, Array<{ batchId: string; count: number }>> = {}
+  const indexes = new Map<string, number>()
+  for (const job of candidates.pending.value) {
+    if (job.status === 'failed') continue
+    const rows = grouped[job.opId] ?? (grouped[job.opId] = [])
+    const key = `${job.opId}:${job.batchId}`
+    const existingIndex = indexes.get(key)
+    if (existingIndex === undefined) {
+      indexes.set(key, rows.length)
+      rows.push({ batchId: job.batchId, count: 1 })
+    } else {
+      rows[existingIndex].count += 1
+    }
+  }
+  return grouped
+})
+
 const candidateThumbs = computed(() => {
-  const thumbs: Record<string, Array<{ id: string; url: string }>> = {}
+  const thumbs: Record<string, Array<{ id: string; url: string; batchId?: string }>> = {}
   for (const op of stack.ops.value) {
     const anyOp = op as any
     if (!anyOp.candidates?.length) continue
     thumbs[op.id] = anyOp.candidates
       .filter((c: any) => c.patch_ref)
-      .map((c: any) => ({ id: c.id, url: stack.payloadUrl(c.patch_ref) }))
+      .map((c: any) => ({
+        id: c.id,
+        url: stack.payloadUrl(c.patch_ref),
+        batchId: c.batch_id,
+      }))
   }
   return thumbs
 })
@@ -1813,6 +2036,7 @@ function selectFamily(id: FamilyId) {
     cropOpId.value = null
     void renderCropInput()
   }
+  if (id === 'paint') syncImplicitPaintLayer()
 }
 
 function selectSub(id: string) {
@@ -2411,15 +2635,29 @@ function addAdjustOp(
 async function addLevelEdit(id: string) {
   const edit = levelEditById(id)
   if (!edit) return
+  // Scope belongs to the CLICK, not to whatever workspace state survives the
+  // async replacement below. Snapshot now so an active selection can never
+  // silently degrade into a whole-image adjustment during the handoff.
+  const scope = activeAdjustmentScope()
   // Try-then-replace, both shapes: an untouched whole-image step and an
   // untouched scoped step are equally provisional landing places.
   await replaceIfPristine()
   discardFragileMaskedAdjustment()
-  if (selection.value) {
-    addScopedLevelEdit(edit)
+  if (scope) {
+    addScopedLevelEdit(edit, scope)
     return
   }
   addAdjustOp(edit.label, { section: edit.id, ...(edit.seed ?? {}) })
+}
+
+function activeAdjustmentScope(): AdjustmentScopeSnapshot<HTMLCanvasElement> | null {
+  return captureAdjustmentScope(
+    selection.value,
+    copyCanvas,
+    workspaceGradient.value,
+    workspaceGradientKey.value,
+    selectionAppliedKey,
+  )
 }
 
 /** The region kind the masked pipeline stores for a level edit's section. */
@@ -2435,7 +2673,10 @@ function maskedKindOf(edit: LevelEdit): Exclude<MaskedAdjustmentKind, 'adjust'> 
  * step keeps the ramp's geometry and its handles stay live. Anything else
  * freezes the rasterised mask, consumed by copy like every region consumer.
  */
-function addScopedLevelEdit(edit: LevelEdit) {
+function addScopedLevelEdit(
+  edit: LevelEdit,
+  scope: AdjustmentScopeSnapshot<HTMLCanvasElement>,
+) {
   disarmMaskedAdjustmentEditing()
   selectedRetouchRegionId.value = null
   hoveredRetouchRegionId.value = null
@@ -2450,15 +2691,11 @@ function addScopedLevelEdit(edit: LevelEdit) {
     seed: edit.seed,
   }
   fragileRetouchRegions.mark(regionId)
-  const gradient =
-    workspaceGradient.value && workspaceGradientKey.value === selectionAppliedKey
-      ? workspaceGradient.value
-      : null
-  if (gradient) {
-    createScopedGradientStep(opId, regionId, gradient)
+  if (scope.kind === 'gradient') {
+    createScopedGradientStep(opId, regionId, scope.gradient)
     return
   }
-  if (selection.value) queueMaskedAdjustmentMask(selection.value)
+  queueMaskedAdjustmentMask(scope.mask)
 }
 
 /**
@@ -2680,11 +2917,12 @@ function applyLook(id: string) {
     void removeOpWithGeometry(existing.id)
     return
   }
+  const scope = activeAdjustmentScope()
   void (async () => {
     await replaceIfPristine()
     discardFragileMaskedAdjustment()
-    if (selection.value) {
-      addScopedLook(look)
+    if (scope) {
+      addScopedLook(look, scope)
       return
     }
     addAdjustOp(look.label, { look: look.id, ...look.params })
@@ -2696,7 +2934,10 @@ function applyLook(id: string) {
  * kind `look`, on the same path a scoped Light edit takes. Gradient selections
  * stay parametric so the ramp's handles remain live.
  */
-function addScopedLook(look: Look) {
+function addScopedLook(
+  look: Look,
+  scope: AdjustmentScopeSnapshot<HTMLCanvasElement>,
+) {
   disarmMaskedAdjustmentEditing()
   selectedRetouchRegionId.value = null
   hoveredRetouchRegionId.value = null
@@ -2711,15 +2952,11 @@ function addScopedLook(look: Look) {
     seed: { ...look.params, look: look.id },
   }
   fragileRetouchRegions.mark(regionId)
-  const gradient =
-    workspaceGradient.value && workspaceGradientKey.value === selectionAppliedKey
-      ? workspaceGradient.value
-      : null
-  if (gradient) {
-    createScopedGradientStep(opId, regionId, gradient)
+  if (scope.kind === 'gradient') {
+    createScopedGradientStep(opId, regionId, scope.gradient)
     return
   }
-  if (selection.value) queueMaskedAdjustmentMask(selection.value)
+  queueMaskedAdjustmentMask(scope.mask)
 }
 
 /**
@@ -3601,7 +3838,9 @@ async function startNewPaintLayer() {
 }
 
 function resetPaintSession() {
+  paintLayerLoadRevision += 1
   paintOpId.value = null
+  paintLayerReady.value = true
   // Without this the next layer starts holding the previous one's pixels: the
   // canvas reloads `initialLayer` on any source change, so leaving it set
   // quietly copies the old strokes into the new step.
@@ -3639,31 +3878,68 @@ watch(
 
 async function enterPaintOp(opId: string) {
   const op = stack.opById(opId) as any
-  const doc = stack.doc.value
-  if (!op?.raster_ref || !doc) return
+  if (!op?.raster_ref || !stack.doc.value) return
   family.value = 'paint'
+  if (paintOpId.value === opId && paintLayerReady.value) return
   // Re-entered ops are "committed" too: deleting the row while a stroke is
   // still uploading must drop that commit, not re-create the row.
   committedPaintOps.add(opId)
+  const loadRevision = ++paintLayerLoadRevision
   paintOpId.value = opId
-  const image = await loadImage(stack.payloadUrl(op.raster_ref, op._revision ?? 0))
-  const index = doc.edits.findIndex(candidate => candidate.id === opId)
-  const now = geometryBelow(doc, index >= 0 ? index : doc.edits.length)
-  const canonical = (op.payload_to_document as Affine | undefined)
-    ?? (op.payload_frame
-      ? payloadToDocumentTransform(op.payload_frame) ?? undefined
-      : undefined)
-  const canvas = canonical
-    ? rewritePayload(image, multiply(now.matrix, canonical), now.width, now.height)
-    : (() => {
-        const unanchored = document.createElement('canvas')
-        unanchored.width = image.naturalWidth
-        unanchored.height = image.naturalHeight
-        unanchored.getContext('2d')!.drawImage(image, 0, 0)
-        return unanchored
-      })()
-  paintInitialLayer.value = canvas
+  paintLayerReady.value = false
+  paintInitialLayer.value = null
+  paintRef.value?.reset()
+  try {
+    const image = await loadImage(stack.payloadUrl(op.raster_ref, op._revision ?? 0))
+    const doc = stack.doc.value
+    const current = stack.opById(opId) as any
+    if (
+      loadRevision !== paintLayerLoadRevision
+      || paintOpId.value !== opId
+      || !doc
+      || !current
+    ) return
+    const index = doc.edits.findIndex(candidate => candidate.id === opId)
+    const now = geometryBelow(doc, index >= 0 ? index : doc.edits.length)
+    const canonical = (current.payload_to_document as Affine | undefined)
+      ?? (current.payload_frame
+        ? payloadToDocumentTransform(current.payload_frame) ?? undefined
+        : undefined)
+    paintInitialLayer.value = canonical
+      ? rewritePayload(image, multiply(now.matrix, canonical), now.width, now.height)
+      : (() => {
+          const unanchored = document.createElement('canvas')
+          unanchored.width = image.naturalWidth
+          unanchored.height = image.naturalHeight
+          unanchored.getContext('2d')!.drawImage(image, 0, 0)
+          return unanchored
+        })()
+    paintLayerReady.value = true
+  } catch (paintLayerError) {
+    if (loadRevision !== paintLayerLoadRevision || paintOpId.value !== opId) return
+    resetPaintSession()
+    console.error('[imageStack] could not load Paint layer', paintLayerError)
+    error.value = 'Could not load that Paint layer.'
+  }
 }
+
+/**
+ * Reconcile Photoshop-style layer selection with the session-owned paint id.
+ * A selected Paint row wins; otherwise an existing top Paint row is current.
+ */
+function syncImplicitPaintLayer() {
+  if (family.value !== 'paint') return
+  const target = implicitPaintLayer(stack.doc.value?.edits ?? [], selectedOpId.value)
+  if (target) {
+    if (paintOpId.value !== target.id) void enterPaintOp(target.id)
+  } else if (paintOpId.value) {
+    resetPaintSession()
+  }
+}
+
+// Row selection can also move by keyboard or through another canvas surface;
+// all selection paths carry the same Paint-layer meaning as a sidebar click.
+watch(selectedOpId, syncImplicitPaintLayer)
 
 // -- retouch --------------------------------------------------------------------
 
@@ -3982,34 +4258,6 @@ const ADJUSTMENT_BRUSHES: Record<string, { kind: RetouchRegionKind; label: strin
 }
 
 /**
- * The toolbar strength projected onto the adjustment schema the region
- * renders through. The engine preview during the stroke is an approximation;
- * the committed region re-renders through the real pipeline with these seeds.
- */
-function adjustmentBrushSeed(tool: string): Record<string, number> | null {
-  const settings = activeRetouchSettings.value
-  switch (tool) {
-    case 'dodge':
-    case 'burn': {
-      const amount = tool === 'dodge' ? settings.exposure : -settings.exposure
-      const key = settings.range === 'shadows'
-        ? 'shadows'
-        : settings.range === 'highlights' ? 'highlights' : 'exposure'
-      return { [key]: amount }
-    }
-    case 'sponge':
-      return { saturation: settings.saturate ? settings.strength : -settings.strength }
-    // Strength is 1–100; blur renders on a 0–40 scale.
-    case 'blur':
-      return { blur: Math.max(1, Math.round(settings.strength * 0.4)) }
-    case 'sharpen':
-      return { sharpen: settings.strength }
-    default:
-      return null
-  }
-}
-
-/**
  * The Heal engine produces pixels immediately for a responsive preview, but
  * persistence keeps the gesture as a child region: its own mask, result,
  * settings, authored frame, and sampling identity.
@@ -4122,7 +4370,7 @@ function onRetouchStroke(
   retouchOpId.value = opId
   // Captured now, not in the queued commit: the seed is what the toolbar said
   // when the stroke was made, and the settings may change before it lands.
-  const seed = adjustmentBrushSeed(metadata.tool)
+  const seed = retouchBrushAdjustmentParams(metadata.tool, activeRetouchSettings.value)
   retouchCommitQueue = retouchCommitQueue
     .then(() => commitRetouchRegion(result, revision, opId, metadata, seed))
     .catch(err => {
@@ -4955,22 +5203,46 @@ function focusRow(opId: string | null) {
 
 async function onStackKeydown(event: KeyboardEvent) {
   const doc = stack.doc.value
-  const current = selectedOpId.value
+  // The inspector is a sibling of the list, and descendants such as candidate
+  // and eye buttons own their own keys. Only a directly focused row may invoke
+  // navigation, visibility, or destructive list commands.
+  const current = directEditRowId(event.target)
   if (!doc || !current) return
   const index = doc.edits.findIndex(op => op.id === current)
   if (index < 0) return
+  if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return
 
-  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-    event.preventDefault()
-    // The list is drawn top-down with the newest first, so Down walks toward
-    // the base — the direction the rows actually run on screen.
-    const next = doc.edits[event.key === 'ArrowDown' ? index - 1 : index + 1]
+  const command = editRowKeyboardCommand(event.key)
+  if (!command) return
+  event.preventDefault()
+  event.stopPropagation()
+
+  if (command.type === 'move-row') {
+    // The list is drawn top-down with the newest first, opposite document order.
+    const next = doc.edits[index + command.indexDelta]
     if (next) focusRow(next.id)
     return
   }
 
-  if (event.key === 'Delete' || event.key === 'Backspace') {
-    event.preventDefault()
+  if (command.type === 'move-candidate') {
+    const available = candidateThumbs.value[current] ?? []
+    const picked = (doc.edits[index] as any).picked as string | undefined
+    const pickedIndex = available.findIndex(candidate => candidate.id === picked)
+    const nextIndex = rowCandidateIndex(available.length, pickedIndex, command.candidateDelta)
+    const next = available[nextIndex]
+    if (next && nextIndex !== pickedIndex) {
+      stack.pickCandidate(current, next.id)
+      void render()
+    }
+    return
+  }
+
+  if (command.type === 'toggle') {
+    if (!event.repeat) await setEnabledWithGeometry(current, !doc.edits[index].enabled)
+    return
+  }
+
+  if (command.type === 'remove') {
     // Whatever sits where this row was, once it is gone.
     const after = doc.edits[index - 1] ?? doc.edits[index + 1] ?? null
     const nextId = after?.id ?? null
@@ -5016,6 +5288,7 @@ function onRowSelect(op: any) {
   // Selecting a shape puts handles on the canvas; an armed selection tool
   // would sit on top of them with the pointer.
   if (selectedShapeId.value) disarmSelect()
+  syncImplicitPaintLayer()
 }
 
 /**
@@ -5155,6 +5428,13 @@ function invertSelection() {
 
 const aiSelectBusy = ref(false)
 const aiSelectError = ref<string | null>(null)
+type AiSelectAction = 'find' | 'subject' | 'background' | 'canvas'
+const aiSelectAction = ref<AiSelectAction | null>(null)
+const aiSelectProgressVisible = ref(false)
+const AI_SELECT_PROGRESS_DELAY_MS = 400
+let aiSelectProgressTimer: ReturnType<typeof setTimeout> | null = null
+/** Segmentation can take seconds; the panel's Cancel (and Esc) abort it. */
+let aiSelectAbort: AbortController | null = null
 
 /** Longest side sent to segmentation. SAM3 works at ~1k; sending more is transfer cost, not quality. */
 const AI_SELECT_MAX_SIDE = 1536
@@ -5227,12 +5507,25 @@ function applyAiMask(mask: CanvasImageSource, mode: SelectionMode) {
 /**
  * AI select: segment the CURRENT composite (the pixels the selection will sit
  * over) and land the result exactly as a drawn gesture would, through the
- * combine mode. Two request shapes, one product rule: a PROMPT names a concept
- * and selects every instance of it ("sky", "people"); a POINT (normalized 0-1)
- * is the Object tool's click and selects the one object under it.
+ * combine mode. A PROMPT names a concept and selects every instance of it; a
+ * POINT (normalized 0-1) selects the object under the click; an INTENT asks
+ * BEN2 for the whole subject or its exact background complement.
  */
+type AiSelectRequest = {
+  prompt?: string
+  point?: { x: number; y: number }
+  intent?: 'subject' | 'background'
+}
+
+function aiActionFor(request: AiSelectRequest): AiSelectAction {
+  if (request.point) return 'canvas'
+  if (request.intent === 'subject') return 'subject'
+  if (request.intent === 'background') return 'background'
+  return 'find'
+}
+
 async function runAiSelect(
-  request: { prompt?: string; point?: { x: number; y: number } },
+  request: AiSelectRequest,
   mode: SelectionMode = selectCombine.value,
 ) {
   if (aiSelectBusy.value) return
@@ -5241,13 +5534,21 @@ async function runAiSelect(
   const src = composite.value
   if (!src || !selectRef.value) return
   aiSelectBusy.value = true
+  aiSelectAction.value = aiActionFor(request)
+  aiSelectProgressVisible.value = false
+  aiSelectProgressTimer = setTimeout(() => {
+    aiSelectProgressVisible.value = true
+  }, AI_SELECT_PROGRESS_DELAY_MS)
   aiSelectError.value = null
+  const abort = new AbortController()
+  aiSelectAbort = abort
   try {
     const sent = aiSelectCanvas(src)
+    const image_data_url = sent.toDataURL('image/png')
     const { data } = await axios.post('/api/mask/select', {
-      image_data_url: sent.toDataURL('image/png'),
+      image_data_url,
       ...request,
-    })
+    }, { signal: abort.signal })
     if (!data.success || !data.detections?.length) {
       aiSelectError.value = data.error
         || (request.prompt ? `No match for “${request.prompt}”` : 'No object at that point')
@@ -5271,7 +5572,8 @@ async function runAiSelect(
       applyAiMask(masks[0], mode)
       return
     }
-    // A named concept: every instance, as one selection.
+    // A named concept is the union of every instance. BEN2 intents return one
+    // mask and take the same path, preserving its continuous alpha.
     const union = document.createElement('canvas')
     union.width = sent.width
     union.height = sent.height
@@ -5279,10 +5581,21 @@ async function runAiSelect(
     for (const mask of masks) unionCtx.drawImage(mask, 0, 0, union.width, union.height)
     applyAiMask(union, mode)
   } catch (e: any) {
-    aiSelectError.value = e?.message || 'Selection failed'
+    // A cancel is an answer, not a failure: the panel returns to rest with no
+    // error to read.
+    if (!abort.signal.aborted) aiSelectError.value = e?.message || 'Selection failed'
   } finally {
+    if (aiSelectProgressTimer) clearTimeout(aiSelectProgressTimer)
+    aiSelectProgressTimer = null
+    aiSelectProgressVisible.value = false
+    aiSelectAction.value = null
     aiSelectBusy.value = false
+    if (aiSelectAbort === abort) aiSelectAbort = null
   }
+}
+
+function cancelAiSelect() {
+  aiSelectAbort?.abort()
 }
 
 /** A same-spot re-click means "not that granularity": within this radius (in
@@ -5929,9 +6242,14 @@ function onKeyup(event: KeyboardEvent) {
 }
 
 function clearViewportGestureState() {
+  // An abandoned gesture still owns the stage's transform; without the commit
+  // the next unrelated render would snap it back to the pre-drag pan.
+  const wasPanning = viewPanning.value || middleMousePointerId !== null
   spacePanHeld.value = false
   viewPanning.value = false
   middleMousePointerId = null
+  nativeTabletPanActive = false
+  if (wasPanning) commitLivePan()
 }
 
 function addViewportPanListeners() {
@@ -5939,6 +6257,7 @@ function addViewportPanListeners() {
   window.addEventListener('pointermove', moveMiddleMousePan, true)
   window.addEventListener('pointerup', endMiddleMousePan, true)
   window.addEventListener('pointercancel', endMiddleMousePan, true)
+  stopTabletPan ??= subscribeTabletPan(onNativeTabletPan)
 }
 
 function removeViewportPanListeners() {
@@ -5946,6 +6265,8 @@ function removeViewportPanListeners() {
   window.removeEventListener('pointermove', moveMiddleMousePan, true)
   window.removeEventListener('pointerup', endMiddleMousePan, true)
   window.removeEventListener('pointercancel', endMiddleMousePan, true)
+  stopTabletPan?.()
+  stopTabletPan = null
 }
 
 /**
@@ -6101,6 +6422,7 @@ onActivated(() => {
   window.addEventListener('keyup', onKeyup)
   window.addEventListener('blur', clearViewportGestureState)
   addViewportPanListeners()
+  addBrushHudListeners()
 })
 
 onDeactivated(() => {
@@ -6108,6 +6430,8 @@ onDeactivated(() => {
   window.removeEventListener('keyup', onKeyup)
   window.removeEventListener('blur', clearViewportGestureState)
   removeViewportPanListeners()
+  removeBrushHudListeners()
+  brushHud.value = null
   clearViewportGestureState()
   // Leaving IS saving: the applied stack becomes the Asset's current Revision
   // (and the recipe is persisted regardless, for eviction or reload).
@@ -6144,6 +6468,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keyup', onKeyup)
   window.removeEventListener('blur', clearViewportGestureState)
   removeViewportPanListeners()
+  removeBrushHudListeners()
   window.removeEventListener('tools-changed', refreshToolCatalog)
   setEditorDirty(props.assetId, false)
   clearEditorLivePreview(props.assetId)
@@ -6436,6 +6761,7 @@ watch(
              whole viewport instead of the cropped display box. -->
         <div
           v-if="family === 'crop'"
+          ref="stageTransform"
           class="absolute left-1/2 top-1/2"
           :style="[
             {
@@ -6460,6 +6786,7 @@ watch(
         </div>
         <div
           v-else
+          ref="stageTransform"
           class="absolute left-1/2 top-1/2"
           :style="[
             { width: zoomedDisplayBox.width + 'px', height: zoomedDisplayBox.height + 'px' },
@@ -6504,7 +6831,7 @@ watch(
             @patch-applied="clearSelection"
           />
           <StackPaintCanvas
-            v-else-if="family === 'paint'"
+            v-else-if="family === 'paint' && paintLayerReady"
             ref="paintRef"
             :source="composite"
             :initial-layer="paintInitialLayer"
@@ -6571,7 +6898,7 @@ watch(
             :source="composite"
             :model="selModel"
             :armed="armedSelectTool"
-            :busy="aiSelectBusy"
+            :busy="aiSelectProgressVisible"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
             :combine="selectCombine"
@@ -6641,6 +6968,8 @@ watch(
           :gradient-feather="canvasGradient?.kind === 'radial'
             ? canvasGradient.feather : selectGradientFeather"
           :ai-busy="aiSelectBusy"
+          :ai-progress-visible="aiSelectProgressVisible"
+          :ai-action="aiSelectAction"
           :ai-error="aiSelectError"
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-chrome"
           @arm="armSelectTool"
@@ -6650,7 +6979,8 @@ watch(
           @invert="invertSelection"
           @clear="clearSelection"
           @morph="morphSelection"
-          @ai-select="(prompt: string) => runAiSelect({ prompt })"
+          @ai-select="runAiSelect"
+          @ai-cancel="cancelAiSelect"
         />
       </div>
       </div>
@@ -6665,7 +6995,6 @@ watch(
       />
       <aside
         ref="sidebarEl"
-        @keydown="onStackKeydown"
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >
@@ -6719,6 +7048,7 @@ watch(
         <div
           v-else
           class="flex-1 overflow-y-auto custom-scrollbar p-1.5"
+          @keydown="onStackKeydown"
           @dragover.prevent="onListDragOver"
           @drop.prevent="onDrop"
           @dragleave="onListDragLeave"
@@ -6734,6 +7064,7 @@ watch(
               :staleness="row.staleness"
               :candidate-thumbs="candidateThumbs[row.op.id]"
               :pending-count="pendingByOp[row.op.id]"
+              :pending-batches="pendingBatchesByOp[row.op.id]"
               :preview-staleness="previewStalenessOf(row.op.id)"
               :out-of-frame="outOfFrame[row.op.id]"
               :resampling="runningOpIds.has(row.op.id)"
@@ -7058,6 +7389,27 @@ watch(
         </div>
       </div>
     </footer>
+
+    <!-- Pen quick brush picker: the SAME picker the toolbar chip opens,
+         popped beside the cursor by a stylus side button. -->
+    <CursorPopover
+      v-if="brushHud && brushHudTarget"
+      :x="brushHud.x"
+      :y="brushHud.y"
+      @close="brushHud = null"
+    >
+      <BrushPicker
+        v-if="brushHudTarget === 'paint'"
+        v-model="paintBrush"
+        :is-eraser="paintEngineId === 'erase'"
+        :stroke-color="paintColorRgb"
+      />
+      <BrushPicker
+        v-else
+        v-model="retouchBrush"
+        :stroke-color="paintColorRgb"
+      />
+    </CursorPopover>
 
     <ConfirmDialog
       :show="confirmingRevert"

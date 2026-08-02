@@ -41,9 +41,8 @@ export function useRasterPaintLayer() {
   // Brush state
   const currentBrushMask = shallowRef<ImageData | null>(null);
 
-  // Brush mask cache: keyed by "size,hardness"
-  let cachedBrushMaskKey = '';
-  let cachedBrushMaskData: ImageData | null = null;
+  // Small LRU: direction-driven tips revisit quantized angles constantly.
+  const brushMaskCache = new Map<string, ImageData>();
 
   // Clone stamp state
   const cloneSourceCanvas = shallowRef<HTMLCanvasElement | null>(null);
@@ -222,17 +221,34 @@ export function useRasterPaintLayer() {
   /**
    * Get or create brush mask for current settings (cached by size+hardness)
    */
-  function getBrushMask(size: number, hardness: number): ImageData {
+  function getBrushMask(
+    size: number,
+    hardness: number,
+    aspect = 1,
+    rotation = 0,
+    tipAssetId?: string,
+  ): ImageData {
     const ceilSize = Math.ceil(size);
-    const key = `${ceilSize},${hardness}`;
-    if (cachedBrushMaskKey === key && cachedBrushMaskData) {
-      currentBrushMask.value = cachedBrushMaskData;
-      return cachedBrushMaskData;
+    const quantizedAspect = Math.round(aspect * 100) / 100;
+    const quantizedRotation = Math.round(rotation * 2) / 2;
+    const key = `${ceilSize},${hardness},${quantizedAspect},${quantizedRotation},${tipAssetId ?? ''}`;
+    const cached = brushMaskCache.get(key);
+    if (cached) {
+      brushMaskCache.delete(key);
+      brushMaskCache.set(key, cached);
+      currentBrushMask.value = cached;
+      return cached;
     }
-    cachedBrushMaskData = createBrushMask(ceilSize, hardness);
-    cachedBrushMaskKey = key;
-    currentBrushMask.value = cachedBrushMaskData;
-    return cachedBrushMaskData;
+    const mask = createBrushMask(
+      ceilSize, hardness, quantizedAspect, quantizedRotation, tipAssetId,
+    );
+    brushMaskCache.set(key, mask);
+    if (brushMaskCache.size > 96) {
+      const oldest = brushMaskCache.keys().next().value;
+      if (oldest !== undefined) brushMaskCache.delete(oldest);
+    }
+    currentBrushMask.value = mask;
+    return mask;
   }
 
   /**
@@ -264,8 +280,8 @@ export function useRasterPaintLayer() {
   ): void {
     if (!layerCtx.value || !cloneOffset.value) return;
 
-    const { size, hardness, opacity, flow, spacing } = brushSettings;
-    const brushMask = getBrushMask(size, hardness);
+    const { size, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
 
     const points = brushStrokePoints(destPoint, size, spacing);
 
@@ -349,14 +365,14 @@ export function useRasterPaintLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size: brushSize, hardness, opacity, flow, spacing } = brushSettings;
+    const { size: brushSize, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
     const points = brushStrokePoints(point, brushSize, spacing);
     if (points.length === 0) return;
 
     const radius = brushSize / 2;
     const halfSize = brushSize / 2;
     const effectiveOpacity = (opacity / 100) * (flow / 100);
-    const brushMask = getBrushMask(brushSize, hardness);
+    const brushMask = getBrushMask(brushSize, hardness, aspect, rotation, tipAssetId);
     const maskData = brushMask.data;
 
     for (const dab of points) {
@@ -452,8 +468,8 @@ export function useRasterPaintLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size, hardness, opacity, flow, spacing } = brushSettings;
-    const brushMask = getBrushMask(size, hardness);
+    const { size, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
 
     const points = brushStrokePoints(point, size, spacing);
 
@@ -485,25 +501,19 @@ export function useRasterPaintLayer() {
         const maskAlpha = (maskData[i + 3] / 255) * effectiveOpacity * selectionAlpha;
         if (maskAlpha === 0) continue;
 
-        // Get the current color (prefer Paint layer if has content, else source)
-        let r = srcPixels[i];
-        let g = srcPixels[i + 1];
-        let b = srcPixels[i + 2];
-
-        if (destPixels[i + 3] > 0) {
-          // Blend existing Paint layer data
-          const existingAlpha = destPixels[i + 3] / 255;
-          r = destPixels[i] * existingAlpha + srcPixels[i] * (1 - existingAlpha);
-          g = destPixels[i + 1] * existingAlpha + srcPixels[i + 1] * (1 - existingAlpha);
-          b = destPixels[i + 2] * existingAlpha + srcPixels[i + 2] * (1 - existingAlpha);
-        }
-
         // The dab bakes the FULL-strength adjustment; maskAlpha (brush shape ×
-        // flow × pen pressure) attenuates it through the compositing alpha
-        // below. Committed Retouch regions re-render parametrically as
-        // full-strength adjustment × mask, so scaling the amount here too
-        // would double-attenuate and make the stroke change on release.
-        const adjusted = adjustLuminosity(r, g, b, amount, range);
+        // flow × pen pressure) accumulates only the MASK coverage. Always
+        // derive the preview color from the frozen stroke source: adjusting
+        // the previous dab's already-adjusted RGB made overlaps compound
+        // toward white/black, while the committed parametric region applies
+        // one full-strength adjustment through the accumulated mask.
+        const adjusted = adjustLuminosity(
+          srcPixels[i],
+          srcPixels[i + 1],
+          srcPixels[i + 2],
+          amount,
+          range,
+        );
 
         // Write to Paint layer
         const srcA = maskAlpha;
@@ -537,8 +547,8 @@ export function useRasterPaintLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size, hardness, opacity, flow, spacing } = brushSettings;
-    const brushMask = getBrushMask(size, hardness);
+    const { size, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
 
     const points = brushStrokePoints(point, size, spacing);
 
@@ -605,6 +615,65 @@ export function useRasterPaintLayer() {
   }
 
   /**
+   * Paint pixels from an already-adjusted copy of the stroke source through
+   * the brush mask.
+   *
+   * Retouch adjustment brushes use this instead of maintaining a second,
+   * approximate implementation of dodge/burn/sponge/blur/sharpen. The layer's
+   * alpha is therefore the accumulated brush coverage, while its RGB is the
+   * exact parametric result that will be recomputed after release.
+   */
+  function applyAdjustedSourceBrush(
+    adjustedSource: HTMLCanvasElement,
+    point: Point,
+    brushSettings: BrushSettings,
+  ): void {
+    if (!layerCtx.value) return;
+
+    const sourceCtx = adjustedSource.getContext('2d');
+    if (!sourceCtx) return;
+
+    const { size, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
+    const points = brushStrokePoints(point, size, spacing);
+    const brushSize = Math.ceil(size);
+    const halfSize = size / 2;
+    const effectiveOpacity = (opacity / 100) * (flow / 100);
+
+    for (const dab of points) {
+      const destX = Math.floor(dab.x - halfSize);
+      const destY = Math.floor(dab.y - halfSize);
+      const sourceData = sampleRegion(sourceCtx, destX, destY, brushSize, brushSize);
+      const destData = layerCtx.value.getImageData(destX, destY, brushSize, brushSize);
+      const selectionMask = getSelectionMaskRegion(destX, destY, brushSize, brushSize);
+
+      for (let i = 0; i < brushMask.data.length; i += 4) {
+        const pixel = i / 4;
+        const selectionAlpha = selectionMask ? selectionMask[pixel] / 255 : 1;
+        const sourceAlpha = sourceData.data[i + 3] / 255;
+        const brushAlpha = (brushMask.data[i + 3] / 255)
+          * effectiveOpacity
+          * selectionAlpha;
+        if (brushAlpha === 0 || sourceAlpha === 0) continue;
+
+        // The persisted compositor uses min(adjusted source alpha, brush mask).
+        // Accumulate the mask by source-over, then apply that same cap here so
+        // partially transparent images preview exactly as they will re-render.
+        const dstA = destData.data[i + 3] / 255;
+        const outA = dstA >= sourceAlpha
+          ? sourceAlpha
+          : Math.min(sourceAlpha, brushAlpha + dstA * (1 - brushAlpha));
+        destData.data[i] = sourceData.data[i];
+        destData.data[i + 1] = sourceData.data[i + 1];
+        destData.data[i + 2] = sourceData.data[i + 2];
+        destData.data[i + 3] = outA * 255;
+      }
+
+      layerCtx.value.putImageData(destData, destX, destY);
+    }
+  }
+
+  /**
    * Get or resize a reusable work canvas for blur/sharpen operations.
    * Uses a small region canvas sized to brushSize + padding instead of full image.
    */
@@ -637,8 +706,8 @@ export function useRasterPaintLayer() {
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    const { size, hardness, opacity, flow, spacing } = brushSettings;
-    const brushMask = getBrushMask(size, hardness);
+    const { size, hardness, opacity, flow, spacing, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
 
     const points = brushStrokePoints(point, size, spacing);
 
@@ -770,19 +839,31 @@ export function useRasterPaintLayer() {
   ): void {
     if (!layerCtx.value) return;
 
-    const { size, hardness, opacity, flow, spacing } = brushSettings;
-    const brushMask = getBrushMask(size, hardness);
-
+    const { size, spacing } = brushSettings;
     const points = brushStrokePoints(point, size, spacing);
+
+    for (const dab of points) applyPaintDab(dab, brushSettings, color);
+  }
+
+  /** Paint exactly one resolved dab; spacing and dynamics live in the new runtime. */
+  function applyPaintDab(
+    point: Point,
+    brushSettings: BrushSettings,
+    color: { r: number; g: number; b: number; a?: number }
+  ): void {
+    if (!layerCtx.value) return;
+
+    const { size, hardness, opacity, flow, aspect, rotation, tipAssetId } = brushSettings;
+    const brushMask = getBrushMask(size, hardness, aspect, rotation, tipAssetId);
 
     const halfSize = size / 2;
     const effectiveOpacity = (opacity / 100) * (flow / 100);
     const colorAlpha = color.a ?? 1;
     const brushSize = Math.ceil(size);
 
-    for (const p of points) {
-      const destX = Math.floor(p.x - halfSize);
-      const destY = Math.floor(p.y - halfSize);
+    {
+      const destX = Math.floor(point.x - halfSize);
+      const destY = Math.floor(point.y - halfSize);
 
       const destData = layerCtx.value!.getImageData(destX, destY, brushSize, brushSize);
       const maskData = brushMask.data;
@@ -1005,9 +1086,11 @@ export function useRasterPaintLayer() {
     applySpotHeal,
     applyDodgeBurn,
     applySaturationBrush,
+    applyAdjustedSourceBrush,
     applyBlurBrush,
     applySharpenBrush,
     applyPaintBrush,
+    applyPaintDab,
     applyFlatFill,
     applyGradientFill,
     applyPatchTool,

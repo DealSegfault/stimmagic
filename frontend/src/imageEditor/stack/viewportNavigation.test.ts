@@ -4,12 +4,14 @@ import test from 'node:test'
 import {
   clampViewportPan,
   isZoomWheelGesture,
+  panForDragDelta,
   panForWheelDelta,
   panForZoomAtPoint,
+  stabilizeWacomWheelDelta,
   wheelPanDelta,
 } from '../ported/viewportNavigation.ts'
 
-test('fit view retains bounded workspace slack for floating controls', () => {
+test('fit view can move throughout the workspace while keeping a visible grip', () => {
   assert.deepEqual(
     clampViewportPan(
       { x: 120, y: -80 },
@@ -21,28 +23,53 @@ test('fit view retains bounded workspace slack for floating controls', () => {
   )
   assert.deepEqual(
     clampViewportPan(
-      { x: 500, y: -500 },
+      { x: 1000, y: -1000 },
       1,
       { width: 800, height: 600 },
       { width: 800, height: 600 },
     ),
-    { x: 160, y: -150 },
+    { x: 736, y: -536 },
   )
 })
 
 test('pan clamps independently on each viewport axis', () => {
   assert.deepEqual(
     clampViewportPan(
-      { x: 1000, y: 1000 },
+      { x: 2000, y: 1000 },
       2,
       { width: 800, height: 300 },
       { width: 800, height: 600 },
     ),
-    { x: 560, y: 150 },
+    { x: 1136, y: 536 },
   )
 })
 
-test('zoomed-out content can still be panned within workspace slack', () => {
+test('drag reversal responds immediately after pushing beyond a pan bound', () => {
+  const content = { width: 800, height: 600 }
+  const viewport = { width: 800, height: 600 }
+
+  const atBottomEdge = panForDragDelta(
+    { x: 0, y: 530 },
+    { x: 0, y: 100 },
+    1,
+    content,
+    viewport,
+  )
+  assert.deepEqual(atBottomEdge, { x: 0, y: 536 })
+
+  assert.deepEqual(
+    panForDragDelta(
+      atBottomEdge,
+      { x: 0, y: -5 },
+      1,
+      content,
+      viewport,
+    ),
+    { x: 0, y: 531 },
+  )
+})
+
+test('zoomed-out content can still be pushed around without losing it', () => {
   assert.deepEqual(
     clampViewportPan(
       { x: -500, y: 500 },
@@ -50,7 +77,7 @@ test('zoomed-out content can still be panned within workspace slack', () => {
       { width: 800, height: 600 },
       { width: 800, height: 600 },
     ),
-    { x: -160, y: 150 },
+    { x: -500, y: 386 },
   )
 })
 
@@ -89,5 +116,16 @@ test('shift-wheel pans horizontally like Lightroom', () => {
   assert.deepEqual(
     wheelPanDelta({ x: 0, y: 3 }, 1, { width: 800, height: 600 }, true),
     { x: 48, y: 0 },
+  )
+})
+
+test('Wacom wheel panning is slowed and large spikes are bounded per event', () => {
+  assert.deepEqual(
+    stabilizeWacomWheelDelta({ x: 10, y: -20 }),
+    { x: 1.2, y: -2.4 },
+  )
+  assert.deepEqual(
+    stabilizeWacomWheelDelta({ x: 200, y: -200 }),
+    { x: 4, y: -4 },
   )
 })

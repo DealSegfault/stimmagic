@@ -733,3 +733,85 @@ def _apply_token_budget(
     )
 
     return result
+
+
+_STRICT_COMPACTION_PLACEHOLDER = {
+    "role": "user",
+    "content": "[Earlier turns were omitted to fit the model context window.]",
+}
+
+
+def _apply_token_budget_strict(
+    messages: List[Dict[str, Any]],
+    *,
+    budget: int,
+    correction: float = 1.0,
+) -> List[Dict[str, Any]]:
+    """Enforce a history budget by retaining complete, cache-friendly turns.
+
+    The ordinary chat compactor intentionally keeps the first turn plus five
+    recent turns, even when a very small window cannot hold all of them.  The
+    ToolView mini-agent has a much larger fixed tool schema and can overflow a
+    32k endpoint after only a few turns, so it needs a hard backstop.
+
+    Keep the system prefix and, when it fits, the first turn.  Fill the tail
+    with the newest contiguous complete turns.  A fixed placeholder separates
+    them, so compaction never injects changing counts or summaries near the
+    front of the request.  Live state is added to the final user message only
+    after this function runs.
+    """
+    budget = max(0, int(budget))
+
+    def _history_tokens(candidate: List[Dict[str, Any]]) -> int:
+        tokens = _estimate_tokens(candidate)
+        return int((tokens["history"] + tokens["images"]) * correction)
+
+    if _history_tokens(messages) <= budget:
+        return messages
+
+    user_turns = _find_user_turn_boundaries(messages)
+    if not user_turns:
+        return messages
+
+    prefix = messages[:user_turns[0]]
+    turns = [
+        messages[start:(user_turns[i + 1] if i + 1 < len(user_turns) else len(messages))]
+        for i, start in enumerate(user_turns)
+    ]
+    if len(turns) == 1:
+        # The current user message is authoritative and cannot be discarded.
+        return prefix + turns[0]
+
+    placeholder = [dict(_STRICT_COMPACTION_PLACEHOLDER)]
+    first = turns[0]
+    latest = turns[-1]
+
+    keep_first = True
+    result = prefix + first + placeholder + latest
+    if _history_tokens(result) > budget:
+        keep_first = False
+        result = prefix + placeholder + latest
+    if _history_tokens(result) > budget:
+        # Even the fixed marker does not fit.  Keep only the current turn.
+        return prefix + latest
+
+    middle = turns[1:-1] if keep_first else turns[:-1]
+    kept_recent: List[List[Dict[str, Any]]] = []
+    for turn in reversed(middle):
+        trial_recent = [turn] + kept_recent
+        trial = prefix + (first if keep_first else []) + placeholder
+        for kept_turn in trial_recent:
+            trial += kept_turn
+        trial += latest
+        if _history_tokens(trial) > budget:
+            break
+        kept_recent = trial_recent
+        result = trial
+
+    omitted_turns = len(turns) - 1 - len(kept_recent) - (1 if keep_first else 0)
+    log.info(
+        f"Strict token budget applied: omitted {omitted_turns} turn(s), "
+        f"kept_first={keep_first}, kept_recent={len(kept_recent) + 1}, "
+        f"budget={budget}"
+    )
+    return result

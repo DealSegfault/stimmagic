@@ -7,8 +7,8 @@
 //! app's mouse events and forwards it as `tablet-input` events; the frontend
 //! merges the stream with DOM pointer events by recency.
 //!
-//! The monitor only emits for events carrying tablet data, so mouse-only
-//! sessions produce zero traffic.
+//! Apart from explicit middle-button pan gestures, the monitor only emits for
+//! events carrying tablet data, so ordinary mouse movement produces no traffic.
 
 use std::ptr::NonNull;
 
@@ -30,6 +30,13 @@ enum TabletEvent {
         pressure: f32,
         tilt_x: f64,
         tilt_y: f64,
+        x: f64,
+        y: f64,
+        absolute_x: isize,
+        absolute_y: isize,
+        delta_x: f64,
+        delta_y: f64,
+        buttons: usize,
     },
     /// Pen entered or left tablet range; identifies the eraser end.
     #[serde(rename_all = "camelCase")]
@@ -39,15 +46,35 @@ enum TabletEvent {
     /// the drag in progress is not a pen stroke and must ignore pen state.
     #[serde(rename_all = "camelCase")]
     MouseStroke { down: bool },
+    /// Native middle-button drag samples. AppKit does not provide default
+    /// handling for third-button drags, and WKWebView consequently delivers a
+    /// sparse/unreliable DOM stream for a stylus barrel button mapped to
+    /// middle-click. Window coordinates are logical points; the frontend uses
+    /// their differences, so title-bar offsets and the flipped DOM Y axis do
+    /// not affect the gesture.
+    #[serde(rename_all = "camelCase")]
+    Pan {
+        phase: &'static str, // "down" | "move" | "up"
+        x: f64,
+        y: f64,
+    },
 }
 
 fn point_event(event: &NSEvent, phase: &'static str) -> TabletEvent {
     let tilt = event.tilt();
+    let point = event.locationInWindow();
     TabletEvent::Point {
         phase,
         pressure: event.pressure(),
         tilt_x: tilt.x,
         tilt_y: tilt.y,
+        x: point.x,
+        y: point.y,
+        absolute_x: event.absoluteX(),
+        absolute_y: event.absoluteY(),
+        delta_x: event.deltaX(),
+        delta_y: event.deltaY(),
+        buttons: event.buttonMask().0,
     }
 }
 
@@ -58,12 +85,39 @@ fn proximity_event(event: &NSEvent) -> TabletEvent {
     }
 }
 
+fn pan_event(event: &NSEvent, phase: &'static str) -> TabletEvent {
+    let point = event.locationInWindow();
+    TabletEvent::Pan {
+        phase,
+        x: point.x,
+        y: point.y,
+    }
+}
+
 /// Install the monitor. Must be called on the main thread (Tauri's `setup`).
 pub fn install(app: &tauri::AppHandle) {
     let app = app.clone();
     let handler = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
         let event_ref = unsafe { event.as_ref() };
         let payload = match event_ref.r#type() {
+            // A barrel button configured as middle-click is button 2 in
+            // AppKit. Capture its complete native drag stream instead of
+            // relying on WKWebView to synthesize pointer movement for an
+            // event AppKit otherwise leaves unhandled.
+            kind @ (NSEventType::OtherMouseDown
+            | NSEventType::OtherMouseDragged
+            | NSEventType::OtherMouseUp)
+                if event_ref.buttonNumber() == 2 =>
+            {
+                Some(pan_event(
+                    event_ref,
+                    match kind {
+                        NSEventType::OtherMouseDown => "down",
+                        NSEventType::OtherMouseUp => "up",
+                        _ => "move",
+                    },
+                ))
+            }
             NSEventType::TabletPoint => Some(point_event(event_ref, "move")),
             NSEventType::TabletProximity => Some(proximity_event(event_ref)),
             // Hover: the pen moving above the tablet rides on plain mouse
@@ -101,6 +155,9 @@ pub fn install(app: &tauri::AppHandle) {
     let mask = NSEventMask::LeftMouseDown
         | NSEventMask::LeftMouseDragged
         | NSEventMask::LeftMouseUp
+        | NSEventMask::OtherMouseDown
+        | NSEventMask::OtherMouseDragged
+        | NSEventMask::OtherMouseUp
         | NSEventMask::MouseMoved
         | NSEventMask::TabletPoint
         | NSEventMask::TabletProximity;

@@ -55,8 +55,12 @@ function brush(
   flow = 100,
   spacing = 25,
   pressureSize = false,
+  presetId?: string,
 ): BrushSettings {
-  return { size, hardness, opacity, flow, spacing, pressureSize, pressureOpacity: true }
+  return {
+    size, hardness, opacity, flow, spacing, pressureSize, pressureOpacity: true,
+    ...(presetId ? { presetId } : {}),
+  }
 }
 
 /**
@@ -73,7 +77,7 @@ type PaintEngineDefaults = Omit<
 
 const DEFAULTS: Record<string, PaintEngineDefaults> = {
   paint: {
-    brush: brush(26, 60, 100, 100, 25, true),
+    brush: brush(26, 92, 100, 100, 18, true, 'stimma.basic.opaque-round'),
     color: DEFAULT_COLOR,
     exposure: 10,
     range: 'midtones',
@@ -81,7 +85,7 @@ const DEFAULTS: Record<string, PaintEngineDefaults> = {
     saturate: true,
   },
   erase: {
-    brush: brush(40, 80),
+    brush: brush(28, 94, 100, 100, 12, true, 'stimma.eraser.precision'),
     color: DEFAULT_COLOR,
     exposure: 10,
     range: 'midtones',
@@ -221,6 +225,11 @@ export function paintEngineSettings(
       pressureOpacity: typeof storedBrush?.pressureOpacity === 'boolean'
         ? storedBrush.pressureOpacity
         : fallback.brush.pressureOpacity,
+      ...(typeof storedBrush?.presetId === 'string'
+        ? { presetId: storedBrush.presetId }
+        : !storedBrush && fallback.brush.presetId
+          ? { presetId: fallback.brush.presetId }
+          : {}),
     },
     color: {
       r: clamp(storedColor?.r, 0, 255, fallback.color.r),

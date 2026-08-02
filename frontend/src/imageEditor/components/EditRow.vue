@@ -45,15 +45,28 @@ import {
   adjacentCandidateIndex,
   candidateNavigationDelta,
 } from '../stack/candidateNavigation'
+import {
+  groupCandidateBatches,
+  type PendingCandidateBatch,
+} from '../stack/candidateBatches'
+
+interface CandidateThumb {
+  id: string
+  url: string
+  fromPreviousState?: boolean
+  batchId?: string
+}
 
 const props = defineProps<{
   op: Op
   selected: boolean
   staleness: Staleness
   /** Candidate thumbnails, resolved by the parent. */
-  candidateThumbs?: Array<{ id: string; url: string; fromPreviousState?: boolean }>
+  candidateThumbs?: CandidateThumb[]
   /** Jobs still running for this op. */
   pendingCount?: number
+  /** In-flight slots grouped by the generation invocation that owns them. */
+  pendingBatches?: PendingCandidateBatch[]
   /** Blast-radius preview: this row would be disturbed by the hovered gesture. */
   previewStaleness?: Staleness | null
   /** Its spatial payload no longer intersects the frame. */
@@ -92,6 +105,14 @@ const anyOp = computed(() => props.op as any)
 
 
 const candidates = computed(() => props.candidateThumbs || [])
+const candidateRows = computed(() => groupCandidateBatches(
+  candidates.value.map((candidate, flatIndex) => ({ ...candidate, flatIndex })),
+  props.pendingBatches?.length
+    ? props.pendingBatches
+    : props.pendingCount
+      ? [{ batchId: 'pending-candidates', count: props.pendingCount }]
+      : [],
+))
 const picked = computed(() => anyOp.value.picked || null)
 /** A chosen patch is still useful identity while an exact composite preview is unavailable. */
 const displayPreview = computed(() =>
@@ -105,6 +126,11 @@ const isGenerative = computed(() => props.op.class === 'patch')
 const retouchRegions = computed(() =>
   anyOp.value.exec?.kind === 'retouch-regions' ? anyOp.value.regions ?? [] : []
 )
+/**
+ * Regions are stored oldest-first because that is their compositing order,
+ * but the editor's lists consistently present the newest operation first.
+ */
+const displayedRetouchRegions = computed(() => [...retouchRegions.value].reverse())
 /**
  * A scoped Adjust step is one adjustment region wearing a row: the row IS the
  * region, so listing "1 region" under it is forensic noise. Real Retouch
@@ -152,6 +178,18 @@ function onRowMouseLeave() {
   if (hasSpatialFeedback.value) emit('hoverRetouch', false)
 }
 
+function onRowClick(event: MouseEvent) {
+  // A click on the row should hand it real keyboard focus. Controls stop their
+  // own clicks, so focusing here never steals focus from an eye, trash button,
+  // candidate, or other nested control.
+  const row = event.currentTarget as HTMLElement
+  const alreadyFocused = document.activeElement === row
+  row.focus({ preventScroll: true })
+  // Focus selects a newly focused row; a repeat click on the focused row still
+  // behaves like a selection gesture without emitting twice on the first one.
+  if (alreadyFocused) emit('select')
+}
+
 function onCandidateClick(event: MouseEvent, candidateId: string) {
   // WebKit on macOS does not consistently focus a button when it is clicked.
   // The indigo picked ring was therefore visible while A/D and the arrow keys
@@ -170,8 +208,8 @@ function onCandidateKeydown(event: KeyboardEvent, index: number) {
   event.stopPropagation()
   const next = adjacentCandidateIndex(candidates.value.length, index, delta)
   if (next < 0 || next === index) return
-  const strip = (event.currentTarget as HTMLElement).parentElement
-  const nextButton = strip?.querySelector(
+  const strips = (event.currentTarget as HTMLElement).closest('[data-candidate-rows]')
+  const nextButton = strips?.querySelector(
     `[data-candidate-index="${next}"]`,
   ) as HTMLElement | null
   nextButton?.focus({ preventScroll: true })
@@ -199,7 +237,9 @@ const previewTint = computed(() =>
       dragging && 'opacity-40',
     ]"
     :draggable="draggable"
-    @click="emit('select')"
+    :aria-current="selected ? 'true' : undefined"
+    @click="onRowClick"
+    @focus="emit('select')"
     @dblclick="emit('reenter')"
     @dragstart="emit('dragStart', $event)"
     @dragend="emit('dragEnd')"
@@ -266,7 +306,7 @@ const previewTint = computed(() =>
              eye/trash buttons land on the exact same vertical rails. -->
         <div v-if="regionsExpanded" class="mt-1 -mr-[62px] flex flex-col">
           <div
-            v-for="region in retouchRegions"
+            v-for="region in displayedRetouchRegions"
             :key="region.id"
             class="group/region min-w-0 flex items-center gap-1 py-0.5 pl-1 text-xs
                    text-content-secondary rounded-md cursor-default"
@@ -305,32 +345,45 @@ const previewTint = computed(() =>
 
       <p v-if="outOfFrame" class="mt-1 text-xs text-content-tertiary">Out of frame</p>
 
-      <!-- Candidate strip. Switching picks is free, so it lives on the row. -->
-      <div v-if="candidates.length || pendingCount" class="flex items-center gap-1.5 mt-1.5">
-        <button
-          v-for="(candidate, index) in candidates"
-          :key="candidate.id"
-          type="button"
-          :data-candidate-index="index"
-          :aria-label="`Candidate ${index + 1} of ${candidates.length}`"
-          :aria-pressed="candidate.id === picked"
-          class="relative w-10 h-10 rounded-media overflow-hidden bg-matte transition-shadow focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          :class="candidate.id === picked ? 'ring-2 ring-selection' : 'opacity-70 hover:opacity-100'"
-          @click.stop="onCandidateClick($event, candidate.id)"
-          @focus="emit('select')"
-          @keydown="onCandidateKeydown($event, index)"
-        >
-          <img :src="candidate.url" class="w-full h-full object-cover" alt="" />
-          <span
-            v-if="candidate.fromPreviousState"
-            class="absolute bottom-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400/90"
-          />
-        </button>
+      <!-- One horizontal strip per paid invocation. Re-running the operation
+           adds a row below instead of squeezing every result onto one line. -->
+      <div
+        v-if="candidateRows.length"
+        data-candidate-rows
+        class="flex flex-col items-start gap-1.5 mt-1.5"
+      >
         <div
-          v-for="n in (pendingCount || 0)"
-          :key="`pending-${n}`"
-          class="w-10 h-10 rounded-media bg-surface-raised animate-pulse"
-        />
+          v-for="(candidateRow, rowIndex) in candidateRows"
+          :key="candidateRow.id"
+          class="flex items-center gap-1.5"
+          role="group"
+          :aria-label="`Generation ${rowIndex + 1}`"
+        >
+          <button
+            v-for="candidate in candidateRow.candidates"
+            :key="candidate.id"
+            type="button"
+            :data-candidate-index="candidate.flatIndex"
+            :aria-label="`Candidate ${candidate.flatIndex + 1} of ${candidates.length}`"
+            :aria-pressed="candidate.id === picked"
+            class="relative w-10 h-10 rounded-media overflow-hidden bg-matte transition-shadow focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+            :class="candidate.id === picked ? 'ring-2 ring-selection' : 'opacity-70 hover:opacity-100'"
+            @click.stop="onCandidateClick($event, candidate.id)"
+            @focus="emit('select')"
+            @keydown="onCandidateKeydown($event, candidate.flatIndex)"
+          >
+            <img :src="candidate.url" class="w-full h-full object-cover" alt="" />
+            <span
+              v-if="candidate.fromPreviousState"
+              class="absolute bottom-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400/90"
+            />
+          </button>
+          <div
+            v-for="n in candidateRow.pendingCount"
+            :key="`pending-${candidateRow.id}-${n}`"
+            class="w-10 h-10 rounded-media bg-surface-raised animate-pulse"
+          />
+        </div>
       </div>
       <p v-if="staged" class="mt-1 text-xs text-content-tertiary">Pick one to apply it.</p>
     </div>

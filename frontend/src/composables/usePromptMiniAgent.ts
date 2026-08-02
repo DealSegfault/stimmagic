@@ -132,6 +132,11 @@ export function usePromptMiniAgent(ctx: MiniAgentContext) {
     // and report them as "already set". Tools still operate on live state.
     const stateForTurn = ctx.getStateContext()
 
+    // A transport failure must not become permanent conversation history. If
+    // the provider rejects this turn (most notably for a stale context-window
+    // setting), restore the pre-turn wire history so Retry is actually a retry
+    // instead of making the oversized request larger every time.
+    const turnStart = messages.value.length
     messages.value.push({ role: 'user', content: text })
 
     try {
@@ -203,6 +208,7 @@ export function usePromptMiniAgent(ctx: MiniAgentContext) {
       }
       lastReply.value = 'Stopped after too many steps. Try a more specific instruction.'
     } catch (e: any) {
+      messages.value.splice(turnStart)
       lastDebugTrace.value = e?.response?.data?.detail?.debug || null
       errorCode.value = e?.response?.data?.detail?.code || null
       error.value =

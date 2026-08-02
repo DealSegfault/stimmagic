@@ -6,6 +6,7 @@
 
 import type { Point } from './geometry';
 import { featherAlpha } from '../stack/featherAlpha';
+import { brushTipAlpha } from '../brush/tipMask';
 
 /**
  * Sample a pixel color from a canvas at the given position
@@ -194,7 +195,10 @@ export function blendColors(
  */
 export function createBrushMask(
   size: number,
-  hardness: number // 0-100
+  hardness: number, // 0-100
+  aspect = 1,
+  rotation = 0,
+  tipAssetId?: string,
 ): ImageData {
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -205,21 +209,26 @@ export function createBrushMask(
     return new ImageData(size, size);
   }
 
+  const image = ctx.createImageData(size, size);
   const radius = size / 2;
-  const hardnessRatio = hardness / 100;
-
-  // Create radial gradient
-  const gradient = ctx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-  gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
-  gradient.addColorStop(hardnessRatio, 'rgba(255, 255, 255, 1)');
-  gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
-
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(radius, radius, radius, 0, Math.PI * 2);
-  ctx.fill();
-
-  return ctx.getImageData(0, 0, size, size);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const alpha = brushTipAlpha(
+        (x + 0.5 - radius) / radius,
+        (y + 0.5 - radius) / radius,
+        hardness,
+        aspect,
+        rotation,
+        tipAssetId,
+      );
+      const offset = (y * size + x) * 4;
+      image.data[offset] = 255;
+      image.data[offset + 1] = 255;
+      image.data[offset + 2] = 255;
+      image.data[offset + 3] = Math.round(alpha * 255);
+    }
+  }
+  return image;
 }
 
 /**

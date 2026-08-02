@@ -22,6 +22,7 @@
  * the canvas back explicitly, while ungrouped tools retain their old toggle.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import Spinner from '../../components/ui/Spinner.vue'
 import Tooltip from '../../components/ui/Tooltip.vue'
 import PaintToolIcon from '../../components/generation/PaintToolIcon.vue'
 import ToolIcon from './ToolIcon.vue'
@@ -54,9 +55,13 @@ const props = defineProps<{
    * tool: this is true when no family is open and no region tool is armed.
    */
   pointerActive?: boolean
-  /** A prompt-to-mask request is in flight; the field shows it and re-arms after. */
+  /** A smart-selection request is in flight; the popup shares one busy state. */
   aiBusy?: boolean
-  /** The last prompt-to-mask failure, shown on the field until the next keystroke. */
+  /** Delayed busy feedback; false keeps fast selections visually instant. */
+  aiProgressVisible?: boolean
+  /** The gesture the status row is reporting on. */
+  aiAction?: 'find' | 'subject' | 'background' | 'canvas' | null
+  /** The last smart-selection failure, shown until the next request/input. */
   aiError?: string | null
 }>()
 
@@ -69,7 +74,8 @@ const emit = defineEmits<{
   invert: []
   clear: []
   morph: [number]
-  aiSelect: [string]
+  aiSelect: [{ prompt: string } | { intent: 'subject' | 'background' }]
+  aiCancel: []
 }>()
 
 const toolById = Object.fromEntries(SELECT_TOOLS.map(tool => [tool.id, tool]))
@@ -177,17 +183,27 @@ function onOutsidePointerDown(event: PointerEvent) {
 }
 
 function onWindowKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape') openGroup.value = null
+  if (event.key !== 'Escape') return
+  // Waiting on a model is the one thing Esc should reach first: cancelling the
+  // request is what the user means, not leaving the tool that issued it. The
+  // listener is capture-phase so the editor's own Esc never sees this one.
+  if (props.aiBusy) {
+    emit('aiCancel')
+    event.stopPropagation()
+    event.preventDefault()
+    return
+  }
+  openGroup.value = null
 }
 
 onMounted(() => {
   window.addEventListener('pointerdown', onOutsidePointerDown)
-  window.addEventListener('keydown', onWindowKeydown)
+  window.addEventListener('keydown', onWindowKeydown, true)
 })
 onBeforeUnmount(() => {
   cancelGroupPress()
   window.removeEventListener('pointerdown', onOutsidePointerDown)
-  window.removeEventListener('keydown', onWindowKeydown)
+  window.removeEventListener('keydown', onWindowKeydown, true)
 })
 
 /** Combine describes how the next gesture meets the visible selection, so its
@@ -250,10 +266,15 @@ const panelSliders = computed<PanelSlider[]>(() => {
 })
 
 /**
- * The Object tool's panel content: both of the tool's gestures are stated
- * there — the field for select-by-name, the placeholder caption for
- * click-to-select. The typed prompt survives a run — re-running and refining
- * are the common follow-ups.
+ * The Object tool's panel content keeps prompt/click selection together with
+ * the two whole-image BEN2 intents. The typed prompt survives a run —
+ * re-running and refining are the common follow-ups.
+ *
+ * The three gestures are NOT peers, so they are not three buttons: naming a
+ * thing is the field's own action and submits from inside it, while subject
+ * and background are one-tap picks below an "or". Whichever one is running,
+ * the picks give way to a single status row, so the spinner and its Cancel are
+ * always in the same place instead of hiding inside whichever control was hit.
  */
 const aiPrompt = ref('')
 /** One-shot distance used by the Expand/Contract selection actions. */
@@ -269,8 +290,23 @@ watch(() => props.armed, armed => {
 function submitAiPrompt() {
   const prompt = aiPrompt.value.trim()
   if (!prompt || props.aiBusy) return
-  emit('aiSelect', prompt)
+  emit('aiSelect', { prompt })
 }
+
+function selectIntent(intent: 'subject' | 'background') {
+  if (props.aiBusy) return
+  emit('aiSelect', { intent })
+}
+
+/** What the status row says while a request runs, named after the gesture. */
+const aiStatusLabel = computed(() => {
+  switch (props.aiAction) {
+    case 'find': return `Finding “${aiPrompt.value.trim()}”…`
+    case 'subject': return 'Selecting subject…'
+    case 'background': return 'Selecting background…'
+    default: return 'Selecting object…'
+  }
+})
 
 function morphSelection(direction: 1 | -1) {
   const amount = Math.max(1, Math.min(100, Math.round(Number(edgeAmount.value) || 1)))
@@ -307,37 +343,105 @@ function buttonClass(active: boolean, enabled = true) {
              bg-surface border border-edge-subtle rounded-lg shadow-lg"
     >
       <template v-if="armed === 'object'">
-        <div class="flex items-center gap-1.5">
-          <input
-            ref="aiInput"
-            v-model="aiPrompt"
-            type="text"
-            placeholder="Select by name, or click the object…"
-            aria-label="Select by name"
-            class="w-64 px-2.5 py-1.5 text-xs rounded-md bg-overlay-subtle/60 text-content
-                   placeholder:text-content-tertiary border focus:outline-none"
-            :class="[
-              shownAiError ? 'border-red-400/70' : 'border-edge-subtle focus:border-accent/60',
-              aiBusy ? 'animate-pulse' : '',
-            ]"
-            :disabled="aiBusy"
-            @input="shownAiError = null"
-            @keydown.enter.prevent="submitAiPrompt"
-          />
-          <button
-            type="button"
-            class="px-2.5 py-1.5 text-xs rounded-md whitespace-nowrap transition-colors"
-            :class="aiPrompt.trim() && !aiBusy
-              ? 'bg-accent/15 text-accent hover:bg-accent/25'
-              : 'text-content-tertiary/50 cursor-default'"
-            :disabled="!aiPrompt.trim() || aiBusy"
-            @click="submitAiPrompt"
-          >
-            {{ aiBusy ? 'Selecting…' : 'Select' }}
-          </button>
+        <div class="w-96">
+          <!-- Naming a thing is the FIELD's action: it submits from inside the
+               field, so nothing about it reads as a peer of the picks below. -->
+          <div class="relative transition-opacity" :class="aiProgressVisible ? 'opacity-60' : ''">
+            <input
+              ref="aiInput"
+              v-model="aiPrompt"
+              type="text"
+              placeholder="Describe what to select, or click it on canvas…"
+              aria-label="Describe what to select"
+              class="w-full pl-2.5 pr-9 py-1.5 text-xs rounded-md bg-overlay-subtle text-content
+                     placeholder:text-content-tertiary border outline-none transition-colors"
+              :class="shownAiError ? 'border-red-400/70' : 'border-transparent focus:border-accent'"
+              :style="aiBusy ? { cursor: aiProgressVisible ? 'progress' : 'default' } : undefined"
+              :disabled="aiBusy"
+              @input="shownAiError = null"
+              @keydown.enter.prevent="submitAiPrompt"
+            />
+            <Transition
+              enter-active-class="transition duration-150 ease-out"
+              enter-from-class="opacity-0 scale-75"
+              leave-active-class="transition duration-100 ease-in"
+              leave-to-class="opacity-0 scale-75"
+            >
+              <button
+                v-if="aiPrompt.trim()"
+                type="button"
+                class="absolute right-1 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md
+                       flex items-center justify-center bg-accent text-white transition-colors
+                       hover:bg-accent/90 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                aria-label="Find"
+                title="Find (Enter)"
+                :disabled="aiBusy"
+                @click="submitAiPrompt"
+              >
+                <ToolIcon name="cornerDownLeft" :size="13" />
+              </button>
+            </Transition>
+          </div>
+
+          <!-- One zone, fixed height: the picks while idle, the status row
+               while anything runs. Cancel never moves. -->
+          <div class="h-14">
+            <div v-if="!aiProgressVisible" class="h-full flex flex-col justify-end">
+              <div class="flex items-center gap-2 py-1.5 text-[10px] leading-4 text-content-muted select-none">
+                <span class="flex-1 h-px bg-edge-subtle" />
+                or
+                <span class="flex-1 h-px bg-edge-subtle" />
+              </div>
+              <div class="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  class="h-7 flex items-center justify-center gap-1.5 rounded-md text-xs font-medium
+                         bg-overlay-subtle text-content-secondary transition-colors
+                         hover:bg-overlay-hover hover:text-content
+                         focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                  :disabled="aiBusy"
+                  @click="selectIntent('subject')"
+                >
+                  <ToolIcon name="person" :size="13" />
+                  Subject
+                </button>
+                <button
+                  type="button"
+                  class="h-7 flex items-center justify-center gap-1.5 rounded-md text-xs font-medium
+                         bg-overlay-subtle text-content-secondary transition-colors
+                         hover:bg-overlay-hover hover:text-content
+                         focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                  :disabled="aiBusy"
+                  @click="selectIntent('background')"
+                >
+                  <ToolIcon name="image" :size="13" />
+                  Background
+                </button>
+              </div>
+            </div>
+            <div v-else class="h-full flex items-center gap-2">
+              <Spinner size="sm" />
+              <span class="flex-1 min-w-0 truncate text-xs text-content-secondary">
+                {{ aiStatusLabel }}
+              </span>
+              <button
+                type="button"
+                class="px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors
+                       focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                :class="buttonClass(false)"
+                @click="emit('aiCancel')"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
-        <!-- Failures only; the happy path needs no second line. -->
-        <p v-if="shownAiError" class="mt-1.5 text-xs text-red-400">{{ shownAiError }}</p>
+        <span class="sr-only" role="status" aria-live="polite">
+          {{ aiProgressVisible ? aiStatusLabel : '' }}
+        </span>
+        <p v-if="shownAiError && !aiBusy" role="alert" class="mt-1.5 text-xs text-red-400">
+          {{ shownAiError }}
+        </p>
       </template>
 
       <div v-else class="flex items-center gap-3">

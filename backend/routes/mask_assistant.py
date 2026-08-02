@@ -6,11 +6,11 @@ prompt_agent_tools.py), which calls /segment directly.
 """
 import base64
 import io
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import numpy as np
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from PIL import Image
 
 from core.logging import get_logger
@@ -83,14 +83,29 @@ def _convert_grayscale_to_rgba(mask_data: bytes) -> bytes:
 # confidence, one detection each. Point mode (tracker model): the object under
 # a click, returned at EVERY granularity the tracker offers (largest area
 # first) so the editor can default to the object and cycle finer on repeated
-# clicks without another request.
+# clicks without another request. Intent mode (BEN2 Base): one continuous
+# whole-subject alpha, or its exact alpha complement for the background.
 
 class SelectRequest(BaseModel):
     image_data_url: str  # PNG/JPEG data URL of the composite being selected over
     prompt: Optional[str] = None  # text mode: select every instance of a concept
     point: Optional[dict] = None  # click mode: {x, y} normalized 0-1; one object
+    intent: Optional[Literal["subject", "background"]] = None  # BEN2 whole-image matting
     confidence: float = 0.5
     max_detections: int = 8
+
+    @model_validator(mode="after")
+    def exactly_one_selector(self):
+        selectors = (
+            self.point is not None,
+            self.prompt is not None,
+            self.intent is not None,
+        )
+        if sum(selectors) != 1:
+            raise ValueError("Provide exactly one of point, prompt, or intent")
+        if self.prompt is not None and not self.prompt.strip():
+            raise ValueError("Prompt must not be blank")
+        return self
 
 
 class SelectDetection(BaseModel):
@@ -122,6 +137,33 @@ def _mask_png_to_selection_rgba(mask_png: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _alpha_to_selection_rgba(alpha: np.ndarray) -> str:
+    """Continuous grayscale alpha -> white RGBA selection without thresholding."""
+    alpha = np.asarray(alpha, dtype=np.uint8)
+    if alpha.ndim != 2:
+        raise ValueError(f"Expected a 2D alpha mask, got {alpha.shape}")
+    rgba = np.full((*alpha.shape, 4), 255, dtype=np.uint8)
+    rgba[:, :, 3] = alpha
+    buf = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _alpha_bbox(alpha: np.ndarray) -> dict:
+    """Bounding box metadata for one continuous selection mask."""
+    rows, cols = np.nonzero(alpha)
+    if not len(rows):
+        return {"x": 0, "y": 0, "width": 0, "height": 0}
+    x_min, x_max = int(cols.min()), int(cols.max())
+    y_min, y_max = int(rows.min()), int(rows.max())
+    return {
+        "x": x_min,
+        "y": y_min,
+        "width": x_max - x_min + 1,
+        "height": y_max - y_min + 1,
+    }
+
+
 class WarmRequest(BaseModel):
     image_data_url: str
 
@@ -143,13 +185,36 @@ async def warm_select(request: WarmRequest):
 
 
 @router.post("/select", response_model=SelectResponse)
-async def select_with_sam3(request: SelectRequest):
+async def select_mask(request: SelectRequest):
     """Segment the posted image for the editor's AI selection gestures."""
     try:
         image_bytes = _decode_data_url(request.image_data_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Bad image data URL: {e}")
 
+    if request.intent is not None:
+        from ben2_service import get_ben2_service
+        ben2_result = await get_ben2_service().subject_alpha(image_bytes)
+        if ben2_result.error:
+            return SelectResponse(success=False, error=ben2_result.error)
+        if ben2_result.alpha is None:
+            return SelectResponse(success=False, error="BEN2 Base returned no alpha mask")
+
+        # Background is defined as the exact 8-bit alpha complement. It must
+        # never become a second model request or a SAM3 text prompt.
+        alpha = (
+            ben2_result.alpha
+            if request.intent == "subject"
+            else np.subtract(255, ben2_result.alpha, dtype=np.uint8)
+        )
+        return SelectResponse(
+            success=True,
+            detections=[SelectDetection(
+                mask_data_url=_alpha_to_selection_rgba(alpha),
+                score=1.0,
+                bbox=_alpha_bbox(alpha),
+            )],
+        )
     if request.point is not None:
         from sam3_tracker_service import get_sam3_tracker_service
         result = await get_sam3_tracker_service().point_masks(
@@ -164,7 +229,9 @@ async def select_with_sam3(request: SelectRequest):
             max_detections=request.max_detections,
         )
     else:
-        raise HTTPException(status_code=400, detail="Provide prompt or point")
+        # SelectRequest validation makes this unreachable, but keeping the
+        # branch explicit makes direct calls fail clearly too.
+        raise HTTPException(status_code=400, detail="Provide exactly one of point, prompt, or intent")
 
     if result.error:
         return SelectResponse(success=False, error=result.error)

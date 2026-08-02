@@ -253,6 +253,7 @@ function chipClass(active: boolean, pending = false) {
       <ToolbarPopover
         v-if="sub !== 'patch'"
         :label="`${Math.round(state.retouchBrush.size)}px`"
+        :width="336"
       >
         <template #trigger>
           <span
@@ -574,6 +575,7 @@ function chipClass(active: boolean, pending = false) {
       <ToolbarPopover
         v-if="state.engineId === 'paint' || state.engineId === 'erase'"
         :label="`${Math.round(state.paintBrush.size)}px`"
+        :width="336"
       >
         <template #trigger>
           <span
@@ -586,6 +588,7 @@ function chipClass(active: boolean, pending = false) {
         </template>
         <BrushPicker
           :model-value="state.paintBrush"
+          :is-eraser="state.engineId === 'erase'"
           :stroke-color="state.paintColor"
           @update:model-value="emit('set', { paintBrush: $event })"
         />

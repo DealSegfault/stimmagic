@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 import asyncio
+import json
 import re
 
 from core.dependencies import get_db_session
@@ -1426,6 +1427,101 @@ class AgentStepResponse(BaseModel):
     debug: Optional[dict] = None
 
 
+# vLLM reports its enforced window in the 400 body when the configured window
+# is stale.  Remember that smaller cap for the lifetime of this backend process
+# so one mismatch costs at most one rejected request and later turns compact
+# before they reach the endpoint.  The key never leaves this process or enters
+# a prompt/cache prefix.
+_PROMPT_AGENT_CONTEXT_CAPS: dict[tuple[str, str], int] = {}
+_CONTEXT_LIMIT_PATTERNS = (
+    re.compile(r"maximum context length is\s*([\d,]+)\s*tokens", re.IGNORECASE),
+    re.compile(r"max(?:imum)?[_ -]?model[_ -]?len(?:gth)?[^\d]{0,20}([\d,]+)", re.IGNORECASE),
+)
+
+
+def _prompt_agent_context_key(config) -> tuple[str, str]:
+    return (
+        str(config.get_api_base() or "").rstrip("/"),
+        str(config.get_model() or ""),
+    )
+
+
+def _reported_provider_context_limit(exc: Exception) -> Optional[int]:
+    """Extract a provider-enforced context window from a rejected response."""
+    response = getattr(exc, "response", None)
+    if response is None or getattr(response, "status_code", None) not in {400, 413, 422}:
+        return None
+    try:
+        body = response.text or ""
+    except Exception:
+        return None
+    for pattern in _CONTEXT_LIMIT_PATTERNS:
+        match = pattern.search(body)
+        if not match:
+            continue
+        try:
+            limit = int(match.group(1).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if limit >= 1024:
+            return limit
+    return None
+
+
+def _prompt_agent_max_tokens(max_context_tokens: int) -> int:
+    """Keep reasoning headroom without claiming most of a small window."""
+    from agent.v2.conversation import response_reserve
+
+    reserve = response_reserve(max_context_tokens)
+    return min(max(reserve, 16_384), max(reserve, max_context_tokens // 4))
+
+
+def _prepare_prompt_agent_request(
+    *,
+    conversation_history: List[dict],
+    system_prompt: str,
+    reminders: List[str],
+    tools: List[dict],
+    max_context_tokens: int,
+) -> tuple[List[dict], int]:
+    """Build one cache-friendly, context-bounded ToolView LLM request.
+
+    Stable data stays stable and first: system prompt, tool schemas, then old
+    conversation turns.  Volatile editor state and time are injected only on
+    the final user message after compaction.  Tool definitions count toward
+    the provider's input even though they are outside ``messages``.
+    """
+    from agent.v2.conversation import (
+        _apply_token_budget_strict,
+        _estimate_tokens,
+        _inject_last_user_context,
+    )
+
+    max_context_tokens = max(1024, int(max_context_tokens))
+    max_tokens = _prompt_agent_max_tokens(max_context_tokens)
+    fixed = _estimate_tokens([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": "\n\n".join(reminders)},
+    ])
+    # Function definitions are serialized outside the messages list but vLLM
+    # tokenizes them as part of the prompt.  Match the main chat agent's
+    # conservative JSON-size estimate and retain the shared 20% safety margin.
+    tools_overhead = len(json.dumps(tools)) // 4 if tools else 0
+    history_budget = max(
+        0,
+        int(max_context_tokens * 0.80)
+        - fixed["total"]
+        - tools_overhead
+        - max_tokens,
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages += [dict(message) for message in conversation_history]
+    messages = _apply_token_budget_strict(messages, budget=history_budget)
+    _inject_last_user_context(messages, reminders)
+    return messages, max_tokens
+
+
 @router.post("/agent/step", response_model=AgentStepResponse)
 async def agent_step(request: AgentStepRequest):
     """One step of the prompt-editor mini-agent.
@@ -1435,7 +1531,6 @@ async def agent_step(request: AgentStepRequest):
     middle of the history to the real context window, and return the model's
     next assistant message (text + tool_calls).
     """
-    import json
     from llm import llm_completion, QuotaExceededError, ContentFilteredError, EntitlementError
     from llm_resolver import LLMUnavailableError, get_effective_llm_config
     from prompt_agent_tools import TOOL_SCHEMAS
@@ -1443,12 +1538,6 @@ async def agent_step(request: AgentStepRequest):
     # reserve, drop-the-middle compaction, and last-user-message reminder
     # injection are all the same helpers the v2 agent uses.
     from agent.v2.llm_options import agent_llm_options
-    from agent.v2.conversation import (
-        response_reserve,
-        _inject_last_user_context,
-        _apply_token_budget,
-        _estimate_tokens,
-    )
 
     try:
         llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
@@ -1493,31 +1582,19 @@ async def agent_step(request: AgentStepRequest):
             "</system-reminder>"
         )
 
-    # Budget the history against the real model window, then drop-the-middle via
-    # the shared compactor. Shallow-copy history dicts so the in-place reminder
-    # injection never mutates the request payload.
-    max_ctx = int(getattr(llm_config, "max_context_tokens", 128_000) or 128_000)
-    # Output reserve. The shared helper caps at 8k, which is ample when thinking
-    # is off. But a model that refuses to stop reasoning (ignores the
-    # enable_thinking:false lever) can burn the whole budget on scratchpad and
-    # return empty content — the silent-failure mode. Give this agent extra
-    # headroom (floor 16k) so a stubborn reasoner still has room to emit an
-    # answer/tool call after it thinks, but never claim more than a quarter of
-    # the window so small local models keep room for history.
-    _reserve = response_reserve(max_ctx)
-    max_tokens = min(max(_reserve, 16_384), max(_reserve, max_ctx // 4))
-    overhead = _estimate_tokens([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": "\n\n".join(reminders)},
-    ])
-    history_budget = max(1000, int(max_ctx * 0.80) - overhead["total"] - max_tokens)
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages += [dict(m) for m in request.conversation_history]
-    messages = _apply_token_budget(messages, budget=history_budget)
-    # Inject the state reminder (+ skill guidance, + timestamp) into the last
-    # user message in place.
-    _inject_last_user_context(messages, reminders)
+    configured_max_ctx = int(
+        getattr(llm_config, "max_context_tokens", 128_000) or 128_000
+    )
+    context_key = _prompt_agent_context_key(llm_config)
+    learned_cap = _PROMPT_AGENT_CONTEXT_CAPS.get(context_key)
+    max_ctx = min(configured_max_ctx, learned_cap) if learned_cap else configured_max_ctx
+    messages, max_tokens = _prepare_prompt_agent_request(
+        conversation_history=request.conversation_history,
+        system_prompt=system_prompt,
+        reminders=reminders,
+        tools=TOOL_SCHEMAS,
+        max_context_tokens=max_ctx,
+    )
 
     # Dev-mode diagnostic trace (see AgentStepRequest.debug). Built once, before
     # the LLM call, so it's available in every return path — success, refusal,
@@ -1557,17 +1634,48 @@ async def agent_step(request: AgentStepRequest):
 
     with llm_correlation_context("prompt-agent"):
         try:
-            resp = await llm_completion(
-                config=llm_config,
-                messages=messages,
-                tools=TOOL_SCHEMAS,
-                max_tokens=max_tokens,
-                # Stable system-prompt prefix + state-as-reminder-on-last-user-msg
-                # means the prefix is cacheable across turns (same as the v2 agent).
-                cacheable=True,
-                session_id=request.session_id,
-                **agent_llm_options(enable_thinking=request.thinking),
-            )
+            async def _complete():
+                return await llm_completion(
+                    config=llm_config,
+                    messages=messages,
+                    tools=TOOL_SCHEMAS,
+                    max_tokens=max_tokens,
+                    # Stable system/tool prefix + state on the final user message
+                    # preserves vLLM prefix caching across turns.
+                    cacheable=True,
+                    session_id=request.session_id,
+                    **agent_llm_options(enable_thinking=request.thinking),
+                )
+
+            try:
+                resp = await _complete()
+            except Exception as first_error:
+                reported_cap = _reported_provider_context_limit(first_error)
+                if not reported_cap or reported_cap >= max_ctx:
+                    raise
+
+                # A local runtime can enforce a smaller --max-model-len than its
+                # Stimma setting advertises. Learn the supplier's explicit cap,
+                # rebuild from the original history, and retry once. Nothing is
+                # inserted before the stable prompt/tool prefix.
+                _PROMPT_AGENT_CONTEXT_CAPS[context_key] = reported_cap
+                max_ctx = reported_cap
+                messages, max_tokens = _prepare_prompt_agent_request(
+                    conversation_history=request.conversation_history,
+                    system_prompt=system_prompt,
+                    reminders=reminders,
+                    tools=TOOL_SCHEMAS,
+                    max_context_tokens=max_ctx,
+                )
+                if debug_info is not None:
+                    debug_info["messages"] = [dict(message) for message in messages]
+                log.warning(
+                    "Prompt-agent learned a smaller provider context window; "
+                    "compacted and retrying",
+                    configured_context=configured_max_ctx,
+                    provider_context=reported_cap,
+                )
+                resp = await _complete()
             tool_calls = [AgentToolCall(id=tc.id, name=tc.name, arguments=tc.arguments) for tc in resp.tool_calls]
             if debug_info:
                 debug_info["raw_response"] = resp.content

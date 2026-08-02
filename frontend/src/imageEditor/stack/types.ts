@@ -30,6 +30,8 @@ export interface OpBlend {
 
 export interface Candidate {
   id: string
+  /** One user-triggered generation invocation; candidates in a batch share a UI row. */
+  batch_id?: string
   /** Bbox-cropped patch PNG — the only region the composite ever keeps. */
   patch_ref?: string
   /**

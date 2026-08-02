@@ -74,6 +74,7 @@ function maskDataUrlFor(canvas: HTMLCanvasElement, target: MaskFormat): string {
 
 export interface PendingSubmission {
   opId: string
+  batchId: string
   jobId: number
   status: 'queued' | 'processing' | 'failed'
   error?: string
@@ -134,10 +135,12 @@ export function useStackCandidates(deps: {
   const pending = shallowRef<PendingSubmission[]>([])
   const lastError = ref<string | null>(null)
   let placeholderSequence = -1
+  let candidateBatchSequence = 0
 
   /** Jobs this editor instance owns, and what to do with their outputs. */
   const jobIntents = new Map<number, {
     opId: string
+    batchId: string
     maskCanvas: HTMLCanvasElement
     sampledInputHash: string
     payloadToDocument?: number[]
@@ -156,6 +159,11 @@ export function useStackCandidates(deps: {
 
   function generatorInstanceId(): string {
     return `image-stack-${deps.documentId() ?? 'none'}`
+  }
+
+  function newCandidateBatchId(): string {
+    candidateBatchSequence += 1
+    return `candidate-batch-${Date.now().toString(36)}-${candidateBatchSequence.toString(36)}`
   }
 
   // -- submission ----------------------------------------------------------
@@ -287,6 +295,7 @@ export function useStackCandidates(deps: {
     lastError.value = null
     const maskSnapshot = snapshot(request.maskCanvas)
     const count = Math.max(1, Math.min(8, Math.floor(request.count) || 1))
+    const batchId = newCandidateBatchId()
     // The strip describes the requested work, not the speed of several HTTP
     // round trips. Reserve every slot before the first job is submitted.
     const placeholderIds = Array.from({ length: count }, () => placeholderSequence--)
@@ -294,6 +303,7 @@ export function useStackCandidates(deps: {
       ...pending.value,
       ...placeholderIds.map(jobId => ({
         opId: request.opId,
+        batchId,
         jobId,
         status: 'queued' as const,
       })),
@@ -327,6 +337,7 @@ export function useStackCandidates(deps: {
         jobIds.push(jobId)
         jobIntents.set(jobId, {
           opId: request.opId,
+          batchId,
           maskCanvas: maskSnapshot,
           sampledInputHash: request.sampledInputHash,
           payloadToDocument: request.payloadToDocument
@@ -427,6 +438,7 @@ export function useStackCandidates(deps: {
       )
       const candidate: Candidate = {
         id: candidateId,
+        batch_id: intent.batchId,
         patch_ref: ref,
         // The compact origin is part of the canonical transform. Keeping the
         // compatibility field as well lets older readers place the patch.

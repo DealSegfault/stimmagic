@@ -1,19 +1,24 @@
 <script setup lang="ts">
 /**
- * Ported from the retired editor's brush picker.
+ * Ported from the retired editor's brush picker, restyled as a compact stack.
  *
- * Kept intact because the preset
- * grid, the live canvas previews of each tip, and the size / hardness /
- * opacity / flow / spacing sliders are already the picker we want. A brush is
- * not a property of the layer it painted, so per the placement rule this hangs
- * off the toolbar rather than living in the Edits inspector.
+ * The picker is one component used from two anchors: the toolbar chip
+ * (ToolbarPopover) and the pen's quick popup beside the cursor
+ * (CursorPopover, opened by a stylus side button). Both places get the same
+ * layout: a live stroke ribbon, a flat preset grid, and full-row bar sliders
+ * whose whole height is the drag target — pen-sized, not mouse-sized.
  *
- * Adapted: preset icon names are plain strings here — the old icon registry is
- * not carried across, and the previews are drawn on canvas anyway.
+ * A brush is not a property of the layer it painted, so per the placement
+ * rule this hangs off the toolbar rather than living in the Edits inspector.
  */
-import { ref, computed, onMounted, onUnmounted, watch, nextTick, inject } from 'vue';
+import { ref, computed, onMounted, watch, nextTick, inject } from 'vue';
 import type { BrushSettings, BrushPreset } from './geometry';
 import type { ComputedRef } from 'vue';
+import { BRUSH_PRESETS, settingsForPreset } from '../brush/brushPresets';
+import { resolveBrushDab, seededRandom } from '../brush/brushRuntime';
+import { createBrushMask } from './pixelOps';
+import ToolIcon from '../components/ToolIcon.vue';
+import type { BrushInputSample } from '../brush/types';
 
 // Inject theme state
 const isDarkTheme = inject<ComputedRef<boolean>>('stimmaThemeIsDark', computed(() => true));
@@ -32,40 +37,18 @@ const emit = defineEmits<{
   (e: 'update:isEraser', value: boolean): void;
 }>();
 
-// Size presets: 6 sizes for each brush type
-const presetSizes = [2, 5, 10, 20, 40, 80];
-
-// Brush type base settings
-const brushTypes = {
-  hard: { hardness: 100, opacity: 100, flow: 100, spacing: 25, glow: 0, jitter: 0, scatter: 0 },
-  soft: { hardness: 30, opacity: 100, flow: 100, spacing: 25, glow: 0, jitter: 0, scatter: 0 },
-  air: { hardness: 5, opacity: 50, flow: 30, spacing: 10, glow: 0, jitter: 0, scatter: 0 },
-};
-
-// Generate presets for each type and size
-const hardPresets: BrushPreset[] = presetSizes.map(size => ({
-  id: `hard-${size}`,
-  name: `${size}`,
-  icon: 'hardRound',
-  settings: { size, ...brushTypes.hard },
+const presetDefinitionById = new Map(BRUSH_PRESETS.map(preset => [preset.id, preset]));
+const presets: BrushPreset[] = BRUSH_PRESETS.map(definition => ({
+  id: definition.id,
+  name: definition.name,
+  icon: definition.tip.kind,
+  settings: settingsForPreset(definition),
+  isEraser: definition.eraser,
 }));
-
-const softPresets: BrushPreset[] = presetSizes.map(size => ({
-  id: `soft-${size}`,
-  name: `${size}`,
-  icon: 'softRound',
-  settings: { size, ...brushTypes.soft },
-}));
-
-const airPresets: BrushPreset[] = presetSizes.map(size => ({
-  id: `air-${size}`,
-  name: `${size}`,
-  icon: 'airbrush',
-  settings: { size, ...brushTypes.air },
-}));
-
-// All presets combined for matching
-const presets: BrushPreset[] = [...hardPresets, ...softPresets, ...airPresets];
+// Flat, category-ordered. Eleven brushes don't need six section headers —
+// the stroke thumbnails and names carry it.
+const visiblePresets = computed(() =>
+  presets.filter(preset => !!preset.isEraser === props.isEraser));
 
 // Current brush settings (for editing)
 const editSettings = ref<BrushSettings>({ ...props.modelValue });
@@ -73,20 +56,8 @@ const activePresetId = ref<string | null>('hard-10');
 const isEraser = ref(false);
 
 // Canvas refs
-const previewCanvasRef = ref<HTMLCanvasElement | null>(null);
+const ribbonCanvasRef = ref<HTMLCanvasElement | null>(null);
 const presetCanvasRefs = ref<Map<string, HTMLCanvasElement>>(new Map());
-
-// Slider dragging state
-const isDraggingSize = ref(false);
-const isDraggingHardness = ref(false);
-const isDraggingOpacity = ref(false);
-const isDraggingFlow = ref(false);
-const isDraggingSpacing = ref(false);
-const sizeSliderRef = ref<HTMLElement | null>(null);
-const hardnessSliderRef = ref<HTMLElement | null>(null);
-const opacitySliderRef = ref<HTMLElement | null>(null);
-const flowSliderRef = ref<HTMLElement | null>(null);
-const spacingSliderRef = ref<HTMLElement | null>(null);
 
 // Store preset canvas ref
 function setPresetCanvasRef(el: HTMLCanvasElement | null, id: string) {
@@ -98,10 +69,10 @@ function setPresetCanvasRef(el: HTMLCanvasElement | null, id: string) {
 // Sync editSettings when modelValue changes externally
 watch(() => props.modelValue, (newVal) => {
   editSettings.value = { ...newVal };
-  drawMainPreview();
 }, { deep: true });
 
-// Sync isEraser when prop changes
+// Sync isEraser when prop changes; the visible grid swaps, so its canvases
+// remount and need a redraw.
 watch(() => props.isEraser, (newVal) => {
   isEraser.value = newVal;
   if (newVal) {
@@ -109,19 +80,16 @@ watch(() => props.isEraser, (newVal) => {
   } else if (activePresetId.value === 'eraser') {
     activePresetId.value = null;
   }
+  void nextTick(() => drawPresetPreviews());
 }, { immediate: true });
-
-// Watch stroke color changes to redraw preview
-watch(() => props.strokeColor, () => {
-  drawMainPreview();
-}, { deep: true });
 
 // Check if preset matches current settings - structural comparison
 function isPresetActive(preset: BrushPreset): boolean {
   if (preset.isEraser && !isEraser.value) return false;
   if (!preset.isEraser && isEraser.value) return false;
 
-  // Compare settings structurally
+  if (currentPresetId() === preset.id) return true;
+  // Old stored brushes have no id; compare their round-brush controls.
   const s = preset.settings;
   const current = editSettings.value;
   return (
@@ -132,6 +100,18 @@ function isPresetActive(preset: BrushPreset): boolean {
     s.spacing === current.spacing
   );
 }
+
+function currentPresetId(): string | undefined {
+  return editSettings.value.presetId;
+}
+
+/** What the ribbon names: the preset, or the settings drifted off one. */
+const ribbonLabel = computed(() => {
+  const definition = editSettings.value.presetId
+    ? presetDefinitionById.get(editSettings.value.presetId)
+    : undefined;
+  return definition ? `${definition.name} · ${definition.category}` : 'Custom brush';
+});
 
 // Select a preset. Pressure dynamics are a how-the-pen-behaves choice, not
 // part of the tip, so they survive switching presets.
@@ -145,7 +125,6 @@ function selectPreset(preset: BrushPreset) {
   };
   emit('update:modelValue', { ...editSettings.value });
   emit('update:isEraser', isEraser.value);
-  drawMainPreview();
 }
 
 function togglePressure(key: 'pressureSize' | 'pressureOpacity') {
@@ -155,100 +134,58 @@ function togglePressure(key: 'pressureSize' | 'pressureOpacity') {
 
 // Apply settings (called when sliders change)
 function applySettings() {
-  // Check if current settings match any preset
-  activePresetId.value = null;
-  for (const preset of presets) {
-    if (preset.isEraser === isEraser.value) {
-      const s = preset.settings;
-      if (
-        s.size === editSettings.value.size &&
-        s.hardness === editSettings.value.hardness &&
-        s.opacity === editSettings.value.opacity &&
-        s.flow === editSettings.value.flow &&
-        s.spacing === editSettings.value.spacing
-      ) {
-        activePresetId.value = preset.id;
-        break;
-      }
-    }
-  }
+  activePresetId.value = editSettings.value.presetId ?? null;
   emit('update:modelValue', { ...editSettings.value });
-  drawMainPreview();
 }
 
-// Slider update handlers
-function updateFromSlider(
-  sliderRef: HTMLElement | null,
-  x: number,
-  min: number,
-  max: number
-): number {
-  if (!sliderRef) return min;
-  const rect = sliderRef.getBoundingClientRect();
-  const ratio = Math.max(0, Math.min(1, (x - rect.left) / rect.width));
-  return Math.round(min + ratio * (max - min));
+// Bar sliders: the whole row is the track, label and value live inside it.
+type NumericBrushKey = 'size' | 'hardness' | 'opacity' | 'flow' | 'spacing';
+interface SliderDef {
+  key: NumericBrushKey;
+  label: string;
+  min: number;
+  max: number;
+  unit: string;
+  pressureKey?: 'pressureSize' | 'pressureOpacity';
+  pressureTitle?: string;
+}
+const SLIDERS: SliderDef[] = [
+  { key: 'size', label: 'Size', min: 1, max: 100, unit: 'px',
+    pressureKey: 'pressureSize', pressureTitle: 'Pen pressure controls brush size' },
+  { key: 'hardness', label: 'Hardness', min: 0, max: 100, unit: '%' },
+  { key: 'opacity', label: 'Opacity', min: 0, max: 100, unit: '%' },
+  { key: 'flow', label: 'Flow', min: 0, max: 100, unit: '%',
+    pressureKey: 'pressureOpacity', pressureTitle: 'Pen pressure controls paint flow' },
+  { key: 'spacing', label: 'Spacing', min: 1, max: 100, unit: '%' },
+];
+
+function sliderFillWidth(def: SliderDef): string {
+  const ratio = (editSettings.value[def.key] - def.min) / (def.max - def.min);
+  return `${Math.max(1.5, ratio * 100)}%`;
 }
 
-function handleSizeDown(e: MouseEvent) {
-  isDraggingSize.value = true;
-  editSettings.value.size = updateFromSlider(sizeSliderRef.value, e.clientX, 1, 100);
-  applySettings();
-}
-
-function handleHardnessDown(e: MouseEvent) {
-  isDraggingHardness.value = true;
-  editSettings.value.hardness = updateFromSlider(hardnessSliderRef.value, e.clientX, 0, 100);
-  applySettings();
-}
-
-function handleOpacityDown(e: MouseEvent) {
-  isDraggingOpacity.value = true;
-  editSettings.value.opacity = updateFromSlider(opacitySliderRef.value, e.clientX, 0, 100);
-  applySettings();
-}
-
-function handleFlowDown(e: MouseEvent) {
-  isDraggingFlow.value = true;
-  editSettings.value.flow = updateFromSlider(flowSliderRef.value, e.clientX, 0, 100);
-  applySettings();
-}
-
-function handleSpacingDown(e: MouseEvent) {
-  isDraggingSpacing.value = true;
-  editSettings.value.spacing = updateFromSlider(spacingSliderRef.value, e.clientX, 1, 100);
-  applySettings();
-}
-
-// Global mouse handlers
-function handleMouseMove(e: MouseEvent) {
-  if (isDraggingSize.value) {
-    editSettings.value.size = updateFromSlider(sizeSliderRef.value, e.clientX, 1, 100);
+function onSliderPointerDown(def: SliderDef, event: PointerEvent) {
+  const track = event.currentTarget as HTMLElement;
+  track.setPointerCapture(event.pointerId);
+  const apply = (clientX: number) => {
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const value = Math.round(def.min + ratio * (def.max - def.min));
+    if (editSettings.value[def.key] === value) return;
+    editSettings.value = { ...editSettings.value, [def.key]: value };
     applySettings();
-  }
-  if (isDraggingHardness.value) {
-    editSettings.value.hardness = updateFromSlider(hardnessSliderRef.value, e.clientX, 0, 100);
-    applySettings();
-  }
-  if (isDraggingOpacity.value) {
-    editSettings.value.opacity = updateFromSlider(opacitySliderRef.value, e.clientX, 0, 100);
-    applySettings();
-  }
-  if (isDraggingFlow.value) {
-    editSettings.value.flow = updateFromSlider(flowSliderRef.value, e.clientX, 0, 100);
-    applySettings();
-  }
-  if (isDraggingSpacing.value) {
-    editSettings.value.spacing = updateFromSlider(spacingSliderRef.value, e.clientX, 1, 100);
-    applySettings();
-  }
-}
-
-function handleMouseUp() {
-  isDraggingSize.value = false;
-  isDraggingHardness.value = false;
-  isDraggingOpacity.value = false;
-  isDraggingFlow.value = false;
-  isDraggingSpacing.value = false;
+  };
+  apply(event.clientX);
+  const move = (moveEvent: PointerEvent) => apply(moveEvent.clientX);
+  const finish = () => {
+    track.removeEventListener('pointermove', move);
+    track.removeEventListener('pointerup', finish);
+    track.removeEventListener('pointercancel', finish);
+  };
+  track.addEventListener('pointermove', move);
+  track.addEventListener('pointerup', finish);
+  track.addEventListener('pointercancel', finish);
+  event.preventDefault();
 }
 
 // Theme-aware colors
@@ -267,46 +204,111 @@ function token(name: string, fallback: string): string {
 const previewColors = computed(() => {
   if (isDarkTheme.value) {
     return {
-      bgStart: token('--color-surface-raised-rgb', '#2a2a2a'),
-      bgEnd: token('--color-matte-rgb', '#1a1a1a'),
       brush: { r: 255, g: 255, b: 255 },
       presetBg: token('--color-matte-rgb', '#1e1e1e'),
     };
   } else {
     return {
-      bgStart: '#e8e8e8',
-      bgEnd: '#d8d8d8',
       brush: { r: 40, g: 40, b: 40 },
-      presetBg: '#e0e0e0',
+      presetBg: token('--color-matte-rgb', '#e0e0e0'),
     };
   }
 });
 
-// Draw main preview (just a single brush stamp centered)
-function drawMainPreview() {
-  const canvas = previewCanvasRef.value;
+/**
+ * The ribbon: one stroke drawn across the full width with the CURRENT
+ * settings, sine pressure. It is the preview and the header in one — it
+ * answers "what will this brush do" while sliders are dragged.
+ */
+function drawRibbon() {
+  const canvas = ribbonCanvasRef.value;
   if (!canvas) return;
-
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const { size, hardness, opacity, flow } = editSettings.value;
-  const width = canvas.width;
-  const height = canvas.height;
-  const colors = previewColors.value;
+  const dpr = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || 312;
+  const height = canvas.clientHeight || 46;
+  canvas.width = Math.round(width * dpr);
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Subtle gradient background
-  const bgGradient = ctx.createLinearGradient(0, 0, width, height);
-  bgGradient.addColorStop(0, colors.bgStart);
-  bgGradient.addColorStop(1, colors.bgEnd);
-  ctx.fillStyle = bgGradient;
+  const colors = previewColors.value;
+  ctx.fillStyle = colors.presetBg;
   ctx.fillRect(0, 0, width, height);
 
-  // Draw brush stamp centered - scale to fit nicely
-  const maxDisplaySize = Math.min(width, height) - 8;
-  const displaySize = Math.min(maxDisplaySize, size * 1.2);
+  const settings = editSettings.value;
+  const definition = settings.presetId
+    ? presetDefinitionById.get(settings.presetId)
+    : undefined;
+  const random = seededRandom(definition?.previewSeed ?? 2166136261);
+  const steps = 40;
+  for (let index = 0; index <= steps; index += 1) {
+    const progress = index / steps;
+    const input: BrushInputSample = {
+      x: progress * width, y: height / 2, time: index * 8,
+      pressure: 0.14 + Math.sin(progress * Math.PI) * 0.86,
+      tiltX: 20, tiltY: 8, rotation: 0, tangentialPressure: 0,
+      pointer: 'pen', eraser: false, velocity: 220,
+      direction: 0, distance: progress * 160,
+    };
+    const x = 8 + progress * (width - 16);
+    // The bottom ~14px belong to the label strip; the stroke rides above it.
+    const strokeY = (height - 12) / 2;
+    if (definition) {
+      const dab = resolveBrushDab(input, settings, definition, random());
+      const displaySize = Math.max(1.5, Math.min(height - 16, dab.size));
+      drawMaskStamp(
+        ctx, x, strokeY, displaySize, dab.hardness,
+        dab.opacity, dab.flow, colors.brush, dab.aspect, dab.rotation, dab.tipAssetId,
+      );
+    } else {
+      // Legacy settings with no preset: a plain round stroke, tapered by hand.
+      const taper = 0.15 + Math.sin(progress * Math.PI) * 0.85;
+      const displaySize = Math.max(1.5, Math.min(height - 16, settings.size * taper));
+      drawMaskStamp(
+        ctx, x, strokeY, displaySize,
+        settings.hardness, settings.opacity, settings.flow, colors.brush,
+      );
+    }
+  }
 
-  drawBrushStamp(ctx, width / 2, height / 2, displaySize, hardness, opacity, flow, colors.brush);
+  // A big soft brush still bleeds into the strip; fade it back to the matte
+  // so the label reads over any stroke.
+  const matte = colors.presetBg.startsWith('rgb(') ? colors.presetBg : 'rgb(8 9 12)';
+  const scrim = ctx.createLinearGradient(0, height - 20, 0, height);
+  scrim.addColorStop(0, matte.replace(')', ' / 0)'));
+  scrim.addColorStop(0.55, matte.replace(')', ' / 0.8)'));
+  scrim.addColorStop(1, matte.replace(')', ' / 0.96)'));
+  ctx.fillStyle = scrim;
+  ctx.fillRect(0, height - 20, width, 20);
+}
+
+function drawMaskStamp(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  size: number,
+  hardness: number,
+  opacity: number,
+  flow: number,
+  color: { r: number; g: number; b: number },
+  aspect = 1,
+  rotation = 0,
+  tipAssetId?: string,
+) {
+  const mask = createBrushMask(Math.max(1, Math.ceil(size)), hardness, aspect, rotation, tipAssetId);
+  const stamp = document.createElement('canvas');
+  stamp.width = mask.width;
+  stamp.height = mask.height;
+  const stampCtx = stamp.getContext('2d')!;
+  stampCtx.putImageData(mask, 0, 0);
+  stampCtx.globalCompositeOperation = 'source-in';
+  stampCtx.fillStyle = `rgb(${color.r} ${color.g} ${color.b})`;
+  stampCtx.fillRect(0, 0, stamp.width, stamp.height);
+  ctx.globalAlpha = (opacity / 100) * (flow / 100);
+  ctx.drawImage(stamp, x - stamp.width / 2, y - stamp.height / 2);
+  ctx.globalAlpha = 1;
 }
 
 // Draw preset previews
@@ -320,7 +322,7 @@ function drawPresetPreviews() {
     const ctx = canvas.getContext('2d');
     if (!ctx) continue;
 
-    const { size, hardness, opacity, flow } = preset.settings;
+    const definition = presetDefinitionById.get(preset.id);
     const width = canvas.width;
     const height = canvas.height;
 
@@ -328,405 +330,123 @@ function drawPresetPreviews() {
     ctx.fillStyle = colors.presetBg;
     ctx.fillRect(0, 0, width, height);
 
-    // Scale brush size to fit in the small preview
-    // Map size 2-80 to display size 6-18
-    const displaySize = 6 + ((size - 2) / 78) * 12;
-
-    drawBrushStamp(ctx, width / 2, height / 2, displaySize, hardness, opacity, flow, colors.brush);
+    if (!definition) continue;
+    const random = seededRandom(definition.previewSeed);
+    for (let index = 0; index < 9; index += 1) {
+      const progress = index / 8;
+      const input: BrushInputSample = {
+        x: progress * width, y: height / 2, time: index * 8,
+        pressure: 0.14 + Math.sin(progress * Math.PI) * 0.86,
+        tiltX: 20, tiltY: 8, rotation: 0, tangentialPressure: 0,
+        pointer: 'pen', eraser: false, velocity: 220,
+        direction: 0, distance: progress * 100,
+      };
+      const dab = resolveBrushDab(input, preset.settings, definition, random());
+      const displaySize = Math.max(3, Math.min(16, 11 * dab.size / definition.base.size));
+      drawMaskStamp(
+        ctx, 4 + progress * (width - 8), height / 2, displaySize,
+        dab.hardness, dab.opacity, dab.flow, colors.brush,
+        dab.aspect, dab.rotation, dab.tipAssetId,
+      );
+    }
   }
 }
 
-// Draw a single brush stamp
-function drawBrushStamp(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  size: number,
-  hardness: number,
-  opacity: number,
-  flow: number,
-  color: { r: number; g: number; b: number }
-) {
-  const radius = size / 2;
-  const alpha = (opacity / 100) * (flow / 100);
-
-  // Create gradient for brush stamp
-  const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
-  const hardnessPoint = Math.max(0.01, hardness / 100);
-
-  gradient.addColorStop(0, `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`);
-  gradient.addColorStop(hardnessPoint, `rgba(${color.r}, ${color.g}, ${color.b}, ${alpha})`);
-  gradient.addColorStop(1, `rgba(${color.r}, ${color.g}, ${color.b}, 0)`);
-
-  ctx.fillStyle = gradient;
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.fill();
-}
-
-// Watch for settings changes to update preview
+// The ribbon tracks every settings change, external or local
 watch(editSettings, () => {
-  drawMainPreview();
+  drawRibbon();
 }, { deep: true });
 
 // Redraw when theme changes
 watch(isDarkTheme, () => {
-  drawMainPreview();
+  drawRibbon();
   drawPresetPreviews();
 });
 
 onMounted(() => {
-  document.addEventListener('mousemove', handleMouseMove);
-  document.addEventListener('mouseup', handleMouseUp);
   nextTick(() => {
-    drawMainPreview();
+    drawRibbon();
     drawPresetPreviews();
   });
 });
-
-onUnmounted(() => {
-  document.removeEventListener('mousemove', handleMouseMove);
-  document.removeEventListener('mouseup', handleMouseUp);
-});
-
-// Computed styles for slider positions
-const sizePos = computed(() => `${((editSettings.value.size - 1) / 99) * 100}%`);
-const hardnessPos = computed(() => `${editSettings.value.hardness}%`);
-const opacityPos = computed(() => `${editSettings.value.opacity}%`);
-const flowPos = computed(() => `${editSettings.value.flow}%`);
-const spacingPos = computed(() => `${((editSettings.value.spacing - 1) / 99) * 100}%`);
 
 // Expose isEraser for parent component
 defineExpose({ isEraser });
 </script>
 
 <template>
-  <div class="stimma-brush-picker">
-    <!-- Brush preview (single stamp) -->
-    <div class="stimma-brush-picker__preview">
-      <canvas
-        ref="previewCanvasRef"
-        class="stimma-brush-picker__preview-canvas"
-        width="80"
-        height="80"
-      />
+  <div class="flex flex-col gap-2 select-none">
+    <!-- Live stroke ribbon: preview + header in one -->
+    <div class="relative h-[46px] rounded-media overflow-hidden bg-matte">
+      <canvas ref="ribbonCanvasRef" class="absolute inset-0 w-full h-full" />
+      <span class="absolute left-2 bottom-1.5 text-[11px] leading-none text-content-secondary">
+        {{ ribbonLabel }}
+      </span>
+      <span class="absolute right-2 bottom-1.5 text-[11px] leading-none text-content-tertiary tabular-nums">
+        {{ editSettings.size }}px
+      </span>
     </div>
 
-    <!-- Preset grid: 3 rows (Hard, Soft, Air) x 6 sizes with visual previews -->
-    <div class="stimma-brush-picker__preset-grid">
-      <div class="stimma-brush-picker__preset-row">
-        <button
-          v-for="preset in hardPresets"
-          :key="preset.id"
-          class="stimma-brush-picker__preset"
-          :class="{ 'stimma-brush-picker__preset--active': isPresetActive(preset) }"
-          :title="`Hard ${preset.name}px`"
-          @click="selectPreset(preset)"
-        >
-          <canvas
-            :ref="(el) => setPresetCanvasRef(el as HTMLCanvasElement, preset.id)"
-            width="24"
-            height="24"
-          />
-        </button>
-      </div>
-      <div class="stimma-brush-picker__preset-row">
-        <button
-          v-for="preset in softPresets"
-          :key="preset.id"
-          class="stimma-brush-picker__preset"
-          :class="{ 'stimma-brush-picker__preset--active': isPresetActive(preset) }"
-          :title="`Soft ${preset.name}px`"
-          @click="selectPreset(preset)"
-        >
-          <canvas
-            :ref="(el) => setPresetCanvasRef(el as HTMLCanvasElement, preset.id)"
-            width="24"
-            height="24"
-          />
-        </button>
-      </div>
-      <div class="stimma-brush-picker__preset-row">
-        <button
-          v-for="preset in airPresets"
-          :key="preset.id"
-          class="stimma-brush-picker__preset"
-          :class="{ 'stimma-brush-picker__preset--active': isPresetActive(preset) }"
-          :title="`Air ${preset.name}px`"
-          @click="selectPreset(preset)"
-        >
-          <canvas
-            :ref="(el) => setPresetCanvasRef(el as HTMLCanvasElement, preset.id)"
-            width="24"
-            height="24"
-          />
-        </button>
-      </div>
+    <!-- Preset grid -->
+    <div class="grid grid-cols-3 gap-1">
+      <button
+        v-for="preset in visiblePresets"
+        :key="preset.id"
+        type="button"
+        class="min-w-0 rounded-md p-1 text-left"
+        :class="isPresetActive(preset)
+          ? 'bg-selection/15 ring-1 ring-inset ring-selection'
+          : 'hover:bg-overlay-hover'"
+        :title="preset.name"
+        @click="selectPreset(preset)"
+      >
+        <canvas
+          :ref="(el) => setPresetCanvasRef(el as HTMLCanvasElement, preset.id)"
+          class="block w-full h-[26px] rounded-media bg-matte"
+          width="100"
+          height="26"
+        />
+        <span
+          class="block mt-0.5 text-[10.5px] leading-[13px] truncate"
+          :class="isPresetActive(preset) ? 'text-content' : 'text-content-tertiary'"
+        >{{ preset.name }}</span>
+      </button>
     </div>
 
-    <!-- Sliders -->
-    <div class="stimma-brush-picker__sliders">
-      <div class="stimma-brush-picker__slider-group">
-        <div class="stimma-brush-picker__slider-header">
-          <label class="stimma-brush-picker__slider-label">Size</label>
-          <span class="stimma-brush-picker__slider-value">{{ editSettings.size }}px</span>
-        </div>
+    <!-- Bar sliders. Stylus dynamics sit ON the sliders they drive: the pen
+         glyph at the end of Size and Flow toggles pressure for that property.
+         Inert with a mouse, so they are safe to show unconditionally. -->
+    <div class="flex flex-col gap-1">
+      <div v-for="def in SLIDERS" :key="def.key" class="flex items-center gap-1.5">
         <div
-          ref="sizeSliderRef"
-          class="stimma-brush-picker__slider-track"
-          @mousedown="handleSizeDown"
+          class="relative flex-1 h-[26px] rounded-md bg-overlay-hover overflow-hidden cursor-ew-resize touch-none"
+          @pointerdown="onSliderPointerDown(def, $event)"
         >
-          <div class="stimma-brush-picker__slider-fill" :style="{ width: sizePos }" />
-          <div class="stimma-brush-picker__slider-handle" :style="{ left: sizePos }" />
+          <div
+            class="absolute inset-y-0 left-0 bg-accent/15 border-r-2 border-accent/85"
+            :style="{ width: sliderFillWidth(def) }"
+          />
+          <span class="absolute left-2 top-1/2 -translate-y-1/2 text-[11.5px] text-content-secondary pointer-events-none">
+            {{ def.label }}
+          </span>
+          <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[11.5px] text-content/85 tabular-nums pointer-events-none">
+            {{ editSettings[def.key] }}{{ def.unit }}
+          </span>
         </div>
-      </div>
-
-      <div class="stimma-brush-picker__slider-group">
-        <div class="stimma-brush-picker__slider-header">
-          <label class="stimma-brush-picker__slider-label">Hardness</label>
-          <span class="stimma-brush-picker__slider-value">{{ editSettings.hardness }}%</span>
-        </div>
-        <div
-          ref="hardnessSliderRef"
-          class="stimma-brush-picker__slider-track"
-          @mousedown="handleHardnessDown"
+        <button
+          v-if="def.pressureKey"
+          type="button"
+          class="w-[22px] h-[26px] flex items-center justify-center rounded-md"
+          :class="editSettings[def.pressureKey]
+            ? 'bg-accent/15 text-accent-hi'
+            : 'text-content-muted hover:bg-overlay-hover hover:text-content-secondary'"
+          :title="def.pressureTitle"
+          @click="togglePressure(def.pressureKey)"
         >
-          <div class="stimma-brush-picker__slider-fill" :style="{ width: hardnessPos }" />
-          <div class="stimma-brush-picker__slider-handle" :style="{ left: hardnessPos }" />
-        </div>
-      </div>
-
-      <div class="stimma-brush-picker__slider-group">
-        <div class="stimma-brush-picker__slider-header">
-          <label class="stimma-brush-picker__slider-label">Opacity</label>
-          <span class="stimma-brush-picker__slider-value">{{ editSettings.opacity }}%</span>
-        </div>
-        <div
-          ref="opacitySliderRef"
-          class="stimma-brush-picker__slider-track"
-          @mousedown="handleOpacityDown"
-        >
-          <div class="stimma-brush-picker__slider-fill" :style="{ width: opacityPos }" />
-          <div class="stimma-brush-picker__slider-handle" :style="{ left: opacityPos }" />
-        </div>
-      </div>
-
-      <div class="stimma-brush-picker__slider-group">
-        <div class="stimma-brush-picker__slider-header">
-          <label class="stimma-brush-picker__slider-label">Flow</label>
-          <span class="stimma-brush-picker__slider-value">{{ editSettings.flow }}%</span>
-        </div>
-        <div
-          ref="flowSliderRef"
-          class="stimma-brush-picker__slider-track"
-          @mousedown="handleFlowDown"
-        >
-          <div class="stimma-brush-picker__slider-fill" :style="{ width: flowPos }" />
-          <div class="stimma-brush-picker__slider-handle" :style="{ left: flowPos }" />
-        </div>
-      </div>
-
-      <div class="stimma-brush-picker__slider-group">
-        <div class="stimma-brush-picker__slider-header">
-          <label class="stimma-brush-picker__slider-label">Spacing</label>
-          <span class="stimma-brush-picker__slider-value">{{ editSettings.spacing }}%</span>
-        </div>
-        <div
-          ref="spacingSliderRef"
-          class="stimma-brush-picker__slider-track"
-          @mousedown="handleSpacingDown"
-        >
-          <div class="stimma-brush-picker__slider-fill" :style="{ width: spacingPos }" />
-          <div class="stimma-brush-picker__slider-handle" :style="{ left: spacingPos }" />
-        </div>
-      </div>
-
-      <!-- Stylus dynamics: which brush properties pen pressure drives.
-           Inert with a mouse, so the row is safe to show unconditionally. -->
-      <div class="stimma-brush-picker__pressure-row">
-        <label class="stimma-brush-picker__slider-label">Pen pressure</label>
-        <div class="stimma-brush-picker__pressure-toggles">
-          <button
-            class="stimma-brush-picker__pressure-toggle"
-            :class="{ 'stimma-brush-picker__pressure-toggle--active': editSettings.pressureSize }"
-            title="Pen pressure controls brush size"
-            @click="togglePressure('pressureSize')"
-          >
-            Size
-          </button>
-          <button
-            class="stimma-brush-picker__pressure-toggle"
-            :class="{ 'stimma-brush-picker__pressure-toggle--active': editSettings.pressureOpacity }"
-            title="Pen pressure controls paint flow"
-            @click="togglePressure('pressureOpacity')"
-          >
-            Flow
-          </button>
-        </div>
+          <ToolIcon name="pencil" :size="12" />
+        </button>
+        <div v-else class="w-[22px]" />
       </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.stimma-brush-picker {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-/* Main preview */
-.stimma-brush-picker__preview {
-  display: flex;
-  justify-content: center;
-  padding: 8px 0;
-}
-
-.stimma-brush-picker__preview-canvas {
-  width: 80px;
-  height: 80px;
-  border-radius: var(--stimma-border-radius-lg);
-}
-
-/* Preset grid */
-.stimma-brush-picker__preset-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  background: rgb(var(--stimma-color-foreground) / 0.05);
-  border-radius: var(--stimma-border-radius);
-  padding: 4px;
-}
-
-.stimma-brush-picker__preset-row {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 4px;
-}
-
-.stimma-brush-picker__preset {
-  aspect-ratio: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--stimma-border-radius-sm);
-  border: 2px solid transparent;
-  background: transparent;
-  cursor: pointer;
-  transition: all 0.15s;
-  padding: 0;
-  overflow: hidden;
-}
-
-.stimma-brush-picker__preset canvas {
-  width: 100%;
-  height: 100%;
-  border-radius: var(--stimma-border-radius-sm);
-}
-
-.stimma-brush-picker__preset:hover {
-  border-color: rgb(var(--stimma-color-foreground) / 0.4);
-}
-
-.stimma-brush-picker__preset--active {
-  border-color: rgb(var(--stimma-color-primary));
-  box-shadow: 0 0 0 1px rgb(var(--stimma-color-primary));
-}
-
-/* Sliders */
-.stimma-brush-picker__sliders {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.stimma-brush-picker__slider-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.stimma-brush-picker__slider-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.stimma-brush-picker__slider-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: rgb(var(--stimma-color-foreground) / 0.8);
-}
-
-.stimma-brush-picker__slider-value {
-  font-size: 12px;
-  font-weight: 500;
-  color: rgb(var(--stimma-color-foreground) / 0.6);
-  min-width: 36px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.stimma-brush-picker__slider-track {
-  height: 6px;
-  background: rgb(var(--stimma-color-foreground) / 0.15);
-  border-radius: var(--stimma-border-radius-round);
-  position: relative;
-  cursor: pointer;
-}
-
-.stimma-brush-picker__slider-fill {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 100%;
-  background: rgb(var(--stimma-color-primary));
-  border-radius: var(--stimma-border-radius-round);
-}
-
-.stimma-brush-picker__pressure-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: 2px;
-}
-
-.stimma-brush-picker__pressure-toggles {
-  display: flex;
-  gap: 4px;
-}
-
-.stimma-brush-picker__pressure-toggle {
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: var(--stimma-border-radius);
-  border: 1px solid rgb(var(--stimma-color-foreground) / 0.15);
-  background: transparent;
-  color: rgb(var(--stimma-color-foreground) / 0.6);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.stimma-brush-picker__pressure-toggle:hover {
-  border-color: rgb(var(--stimma-color-foreground) / 0.4);
-}
-
-.stimma-brush-picker__pressure-toggle--active {
-  border-color: rgb(var(--stimma-color-primary));
-  background: rgb(var(--stimma-color-primary) / 0.15);
-  color: rgb(var(--stimma-color-foreground) / 0.9);
-}
-
-.stimma-brush-picker__slider-handle {
-  position: absolute;
-  top: 50%;
-  width: 14px;
-  height: 14px;
-  background: white;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-  pointer-events: none;
-}
-</style>

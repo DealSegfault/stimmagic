@@ -22,6 +22,13 @@ export interface BrushSettings {
   // Stylus dynamics; ignored for mouse strokes (pressure is null there)
   pressureSize?: boolean;     // pen pressure scales dab size
   pressureOpacity?: boolean;  // pen pressure scales dab flow
+  /** Versioned Phase-2 brush behavior; old settings omit it and use round paint. */
+  presetId?: string;
+  /** Resolved by the brush runtime for each dab. */
+  aspect?: number;
+  rotation?: number;
+  /** Content id for a reusable grayscale tip mask. */
+  tipAssetId?: string;
 }
 
 /**
