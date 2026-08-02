@@ -417,9 +417,7 @@
 
       <!-- Versions are saved states of this Asset; Media remains implementation detail. -->
       <div v-if="currentItem.asset_id && versions.length > 1" class="mb-6">
-        <h4 class="m-0 text-xs font-semibold text-content-secondary">
-          Versions <span class="normal-case tracking-normal text-content-muted">{{ versions.length }}</span>
-        </h4>
+        <h4 class="m-0 text-xs font-semibold text-content-secondary">Versions</h4>
         <div class="mt-2">
           <div
             v-for="version in visibleVersions"

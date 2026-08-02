@@ -158,11 +158,16 @@
                   {{ formatSimilarity(rowItem.similarity_score) }}
                 </div>
 
+                <!-- Version depth: ambient fact, no chip. Persistent so sweeping the grid doesn't flicker. -->
                 <div
                   v-if="rowItem.revision_count > 1"
-                  class="rounded-md bg-black/70 px-1.5 py-1 text-[11px] font-medium text-white opacity-0 backdrop-blur-md transition-opacity group-hover:opacity-100"
+                  class="pointer-events-none flex items-center gap-1 pl-px text-white/65 transition-colors duration-150 group-hover:text-white/95 drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]"
                 >
-                  {{ rowItem.revision_count }} versions
+                  <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M5.75 3.25h6a1 1 0 0 1 1 1v6" opacity="0.55" />
+                    <rect x="2.75" y="5.75" width="7.5" height="7.5" rx="1.25" />
+                  </svg>
+                  <span class="font-mono text-[10px] leading-none tabular-nums">{{ rowItem.revision_count }}</span>
                 </div>
 
                 <!-- Auto-delete time remaining badge -->
