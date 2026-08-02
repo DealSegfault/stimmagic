@@ -3300,22 +3300,22 @@ watch(selectedShape, shape => {
 /**
  * The two splits in the right-hand column, both dragged and both remembered.
  *
- * How much room the stack deserves against the canvas, and Properties against
- * the stack, depends on what the user is doing — an Adjust panel wants height,
- * a long stack wants the opposite. Neither is a constant worth guessing.
+ * How much room the stack deserves against the canvas is the user's call.
+ * Properties starts larger because its control surfaces are usually the active
+ * work, while the stack remains available above it.
  */
 const sidebarWidth = ref(Number(localStorage.getItem('stimma_editor_sidebar')) || 320)
 const propertiesHeight = ref(Number(localStorage.getItem('stimma_editor_properties')) || 0)
 const sidebarEl = ref<HTMLElement | null>(null)
 
 /**
- * Two fifths of the stack by default, measured rather than guessed — a pixel
+ * Two thirds of the sidebar by default, measured rather than guessed — a pixel
  * constant is the wrong height on every window that is not the one it was
  * picked on. Only until the user drags it, after which their number wins.
  */
 watch(sidebarEl, element => {
   if (!element || propertiesHeight.value) return
-  propertiesHeight.value = Math.round(element.getBoundingClientRect().height * 0.4)
+  propertiesHeight.value = Math.round(element.getBoundingClientRect().height * (2 / 3))
 }, { flush: 'post' })
 
 /** Drag along one axis, clamped, persisted on release. */
@@ -3348,7 +3348,19 @@ function startResize(
 const startSidebarResize = (event: PointerEvent) =>
   startResize(event, sidebarWidth, 'stimma_editor_sidebar', 'x', 260, 640)
 const startPropertiesResize = (event: PointerEvent) =>
-  startResize(event, propertiesHeight, 'stimma_editor_properties', 'y', 140, 760)
+  startResize(
+    event,
+    propertiesHeight,
+    'stimma_editor_properties',
+    'y',
+    140,
+    Math.round((sidebarEl.value?.getBoundingClientRect().height ?? 1140) * (2 / 3)),
+  )
+
+const propertiesPanelStyle = computed(() => ({
+  height: propertiesHeight.value + 'px',
+  maxHeight: '66.6667%',
+}))
 
 const imagePalette = ref<Array<{ r: number; g: number; b: number; a?: number }>>([])
 
@@ -6762,9 +6774,8 @@ watch(
 
         <!-- Inspector: the selected row's full control surface, under the
              stack. The row keeps only the eye as an immediate affordance. -->
-        <!-- Properties is half the sidebar: these panels carry a dozen
-             controls each, and a 288px window turned every one of them into a
-             scrolling peephole. -->
+        <!-- Properties gets two thirds of the sidebar by default: these panels
+             carry the active controls, while Edits remains available above. -->
         <div
           v-if="inspectorKind !== null"
           class="h-1 shrink-0 cursor-row-resize bg-edge-subtle/40 hover:bg-accent/40 transition-colors"
@@ -6773,7 +6784,7 @@ watch(
         <div
           v-if="inspectorKind === 'annotation' && selectedShape"
           class="shrink-0 border-t border-edge-subtle flex flex-col"
-          :style="{ height: propertiesHeight + 'px' }"
+          :style="propertiesPanelStyle"
         >
           <div
             class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
@@ -6798,7 +6809,7 @@ watch(
         <div
           v-else-if="inspectorKind === 'retouch' && selectedRetouchRegion"
           class="shrink-0 border-t border-edge-subtle flex flex-col"
-          :style="{ height: propertiesHeight + 'px' }"
+          :style="propertiesPanelStyle"
         >
           <div
             class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
@@ -6830,7 +6841,7 @@ watch(
         <div
           v-else-if="inspectorKind === 'model' && selectedModelOp"
           class="shrink-0 border-t border-edge-subtle flex flex-col"
-          :style="{ height: propertiesHeight + 'px' }"
+          :style="propertiesPanelStyle"
         >
           <div
             class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60
@@ -6866,7 +6877,7 @@ watch(
         <div
           v-else-if="showsAdjustInspector"
           class="shrink-0 border-t border-edge-subtle flex flex-col"
-          :style="{ height: propertiesHeight + 'px' }"
+          :style="propertiesPanelStyle"
         >
           <div
             class="px-3 h-11 flex items-center shrink-0 bg-surface-raised/60

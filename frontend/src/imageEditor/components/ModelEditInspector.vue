@@ -8,6 +8,7 @@
  */
 import { computed, watch } from 'vue'
 import Button from '../../components/ui/Button.vue'
+import ScrubValue from '../../components/ui/ScrubValue.vue'
 import ReferenceImageStrip from './ReferenceImageStrip.vue'
 import ToolAdvancedParams from './ToolAdvancedParams.vue'
 import { useLoraPool } from '../../composables/useLoraPool'
@@ -17,12 +18,7 @@ import {
   modelReferenceLimits,
   sanitizeModelToolParams,
 } from '../stack/modelToolParams'
-import {
-  FEATHER_SLIDER_MAX,
-  MAX_FEATHER_PX,
-  featherPxFromSlider,
-  featherSliderFromPx,
-} from '../stack/featherScale'
+import { MAX_FEATHER_PX } from '../stack/featherScale'
 
 const props = defineProps<{
   op: GenerativeOp
@@ -166,58 +162,37 @@ watch(
 
     <section class="space-y-3">
       <h3 class="text-xs font-semibold text-content-secondary">Blend</h3>
-      <label class="grid grid-cols-[64px_1fr_38px] items-center gap-2 text-xs">
+      <label class="flex items-center justify-between gap-3 text-xs">
         <span class="text-content-tertiary">Opacity</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          :value="Math.round(blend.opacity * 100)"
-          @input="emit('blend', {
-            opacity: Number(($event.target as HTMLInputElement).value) / 100,
-          })"
-          @change="emit('blendCommit')"
-        />
-        <span class="text-right font-mono tabular-nums text-content-secondary">
-          {{ Math.round(blend.opacity * 100) }}%
+        <span class="min-w-12 text-right">
+          <ScrubValue
+            :model-value="Math.round(blend.opacity * 100)"
+            :min="0"
+            :max="100"
+            :step="1"
+            :non-default="blend.opacity !== 1"
+            :format="value => `${value}%`"
+            title="Drag to adjust opacity · click for slider"
+            @update:model-value="emit('blend', { opacity: $event / 100 })"
+            @commit="emit('blendCommit')"
+          />
         </span>
       </label>
-      <label class="grid grid-cols-[64px_1fr_58px] items-center gap-2 text-xs">
+      <label class="flex items-center justify-between gap-3 text-xs">
         <span class="text-content-tertiary">Feather</span>
-        <input
-          type="range"
-          min="0"
-          :max="FEATHER_SLIDER_MAX"
-          step="1"
-          :value="featherSliderFromPx(blend.feather_px)"
-          @input="emit('blend', {
-            feather_px: featherPxFromSlider(
-              Number(($event.target as HTMLInputElement).value),
-            ),
-          })"
-          @change="emit('blendCommit')"
-        />
-        <input
-          type="number"
-          min="0"
-          :max="MAX_FEATHER_PX"
-          step="1"
-          :value="Math.round(blend.feather_px)"
-          aria-label="Feather in image pixels"
-          class="w-full rounded-md border border-transparent bg-overlay-subtle px-1.5 py-1
-                 text-right font-mono tabular-nums text-content-secondary outline-none
-                 focus:border-accent focus-visible:ring-2 ring-accent/40"
-          @change="emit('blend', {
-            feather_px: Math.max(
-              0,
-              Math.min(
-                MAX_FEATHER_PX,
-                Number(($event.target as HTMLInputElement).value),
-              ),
-            ),
-          }); emit('blendCommit')"
-        />
+        <span class="min-w-12 text-right">
+          <ScrubValue
+            :model-value="Math.round(blend.feather_px)"
+            :min="0"
+            :max="MAX_FEATHER_PX"
+            :step="1"
+            :non-default="blend.feather_px !== 6"
+            :format="value => `${value}px`"
+            title="Drag to adjust feather · click for slider"
+            @update:model-value="emit('blend', { feather_px: $event })"
+            @commit="emit('blendCommit')"
+          />
+        </span>
       </label>
     </section>
   </div>

@@ -12,12 +12,8 @@ import { gradientSliderOf, isGradientMask, withGradientSlider } from '../stack/r
 import type { ToneCurveHistogram } from '../stack/toneCurve'
 import LookControls from './LookControls.vue'
 import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
-import {
-  FEATHER_SLIDER_MAX,
-  MAX_FEATHER_PX,
-  featherPxFromSlider,
-  featherSliderFromPx,
-} from '../stack/featherScale'
+import ScrubValue from '../../components/ui/ScrubValue.vue'
+import { MAX_FEATHER_PX } from '../stack/featherScale'
 
 const props = defineProps<{
   region: RetouchRegion
@@ -159,22 +155,26 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
     <section v-if="isAdjustment" class="mt-5 space-y-1.5">
       <h3 class="text-xs font-semibold text-content-secondary">Scope</h3>
       <div class="flex items-center gap-2">
-        <span class="flex-1 text-xs text-content-tertiary">Selection</span>
+        <span class="min-w-0 flex-1 text-xs text-content-tertiary">Selection</span>
         <button
           type="button"
-          class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+          class="shrink-0 whitespace-nowrap px-2 py-1.5 text-xs rounded-md border border-edge-subtle
                  text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          aria-label="Edit selection mask"
+          title="Edit selection mask"
           @click="emit('editMask')"
         >
-          Edit mask
+          Edit
         </button>
         <button
           type="button"
-          class="px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+          class="shrink-0 whitespace-nowrap px-2 py-1.5 text-xs rounded-md border border-edge-subtle
                  text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          aria-label="Apply adjustment to whole image"
+          title="Apply adjustment to whole image"
           @click="emit('unscope')"
         >
-          Apply to whole image
+          Whole image
         </button>
       </div>
     </section>
@@ -216,52 +216,39 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
 
     <section class="space-y-3" :class="(isAdjustment || gradient) && 'mt-5'">
       <h3 class="text-xs font-semibold text-content-secondary">Blend</h3>
-      <label class="grid grid-cols-[64px_1fr_38px] items-center gap-2 text-xs">
+      <label class="flex items-center justify-between gap-3 text-xs">
         <span class="text-content-tertiary">Opacity</span>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          :value="Math.round(region.settings.opacity * 100)"
-          @input="emit('settings', {
-            opacity: Number(($event.target as HTMLInputElement).value) / 100,
-          }, `retouch-opacity:${region.id}`)"
-          @change="emit('settingsCommit')"
-        />
-        <span class="font-mono tabular-nums text-right text-content-secondary">
-          {{ Math.round(region.settings.opacity * 100) }}%
+        <span class="min-w-12 text-right">
+          <ScrubValue
+            :model-value="Math.round(region.settings.opacity * 100)"
+            :min="0"
+            :max="100"
+            :step="1"
+            :non-default="region.settings.opacity !== 1"
+            :format="value => `${value}%`"
+            title="Drag to adjust opacity · click for slider"
+            @update:model-value="emit('settings', {
+              opacity: $event / 100,
+            }, `retouch-opacity:${region.id}`)"
+            @commit="emit('settingsCommit')"
+          />
         </span>
       </label>
-      <label class="grid grid-cols-[64px_1fr_58px] items-center gap-2 text-xs">
+      <label class="flex items-center justify-between gap-3 text-xs">
         <span class="text-content-tertiary">Feather</span>
-        <input
-          type="range"
-          min="0"
-          :max="FEATHER_SLIDER_MAX"
-          step="1"
-          :value="featherSliderFromPx(region.settings.feather_px)"
-          @input="setFeather(
-            region,
-            featherPxFromSlider(Number(($event.target as HTMLInputElement).value)),
-          )"
-          @change="emit('settingsCommit')"
-        />
-        <input
-          type="number"
-          min="0"
-          :max="MAX_FEATHER_PX"
-          step="1"
-          :value="Math.round(region.settings.feather_px)"
-          aria-label="Feather in image pixels"
-          class="w-full rounded-control border border-edge-subtle bg-surface-raised px-1.5 py-1
-                 text-right font-mono tabular-nums text-content-secondary
-                 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-          @change="setFeather(
-            region,
-            Number(($event.target as HTMLInputElement).value),
-          ); emit('settingsCommit')"
-        />
+        <span class="min-w-12 text-right">
+          <ScrubValue
+            :model-value="Math.round(region.settings.feather_px)"
+            :min="0"
+            :max="MAX_FEATHER_PX"
+            :step="1"
+            :non-default="region.settings.feather_px !== 0"
+            :format="value => `${value}px`"
+            title="Drag to adjust feather · click for slider"
+            @update:model-value="setFeather(region, $event)"
+            @commit="emit('settingsCommit')"
+          />
+        </span>
       </label>
     </section>
   </div>

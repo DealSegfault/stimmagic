@@ -93,9 +93,11 @@ function forwardChange(patch: Record<string, any>, coalesceKey: string) {
       />
       <label
         v-else
-        class="grid grid-cols-[112px_1fr_42px] items-center gap-2 text-xs"
+        class="grid grid-cols-[88px_minmax(0,1fr)_32px] items-center gap-1.5 text-xs"
       >
-        <span class="text-content-tertiary">{{ control.label }}</span>
+        <span class="truncate text-content-tertiary" :title="control.label">
+          {{ control.label }}
+        </span>
         <input
           type="range"
           class="min-w-0"

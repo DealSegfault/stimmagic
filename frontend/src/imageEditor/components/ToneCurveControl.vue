@@ -276,13 +276,17 @@ function reset() {
     <!-- The plot is capped, so the rows that belong to it are capped with it —
          a narrow graph between full-width rows reads as a mistake. -->
     <div class="mx-auto w-full max-w-[264px] space-y-2.5">
-      <div class="flex items-center justify-between gap-2">
-        <div class="inline-flex items-center gap-0.5" role="radiogroup" aria-label="Curve channel">
+      <div class="grid grid-cols-[minmax(0,1fr)_32px] items-center gap-1.5">
+        <div
+          class="grid min-w-0 grid-cols-4 items-center gap-1"
+          role="radiogroup"
+          aria-label="Curve channel"
+        >
           <button
             v-for="option in TONE_CURVE_CHANNELS"
             :key="option"
             type="button"
-            class="min-w-8 rounded-md px-2 py-1 text-[11px] font-medium
+            class="min-w-0 rounded-md px-1.5 py-1 text-[11px] font-medium
                    transition-colors duration-150
                    focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
             :class="[
@@ -297,21 +301,35 @@ function reset() {
           </button>
         </div>
 
-        <select
-          class="min-w-0 rounded-md bg-surface-raised px-2 py-1 text-[11px]
-                 text-content-secondary focus-visible:outline-none
-                 focus-visible:ring-2 ring-accent/60"
-          aria-label="Curve preset"
-          :disabled="disabled"
-          value=""
-          @change="applyPreset(($event.target as HTMLSelectElement).value);
-                   ($event.target as HTMLSelectElement).value = ''"
+        <span
+          class="relative block h-7 w-8 rounded-md bg-surface-raised
+                 focus-within:ring-2 ring-accent/60"
+          title="Curve presets"
         >
-          <option value="" disabled>Preset</option>
-          <option value="linear">Linear</option>
-          <option value="medium">Medium contrast</option>
-          <option value="strong">Strong contrast</option>
-        </select>
+          <select
+            class="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0
+                   focus-visible:outline-none disabled:cursor-not-allowed"
+            aria-label="Curve presets"
+            :disabled="disabled"
+            value=""
+            @change="applyPreset(($event.target as HTMLSelectElement).value);
+                     ($event.target as HTMLSelectElement).value = ''"
+          >
+            <option value="" disabled class="text-content-secondary">Curve presets</option>
+            <option value="linear" class="text-content-secondary">Linear</option>
+            <option value="medium" class="text-content-secondary">Medium contrast</option>
+            <option value="strong" class="text-content-secondary">Strong contrast</option>
+          </select>
+          <svg
+            viewBox="0 0 20 20"
+            fill="none"
+            class="pointer-events-none absolute left-1/2 top-1/2 h-4 w-4
+                   -translate-x-1/2 -translate-y-1/2 text-content-tertiary"
+            aria-hidden="true"
+          >
+            <path d="m6 8 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </span>
       </div>
 
       <!-- Square by construction: input and output share the 0–255 scale, so the

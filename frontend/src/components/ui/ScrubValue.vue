@@ -27,6 +27,7 @@
             :value="modelValue"
             :min="min" :max="max" :step="step"
             @input="emitClamped(Number(($event.target as HTMLInputElement).value))"
+            @change="emit('commit')"
             class="flex-1 h-1 bg-overlay-subtle rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-accent [&::-moz-range-thumb]:appearance-none [&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-accent [&::-moz-range-thumb]:border-0"
           />
           <input
@@ -65,7 +66,10 @@ const props = withDefaults(defineProps<{
   title?: string
 }>(), { min: 0, max: 100, step: 1, disabled: false, nonDefault: false })
 
-const emit = defineEmits<{ (e: 'update:modelValue', v: number): void }>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', v: number): void
+  (e: 'commit'): void
+}>()
 
 const open = ref(false)
 const anchorRef = ref<HTMLElement | null>(null)
@@ -124,7 +128,8 @@ function onPointerDown(e: PointerEvent) {
     el.releasePointerCapture(e.pointerId)
     el.removeEventListener('pointermove', onMove)
     el.removeEventListener('pointerup', onUp)
-    if (!moved) openPopover()
+    if (moved) emit('commit')
+    else openPopover()
   }
   el.addEventListener('pointermove', onMove)
   el.addEventListener('pointerup', onUp)
@@ -133,6 +138,9 @@ function onPointerDown(e: PointerEvent) {
 function commitText(e: Event) {
   const raw = (e.target as HTMLInputElement).value.replace(/[^\d.eE+-]/g, '')
   const num = Number(raw)
-  if (!isNaN(num) && raw !== '') emitClamped(num)
+  if (!isNaN(num) && raw !== '') {
+    emitClamped(num)
+    emit('commit')
+  }
 }
 </script>
