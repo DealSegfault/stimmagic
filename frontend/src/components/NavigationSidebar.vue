@@ -557,13 +557,16 @@
               ></div>
             </div>
 
-            <!-- One rule, in the place it always was: below the durable pins.
-                 Everything under it is current work — the editing shelf and
-                 the open rows — so the chips need no rule of their own, and
-                 the trailing group needs no label. -->
-            <div v-if="pinnedTabs.length > 0 && (editorTabs.length > 0 || openTabs.length > 0)" class="mx-3 my-1 border-t border-edge-subtle"></div>
+            <!-- Durable pins are a separate group from the current workspace. -->
+            <div
+              v-if="pinnedTabs.length > 0 && (editorTabs.length > 0 || openTabs.length > 0)"
+              class="mx-3 mt-1 border-t border-edge-subtle"
+              :class="editorTabs.length > 0 ? 'mb-2' : 'mb-1'"
+            ></div>
 
             <!-- Open editors are a working set, not documents with names. -->
+            <div v-if="editorTabs.length > 0" class="px-3 pt-1 pb-1 text-xs font-semibold text-content-secondary">Editing</div>
+
             <EditorShelf
               :tabs="editorTabs"
               @open="navigateToTabId"
@@ -571,6 +574,8 @@
               @contextmenu="onShelfContextMenu"
               @media-drop="handleShelfMediaDrop"
             />
+
+            <div v-if="editorTabs.length > 0 && openTabs.length > 0" class="mx-3 my-1 border-t border-edge-subtle"></div>
 
             <div v-if="openTabs.length > 0 && editorTabs.length === 0" class="pt-1"></div>
 

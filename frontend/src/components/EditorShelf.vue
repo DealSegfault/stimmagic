@@ -1,10 +1,5 @@
 <template>
-  <!--
-    No section label and no bracketing hairline. Every other group here is a
-    stack of text rows, so a labelled, rule-bounded band of thumbnails read as
-    a foreign object wedged into the list. Chips are self-evident; what they
-    need is air, not an announcement.
-  -->
+  <!-- The parent sidebar supplies the section label and peer separator. -->
   <div v-if="ranked.length > 0" class="py-2.5">
     <!-- The drop ring hugs the chips rather than the sidebar's full width, so
          the negative margin cancels its own padding and capacity math (which
