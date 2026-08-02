@@ -462,7 +462,16 @@
           :style="checkerOverlayStyle"
           @contextmenu="handleContextMenu($event, displayItem)"
         >
+          <canvas
+            v-if="currentEditorFrame"
+            ref="liveEditorCanvasElement"
+            class="w-full h-full select-none"
+            draggable="true"
+            @dragstart="handleDragStart"
+            @dragend="handleDragEnd"
+          />
           <img
+            v-else
             :key="`img-${displayItem?.id}-${refreshKey}`"
             :src="getMediaFileUrl(displayItem.file_hash)"
             :alt="displayItem.vlm_caption"
@@ -1229,10 +1238,17 @@ import { makeProfileKey, makeToolDbKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { useWorkspaceTabs, toolInstanceScopedId, toolInstanceRoute } from '../composables/useWorkspaceTabs'
 import { openImageEditor } from '../imageEditor/stack/openImageEditor'
+import { editorLiveFrame } from '../imageEditor/liveEditorPreview'
+import { dirtyEditorAssets } from '../imageEditor/stack/editorDirtyState'
 import { getCurrentProfileId } from '../composables/useProfile'
 import { getCachedPin } from '../composables/usePinLock'
 import { getApiBase } from '../apiConfig'
 import { assetIdOf, mediaIdOf, hasAssetIdentity } from '../utils/assetIdentity'
+import {
+  assetHeadSignature,
+  normalizeAssetHead,
+  replaceAssetHeadInCache,
+} from '../utils/assetHeadProjection'
 import {
   diffInsertedLiveIds,
   orderLiveAdvanceCandidates,
@@ -1326,6 +1342,7 @@ const {
   removeFromBoardSection: removeAssetFromBoardSection,
   getProjects: getAssetProjects,
   getBoards: getAssetBoards,
+  getAssetBrowserItem,
 } = useAssetApi()
 const { on: onWebSocketEvent } = useWebSocket()
 const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
@@ -1356,7 +1373,23 @@ const visibleFaceOverlays = computed(() => {
 })
 
 // Cache for metadata to avoid re-fetching when navigating back/forth
-const metadataCache = ref(new Map()) // mediaId -> { faces, boards, job, chat }
+// Asset + payload keyed: Asset identity stays stable across revisions, while
+// faces, lineage and generation metadata belong to the exact payload.
+const metadataCache = ref(new Map()) // "assetId:mediaId" -> metadata
+
+function metadataCacheKey(item) {
+  const identity = itemIdentity(item)
+  const mediaId = itemPayloadId(item)
+  return identity && mediaId ? `${identity}:${mediaId}` : null
+}
+
+function invalidateMetadataCache(identity) {
+  if (!identity) return
+  const prefix = `${identity}:`
+  for (const key of metadataCache.value.keys()) {
+    if (String(key).startsWith(prefix)) metadataCache.value.delete(key)
+  }
+}
 
 // Flag to prevent watchers from firing during atomic transitions (infinity mode)
 const isAtomicTransition = ref(false)
@@ -1521,6 +1554,9 @@ const gridTitleContainerWidth = ref(null)
 
 // Item cache for lazy loading
 const itemsCache = ref(new Map())
+// Canonical current heads keyed by stable Asset id. This also covers the rare
+// fixed-items slideshow, whose readonly prop cannot be patched in place.
+const assetHeadOverrides = ref(new Map())
 const markerUpdateTrigger = ref(0) // Force re-render when markers change
 const loadingPages = ref(new Map()) // Maps page number to loading promise
 let pageProviderCacheRevision = 0
@@ -1666,7 +1702,9 @@ const hasExactDimensions = computed(() => {
   const cw = containerSize.value.width
   const ch = containerSize.value.height
   const item = displayItem.value
-  return !!(cw && ch && item?.width && item?.height)
+  const width = currentEditorFrame.value?.canvas.width ?? item?.width
+  const height = currentEditorFrame.value?.canvas.height ?? item?.height
+  return !!(cw && ch && width && height)
 })
 
 // Computed style for image wrapper - positions it exactly where the image renders
@@ -1685,8 +1723,8 @@ const checkerOverlayStyle = computed(() => {
     }
   }
 
-  const iw = item.width
-  const ih = item.height
+  const iw = currentEditorFrame.value?.canvas.width ?? item.width
+  const ih = currentEditorFrame.value?.canvas.height ?? item.height
   const containerAspect = cw / ch
   const imageAspect = iw / ih
 
@@ -1723,7 +1761,7 @@ const isViewingSource = computed(() => sourceViewStack.value.length > 0)
 const baseCurrentItem = computed(() => {
   // If items are provided directly (nested slideshow), use those
   if (props.items && props.items.length > 0) {
-    return props.items[currentIndex.value] || null
+    return withAssetHeadOverride(props.items[currentIndex.value] || null)
   }
 
   // If using shared mediaList, get item skipping locally removed ones
@@ -1733,7 +1771,7 @@ const baseCurrentItem = computed(() => {
 
     // If no removed items, direct lookup
     if (removedIds.size === 0) {
-      return props.mediaList.getItem(targetIndex) || null
+      return withAssetHeadOverride(props.mediaList.getItem(targetIndex) || null)
     }
 
     // Find the targetIndex-th non-removed item
@@ -1745,7 +1783,7 @@ const baseCurrentItem = computed(() => {
 
       if (!removedIds.has(itemIdentity(item))) {
         if (validCount === targetIndex) {
-          return item
+          return withAssetHeadOverride(item)
         }
         validCount++
       }
@@ -1761,7 +1799,7 @@ const baseCurrentItem = computed(() => {
 
   // If no removed items, direct lookup
   if (removedIds.size === 0) {
-    return itemsCache.value.get(targetIndex) || null
+    return withAssetHeadOverride(itemsCache.value.get(targetIndex) || null)
   }
 
   // Find the targetIndex-th non-removed item in the cache
@@ -1772,15 +1810,19 @@ const baseCurrentItem = computed(() => {
   while (actualIndex <= maxCacheIndex + removedIds.size) {
     const item = itemsCache.value.get(actualIndex)
     if (item && !removedIds.has(itemIdentity(item))) {
-      if (validCount === targetIndex) {
-        return item
-      }
+      if (validCount === targetIndex) return withAssetHeadOverride(item)
       validCount++
     }
     actualIndex++
   }
   return null
 })
+
+function withAssetHeadOverride(item) {
+  if (!item || !hasAssetIdentity(item)) return item
+  const head = assetHeadOverrides.value.get(assetIdOf(item))
+  return head ? { ...item, ...head } : item
+}
 
 // currentItem respects view stacks - shows appropriate item based on context
 const currentItem = computed(() => {
@@ -1819,6 +1861,31 @@ const currentPayloadItem = computed(() => (
       }
     : null
 ))
+
+// Leaving the editor starts autosave asynchronously. During that short window
+// the durable Asset head is still the previous Revision, but the KeepAlive'd
+// editor already owns the exact pixels the person expects to see. Copy those
+// full-resolution pixels into the slideshow until the commit lands; then the
+// canonical file projection takes over.
+const currentEditorFrame = computed(() => {
+  const assetId = currentAssetId.value
+  if (!assetId || isViewingSource.value) return null
+  if (!dirtyEditorAssets.value.has(String(assetId))) return null
+  return editorLiveFrame(assetId) ?? null
+})
+const liveEditorCanvasElement = ref(null)
+
+watch(
+  [currentEditorFrame, liveEditorCanvasElement],
+  ([frame, target]) => {
+    if (!frame?.canvas || !target) return
+    target.width = frame.canvas.width
+    target.height = frame.canvas.height
+    target.getContext('2d').drawImage(frame.canvas, 0, 0)
+    mediaLoaded.value = true
+  },
+  { flush: 'post', immediate: true },
+)
 
 // Set when exporting a specific asset version; otherwise the modal targets the
 // payload on screen.
@@ -2170,6 +2237,110 @@ function applyMediaPatchToLocalState(mediaId, updates) {
     }
   }
 }
+
+// An Asset keeps the same browser identity when its current Revision advances.
+// Every slideshow entry point can therefore hand us a perfectly valid but old
+// projection. Reconcile the projection here, at the shared display boundary,
+// instead of relying on each parent view to invalidate its own cache correctly.
+const reconciledAssetHeads = new Map()
+const assetHeadRefreshTokens = new Map()
+
+function applyAssetHeadToLocalState(assetId, projection) {
+  if (!assetId || !projection) return
+  const normalized = normalizeAssetHead(assetId, projection)
+  reconciledAssetHeads.set(assetId, assetHeadSignature(normalized))
+  assetHeadOverrides.value = new Map(assetHeadOverrides.value).set(assetId, normalized)
+  invalidateMetadataCache(assetId)
+
+  const replaced = replaceAssetHeadInCache(itemsCache.value, assetId, normalized)
+  if (replaced !== itemsCache.value) itemsCache.value = replaced
+
+  props.mediaList?.updateItem?.(assetId, normalized)
+
+  // Set and grid members can be weak Asset links. Their resolved projection
+  // should advance too; exact historical versions use sourceViewStack and are
+  // intentionally excluded below.
+  setViewStack.value = setViewStack.value.map(entry => ({
+    ...entry,
+    items: entry.items.map(item => (
+      itemIdentity(item) === assetId ? { ...item, ...normalized } : item
+    )),
+  }))
+  gridViewStack.value = gridViewStack.value.map(entry => {
+    const cellMap = new Map(entry.cellMap)
+    let changed = false
+    for (const [key, cell] of cellMap.entries()) {
+      if (itemIdentity(cell?.resolved) !== assetId) continue
+      cellMap.set(key, { ...cell, resolved: { ...cell.resolved, ...normalized } })
+      changed = true
+    }
+    return changed ? { ...entry, cellMap } : entry
+  })
+
+  // pageProvider and mediaList caches now drive currentItem. A direct display
+  // write closes the remaining frame between that reactive update and Vue's
+  // watcher, and also covers a slideshow backed by a fixed `items` prop.
+  if (!isViewingSource.value && itemIdentity(currentItem.value) === assetId) {
+    applyDisplayItem({ ...currentItem.value, ...normalized })
+  }
+}
+
+async function refreshAssetHead(assetId, { force = false } = {}) {
+  if (!assetId) return
+  const shown = !isViewingSource.value && itemIdentity(currentItem.value) === assetId
+    ? currentItem.value
+    : null
+  const shownSignature = assetHeadSignature(shown)
+  if (!force && shownSignature && reconciledAssetHeads.get(assetId) === shownSignature) return
+
+  const token = (assetHeadRefreshTokens.get(assetId) || 0) + 1
+  assetHeadRefreshTokens.set(assetId, token)
+  try {
+    const projection = await getAssetBrowserItem(assetId, props.isTrashView)
+    if (assetHeadRefreshTokens.get(assetId) !== token) return
+    applyAssetHeadToLocalState(assetId, projection)
+  } catch (error) {
+    // A slide can disappear or move to Trash between navigation and this
+    // read. Existing lifecycle handlers own that transition.
+    console.warn(`[SlideshowMode] Could not refresh Asset ${assetId} head:`, error)
+  }
+}
+
+function handleAssetCurrentRevisionChanged(data) {
+  const assetId = Number(data?.asset_id ?? data?.asset?.asset_id ?? data?.asset?.id)
+  if (!assetId) return
+  const isKnown = itemIdentity(currentItem.value) === assetId
+    || itemIdentity(displayItem.value) === assetId
+    || props.mediaList?.findIndex?.(assetId) >= 0
+    || [...itemsCache.value.values()].some(item => itemIdentity(item) === assetId)
+  if (!isKnown) return
+  if (data?.asset) {
+    // Revision restore already sends the complete browser projection.
+    const token = (assetHeadRefreshTokens.get(assetId) || 0) + 1
+    assetHeadRefreshTokens.set(assetId, token)
+    applyAssetHeadToLocalState(assetId, data.asset)
+    return
+  }
+  // Editor saves and agent revisions currently send ids only.
+  void refreshAssetHead(assetId, { force: true })
+}
+
+watch(
+  () => {
+    if (isViewingSource.value || !currentItem.value || !hasAssetIdentity(currentItem.value)) return null
+    return [
+      assetIdOf(currentItem.value),
+      currentItem.value.revision_id,
+      mediaIdOf(currentItem.value),
+      currentItem.value.file_hash,
+    ]
+  },
+  (head) => {
+    const assetId = Number(head?.[0])
+    if (assetId) void refreshAssetHead(assetId)
+  },
+  { immediate: true },
+)
 
 function mediaUpdatePatch(fields = [], media = {}) {
   const patch = {}
@@ -4650,7 +4821,7 @@ async function toggleProjectMembership(projectId, checked) {
       projectPickerMembership.value.delete(projectId)
     }
     // Refresh the info panel list
-    metadataCache.value.delete(itemIdentity(currentItem.value))
+    invalidateMetadataCache(itemIdentity(currentItem.value))
     mediaProjects.value = currentAssetId.value
       ? await getAssetProjects(currentAssetId.value)
       : (await axios.get(`/api/media/${currentPayloadId.value}/projects`)).data
@@ -4681,7 +4852,7 @@ async function removeFromProject(projectId) {
   try {
     if (currentAssetId.value) await removeAssetFromProject(currentAssetId.value, projectId)
     else await removeMediaFromProject(projectId, currentPayloadId.value)
-    metadataCache.value.delete(itemIdentity(currentItem.value))
+    invalidateMetadataCache(itemIdentity(currentItem.value))
     mediaProjects.value = currentAssetId.value
       ? await getAssetProjects(currentAssetId.value)
       : (await axios.get(`/api/media/${currentPayloadId.value}/projects`)).data
@@ -4704,7 +4875,7 @@ async function removeFromBoard(boardId) {
         break
       }
     }
-    metadataCache.value.delete(itemIdentity(currentItem.value))
+    invalidateMetadataCache(itemIdentity(currentItem.value))
     mediaBoards.value = currentAssetId.value
       ? await getAssetBoards(currentAssetId.value)
       : (await axios.get(`/api/media/${currentPayloadId.value}/boards`)).data
@@ -4723,7 +4894,7 @@ async function handleBoardAdded() {
   // Reload boards to show the newly added board
   if (currentItem.value) {
     // Invalidate cache for this item so fresh data is fetched
-    metadataCache.value.delete(itemIdentity(currentItem.value))
+    invalidateMetadataCache(itemIdentity(currentItem.value))
     if (currentAssetId.value) mediaBoards.value = await getAssetBoards(currentAssetId.value)
     else await fetchMediaBoards(currentPayloadId.value)
   }
@@ -5123,7 +5294,7 @@ function preloadImage(url) {
 // Push cached metadata for `item` into the info-panel refs (extracted from the old
 // atomic transition).
 function applyMetadataFromCache(item) {
-  const metadata = metadataCache.value.get(itemIdentity(item))
+  const metadata = metadataCache.value.get(metadataCacheKey(item))
   if (!metadata) return
   faces.value = metadata.faces
   mediaProjects.value = metadata.projects || []
@@ -5370,6 +5541,7 @@ onMounted(async () => {
   wsUnsubscribers.push(onWebSocketEvent('asset_trashed', handleAssetsRemovedWs))
   wsUnsubscribers.push(onWebSocketEvent('assets_trashed', handleAssetsRemovedWs))
   wsUnsubscribers.push(onWebSocketEvent('asset_identity_deleted', handleAssetsRemovedWs))
+  wsUnsubscribers.push(onWebSocketEvent('asset_current_revision_changed', handleAssetCurrentRevisionChanged))
   if (props.isTrashView) {
     wsUnsubscribers.push(onWebSocketEvent('asset_restored', handleAssetsRemovedWs))
     wsUnsubscribers.push(onWebSocketEvent('assets_restored', handleAssetsRemovedWs))
@@ -5773,11 +5945,12 @@ watch(isMuted, (newValue) => {
 async function fetchAndCacheMetadata(item) {
   const identity = itemIdentity(item)
   const mediaId = itemPayloadId(item)
+  const cacheKey = metadataCacheKey(item)
   const assetId = hasAssetIdentity(item) ? identity : null
-  if (!identity || !mediaId) return null
+  if (!identity || !mediaId || !cacheKey) return null
 
   // Check cache first
-  const cached = metadataCache.value.get(identity)
+  const cached = metadataCache.value.get(cacheKey)
   if (cached) return cached
 
   try {
@@ -5835,7 +6008,7 @@ async function fetchAndCacheMetadata(item) {
       descendants: derivedDescendants,
       inspiredDescendants: inspiredDescendants
     }
-    metadataCache.value.set(identity, metadata)
+    metadataCache.value.set(cacheKey, metadata)
 
     return metadata
   } catch (err) {
@@ -5875,7 +6048,7 @@ watch(currentItem, async (newItem) => {
   }
 
   // Check cache first - if cached, update synchronously (no blink)
-  const cached = metadataCache.value.get(itemIdentity(newItem))
+  const cached = metadataCache.value.get(metadataCacheKey(newItem))
   if (cached) {
     faces.value = cached.faces
     mediaProjects.value = cached.projects || []
@@ -5892,7 +6065,9 @@ watch(currentItem, async (newItem) => {
   const metadata = await fetchAndCacheMetadata(newItem)
   chatInfoLoading.value = false
 
-  if (metadata) {
+  // Stable Asset identity is not enough for this guard: its payload can advance
+  // while the old revision's faces/lineage requests are still in flight.
+  if (metadata && itemPayloadId(currentItem.value) === itemPayloadId(newItem)) {
     faces.value = metadata.faces
     mediaProjects.value = metadata.projects || []
     mediaBoards.value = metadata.boards
