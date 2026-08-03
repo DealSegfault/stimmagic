@@ -1593,6 +1593,8 @@ const slideshowTimer = ref(null)
 
 const videoElement = ref(null)
 let msePlayback = null
+let slideshowViewActive = true
+let deactivatedVideoState = null
 // Registry wiring: pause on KeepAlive deactivate, tear down on unmount/keyed
 // swap (a removed element otherwise keeps playing its audio per spec).
 useManagedMediaElement(videoElement)
@@ -1624,16 +1626,21 @@ watch(
   [videoElement, () => (displayItem.value && isVideoType(displayItem.value) ? displayItem.value.file_hash : null)],
   ([element, fileHash]) => {
     destroyMsePlayback()
-    if (!element || !fileHash) return
+    if (!element || !fileHash || !slideshowViewActive) return
 
     element.muted = isMuted.value
     element.volume = volume.value
     const playback = new MseLoopPlayback(element, getMseLoopUrls(fileHash), {
+      shouldPlay: () => slideshowViewActive,
       onBoundary: () => {
         if (videoAdvanceArmed.value) onVideoEnded()
       },
       onReady: (readyPlayback) => {
         if (msePlayback !== readyPlayback) return
+        if (deactivatedVideoState?.fileHash === fileHash) {
+          readyPlayback.seekLogical(deactivatedVideoState.logicalTime)
+          deactivatedVideoState = null
+        }
         videoDuration.value = readyPlayback.duration
         mediaLoaded.value = true
       },
@@ -5670,8 +5677,20 @@ onUnmounted(() => {
 // Also clean up focus mode when deactivated by KeepAlive (e.g., navigating away)
 // This is needed because the parent view uses KeepAlive, so onUnmounted won't fire
 onDeactivated(() => {
+  slideshowViewActive = false
   document.body.classList.remove('slideshow-focus-mode')
   cleanupCursorTimeout()
+  // WebKit can return a KeepAlive-cached MSE video with a dead compositor
+  // surface after sidebar navigation. Release the hidden MediaSource now; the
+  // activation path remounts the element and rebuilds it while preserving the
+  // logical playhead and the rest of the slideshow state.
+  if (isVideo.value && videoElement.value) {
+    deactivatedVideoState = {
+      fileHash: displayItem.value?.file_hash,
+      logicalTime: msePlayback?.logicalCurrentTime ?? videoElement.value.currentTime ?? 0,
+    }
+    destroyMsePlayback()
+  }
   // Hidden by KeepAlive — a pending hero load must not keep throttling
   // thumbnails elsewhere in the app.
   if (releaseHeroLoad) {
@@ -5685,10 +5704,16 @@ onDeactivated(() => {
   }
 })
 
-// The playback registry pauses the video on deactivate; resume the ambient
-// autoplay when the user navigates back to a view with the slideshow open.
+// Rebuild a video element after KeepAlive activation. Reusing WebKit's old
+// composited media layer is what leaves the hero black even though the strip
+// and slideshow state are still present.
 onActivated(() => {
-  if (isVideo.value && videoElement.value) void videoElement.value.play()
+  slideshowViewActive = true
+  if (isVideo.value && deactivatedVideoState) {
+    refreshKey.value++
+  } else {
+    deactivatedVideoState = null
+  }
   if (videoElement.value && transportRaf == null) {
     transportRaf = requestAnimationFrame(transportTick)
   }
