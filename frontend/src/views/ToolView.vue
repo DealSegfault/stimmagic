@@ -1559,7 +1559,10 @@ async function connectStimmaCloudForSubmission() {
 let loadRetryTimeout: ReturnType<typeof setTimeout> | null = null
 let availabilityPollInterval: ReturnType<typeof setInterval> | null = null
 const LOAD_RETRY_DELAY_MS = 1000
-const AVAILABILITY_POLL_MS = 1000
+// Provider status changes normally arrive over WebSocket. Keep HTTP polling as
+// a low-frequency fallback in case an event is missed, rather than hitting the
+// tool descriptor endpoint every second while a provider is offline.
+const AVAILABILITY_POLL_MS = 30_000
 
 // Flag to prevent loadPendingGeneration from re-running or being overwritten
 const pendingGenerationApplied = ref(false)
@@ -6536,12 +6539,18 @@ onActivated(() => {
   stageViewActive.value = true
   window.addEventListener('keydown', handleKeyDown)
   syncStageVideoPlayback()
+  if (tool.value?.availability !== 'available') {
+    startAvailabilityPolling()
+  }
 })
 
 onDeactivated(() => {
   stageViewActive.value = false
   syncStageVideoPlayback()
   window.removeEventListener('keydown', handleKeyDown)
+  // Tool views are KeepAlive'd, so deactivation does not reach onUnmounted.
+  // Do not let unavailable tools in background tabs keep polling forever.
+  stopAvailabilityPolling()
 })
 
 onUnmounted(async () => {
