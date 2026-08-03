@@ -43,6 +43,7 @@ from container_service import create_container_asset_from_media
 from cleanup_service import CleanupService
 from tests.helpers.media import create_media_item
 from implicit_markers import EDITED_MARKER_ID, IMAGE_EDITOR_TOOL_ID
+from utils.lineage import propagate_tool_lineage
 
 
 @pytest.mark.asyncio
@@ -1070,9 +1071,25 @@ async def test_edited_implicit_marker_projects_filters_and_counts(client, db_ses
                 full_tool_id=IMAGE_EDITOR_TOOL_ID,
             )
         )
+        await session.flush()
+        derived_media = await create_media_item(
+            session,
+            vlm_caption=caption,
+            tool_id="test:image-to-video",
+        )
+        derived_asset = await create_asset_from_media(
+            session, media_id=derived_media.id
+        )
+        await propagate_tool_lineage(
+            session,
+            derived_media.id,
+            [edited_media.id],
+            own_tool_id="test:image-to-video",
+        )
         await session.commit()
         edited_asset_id = edited_asset.id
         plain_asset_id = plain_asset.id
+        derived_asset_id = derived_asset.id
 
     browse = await client.get(
         "/api/assets/browse", params={"caption_query": caption}
@@ -1086,6 +1103,7 @@ async def test_edited_implicit_marker_projects_filters_and_counts(client, db_ses
     assert 'fill="currentColor"' in edited_markers[0]["icon_svg"]
     assert "stroke=" not in edited_markers[0]["icon_svg"]
     assert items[plain_asset_id]["markers"] == []
+    assert items[derived_asset_id]["markers"] == []
 
     available = await client.get("/api/assets/implicit-markers")
     assert available.status_code == 200, available.text
@@ -1110,9 +1128,10 @@ async def test_edited_implicit_marker_projects_filters_and_counts(client, db_ses
         },
     )
     assert excluded.status_code == 200, excluded.text
-    assert [item["asset_id"] for item in excluded.json()["items"]] == [
-        plain_asset_id
-    ]
+    assert {item["asset_id"] for item in excluded.json()["items"]} == {
+        plain_asset_id,
+        derived_asset_id,
+    }
 
     counts = await client.get(
         "/api/assets/filter-counts", params={"caption_query": caption}
@@ -1193,30 +1212,30 @@ async def test_recently_edited_sort_uses_edit_date_then_import_fallback(
             )
         )
 
-        unmarked_editor_output = await create_media_item(
+        direct_edit_without_lineage = await create_media_item(
             session,
             vlm_caption=caption,
             tool_id=IMAGE_EDITOR_TOOL_ID,
         )
-        unmarked_editor_output.indexed_date = datetime(2025, 1, 2)
-        unmarked_editor_asset = await create_asset_from_media(
-            session, media_id=unmarked_editor_output.id
+        direct_edit_without_lineage.indexed_date = datetime(2025, 1, 2)
+        direct_edit_asset = await create_asset_from_media(
+            session, media_id=direct_edit_without_lineage.id
         )
-        unmarked_editor_revision = await session.get(
-            AssetRevision, unmarked_editor_asset.current_revision_id
+        direct_edit_revision = await session.get(
+            AssetRevision, direct_edit_asset.current_revision_id
         )
-        unmarked_editor_revision.created_at = datetime(2025, 1, 6)
+        direct_edit_revision.created_at = datetime(2025, 1, 6)
 
         plain = await create_media_item(session, vlm_caption=caption)
         plain.indexed_date = datetime(2025, 1, 4)
         plain_asset = await create_asset_from_media(session, media_id=plain.id)
         await session.commit()
         expected = [
-            inherited_edit_asset.id,
+            direct_edit_asset.id,
             plain_asset.id,
             edited_two_asset.id,
-            unmarked_editor_asset.id,
             edited_one_asset.id,
+            inherited_edit_asset.id,
         ]
 
     response = await client.get(
@@ -1226,10 +1245,10 @@ async def test_recently_edited_sort_uses_edit_date_then_import_fallback(
     assert response.status_code == 200, response.text
     assert [item["asset_id"] for item in response.json()["items"]] == expected
     items = {item["asset_id"]: item for item in response.json()["items"]}
-    assert [marker["id"] for marker in items[inherited_edit_asset.id]["markers"]] == [
+    assert items[inherited_edit_asset.id]["markers"] == []
+    assert [marker["id"] for marker in items[direct_edit_asset.id]["markers"]] == [
         EDITED_MARKER_ID
     ]
-    assert items[unmarked_editor_asset.id]["markers"] == []
 
     ids = await client.get(
         "/api/assets/browse/ids",

@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from database import AssetRevision, MediaItem, MediaToolLineage
+from database import AssetRevision, MediaItem
 
 
 IMPLICIT_MARKER_PREFIX = "implicit:"
@@ -67,14 +67,15 @@ def media_has_implicit_marker(marker_key: str, media_id_column=None):
     media_id_column = media_id_column if media_id_column is not None else MediaItem.id
     if marker_key != EDITED_MARKER_KEY:
         raise ValueError(f"Unknown implicit marker: {marker_key}")
+    direct_media = aliased(MediaItem)
     return (
         select(1)
-        .select_from(MediaToolLineage)
+        .select_from(direct_media)
         .where(
-            MediaToolLineage.media_id == media_id_column,
-            MediaToolLineage.full_tool_id.in_(EDITED_TOOL_IDS),
+            direct_media.id == media_id_column,
+            direct_media.tool_id.in_(EDITED_TOOL_IDS),
         )
-        .correlate_except(MediaToolLineage)
+        .correlate_except(direct_media)
         .exists()
     )
 
@@ -99,9 +100,9 @@ async def implicit_markers_by_media(
 
     edited_ids = set(
         await session.scalars(
-            select(MediaToolLineage.media_id).where(
-                MediaToolLineage.media_id.in_(ids),
-                MediaToolLineage.full_tool_id.in_(EDITED_TOOL_IDS),
+            select(MediaItem.id).where(
+                MediaItem.id.in_(ids),
+                MediaItem.tool_id.in_(EDITED_TOOL_IDS),
             )
         )
     )
@@ -111,26 +112,24 @@ async def implicit_markers_by_media(
 
 
 def latest_edited_revision_at(asset_id_column):
-    """Latest Revision timestamp that satisfies the edited-marker criteria.
+    """Latest directly edited Revision timestamp for an Asset.
 
-    The marker is lineage-based, so the sort timestamp must be lineage-based as
-    well. This keeps inherited editor provenance and direct editor output under
-    the same definition instead of independently consulting ``MediaItem.tool_id``.
+    Using an edited payload as input to another process resets the marker. The
+    descendant keeps its full tool lineage for history, but it is not itself an
+    editor output until the user edits that new payload.
     """
     revision = aliased(AssetRevision)
     media = aliased(MediaItem)
-    tool_lineage = aliased(MediaToolLineage)
     return (
         select(func.max(revision.created_at))
         .select_from(revision)
         .join(media, media.id == revision.primary_media_id)
-        .join(tool_lineage, tool_lineage.media_id == media.id)
         .where(
             revision.asset_id == asset_id_column,
             revision.deleted_at.is_(None),
             media.deleted_at.is_(None),
-            tool_lineage.full_tool_id.in_(EDITED_TOOL_IDS),
+            media.tool_id.in_(EDITED_TOOL_IDS),
         )
-        .correlate_except(revision, media, tool_lineage)
+        .correlate_except(revision, media)
         .scalar_subquery()
     )
