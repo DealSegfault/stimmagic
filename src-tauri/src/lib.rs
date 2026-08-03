@@ -1,7 +1,9 @@
 use std::io::{BufRead, BufReader};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -85,6 +87,67 @@ fn log_from_webview(level: String, message: String) {
         "debug" => log::debug!(target: "web", "{}", message),
         _ => log::info!(target: "web", "{}", message),
     }
+}
+
+/// Open a web URL without resolving `xdg-open` from the AppImage's PATH.
+///
+/// Tauri's opener ultimately uses the `open` crate, whose Linux lookup can
+/// select the copy of `xdg-open` bundled inside an AppImage. That copy falls
+/// back to parsing desktop files itself and mishandles quoted arguments in
+/// Snap browser entries (for example Vivaldi's `--class` argument), opening
+/// the argument as a second tab. Prefer host launchers by absolute path.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|_| "Invalid external URL".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("Only HTTP(S) external URLs are allowed".to_string());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        const HOST_OPENERS: &[(&str, Option<&str>)] = &[
+            ("/usr/bin/gio", Some("open")),
+            ("/bin/gio", Some("open")),
+            ("/usr/bin/xdg-open", None),
+            ("/bin/xdg-open", None),
+            ("/run/current-system/sw/bin/xdg-open", None),
+        ];
+
+        for (program, subcommand) in HOST_OPENERS {
+            if !Path::new(program).is_file() {
+                continue;
+            }
+            let mut command = Command::new(program);
+            if let Some(subcommand) = subcommand {
+                command.arg(subcommand);
+            }
+            // Host tools must not inherit AppImage library/module overrides.
+            // Keep XDG_DATA_DIRS so Gio can still discover Snap desktop files.
+            for variable in [
+                "APPDIR",
+                "APPIMAGE",
+                "GDK_PIXBUF_MODULE_FILE",
+                "GIO_MODULE_DIR",
+                "GI_TYPELIB_PATH",
+                "GTK_PATH",
+                "LD_LIBRARY_PATH",
+                "LD_PRELOAD",
+            ] {
+                command.env_remove(variable);
+            }
+            command
+                .arg(parsed.as_str())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("Failed to open URL: {error}"))?;
+            return Ok(());
+        }
+    }
+
+    tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>)
+        .map_err(|error| format!("Failed to open URL: {error}"))
 }
 
 // Tauri command to get the backend port
@@ -356,6 +419,7 @@ pub fn run() {
             get_backend_port,
             print_webview,
             log_from_webview,
+            open_external_url,
             shift_key_down,
             windows::get_window_profile,
             windows::report_window_profile,

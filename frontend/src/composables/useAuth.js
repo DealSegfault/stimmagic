@@ -102,11 +102,11 @@ export async function signInWithBrowser(mode) {
 
     // 2. Open system browser to login page
     if (isTauri()) {
-      // The dedicated opener avoids AppImage-bundled xdg-open behavior that
-      // can misparse Snap browser desktop arguments (for example Vivaldi's
-      // --class flag) as a second URL.
-      const { openUrl: openExternalUrl } = await import('@tauri-apps/plugin-opener')
-      await openExternalUrl(openUrl)
+      // The native command bypasses the AppImage-bundled xdg-open on Linux;
+      // its desktop-file parser can turn a Snap browser's --class argument
+      // into an unwanted second URL.
+      const { invoke } = await import('@tauri-apps/api/core')
+      await invoke('open_external_url', { url: openUrl })
     } else {
       // Web fallback - open in new tab
       window.open(openUrl, '_blank')
