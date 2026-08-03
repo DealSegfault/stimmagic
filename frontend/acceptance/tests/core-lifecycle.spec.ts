@@ -48,7 +48,7 @@ test.describe('core object lifecycle acceptance', () => {
       name: 'Acceptance Lifecycle Project Renamed',
       additional_instructions: 'Keep acceptance state project-scoped.',
       memory: 'Acceptance memory',
-      default_model_slug: 'acceptance-model',
+      chat_model_slug: 'acceptance-model',
     });
 
     expect(updated.name).toBe('Acceptance Lifecycle Project Renamed');
@@ -56,7 +56,7 @@ test.describe('core object lifecycle acceptance', () => {
 
     const loaded = await getProject(page, project.id);
     expect(loaded.name).toBe('Acceptance Lifecycle Project Renamed');
-    expect(loaded.default_model_slug).toBe('acceptance-model');
+    expect(loaded.chat_model_slug).toBe('acceptance-model');
 
     const projects = await listProjects(page);
     expect(projects.some((item) => item.id === project.id)).toBe(true);
