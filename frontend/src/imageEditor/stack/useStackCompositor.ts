@@ -24,7 +24,7 @@ import { pickedCandidate } from './types'
 import { canonicalOp, stackHashes } from './stackHashes'
 import { expandEdgesFromParams, expandedFrame } from './expandGeometry'
 import {
-  geometryBelow, isIdentity, multiply, payloadToDocument,
+  geometryBelow, multiply, payloadToDocument,
   rewritePayload, transformShapes, translate,
 } from './geometryTransform'
 import type { Affine } from './geometryTransform'
@@ -43,6 +43,7 @@ import type { GradientMask } from './types'
 import { retouchRegionAlpha } from './retouchRegionAlpha'
 import { cutoutAlpha } from './cutoutAlpha'
 import { maskedRetouchAdjustmentParams } from './adjustSections'
+import { canReusePositionedPayload } from './positionedPayload'
 
 export interface CompositeStage {
   /** Input hash for this op — the cache key of the composite BELOW it. */
@@ -736,8 +737,9 @@ export class StackCompositor {
     const matrix = documentFromPayload
       ? multiply(nowFromDocument, documentFromPayload)
       : multiply(documentToPreview, translate(origin[0], origin[1]))
-    if (isIdentity(matrix)) return payload
-    return rewritePayload(payload, matrix, width, height)
+    return canReusePositionedPayload(payload, matrix, width, height)
+      ? payload
+      : rewritePayload(payload, matrix, width, height)
   }
 
   /** Rebuild one compact Retouch payload in its full authored frame, then anchor it. */
@@ -835,7 +837,7 @@ export class StackCompositor {
     const positioned = documentFromPayload
       ? multiply(nowFromDocument, documentFromPayload)
       : multiply(baseScale, translate(x, y))
-    return isIdentity(positioned)
+    return canReusePositionedPayload(payload, positioned, width, height)
       ? payload
       : rewritePayload(payload, positioned, width, height)
   }
