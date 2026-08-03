@@ -5,6 +5,7 @@ Uses onnx_clip library with ViT-B/32 model for efficient CPU/GPU inference
 without PyTorch dependency.
 """
 
+import gc
 import threading
 from PIL import Image
 import numpy as np
@@ -12,6 +13,7 @@ from typing import Optional, Union
 from pathlib import Path
 import model_cache
 from core.logging import get_logger
+from model_lifetime import IdleModelHandle, idle_seconds
 
 log = get_logger(__name__)
 
@@ -33,10 +35,24 @@ class CLIPService:
         self._loaded = False
         self._loaded_event = threading.Event()
         self._load_lock = threading.Lock()
+        self._idle = IdleModelHandle(
+            "CLIP", idle_seconds("STIMMA_CLIP_IDLE_SECONDS", 900), self._unload_model,
+        )
+
+    def _unload_model(self):
+        with self._load_lock:
+            self.model = None
+            self._loaded = False
+            self._loaded_event.clear()
+        gc.collect()
 
     def load_model(self):
         """Load the CLIP model. Safe to call from multiple threads; concurrent
         callers block until the load finishes."""
+        with self._idle.use():
+            self._load_model_active()
+
+    def _load_model_active(self):
         # onnx_clip imports cv2 at module level but never uses it (PIL path is
         # hardcoded). Provide a stub so the import succeeds in packaged builds
         # where cv2 isn't bundled.
@@ -142,6 +158,10 @@ class CLIPService:
         Returns:
             Normalized embedding as numpy array (512 dimensions)
         """
+        with self._idle.use():
+            return self._encode_image_active(image)
+
+    def _encode_image_active(self, image: Union[str, Path, Image.Image]) -> np.ndarray:
         self._ensure_loaded()
 
         # Load image if path provided
@@ -181,6 +201,10 @@ class CLIPService:
         Returns:
             Normalized embedding as numpy array (512 dimensions)
         """
+        with self._idle.use():
+            return self._encode_text_active(text)
+
+    def _encode_text_active(self, text: str) -> np.ndarray:
         self._ensure_loaded()
 
         # Get embedding from onnx_clip

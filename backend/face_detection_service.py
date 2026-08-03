@@ -1,8 +1,10 @@
+import gc
 import numpy as np
 from PIL import Image
 from typing import Optional, Union, List, Dict, Any
 from pathlib import Path
 from core.logging import get_logger
+from model_lifetime import IdleModelHandle, idle_seconds
 import json
 import threading
 import os
@@ -45,6 +47,22 @@ class FaceDetectionService:
         self._loading = False
         self._loaded = False
         self._load_lock = threading.Lock()
+        self._idle = IdleModelHandle(
+            "AuraFace", idle_seconds("STIMMA_AURAFACE_IDLE_SECONDS", 900),
+            self._unload_model,
+        )
+
+    def _unload_model(self):
+        with self._load_lock:
+            self.detector = None
+            self.recognizer = None
+            self.device = None
+            self._loaded = False
+        gc.collect()
+
+    def _load_model_with_lease(self):
+        with self._idle.use():
+            self._load_model_sync()
 
     def load_model(self, background: bool = False):
         """
@@ -59,10 +77,10 @@ class FaceDetectionService:
 
         if background:
             log.info("Starting face detection model loading in background thread...")
-            thread = threading.Thread(target=self._load_model_sync, daemon=True)
+            thread = threading.Thread(target=self._load_model_with_lease, daemon=True)
             thread.start()
         else:
-            self._load_model_sync()
+            self._load_model_with_lease()
 
     def _load_model_sync(self):
         """Load the model, serialized so concurrent callers block until it's ready."""
@@ -135,6 +153,10 @@ class FaceDetectionService:
                 - embedding: numpy array of face embedding
                 - landmarks: dict with facial landmark coordinates (optional)
         """
+        with self._idle.use():
+            return self._detect_faces_active(image)
+
+    def _detect_faces_active(self, image: Union[str, Path, Image.Image]) -> List[Dict[str, Any]]:
         if not self._loaded:
             # Auto-load on first use; blocks on the load lock if another
             # thread is already loading, so we never proceed with detector=None.

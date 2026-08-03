@@ -7,6 +7,7 @@ download source.
 """
 
 import asyncio
+import gc
 import hashlib
 import io
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,7 @@ from PIL import Image
 
 import model_cache
 from core.logging import get_logger
+from model_lifetime import IdleModelHandle, idle_seconds
 
 log = get_logger(__name__)
 
@@ -140,6 +142,17 @@ class BEN2Service:
         self._cached_image_hash: Optional[str] = None
         self._cached_alpha: Optional[np.ndarray] = None
         self._load_stage = "idle"
+        self._idle = IdleModelHandle(
+            "BEN2", idle_seconds("STIMMA_BEN2_IDLE_SECONDS", 300), self._unload_sync,
+        )
+
+    def _unload_sync(self) -> None:
+        self._session = None
+        self._input_name = None
+        self._cached_image_hash = None
+        self._cached_alpha = None
+        self._load_stage = "idle"
+        gc.collect()
 
     def _load_sync(self) -> None:
         if self._model_path_override is None:
@@ -209,16 +222,17 @@ class BEN2Service:
             return BEN2Result(error=f"Could not read the image: {exc}")
 
         try:
-            await self._ensure_loaded()
-            async with self._inference_semaphore:
-                if image_hash == self._cached_image_hash and self._cached_alpha is not None:
-                    log.debug("BEN2: Reusing cached subject alpha")
-                    alpha = self._cached_alpha
-                else:
-                    loop = asyncio.get_running_loop()
-                    alpha = await loop.run_in_executor(_executor, self._infer_sync, image)
-                    self._cached_image_hash = image_hash
-                    self._cached_alpha = alpha
+            with self._idle.use():
+                await self._ensure_loaded()
+                async with self._inference_semaphore:
+                    if image_hash == self._cached_image_hash and self._cached_alpha is not None:
+                        log.debug("BEN2: Reusing cached subject alpha")
+                        alpha = self._cached_alpha
+                    else:
+                        loop = asyncio.get_running_loop()
+                        alpha = await loop.run_in_executor(_executor, self._infer_sync, image)
+                        self._cached_image_hash = image_hash
+                        self._cached_alpha = alpha
             return BEN2Result(
                 alpha=alpha,
                 original_width=width,

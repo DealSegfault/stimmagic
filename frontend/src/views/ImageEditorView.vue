@@ -213,6 +213,10 @@ const { availableMarkers, init: initMarkers } = useMarkers()
 const { getMediaFileUrl } = useMediaApi()
 
 const loading = ref(true)
+/** KeepAlive preserves the document, but hidden editors must do no background UI work. */
+const editorActive = ref(true)
+let editorReady = false
+let toolCatalogListenerAttached = false
 const error = ref<string | null>(null)
 const baseInfo = ref<any>(null)
 const initialToolPrefs = readToolPrefs()
@@ -6487,6 +6491,18 @@ async function refreshToolCatalog() {
   }
 }
 
+function attachToolCatalogListener() {
+  if (!editorActive.value || toolCatalogListenerAttached) return
+  window.addEventListener('tools-changed', refreshToolCatalog)
+  toolCatalogListenerAttached = true
+}
+
+function detachToolCatalogListener() {
+  if (!toolCatalogListenerAttached) return
+  window.removeEventListener('tools-changed', refreshToolCatalog)
+  toolCatalogListenerAttached = false
+}
+
 async function hydrateEditorExtras() {
   void stack.hydrateHistory()
     .then(() => { savedCursor.value = stack.openedCursor.value })
@@ -6559,7 +6575,7 @@ async function hydrateEditorExtras() {
   // at open keeps offering its tools. Re-read it on the same signal the rest of
   // the app listens for. Picks are left alone — a person's chosen tool going
   // quiet is reported when they press Run, not by silently swapping models.
-  window.addEventListener('tools-changed', refreshToolCatalog)
+  attachToolCatalogListener()
 
   // Restore workspace preference only after the first usable frame. Some
   // families prepare previews of their own; none may delay showing the image.
@@ -6585,8 +6601,6 @@ onMounted(async () => {
     baseInfo.value = stack.doc.value?.base
       ? { ...stack.doc.value.base }
       : opened.base
-    candidates.start()
-
     // Before the first render: whole-image steps have no executor any more, so
     // rendering first would show the image without them.
     await flattenIfNeeded()
@@ -6598,6 +6612,8 @@ onMounted(async () => {
     // Let Vue create and paint the viewport before starting history, tool
     // discovery, version status, or family-specific preview work.
     loading.value = false
+    editorReady = true
+    if (editorActive.value) candidates.start()
     await nextTick()
     requestAnimationFrame(() => setTimeout(() => { void hydrateEditorExtras() }, 0))
   } catch (err: any) {
@@ -6612,6 +6628,9 @@ onMounted(async () => {
 // away: window-level keys must follow activation, not mount, or the editor's
 // shortcuts would keep firing on whatever screen you moved to.
 onActivated(() => {
+  editorActive.value = true
+  if (editorReady) candidates.start()
+  attachToolCatalogListener()
   window.addEventListener('keydown', onKeydown)
   window.addEventListener('keyup', onKeyup)
   window.addEventListener('blur', clearViewportGestureState)
@@ -6620,6 +6639,9 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+  editorActive.value = false
+  candidates.pause()
+  detachToolCatalogListener()
   window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('keyup', onKeyup)
   window.removeEventListener('blur', clearViewportGestureState)
@@ -6663,7 +6685,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('blur', clearViewportGestureState)
   removeViewportPanListeners()
   removeBrushHudListeners()
-  window.removeEventListener('tools-changed', refreshToolCatalog)
+  detachToolCatalogListener()
   setEditorDirty(props.assetId, false)
   clearEditorLivePreview(props.assetId)
   resizeObserver?.disconnect()
@@ -7093,6 +7115,7 @@ watch(
             :model="selModel"
             :armed="armedSelectTool"
             :busy="aiSelectProgressVisible"
+            :visible="editorActive"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
             :combine="selectCombine"

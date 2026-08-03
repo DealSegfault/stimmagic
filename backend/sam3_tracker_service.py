@@ -13,6 +13,7 @@ facebook/sam3's tracker head).
 """
 
 import asyncio
+import gc
 import hashlib
 import io
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,7 @@ from PIL import Image
 
 import model_cache
 from core.logging import get_logger
+from model_lifetime import IdleModelHandle, idle_seconds
 from sam3_service import SAM3Detection, SAM3Result, _compute_bbox_from_mask, _mask_to_png
 
 log = get_logger(__name__)
@@ -79,9 +81,20 @@ class SAM3TrackerService:
         self._embed_cache: dict[str, list[np.ndarray]] = {}
         self._load_stage = "idle"
         self._encoder_files: list[str] | None = None
+        self._idle = IdleModelHandle(
+            "SAM3 tracker",
+            idle_seconds("STIMMA_SAM3_TRACKER_IDLE_SECONDS", 300),
+            self._unload_sync,
+        )
+
+    def _unload_sync(self):
+        self._sess_encoder = None
+        self._sess_decoder = None
+        self._embed_cache.clear()
+        self._load_stage = "idle"
+        gc.collect()
 
     def _load_sync(self):
-        import onnx
         import onnxruntime as ort
 
         log.info("SAM3 tracker: Loading ONNX models...")
@@ -96,6 +109,7 @@ class SAM3TrackerService:
             exec_providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         else:
             exec_providers = ['CPUExecutionProvider']
+            sess_options.enable_cpu_mem_arena = False
         log.info(f"SAM3 tracker: Using providers: {exec_providers}")
 
         self._load_stage = "loading" if _models_present(encoder_files) else "downloading_model"
@@ -103,10 +117,8 @@ class SAM3TrackerService:
         self._load_stage = "loading"
 
         def load(model_name: str) -> "ort.InferenceSession":
-            # Embed the external data so the session owns its weights.
-            model = onnx.load(str(models_dir / model_name), load_external_data=True)
             return ort.InferenceSession(
-                model.SerializeToString(),
+                str(models_dir / model_name),
                 sess_options=sess_options,
                 providers=exec_providers,
             )
@@ -217,10 +229,11 @@ class SAM3TrackerService:
         except Exception as e:
             log.warning(f"SAM3 tracker warm: bad image: {e}")
             return
-        await self._ensure_loaded()
-        async with self._inference_semaphore:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(_executor, self._embed_sync, image, cache_key)
+        with self._idle.use():
+            await self._ensure_loaded()
+            async with self._inference_semaphore:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(_executor, self._embed_sync, image, cache_key)
 
     async def point_masks(
         self,
@@ -238,12 +251,13 @@ class SAM3TrackerService:
         except Exception as e:
             return SAM3Result(error=str(e), original_width=0, original_height=0)
 
-        await self._ensure_loaded()
-        async with self._inference_semaphore:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(
-                _executor, self._point_masks_sync, image, cache_key, points,
-            )
+        with self._idle.use():
+            await self._ensure_loaded()
+            async with self._inference_semaphore:
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    _executor, self._point_masks_sync, image, cache_key, points,
+                )
 
 
 _tracker_service: Optional[SAM3TrackerService] = None

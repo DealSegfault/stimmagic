@@ -9,6 +9,7 @@ exposed directly to the agent.
 """
 
 import asyncio
+import gc
 import hashlib
 import io
 import os
@@ -22,6 +23,7 @@ from PIL import Image
 
 import model_cache
 from core.logging import get_logger
+from model_lifetime import IdleModelHandle, idle_seconds
 
 log = get_logger(__name__)
 
@@ -32,13 +34,25 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sam3")
 # HuggingFace repo "wkentaro/sam3-onnx-models".
 
 # Model file names
-MODEL_FILES = [
+MODEL_FILES_FP32 = [
     "sam3_image_encoder.onnx",
     "sam3_image_encoder.onnx.data",
     "sam3_language_encoder.onnx",
     "sam3_language_encoder.onnx.data",
     "sam3_decoder.onnx",
     "sam3_decoder.onnx.data",
+]
+
+# Dynamic INT8 weights for transformer MatMul/Gemm nodes. CPU installs use
+# these by default; CUDA keeps FP32 because its EP cannot execute the dynamic
+# quantization operators efficiently and would fall back across the graph.
+MODEL_FILES_INT8 = [
+    "sam3_image_encoder.int8.onnx",
+    "sam3_image_encoder.int8.onnx.data",
+    "sam3_language_encoder.int8.onnx",
+    "sam3_language_encoder.int8.onnx.data",
+    "sam3_decoder.int8.onnx",
+    "sam3_decoder.int8.onnx.data",
 ]
 
 
@@ -102,18 +116,28 @@ def _get_models_dir() -> Path:
     return model_cache.models_root() / "sam3"
 
 
-def _ensure_models_downloaded() -> Path:
+def _runtime_model_files() -> list[str]:
+    import onnxruntime as ort
+    return (
+        MODEL_FILES_FP32
+        if "CUDAExecutionProvider" in ort.get_available_providers()
+        else MODEL_FILES_INT8
+    )
+
+
+def _ensure_models_downloaded(model_files: list[str]) -> Path:
     """Download SAM3 ONNX models from R2 on first use (into the user cache)."""
     # Pre-model_cache installs cached these under ~/.cache/stimma/sam3-onnx;
     # adopt those in place so they don't re-download.
     legacy_dir = Path.home() / ".cache" / "stimma" / "sam3-onnx"
-    for filename in MODEL_FILES:
+    for filename in model_files:
         model_cache.ensure_model(f"sam3/{filename}", legacy_paths=[legacy_dir / filename])
     return _get_models_dir()
 
 
-def _models_present() -> bool:
-    return all(model_cache.model_is_present(f"sam3/{filename}") for filename in MODEL_FILES)
+def _models_present(model_files: Optional[list[str]] = None) -> bool:
+    files = model_files or _runtime_model_files()
+    return all(model_cache.model_is_present(f"sam3/{filename}") for filename in files)
 
 
 def _compute_bbox_from_mask(mask_array: np.ndarray, original_width: int, original_height: int) -> tuple[BBox, float] | None:
@@ -217,17 +241,31 @@ class SAM3Service:
         self._encoder_cache_key: Optional[str] = None
         self._encoder_cache_value = None
         self._load_stage = "idle"
+        self._model_files: list[str] | None = None
+        self._idle = IdleModelHandle(
+            "SAM3", idle_seconds("STIMMA_SAM3_IDLE_SECONDS", 300), self._unload_sync,
+        )
+
+    def _unload_sync(self) -> None:
+        self._sess_image = None
+        self._sess_language = None
+        self._sess_decoder = None
+        self._encoder_cache_key = None
+        self._encoder_cache_value = None
+        self._load_stage = "idle"
+        gc.collect()
 
     def _load_model_sync(self):
         """Load the SAM3 ONNX models synchronously. Called in thread pool."""
         import onnxruntime as ort
-        import onnx
-
         log.info("SAM3: Loading ONNX models...")
 
+        model_files = _runtime_model_files()
+        self._model_files = model_files
+
         # Ensure models are downloaded
-        self._load_stage = "loading" if _models_present() else "downloading_model"
-        self._models_dir = _ensure_models_downloaded()
+        self._load_stage = "loading" if _models_present(model_files) else "downloading_model"
+        self._models_dir = _ensure_models_downloaded(model_files)
         self._load_stage = "loading"
 
         # Load ONNX sessions
@@ -246,30 +284,25 @@ class SAM3Service:
             exec_providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
         else:
             exec_providers = ['CPUExecutionProvider']
+            # The encoder's temporary activations are enormous. ORT's arena
+            # retains their peak allocation after inference; direct CPU
+            # allocation released ~1.7 GB in validation with no runtime loss.
+            sess_options.enable_cpu_mem_arena = False
 
         log.info(f"SAM3: Using providers: {exec_providers}")
 
-        # Load models with external data support
-        # We need to load the model, convert external data to be embedded, then create session
-        def load_model_with_external_data(model_name: str) -> ort.InferenceSession:
+        def load_model(model_name: str) -> ort.InferenceSession:
             model_path = self._models_dir / model_name
             log.info(f"SAM3: Loading {model_name}...")
-
-            # Load ONNX model with external data
-            model = onnx.load(str(model_path), load_external_data=True)
-
-            # Serialize to bytes for inference session
-            model_bytes = model.SerializeToString()
-
             return ort.InferenceSession(
-                model_bytes,
+                str(model_path),
                 sess_options=sess_options,
                 providers=exec_providers,
             )
 
-        self._sess_image = load_model_with_external_data("sam3_image_encoder.onnx")
-        self._sess_language = load_model_with_external_data("sam3_language_encoder.onnx")
-        self._sess_decoder = load_model_with_external_data("sam3_decoder.onnx")
+        self._sess_image = load_model(model_files[0])
+        self._sess_language = load_model(model_files[2])
+        self._sess_decoder = load_model(model_files[4])
 
         self._load_stage = "ready"
         log.info("SAM3: ONNX models loaded successfully")
@@ -309,7 +342,12 @@ class SAM3Service:
         if self._load_stage in {"downloading_model", "loading"}:
             return self._load_stage
         if self._sess_image is None or self._sess_language is None or self._sess_decoder is None:
-            return "loading" if _models_present() else "downloading_model"
+            present = (
+                _models_present(self._model_files)
+                if self._model_files is not None
+                else _models_present()
+            )
+            return "loading" if present else "downloading_model"
         return "selecting" if cache_key == self._encoder_cache_key else "processing_image"
 
     def _segment_sync(
@@ -473,24 +511,15 @@ class SAM3Service:
             log.error(f"SAM3: Failed to load image: {e}")
             return SAM3Result(error=str(e), original_width=0, original_height=0)
 
-        # Ensure model is loaded
-        await self._ensure_loaded()
-
-        # Acquire semaphore to ensure one inference at a time
-        async with self._inference_semaphore:
-            log.info("SAM3: Starting segmentation", prompt_chars=len(prompt))
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                _executor,
-                self._segment_sync,
-                image,
-                cache_key,
-                prompt,
-                confidence_threshold,
-                max_detections,
-                want_visualization,
-            )
-            return result
+        with self._idle.use():
+            await self._ensure_loaded()
+            async with self._inference_semaphore:
+                log.info("SAM3: Starting segmentation", prompt_chars=len(prompt))
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(
+                    _executor, self._segment_sync, image, cache_key, prompt,
+                    confidence_threshold, max_detections, want_visualization,
+                )
 
 
 # Singleton instance

@@ -503,7 +503,7 @@ export function useStackCandidates(deps: {
   }
 
   function start() {
-    stop()
+    pause()
     unsubscribe = [
       onWebSocketEvent('generation_job_started', (data: any) => {
         const jobId = Number(data.job?.id)
@@ -556,11 +556,16 @@ export function useStackCandidates(deps: {
     }, 1500)
   }
 
-  function stop() {
+  /** Suspend background reconciliation while a KeepAlive editor is hidden. */
+  function pause() {
     unsubscribe.forEach(fn => fn())
     unsubscribe = []
     if (reconciliationTimer) clearInterval(reconciliationTimer)
     reconciliationTimer = null
+  }
+
+  function stop() {
+    pause()
     // Nothing will ever resolve these once the socket handlers are gone, and a
     // save awaiting one would hang with a spinner instead of reporting.
     for (const intent of oneShotIntents.values()) {
@@ -573,5 +578,5 @@ export function useStackCandidates(deps: {
     pending.value = opId ? pending.value.filter(p => p.opId !== opId) : []
   }
 
-  return { pending, lastError, submit, runToolOnce, start, stop, clearPending }
+  return { pending, lastError, submit, runToolOnce, start, pause, stop, clearPending }
 }

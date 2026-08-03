@@ -67,6 +67,9 @@ async def test_fake_session_uses_discovered_input_without_downloading(
     model_input = session.feeds[0]["discovered_ben2_input"]
     assert model_input.shape == (1, 3, 1024, 1024)
     assert model_input.dtype == np.float32
+    assert service._idle.unload_now()
+    assert service._session is None
+    assert service._input_name is None
 
 
 async def test_non_square_output_has_correct_dimensions_and_orientation(tmp_path):
