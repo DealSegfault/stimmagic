@@ -2033,6 +2033,10 @@ class GenerationQueue:
             return
 
         self._workers_running = True
+        # One initial recovery scan picks up durable jobs left by a prior process.
+        # After that, submissions wake the workers instead of every worker polling
+        # every profile database once per second while the app is idle.
+        self._job_submitted_event.set()
 
         for i in range(num_workers):
             task = asyncio.create_task(self._worker_loop(i))
@@ -2082,6 +2086,16 @@ class GenerationQueue:
 
         while self._workers_running:
             try:
+                try:
+                    await asyncio.wait_for(
+                        self._job_submitted_event.wait(), timeout=300.0
+                    )
+                except asyncio.TimeoutError:
+                    # Infrequent crash-recovery scan for jobs committed without a
+                    # matching in-process notification.
+                    pass
+                self._job_submitted_event.clear()
+
                 # Get list of all backends
                 backends = await backend_registry.list_backends()
                 backend_names = list(backends.keys())
@@ -2089,6 +2103,9 @@ class GenerationQueue:
                 if not backend_names:
                     log.warning(f"Worker {worker_id}: No backends available")
                     await asyncio.sleep(5)
+                    # Provider availability can change independently of job
+                    # submission, so retain the short retry only in this state.
+                    self._job_submitted_event.set()
                     continue
 
                 # Log backends periodically (every ~10 seconds = 10 iterations)
@@ -2106,6 +2123,7 @@ class GenerationQueue:
                 profiles_dbs = self._get_all_jobs_dbs()
                 if not profiles_dbs:
                     await asyncio.sleep(5)
+                    self._job_submitted_event.set()
                     continue
 
                 # Try each profile in round-robin order for fairness
@@ -2130,12 +2148,9 @@ class GenerationQueue:
                         break
 
                 if not job_found:
-                    # Wait for a job submission event, or poll after 1s timeout
-                    self._job_submitted_event.clear()
-                    try:
-                        await asyncio.wait_for(self._job_submitted_event.wait(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass
+                    continue
+                # Keep draining durable work without requiring another wake-up.
+                self._job_submitted_event.set()
 
             except asyncio.CancelledError:
                 break

@@ -43,13 +43,14 @@ ASSET_IDENTITY_BATCH_SIZE = 25
 ASSET_REFERENCE_BATCH_SIZE = 1000
 ASSET_FINALIZE_BATCH_SIZE = 100
 LEASE_SECONDS = 60
-WORKER_IDLE_SECONDS = 1.0
 WORKER_BUSY_YIELD_SECONDS = 0.01
+WORKER_RECOVERY_SECONDS = 300.0
 PROGRESS_BROADCAST_INTERVAL_SECONDS = 0.25
 LEASE_RECOVERY_INTERVAL_SECONDS = 5.0
 
 _worker_task: asyncio.Task | None = None
 _worker_lock = asyncio.Lock()
+_worker_wake_event = asyncio.Event()
 _last_progress_broadcast_at: dict[str, float] = {}
 _last_lease_recovery_at: dict[str, float] = {}
 
@@ -468,6 +469,9 @@ async def broadcast_asset_delete_queue_enqueued(
 async def ensure_delete_worker_started() -> None:
     global _worker_task
 
+    # Queue producers call this after committing. Wake an existing worker as
+    # well as ensuring one exists.
+    _worker_wake_event.set()
     async with _worker_lock:
         current_loop = asyncio.get_running_loop()
         if _worker_task and not _worker_task.done():
@@ -522,9 +526,17 @@ async def _delete_worker_loop() -> None:
             # Leave a small writer-fairness window between deletion batches.
             # The ingestion worker lives in another process and otherwise can
             # lose the SQLite writer race indefinitely to this tight loop.
-            await asyncio.sleep(
-                WORKER_BUSY_YIELD_SECONDS if did_work else WORKER_IDLE_SECONDS
-            )
+            if did_work:
+                await asyncio.sleep(WORKER_BUSY_YIELD_SECONDS)
+                continue
+            try:
+                await asyncio.wait_for(
+                    _worker_wake_event.wait(), timeout=WORKER_RECOVERY_SECONDS
+                )
+            except asyncio.TimeoutError:
+                # Recover durable work whose producer died before notifying us.
+                pass
+            _worker_wake_event.clear()
     except asyncio.CancelledError:
         log.info("DELETE OPS: worker stopped")
         raise

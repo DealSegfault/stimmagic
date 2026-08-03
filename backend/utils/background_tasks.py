@@ -79,6 +79,7 @@ async def _wait_for_cleanup_schedule(timeout: float) -> None:
 
 # Processing phases to monitor
 BROADCAST_PHASES = ['metadata', 'clip', 'face_detection', 'vlm_caption']
+IDLE_RECONCILIATION_SECONDS = 60
 
 
 async def monitor_media_changes(ws_manager):
@@ -90,7 +91,9 @@ async def monitor_media_changes(ws_manager):
 
     while True:
         try:
-            await asyncio.sleep(5)  # Check every 5 seconds
+            # Inserts normally arrive through websocket/IPC paths. This is only
+            # a crash-recovery reconciliation, not a UI refresh clock.
+            await asyncio.sleep(IDLE_RECONCILIATION_SECONDS)
 
             # Get current total count across ALL profile databases
             settings = get_settings()
@@ -182,16 +185,15 @@ async def cleanup_expired_images(ws_manager):
             next_expiration = earliest_expiration
 
             for profile_id, asset_ids in expired_assets_by_profile.items():
-                for asset_id in asset_ids:
-                    await ws_manager.broadcast(
-                        "asset_deleted",
-                        {
-                            "asset_id": asset_id,
-                            "reason": "auto_delete_expired",
-                            "profile_id": profile_id,
-                        },
-                        include_profile=False,
-                    )
+                await ws_manager.broadcast(
+                    "assets_trashed",
+                    {
+                        "asset_ids": asset_ids,
+                        "reason": "auto_delete_expired",
+                        "profile_id": profile_id,
+                    },
+                    include_profile=False,
+                )
             for profile_id, media_ids in legacy_media_by_profile.items():
                 event = "media_bulk_deleted" if len(media_ids) > 1 else "media_deleted"
                 payload = (
@@ -371,9 +373,11 @@ async def monitor_processing_stats(ws_manager):
     """
     from sqlalchemy import case
 
+    last_phase_stats = None
+    sleep_seconds = 5
     while True:
         try:
-            await asyncio.sleep(5)  # Update every 5 seconds - stats don't need real-time updates
+            await asyncio.sleep(sleep_seconds)
 
             # Query stats from ALL profile databases
             settings = get_settings()
@@ -411,8 +415,20 @@ async def monitor_processing_stats(ws_manager):
                         for status in ['pending', 'processing', 'completed', 'failed']:
                             phase_stats[phase][status] += getattr(row, f"{phase}_{status}") or 0
 
-            # Broadcast to all connected WebSocket clients (global event, no profile filtering)
-            await ws_manager.broadcast('processing_stats', {'phase_stats': phase_stats}, include_profile=False)
+            active = any(
+                counts['pending'] or counts['processing']
+                for counts in phase_stats.values()
+            )
+            sleep_seconds = 5 if active else IDLE_RECONCILIATION_SECONDS
+
+            # An unchanged snapshot cannot update the UI. Avoid generating a
+            # websocket event and its downstream render/reconciliation work.
+            if phase_stats != last_phase_stats:
+                await ws_manager.broadcast(
+                    'processing_stats', {'phase_stats': phase_stats},
+                    include_profile=False,
+                )
+                last_phase_stats = phase_stats
 
         except asyncio.CancelledError:
             log.info("PROCESSING STATS MONITOR: Shutting down")
