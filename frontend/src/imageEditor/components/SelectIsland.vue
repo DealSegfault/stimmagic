@@ -59,6 +59,8 @@ const props = defineProps<{
   aiBusy?: boolean
   /** Delayed busy feedback; false keeps fast selections visually instant. */
   aiProgressVisible?: boolean
+  /** Actual backend phase for the in-flight smart selection. */
+  aiStage?: 'starting' | 'downloading_model' | 'loading' | 'processing_image' | 'selecting'
   /** The gesture the status row is reporting on. */
   aiAction?: 'find' | 'subject' | 'background' | 'canvas' | null
   /** The last smart-selection failure, shown until the next request/input. */
@@ -319,6 +321,10 @@ function selectIntent(intent: 'subject' | 'background') {
 
 /** What the status row says while a request runs, named after the gesture. */
 const aiStatusLabel = computed(() => {
+  if (props.aiStage === 'downloading_model') return 'Downloading selection model…'
+  if (props.aiStage === 'loading') return 'Loading selection model…'
+  if (props.aiStage === 'processing_image') return 'Processing image…'
+  if (props.aiStage === 'starting') return 'Starting smart selection…'
   switch (props.aiAction) {
     case 'find': return `Finding “${aiPrompt.value.trim()}”…`
     case 'subject': return 'Selecting subject…'

@@ -449,10 +449,20 @@ function closeMagnetic() {
 
 function draw() {
   const canvas = overlay.value
-  if (!canvas) return
+  if (!canvas || !props.source) return
   const ctx = canvas.getContext('2d')!
+  // The overlay is display chrome, not the authoritative selection mask. Its
+  // backing store is viewport-sized (see resizeOverlay), while every geometry
+  // value remains in source pixels. Map source space onto the smaller backing
+  // store so a 24 MP photo does not make every ants tick, tool switch, and
+  // gradient pointer move repaint 24 million invisible pixels.
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   if (!props.visible) return
+  ctx.setTransform(
+    canvas.width / Math.max(1, props.source.width), 0,
+    0, canvas.height / Math.max(1, props.source.height), 0, 0,
+  )
 
   drawGradientDragPreview(ctx)
 
@@ -466,6 +476,10 @@ function draw() {
     const feedbackCtx = brushFeedback.getContext('2d')!
     feedbackCtx.clearRect(0, 0, brushFeedback.width, brushFeedback.height)
     feedbackCtx.save()
+    feedbackCtx.setTransform(
+      brushFeedback.width / Math.max(1, props.source.width), 0,
+      0, brushFeedback.height / Math.max(1, props.source.height), 0, 0,
+    )
     feedbackCtx.strokeStyle = '#fff'
     feedbackCtx.lineWidth = props.brushSize * scale.value
     feedbackCtx.lineCap = 'round'
@@ -481,9 +495,12 @@ function draw() {
     feedbackCtx.globalCompositeOperation = 'source-in'
     feedbackCtx.fillStyle = props.combine === 'subtract'
       ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'
-    feedbackCtx.fillRect(0, 0, brushFeedback.width, brushFeedback.height)
+    feedbackCtx.fillRect(0, 0, props.source.width, props.source.height)
     feedbackCtx.restore()
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.drawImage(brushFeedback, 0, 0)
+    ctx.restore()
   }
 
   ctx.save()
@@ -556,14 +573,15 @@ function draw() {
  */
 function drawGradientGuides(ctx: CanvasRenderingContext2D) {
   const mask = shownGradient.value
-  if (!mask || !props.visible) return
-  const canvas = ctx.canvas
+  if (!mask || !props.visible || !props.source) return
+  const sourceWidth = props.source.width
+  const sourceHeight = props.source.height
   const line = Math.max(1, scale.value)
   const interactive = gradientChromeVisible.value
 
   ctx.save()
   ctx.beginPath()
-  ctx.rect(0, 0, canvas.width, canvas.height)
+  ctx.rect(0, 0, sourceWidth, sourceHeight)
   ctx.clip()
   // Teal accent. Canvas takes no design tokens, so this matches --accent the
   // way the ants above match plain white.
@@ -579,7 +597,7 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
     const dy = mask.y2 - mask.y1
     const length = Math.hypot(dx, dy) || 1
     // Perpendicular, long enough to cross any frame at any angle.
-    const span = (canvas.width + canvas.height) * 1.5
+    const span = (sourceWidth + sourceHeight) * 1.5
     const px = (-dy / length) * span
     const py = (dx / length) * span
     const rail = (x: number, y: number, dashed: boolean) => {
@@ -618,11 +636,11 @@ function drawGradientGuides(ctx: CanvasRenderingContext2D) {
  * Preview coverage while geometry or falloff is moving. Once the gesture is
  * released, the wash drops away and the guides become the selection readout;
  * after Paint takes the pointer those guides remain, without editable handles.
- * Native canvas gradients keep pointer-move feedback cheap at full resolution.
+ * Native canvas gradients keep pointer-move feedback cheap at display resolution.
  */
 function drawGradientDragPreview(ctx: CanvasRenderingContext2D) {
   const mask = shownGradient.value
-  if (!mask) return
+  if (!mask || !props.source) return
 
   // Geometry previews are tool-local: a persisted adjustment already renders
   // its result, and inactive tools do not paint a workspace wash. A falloff
@@ -654,7 +672,7 @@ function drawGradientDragPreview(ctx: CanvasRenderingContext2D) {
       gradient.addColorStop(t, colorAt(1 - ramp))
     }
     ctx.fillStyle = gradient
-    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+    ctx.fillRect(0, 0, props.source.width, props.source.height)
   } else {
     if (mask.rx < 1 || mask.ry < 1) {
       ctx.restore()
@@ -675,8 +693,8 @@ function drawGradientDragPreview(ctx: CanvasRenderingContext2D) {
     ctx.fillRect(
       -mask.cx / mask.rx,
       -mask.cy / mask.ry,
-      ctx.canvas.width / mask.rx,
-      ctx.canvas.height / mask.ry,
+      props.source.width / mask.rx,
+      props.source.height / mask.ry,
     )
   }
   ctx.restore()
@@ -730,11 +748,21 @@ function replaceGradient(mask: GradientMask) {
   publish(false)
 }
 
-function resize() {
+function resizeOverlay() {
   const canvas = overlay.value
-  if (!canvas || !props.source) return
-  canvas.width = props.source.width
-  canvas.height = props.source.height
+  if (!canvas) return
+  // Match the annotation overlay: crisp at normal/high DPI, but never let a
+  // very dense monitor turn display chrome back into a source-sized hot path.
+  const density = Math.max(1, Math.min(window.devicePixelRatio || 1, 2))
+  const width = Math.max(1, Math.round(props.displayWidth * density))
+  const height = Math.max(1, Math.round(props.displayHeight * density))
+  if (canvas.width !== width) canvas.width = width
+  if (canvas.height !== height) canvas.height = height
+}
+
+function resize() {
+  if (!props.source) return
+  resizeOverlay()
   selection.initSelection({ width: props.source.width, height: props.source.height })
   // The gradient map is per-image; drop it when the composite underneath moves.
   magnetic.invalidate()
@@ -752,6 +780,10 @@ defineExpose({
 })
 
 watch(() => props.source, resize)
+watch([() => props.displayWidth, () => props.displayHeight], () => {
+  resizeOverlay()
+  draw()
+})
 watch(() => props.armed, armed => {
   if (!armed) {
     magnetic.cancel()

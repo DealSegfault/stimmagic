@@ -112,6 +112,10 @@ def _ensure_models_downloaded() -> Path:
     return _get_models_dir()
 
 
+def _models_present() -> bool:
+    return all(model_cache.model_is_present(f"sam3/{filename}") for filename in MODEL_FILES)
+
+
 def _compute_bbox_from_mask(mask_array: np.ndarray, original_width: int, original_height: int) -> tuple[BBox, float] | None:
     """
     Compute bounding box from mask array.
@@ -212,6 +216,7 @@ class SAM3Service:
         # interactive callers re-prompting the same image only pay the decoder.
         self._encoder_cache_key: Optional[str] = None
         self._encoder_cache_value = None
+        self._load_stage = "idle"
 
     def _load_model_sync(self):
         """Load the SAM3 ONNX models synchronously. Called in thread pool."""
@@ -221,7 +226,9 @@ class SAM3Service:
         log.info("SAM3: Loading ONNX models...")
 
         # Ensure models are downloaded
+        self._load_stage = "loading" if _models_present() else "downloading_model"
         self._models_dir = _ensure_models_downloaded()
+        self._load_stage = "loading"
 
         # Load ONNX sessions
         log.info("SAM3: Creating ONNX inference sessions...")
@@ -264,6 +271,7 @@ class SAM3Service:
         self._sess_language = load_model_with_external_data("sam3_language_encoder.onnx")
         self._sess_decoder = load_model_with_external_data("sam3_decoder.onnx")
 
+        self._load_stage = "ready"
         log.info("SAM3: ONNX models loaded successfully")
 
     async def _ensure_loaded(self):
@@ -295,6 +303,14 @@ class SAM3Service:
             self._encoder_cache_key = cache_key
             self._encoder_cache_value = image_output
         return image_output
+
+    def selection_stage(self, cache_key: str) -> str:
+        """Current user-visible phase for a prompt selection on ``cache_key``."""
+        if self._load_stage in {"downloading_model", "loading"}:
+            return self._load_stage
+        if self._sess_image is None or self._sess_language is None or self._sess_decoder is None:
+            return "loading" if _models_present() else "downloading_model"
+        return "selecting" if cache_key == self._encoder_cache_key else "processing_image"
 
     def _segment_sync(
         self,

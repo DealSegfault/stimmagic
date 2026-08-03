@@ -118,7 +118,13 @@
                   </button>
                 </div>
                 <div class="text-content-tertiary">{{ warning.message }}</div>
-                <a :href="warning.action_url" target="_blank" class="text-blue-500 hover:underline">
+                <a
+                  :href="warning.action_url"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-blue-500 hover:underline"
+                  @click.stop.prevent="openSystemWarningAction(warning.action_url)"
+                >
                   {{ warning.action_label || 'Installation instructions' }} →
                 </a>
               </div>
@@ -1039,6 +1045,17 @@ function isSystemWarningDismissed(type) {
 function dismissSystemWarning(type) {
   localStorage.setItem(makeGlobalKey('dismissed_warning', type), 'true')
   systemWarnings.value = systemWarnings.value.filter(w => w.type !== type)
+}
+
+async function openSystemWarningAction(url) {
+  if (!url) return
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell')
+    await open(url)
+  } catch (error) {
+    console.error('Failed to open system warning action:', error)
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }
 }
 
 async function fetchSystemWarnings() {

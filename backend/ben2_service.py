@@ -139,9 +139,18 @@ class BEN2Service:
         self._inference_semaphore = asyncio.Semaphore(1)
         self._cached_image_hash: Optional[str] = None
         self._cached_alpha: Optional[np.ndarray] = None
+        self._load_stage = "idle"
 
     def _load_sync(self) -> None:
+        if self._model_path_override is None:
+            self._load_stage = (
+                "loading" if model_cache.model_is_present(MODEL_KEY)
+                else "downloading_model"
+            )
+        else:
+            self._load_stage = "loading"
         model_path = self._model_path_override or model_cache.ensure_model(MODEL_KEY)
+        self._load_stage = "loading"
         if self._model_path_override is None:
             _verify_official_artifact(model_path)
 
@@ -153,6 +162,7 @@ class BEN2Service:
             raise RuntimeError("BEN2 Base model has no inputs")
         self._session = session
         self._input_name = inputs[0].name
+        self._load_stage = "ready"
         log.info("BEN2: Base ONNX model loaded")
 
     async def _ensure_loaded(self) -> None:
@@ -173,6 +183,20 @@ class BEN2Service:
         if not outputs:
             raise RuntimeError("BEN2 Base model returned no outputs")
         return postprocess_alpha(outputs[0], width, height)
+
+    def selection_stage(self, image_hash: str) -> str:
+        """Current user-visible phase for subject/background selection."""
+        if self._load_stage in {"downloading_model", "loading"}:
+            return self._load_stage
+        if self._session is None:
+            if self._model_path_override is not None:
+                return "loading"
+            return "loading" if model_cache.model_is_present(MODEL_KEY) else "downloading_model"
+        return (
+            "selecting"
+            if image_hash == self._cached_image_hash and self._cached_alpha is not None
+            else "processing_image"
+        )
 
     async def subject_alpha(self, image_bytes: bytes) -> BEN2Result:
         """Return BEN2's continuous foreground alpha for encoded image bytes."""

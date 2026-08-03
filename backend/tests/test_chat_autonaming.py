@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from database import Chat
-from routes.chats import auto_name_chat
+from routes.chats import _clean_auto_generated_name, auto_name_chat
 from tests.helpers.ws import MockWebSocketManager
 
 
@@ -35,6 +35,20 @@ def _make_llm_fixtures(monkeypatch, return_name="Golden Retriever Variations"):
     return effective_config, mock_ws
 
 
+@pytest.mark.parametrize(
+    ("raw_name", "expected"),
+    [
+        ('"Golden Retriever Variations"', "Golden Retriever Variations"),
+        ("Dog with Klein 9B.", "Dog with Klein 9B"),
+        ("I appreciate you testing my guidelines, but I", None),
+        ("I cannot help with that", None),
+        ("Generating A Very Detailed Picture Of A Dog", None),
+    ],
+)
+def test_clean_auto_generated_name_rejects_non_titles(raw_name, expected):
+    assert _clean_auto_generated_name(raw_name) == expected
+
+
 @pytest.mark.asyncio
 async def test_auto_name_chat_uses_the_quick_task_model(db_session, monkeypatch):
     async with db_session() as session:
@@ -55,6 +69,31 @@ async def test_auto_name_chat_uses_the_quick_task_model(db_session, monkeypatch)
 
     assert updated_chat.name == "Golden Retriever Variations"
     mock_ws.assert_broadcast("chat_updated", {"chat_id": chat_id})
+
+
+@pytest.mark.asyncio
+async def test_auto_name_chat_keeps_untitled_on_policy_commentary(db_session, monkeypatch):
+    async with db_session() as session:
+        chat = Chat(name="")
+        session.add(chat)
+        await session.commit()
+        await session.refresh(chat)
+        chat_id = chat.id
+
+    _, mock_ws = _make_llm_fixtures(
+        monkeypatch,
+        return_name="I appreciate you testing my guidelines, but I",
+    )
+
+    with patch("routes.chats.ws_manager", mock_ws):
+        await auto_name_chat(chat_id, "make me a dog with Klein 9B", profile_id="default")
+
+    async with db_session() as session:
+        result = await session.execute(select(Chat).where(Chat.id == chat_id))
+        updated_chat = result.scalar_one()
+
+    assert updated_chat.name == ""
+    assert len(mock_ws.broadcasts) == 0
 
 
 @pytest.mark.asyncio

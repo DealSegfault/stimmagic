@@ -57,6 +57,8 @@
         { "path": "**" }
       ]
     },
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
     {
       "identifier": "opener:allow-reveal-item-in-dir",
       "allow": [

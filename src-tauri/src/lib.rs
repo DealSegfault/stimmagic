@@ -20,6 +20,19 @@ mod windows;
 /// Tauri process stays alive, which keeps the watchdog and backend warm.
 static QUITTING: AtomicBool = AtomicBool::new(false);
 
+/// WebKitGTK's DMA-BUF renderer produces invisible/gray webviews on the GB10
+/// devices targeted by our Linux ARM64 build. Disable only that renderer path;
+/// accelerated compositing remains enabled. Honor an explicit environment
+/// value so users and packagers can override this as WebKitGTK support evolves.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn configure_linux_webkit_renderer() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    eprintln!("[stimma] Linux ARM64 build: disabled WebKitGTK DMA-BUF renderer");
+}
+
 /// Build distribution, baked in at compile time: "dev" (default) or
 /// "official" (set only by release CI via the STIMMA_DISTRIBUTION env var).
 /// Passed to the backend sidecar so all three layers agree.
@@ -253,6 +266,9 @@ mod webview_data_store_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    configure_linux_webkit_renderer();
+
     let dev_mode = std::env::var("STIMMA_DEV").is_ok();
 
     let dev_backend_port = std::env::var("STIMMA_BACKEND_PORT")

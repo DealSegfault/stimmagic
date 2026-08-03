@@ -48,6 +48,22 @@ def _ensure_models_downloaded(encoder_files: list[str]):
     return model_cache.models_root() / "sam3-tracker"
 
 
+def _runtime_encoder_files() -> list[str]:
+    import onnxruntime as ort
+    return (
+        ENCODER_FILES_CUDA
+        if 'CUDAExecutionProvider' in ort.get_available_providers()
+        else ENCODER_FILES_CPU
+    )
+
+
+def _models_present(encoder_files: list[str]) -> bool:
+    return all(
+        model_cache.model_is_present(f"sam3-tracker/{filename}")
+        for filename in [*encoder_files, *DECODER_FILES]
+    )
+
+
 class SAM3TrackerService:
     """Lazy-loaded tracker with a small embedding cache for interactive clicks."""
 
@@ -61,6 +77,8 @@ class SAM3TrackerService:
         self._load_lock = asyncio.Lock()
         self._inference_semaphore = asyncio.Semaphore(1)
         self._embed_cache: dict[str, list[np.ndarray]] = {}
+        self._load_stage = "idle"
+        self._encoder_files: list[str] | None = None
 
     def _load_sync(self):
         import onnx
@@ -72,15 +90,17 @@ class SAM3TrackerService:
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
         providers = ort.get_available_providers()
-        if 'CUDAExecutionProvider' in providers:
+        encoder_files = _runtime_encoder_files()
+        self._encoder_files = encoder_files
+        if encoder_files == ENCODER_FILES_CUDA:
             exec_providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-            encoder_files = ENCODER_FILES_CUDA
         else:
             exec_providers = ['CPUExecutionProvider']
-            encoder_files = ENCODER_FILES_CPU
         log.info(f"SAM3 tracker: Using providers: {exec_providers}")
 
+        self._load_stage = "loading" if _models_present(encoder_files) else "downloading_model"
         models_dir = _ensure_models_downloaded(encoder_files)
+        self._load_stage = "loading"
 
         def load(model_name: str) -> "ort.InferenceSession":
             # Embed the external data so the session owns its weights.
@@ -93,6 +113,7 @@ class SAM3TrackerService:
 
         self._sess_encoder = load(encoder_files[0])
         self._sess_decoder = load(DECODER_FILES[0])
+        self._load_stage = "ready"
         log.info("SAM3 tracker: ONNX models loaded")
 
     async def _ensure_loaded(self):
@@ -118,6 +139,15 @@ class SAM3TrackerService:
             self._embed_cache.pop(next(iter(self._embed_cache)))
         self._embed_cache[cache_key] = embeddings
         return embeddings
+
+    def selection_stage(self, cache_key: str) -> str:
+        """Current user-visible phase for a point selection on ``cache_key``."""
+        if self._load_stage in {"downloading_model", "loading"}:
+            return self._load_stage
+        if self._sess_encoder is None or self._sess_decoder is None:
+            encoder_files = self._encoder_files or _runtime_encoder_files()
+            return "loading" if _models_present(encoder_files) else "downloading_model"
+        return "selecting" if cache_key in self._embed_cache else "processing_image"
 
     def _point_masks_sync(
         self,

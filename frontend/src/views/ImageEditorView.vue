@@ -5512,8 +5512,11 @@ const aiSelectError = ref<string | null>(null)
 type AiSelectAction = 'find' | 'subject' | 'background' | 'canvas'
 const aiSelectAction = ref<AiSelectAction | null>(null)
 const aiSelectProgressVisible = ref(false)
+type AiSelectStage = 'starting' | 'downloading_model' | 'loading' | 'processing_image' | 'selecting'
+const aiSelectStage = ref<AiSelectStage>('starting')
 const AI_SELECT_PROGRESS_DELAY_MS = 400
 let aiSelectProgressTimer: ReturnType<typeof setTimeout> | null = null
+let aiSelectProgressPollTimer: ReturnType<typeof setInterval> | null = null
 /** Segmentation can take seconds; the panel's Cancel (and Esc) abort it. */
 let aiSelectAbort: AbortController | null = null
 
@@ -5605,6 +5608,28 @@ function aiActionFor(request: AiSelectRequest): AiSelectAction {
   return 'find'
 }
 
+function stopAiSelectProgressPolling() {
+  if (aiSelectProgressPollTimer) clearInterval(aiSelectProgressPollTimer)
+  aiSelectProgressPollTimer = null
+}
+
+function startAiSelectProgressPolling(requestId: string, abort: AbortController) {
+  stopAiSelectProgressPolling()
+  const refresh = async () => {
+    if (abort.signal.aborted || aiSelectAbort !== abort) return
+    try {
+      const { data } = await axios.get(`/api/mask/select/progress/${requestId}`)
+      if (!abort.signal.aborted && aiSelectAbort === abort && data?.stage) {
+        aiSelectStage.value = data.stage as AiSelectStage
+      }
+    } catch {
+      // Progress is supplementary; the selection request owns real errors.
+    }
+  }
+  void refresh()
+  aiSelectProgressPollTimer = setInterval(refresh, 200)
+}
+
 async function runAiSelect(
   request: AiSelectRequest,
   mode: SelectionMode = selectCombine.value,
@@ -5617,16 +5642,21 @@ async function runAiSelect(
   aiSelectBusy.value = true
   aiSelectAction.value = aiActionFor(request)
   aiSelectProgressVisible.value = false
+  aiSelectStage.value = 'starting'
   aiSelectProgressTimer = setTimeout(() => {
     aiSelectProgressVisible.value = true
   }, AI_SELECT_PROGRESS_DELAY_MS)
   aiSelectError.value = null
   const abort = new AbortController()
   aiSelectAbort = abort
+  const request_id = globalThis.crypto?.randomUUID?.()
+    ?? `select-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  startAiSelectProgressPolling(request_id, abort)
   try {
     const sent = aiSelectCanvas(src)
     const image_data_url = sent.toDataURL('image/png')
     const { data } = await axios.post('/api/mask/select', {
+      request_id,
       image_data_url,
       ...request,
     }, { signal: abort.signal })
@@ -5668,7 +5698,9 @@ async function runAiSelect(
   } finally {
     if (aiSelectProgressTimer) clearTimeout(aiSelectProgressTimer)
     aiSelectProgressTimer = null
+    stopAiSelectProgressPolling()
     aiSelectProgressVisible.value = false
+    aiSelectStage.value = 'starting'
     aiSelectAction.value = null
     aiSelectBusy.value = false
     if (aiSelectAbort === abort) aiSelectAbort = null
@@ -7132,6 +7164,7 @@ watch(
             ? canvasGradient.feather : selectGradientFeather"
           :ai-busy="aiSelectBusy"
           :ai-progress-visible="aiSelectProgressVisible"
+          :ai-stage="aiSelectStage"
           :ai-action="aiSelectAction"
           :ai-error="aiSelectError"
           class="absolute bottom-4 left-1/2 -translate-x-1/2 z-chrome"

@@ -98,3 +98,19 @@ def test_constant_output_is_guarded_without_nan_or_thresholding():
     assert alpha.shape == (5, 7)
     assert alpha.dtype == np.uint8
     assert np.count_nonzero(alpha) == 0
+
+
+def test_progress_distinguishes_download_load_process_and_cached_select(monkeypatch):
+    service = ben2_service.BEN2Service()
+    monkeypatch.setattr(ben2_service.model_cache, "model_is_present", lambda key: False)
+    assert service.selection_stage("image-a") == "downloading_model"
+
+    monkeypatch.setattr(ben2_service.model_cache, "model_is_present", lambda key: True)
+    assert service.selection_stage("image-a") == "loading"
+
+    service._load_stage = "ready"
+    service._session = object()
+    assert service.selection_stage("image-a") == "processing_image"
+    service._cached_image_hash = "image-a"
+    service._cached_alpha = np.ones((1, 1), dtype=np.uint8)
+    assert service.selection_stage("image-a") == "selecting"

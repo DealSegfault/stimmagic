@@ -59,6 +59,11 @@ def model_path(key: str) -> Path:
     return models_root() / key
 
 
+def model_is_present(key: str) -> bool:
+    """Return whether a complete, non-empty cached model artifact exists."""
+    return _is_present(model_path(key))
+
+
 def _is_present(path: Path) -> bool:
     try:
         return path.is_file() and path.stat().st_size > 0

@@ -5,12 +5,15 @@ ToolView prompt agent (mask_subject / unmask_subject / expand_mask / ... in
 prompt_agent_tools.py), which calls /segment directly.
 """
 import base64
+import hashlib
 import io
+import threading
+import time
 from typing import List, Literal, Optional
 
 import numpy as np
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from PIL import Image
 
 from core.logging import get_logger
@@ -88,6 +91,9 @@ def _convert_grayscale_to_rgba(mask_data: bytes) -> bytes:
 
 class SelectRequest(BaseModel):
     image_data_url: str  # PNG/JPEG data URL of the composite being selected over
+    request_id: Optional[str] = Field(
+        default=None, min_length=1, max_length=128,
+    )  # Correlates exact backend progress with this UI request
     prompt: Optional[str] = None  # text mode: select every instance of a concept
     point: Optional[dict] = None  # click mode: {x, y} normalized 0-1; one object
     intent: Optional[Literal["subject", "background"]] = None  # BEN2 whole-image matting
@@ -118,6 +124,60 @@ class SelectResponse(BaseModel):
     success: bool
     detections: List[SelectDetection] = []
     error: Optional[str] = None
+
+
+SelectProgressStage = Literal[
+    "starting", "downloading_model", "loading", "processing_image", "selecting",
+]
+
+
+class SelectProgressResponse(BaseModel):
+    stage: SelectProgressStage
+
+
+_select_progress_lock = threading.Lock()
+_select_progress: dict[str, tuple[str, str, float]] = {}
+_SELECT_PROGRESS_TTL_SECONDS = 10 * 60
+
+
+def _register_select_progress(
+    request_id: Optional[str], mode: str, cache_key: str,
+) -> None:
+    if not request_id:
+        return
+    now = time.monotonic()
+    with _select_progress_lock:
+        expired = [
+            key for key, (_, _, created) in _select_progress.items()
+            if now - created > _SELECT_PROGRESS_TTL_SECONDS
+        ]
+        for key in expired:
+            _select_progress.pop(key, None)
+        _select_progress[request_id] = (mode, cache_key, now)
+
+
+@router.get("/select/progress/{request_id}", response_model=SelectProgressResponse)
+async def select_progress(request_id: str):
+    """Report the real model/download/encode phase of an editor selection."""
+    with _select_progress_lock:
+        entry = _select_progress.get(request_id)
+    if entry is None:
+        return SelectProgressResponse(stage="starting")
+
+    mode, cache_key, _ = entry
+    try:
+        if mode == "point":
+            from sam3_tracker_service import get_sam3_tracker_service
+            stage = get_sam3_tracker_service().selection_stage(cache_key)
+        elif mode == "prompt":
+            stage = get_sam3_service().selection_stage(cache_key)
+        else:
+            from ben2_service import get_ben2_service
+            stage = get_ben2_service().selection_stage(cache_key)
+    except Exception as exc:
+        log.debug(f"Could not read selection progress: {exc}")
+        stage = "starting"
+    return SelectProgressResponse(stage=stage)
 
 
 def _decode_data_url(data_url: str) -> bytes:
@@ -191,6 +251,17 @@ async def select_mask(request: SelectRequest):
         image_bytes = _decode_data_url(request.image_data_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Bad image data URL: {e}")
+
+    if request.point is not None:
+        progress_mode = "point"
+        progress_cache_key = hashlib.sha1(image_bytes).hexdigest()
+    elif request.prompt:
+        progress_mode = "prompt"
+        progress_cache_key = hashlib.sha1(image_bytes).hexdigest()
+    else:
+        progress_mode = "intent"
+        progress_cache_key = hashlib.sha256(image_bytes).hexdigest()
+    _register_select_progress(request.request_id, progress_mode, progress_cache_key)
 
     if request.intent is not None:
         from ben2_service import get_ben2_service

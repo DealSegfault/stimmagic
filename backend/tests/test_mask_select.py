@@ -7,6 +7,8 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
+import sam3_service
+import sam3_tracker_service
 from ben2_service import BEN2Result
 from routes import mask_assistant
 from sam3_service import BBox, SAM3Detection, SAM3Result
@@ -112,6 +114,62 @@ async def test_existing_point_request_still_dispatches_to_tracker():
     assert response.success is True
     service.point_masks.assert_awaited_once()
     assert service.point_masks.await_args.kwargs["points"] == [(0.25, 0.75, 1)]
+
+
+async def test_point_progress_reports_the_trackers_real_stage():
+    service = MagicMock()
+    service.selection_stage.return_value = "processing_image"
+    request_id = "point-progress-test"
+    mask_assistant._register_select_progress(request_id, "point", "image-cache-key")
+
+    with patch("sam3_tracker_service.get_sam3_tracker_service", return_value=service):
+        response = await mask_assistant.select_progress(request_id)
+
+    assert response.stage == "processing_image"
+    service.selection_stage.assert_called_once_with("image-cache-key")
+
+
+async def test_unknown_progress_request_starts_without_guessing_a_stage():
+    response = await mask_assistant.select_progress("not-a-real-selection-request")
+
+    assert response.stage == "starting"
+
+
+def test_tracker_progress_distinguishes_download_load_encode_and_select(monkeypatch):
+    service = sam3_tracker_service.SAM3TrackerService()
+    monkeypatch.setattr(
+        sam3_tracker_service, "_runtime_encoder_files",
+        lambda: sam3_tracker_service.ENCODER_FILES_CPU,
+    )
+    monkeypatch.setattr(sam3_tracker_service, "_models_present", lambda files: False)
+    assert service.selection_stage("image-a") == "downloading_model"
+
+    monkeypatch.setattr(sam3_tracker_service, "_models_present", lambda files: True)
+    assert service.selection_stage("image-a") == "loading"
+
+    service._load_stage = "ready"
+    service._sess_encoder = object()
+    service._sess_decoder = object()
+    assert service.selection_stage("image-a") == "processing_image"
+    service._embed_cache["image-a"] = []
+    assert service.selection_stage("image-a") == "selecting"
+
+
+def test_prompt_progress_distinguishes_download_load_encode_and_select(monkeypatch):
+    service = sam3_service.SAM3Service()
+    monkeypatch.setattr(sam3_service, "_models_present", lambda: False)
+    assert service.selection_stage("image-a") == "downloading_model"
+
+    monkeypatch.setattr(sam3_service, "_models_present", lambda: True)
+    assert service.selection_stage("image-a") == "loading"
+
+    service._load_stage = "ready"
+    service._sess_image = object()
+    service._sess_language = object()
+    service._sess_decoder = object()
+    assert service.selection_stage("image-a") == "processing_image"
+    service._encoder_cache_key = "image-a"
+    assert service.selection_stage("image-a") == "selecting"
 
 
 @pytest.mark.parametrize("payload", [
