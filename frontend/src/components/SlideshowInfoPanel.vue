@@ -1,8 +1,13 @@
 <template>
   <div
     data-testid="media-info-panel"
-    class="bg-surface-elevated backdrop-blur-[10px] overflow-y-auto overflow-x-visible z-chrome flex flex-col relative sidebar-scroll order-2 transition-all duration-300"
-    :class="focusMode ? 'w-0 opacity-0 pointer-events-none border-l-0' : 'w-[384px] max-w-[90vw] border-l border-edge-subtle'"
+    class="overflow-y-auto overflow-x-visible flex flex-col relative sidebar-scroll"
+    :class="contentOnly
+      ? 'flex-1 min-h-0 w-full bg-transparent'
+      : [
+          'bg-surface-elevated backdrop-blur-[10px] z-chrome order-2 transition-all duration-300',
+          focusMode ? 'w-0 opacity-0 pointer-events-none border-l-0' : 'w-[384px] max-w-[90vw] border-l border-edge-subtle'
+        ]"
   >
     <!-- Header (pinned): markers + utility rail, then the two core-loop verbs.
          Grammar: labels stay on the two actions whose icons don't carry
@@ -43,7 +48,7 @@
       </div>
       <div class="grid grid-cols-2 gap-1.5 mt-2">
         <button
-          v-if="isImageType(currentItem)"
+          v-if="showEditAction && isImageType(currentItem)"
           type="button"
           class="col-span-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md bg-surface-raised px-3 py-2 text-xs font-medium text-content transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
           @click="$emit('edit-image', mediaIdOf(currentItem))"
@@ -834,6 +839,16 @@ const props = defineProps({
   title: {
     type: String,
     default: 'Media Info'
+  },
+  // Reuse the panel inside another sidebar without imposing the slideshow's
+  // fixed width, border, backdrop, or transition chrome.
+  contentOnly: {
+    type: Boolean,
+    default: false
+  },
+  showEditAction: {
+    type: Boolean,
+    default: true
   }
 })
 
