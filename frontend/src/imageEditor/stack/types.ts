@@ -317,7 +317,7 @@ export type MaskComponentMode = 'add' | 'subtract' | 'intersect'
  */
 export interface SelectionSemantic {
   prompt?: string
-  intent?: 'subject' | 'background'
+  intent?: 'subject' | 'background' | 'sky'
 }
 
 export interface MaskComponent {

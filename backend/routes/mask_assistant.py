@@ -87,7 +87,8 @@ def _convert_grayscale_to_rgba(mask_data: bytes) -> bytes:
 # a click, returned at EVERY granularity the tracker offers (largest area
 # first) so the editor can default to the object and cycle finer on repeated
 # clicks without another request. Intent mode (BEN2 Base): one continuous
-# whole-subject alpha, or its exact alpha complement for the background.
+# whole-subject alpha, or its exact alpha complement for the background. Sky
+# intent uses the dedicated SkyWater semantic pass and guided refinement.
 
 class SelectRequest(BaseModel):
     image_data_url: str  # PNG/JPEG data URL of the composite being selected over
@@ -96,7 +97,7 @@ class SelectRequest(BaseModel):
     )  # Correlates exact backend progress with this UI request
     prompt: Optional[str] = None  # text mode: select every instance of a concept
     point: Optional[dict] = None  # click mode: {x, y} normalized 0-1; one object
-    intent: Optional[Literal["subject", "background"]] = None  # BEN2 whole-image matting
+    intent: Optional[Literal["subject", "background", "sky"]] = None
     confidence: float = 0.5
     max_detections: int = 8
 
@@ -171,9 +172,14 @@ async def select_progress(request_id: str):
             stage = get_sam3_tracker_service().selection_stage(cache_key)
         elif mode == "prompt":
             stage = get_sam3_service().selection_stage(cache_key)
-        else:
+        elif mode == "intent":
             from ben2_service import get_ben2_service
             stage = get_ben2_service().selection_stage(cache_key)
+        elif mode == "sky":
+            from skywater_service import get_skywater_service
+            stage = get_skywater_service().selection_stage(cache_key)
+        else:
+            stage = "starting"
     except Exception as exc:
         log.debug(f"Could not read selection progress: {exc}")
         stage = "starting"
@@ -259,11 +265,29 @@ async def select_mask(request: SelectRequest):
         progress_mode = "prompt"
         progress_cache_key = hashlib.sha1(image_bytes).hexdigest()
     else:
-        progress_mode = "intent"
+        progress_mode = "sky" if request.intent == "sky" else "intent"
         progress_cache_key = hashlib.sha256(image_bytes).hexdigest()
     _register_select_progress(request.request_id, progress_mode, progress_cache_key)
 
     if request.intent is not None:
+        if request.intent == "sky":
+            from skywater_service import get_skywater_service
+            sky_result = await get_skywater_service().sky_alpha(image_bytes)
+            if sky_result.error:
+                return SelectResponse(success=False, error=sky_result.error)
+            if sky_result.alpha is None:
+                return SelectResponse(success=False, error="Sky selection returned no alpha mask")
+            if not np.any(sky_result.alpha):
+                return SelectResponse(success=False, error="No sky found")
+            return SelectResponse(
+                success=True,
+                detections=[SelectDetection(
+                    mask_data_url=_alpha_to_selection_rgba(sky_result.alpha),
+                    score=sky_result.score,
+                    bbox=_alpha_bbox(sky_result.alpha),
+                )],
+            )
+
         from ben2_service import get_ben2_service
         ben2_result = await get_ben2_service().subject_alpha(image_bytes)
         if ben2_result.error:

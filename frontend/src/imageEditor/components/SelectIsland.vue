@@ -68,7 +68,7 @@ const props = defineProps<{
   /** Actual backend phase for the in-flight smart selection. */
   aiStage?: 'starting' | 'downloading_model' | 'loading' | 'processing_image' | 'selecting'
   /** The gesture the status row is reporting on. */
-  aiAction?: 'find' | 'subject' | 'background' | 'canvas' | null
+  aiAction?: 'find' | 'subject' | 'background' | 'sky' | 'canvas' | null
   /** The last smart-selection failure, shown until the next request/input. */
   aiError?: string | null
 }>()
@@ -84,7 +84,7 @@ const emit = defineEmits<{
   morph: [number]
   /** The active gradient's falloff slider started or ended a gesture. */
   gradientAdjusting: [boolean]
-  aiSelect: [{ prompt: string } | { intent: 'subject' | 'background' }]
+  aiSelect: [{ prompt: string } | { intent: 'subject' | 'background' | 'sky' }]
   aiCancel: []
 }>()
 
@@ -322,7 +322,7 @@ function submitAiPrompt() {
   emit('aiSelect', { prompt })
 }
 
-function selectIntent(intent: 'subject' | 'background') {
+function selectIntent(intent: 'subject' | 'background' | 'sky') {
   if (props.aiBusy) return
   emit('aiSelect', { intent })
 }
@@ -337,6 +337,7 @@ const aiStatusLabel = computed(() => {
     case 'find': return `Finding “${aiPrompt.value.trim()}”…`
     case 'subject': return 'Selecting subject…'
     case 'background': return 'Selecting background…'
+    case 'sky': return 'Selecting sky…'
     default: return 'Selecting object…'
   }
 })
@@ -425,7 +426,7 @@ function buttonClass(active: boolean, enabled = true) {
                 or
                 <span class="flex-1 h-px bg-edge-subtle" />
               </div>
-              <div class="grid grid-cols-2 gap-1.5">
+              <div class="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   class="h-7 flex items-center justify-center gap-1.5 rounded-md text-xs font-medium
@@ -449,6 +450,18 @@ function buttonClass(active: boolean, enabled = true) {
                 >
                   <ToolIcon name="image" :size="13" />
                   Background
+                </button>
+                <button
+                  type="button"
+                  class="h-7 flex items-center justify-center gap-1.5 rounded-md text-xs font-medium
+                         bg-overlay-subtle text-content-secondary transition-colors
+                         hover:bg-overlay-hover hover:text-content
+                         focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+                  :disabled="aiBusy"
+                  @click="selectIntent('sky')"
+                >
+                  <ToolIcon name="sun" :size="13" />
+                  Sky
                 </button>
               </div>
             </div>

@@ -273,6 +273,10 @@ test('component rows name themselves by what they are', () => {
     'Subject',
   )
   assert.equal(
+    maskComponentLabel({ id: 'c', mode: 'add', enabled: true, semantic: { intent: 'sky' } }),
+    'Sky',
+  )
+  assert.equal(
     maskComponentLabel({
       id: 'c', mode: 'add', enabled: true,
       mask: { kind: 'radial', cx: 0, cy: 0, rx: 5, ry: 5, feather: 60, invert: false },

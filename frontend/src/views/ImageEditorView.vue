@@ -6832,7 +6832,7 @@ function invertSelection() {
 
 const aiSelectBusy = ref(false)
 const aiSelectError = ref<string | null>(null)
-type AiSelectAction = 'find' | 'subject' | 'background' | 'canvas'
+type AiSelectAction = 'find' | 'subject' | 'background' | 'sky' | 'canvas'
 const aiSelectAction = ref<AiSelectAction | null>(null)
 const aiSelectProgressVisible = ref(false)
 type AiSelectStage = 'starting' | 'downloading_model' | 'loading' | 'processing_image' | 'selecting'
@@ -6843,8 +6843,10 @@ let aiSelectProgressPollTimer: ReturnType<typeof setInterval> | null = null
 /** Segmentation can take seconds; the panel's Cancel (and Esc) abort it. */
 let aiSelectAbort: AbortController | null = null
 
-/** Longest side sent to segmentation. SAM3 works at ~1k; sending more is transfer cost, not quality. */
+/** Longest side sent to object segmentation. SAM3 works at ~1k. */
 const AI_SELECT_MAX_SIDE = 1536
+/** Sky semantics run at 384px, but its guided edge pass needs source detail. */
+const AI_SKY_SELECT_MAX_SIDE = 4096
 
 /**
  * The last Object click's granularity stack. The tracker returns the clicked
@@ -6870,8 +6872,11 @@ let applyingAiMask = false
  * through here: the backend's embedding cache is keyed on the sent bytes, so
  * a warm encoded any other way buys nothing.
  */
-function aiSelectCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
-  const scale = Math.min(1, AI_SELECT_MAX_SIDE / Math.max(src.width, src.height))
+function aiSelectCanvas(
+  src: HTMLCanvasElement,
+  maxSide = AI_SELECT_MAX_SIDE,
+): HTMLCanvasElement {
+  const scale = Math.min(1, maxSide / Math.max(src.width, src.height))
   if (scale >= 1) return src
   const sent = document.createElement('canvas')
   sent.width = Math.round(src.width * scale)
@@ -6932,18 +6937,20 @@ function coverageAtSourceSize(
  * over) and land the result exactly as a drawn gesture would, through the
  * combine mode. A PROMPT names a concept and selects every instance of it; a
  * POINT (normalized 0-1) selects the object under the click; an INTENT asks
- * BEN2 for the whole subject or its exact background complement.
+ * BEN2 for the whole subject or its exact background complement, or the
+ * dedicated SkyWater pipeline for sky.
  */
 type AiSelectRequest = {
   prompt?: string
   point?: { x: number; y: number }
-  intent?: 'subject' | 'background'
+  intent?: 'subject' | 'background' | 'sky'
 }
 
 function aiActionFor(request: AiSelectRequest): AiSelectAction {
   if (request.point) return 'canvas'
   if (request.intent === 'subject') return 'subject'
   if (request.intent === 'background') return 'background'
+  if (request.intent === 'sky') return 'sky'
   return 'find'
 }
 
@@ -6992,7 +6999,10 @@ async function runAiSelect(
     ?? `select-${Date.now()}-${Math.random().toString(36).slice(2)}`
   startAiSelectProgressPolling(request_id, abort)
   try {
-    const sent = aiSelectCanvas(src)
+    const sent = aiSelectCanvas(
+      src,
+      request.intent === 'sky' ? AI_SKY_SELECT_MAX_SIDE : AI_SELECT_MAX_SIDE,
+    )
     const image_data_url = sent.toDataURL('image/png')
     const { data } = await axios.post('/api/mask/select', {
       request_id,
@@ -8312,7 +8322,9 @@ onMounted(async () => {
 // shortcuts would keep firing on whatever screen you moved to.
 onActivated(() => {
   editorActive.value = true
-  if (sidebarTab.value === 'info') void loadEditorMediaInfo()
+  // Re-entering a KeepAlive'd editor is a fresh editing session. The previous
+  // session may have ended on Info, but the useful landing surface is Edits.
+  sidebarTab.value = 'edits'
   if (editorReady) candidates.start()
   attachToolCatalogListener()
   window.addEventListener('keydown', onKeydown)

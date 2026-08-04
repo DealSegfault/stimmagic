@@ -198,6 +198,7 @@ export function maskComponentLabel(component: MaskComponent): string {
   }
   if (semantic?.intent === 'subject') return 'Subject'
   if (semantic?.intent === 'background') return 'Background'
+  if (semantic?.intent === 'sky') return 'Sky'
   if (component.mask?.kind === 'linear') return 'Linear gradient'
   if (component.mask?.kind === 'radial') return 'Radial gradient'
   return 'Selection'

@@ -12,6 +12,7 @@ import sam3_tracker_service
 from ben2_service import BEN2Result
 from routes import mask_assistant
 from sam3_service import BBox, SAM3Detection, SAM3Result
+from skywater_service import SkyWaterResult
 
 
 def _image_data_url(width: int = 4, height: int = 2) -> str:
@@ -68,6 +69,40 @@ async def test_background_intent_is_exact_subject_alpha_inverse():
     assert response.success is True
     service.subject_alpha.assert_awaited_once()
     np.testing.assert_array_equal(_response_alpha(response), 255 - subject)
+
+
+async def test_sky_intent_dispatches_to_skywater_and_preserves_soft_alpha():
+    sky = np.array([[0, 32, 160, 255], [0, 80, 220, 255]], dtype=np.uint8)
+    service = MagicMock()
+    service.sky_alpha = AsyncMock(return_value=SkyWaterResult(
+        alpha=sky, score=0.93, original_width=4, original_height=2,
+    ))
+
+    with patch("skywater_service.get_skywater_service", return_value=service):
+        response = await mask_assistant.select_mask(mask_assistant.SelectRequest(
+            image_data_url=_image_data_url(), intent="sky",
+        ))
+
+    assert response.success is True
+    service.sky_alpha.assert_awaited_once()
+    np.testing.assert_array_equal(_response_alpha(response), sky)
+    assert response.detections[0].score == pytest.approx(0.93)
+
+
+async def test_sky_intent_reports_no_sky_for_empty_alpha():
+    service = MagicMock()
+    service.sky_alpha = AsyncMock(return_value=SkyWaterResult(
+        alpha=np.zeros((2, 4), dtype=np.uint8), score=0.2,
+        original_width=4, original_height=2,
+    ))
+
+    with patch("skywater_service.get_skywater_service", return_value=service):
+        response = await mask_assistant.select_mask(mask_assistant.SelectRequest(
+            image_data_url=_image_data_url(), intent="sky",
+        ))
+
+    assert response.success is False
+    assert response.error == "No sky found"
 
 
 async def test_existing_prompt_request_still_dispatches_to_sam3():
@@ -129,6 +164,19 @@ async def test_point_progress_reports_the_trackers_real_stage():
     service.selection_stage.assert_called_once_with("image-cache-key")
 
 
+async def test_sky_progress_reports_skywaters_real_stage():
+    service = MagicMock()
+    service.selection_stage.return_value = "downloading_model"
+    request_id = "sky-progress-test"
+    mask_assistant._register_select_progress(request_id, "sky", "image-cache-key")
+
+    with patch("skywater_service.get_skywater_service", return_value=service):
+        response = await mask_assistant.select_progress(request_id)
+
+    assert response.stage == "downloading_model"
+    service.selection_stage.assert_called_once_with("image-cache-key")
+
+
 async def test_unknown_progress_request_starts_without_guessing_a_stage():
     response = await mask_assistant.select_progress("not-a-real-selection-request")
 
@@ -186,5 +234,5 @@ def test_missing_or_conflicting_request_shapes_fail_clearly(payload):
 def test_blank_prompt_and_invalid_intent_fail_clearly():
     with pytest.raises(ValidationError, match="Prompt must not be blank"):
         mask_assistant.SelectRequest(image_data_url=_image_data_url(), prompt="   ")
-    with pytest.raises(ValidationError, match="Input should be 'subject' or 'background'"):
+    with pytest.raises(ValidationError, match="Input should be 'subject', 'background' or 'sky'"):
         mask_assistant.SelectRequest(image_data_url=_image_data_url(), intent="person")
