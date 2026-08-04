@@ -374,8 +374,17 @@ export function useSelection() {
   /**
    * Finish rectangle selection
    */
-  function finishRectSelection(point: Point, mode: SelectionMode, constrain: boolean = false): void {
-    if (!isDrawing.value || !drawingStartPoint.value || !selectionCtx.value) return;
+  /**
+   * Finish functions return the GESTURE's own geometry (null when nothing was
+   * committed), so a caller can record the gesture as an editable ingredient
+   * of a composite mask instead of only its flattened combination.
+   */
+  function finishRectSelection(
+    point: Point,
+    mode: SelectionMode,
+    constrain: boolean = false,
+  ): { x: number; y: number; width: number; height: number } | null {
+    if (!isDrawing.value || !drawingStartPoint.value || !selectionCtx.value) return null;
 
     const start = drawingStartPoint.value;
     const effectivePoint = constrain ? constrainToSquare(start, point) : point;
@@ -405,6 +414,7 @@ export function useSelection() {
     isDrawing.value = false;
     drawingStartPoint.value = null;
     drawingCurrentPoint.value = null;
+    return { x, y, width, height };
   }
 
   /**
@@ -445,8 +455,12 @@ export function useSelection() {
   /**
    * Finish ellipse selection
    */
-  function finishEllipseSelection(point: Point, mode: SelectionMode, constrain: boolean = false): void {
-    if (!isDrawing.value || !drawingStartPoint.value || !selectionCtx.value) return;
+  function finishEllipseSelection(
+    point: Point,
+    mode: SelectionMode,
+    constrain: boolean = false,
+  ): { centerX: number; centerY: number; radiusX: number; radiusY: number } | null {
+    if (!isDrawing.value || !drawingStartPoint.value || !selectionCtx.value) return null;
 
     const start = drawingStartPoint.value;
     const effectivePoint = constrain ? constrainToSquare(start, point) : point;
@@ -475,6 +489,7 @@ export function useSelection() {
     isDrawing.value = false;
     drawingStartPoint.value = null;
     drawingCurrentPoint.value = null;
+    return { centerX, centerY, radiusX, radiusY };
   }
 
   /**
@@ -499,11 +514,13 @@ export function useSelection() {
   /**
    * Finish lasso selection
    */
-  function finishLassoSelection(mode: SelectionMode): void {
-    if (!isDrawing.value || !selectionCtx.value) return;
+  function finishLassoSelection(mode: SelectionMode): Point[] | null {
+    if (!isDrawing.value || !selectionCtx.value) return null;
 
+    let committed: Point[] | null = null;
     if (drawingPoints.value.length >= 3) {
       const points = [...drawingPoints.value];
+      committed = points;
       fillLassoSelection(selectionCtx.value, points, mode);
 
       // Store shape for smooth marching ants
@@ -525,14 +542,15 @@ export function useSelection() {
     isDrawing.value = false;
     drawingPoints.value = [];
     drawingCurrentPoint.value = null;
+    return committed;
   }
 
   /**
    * Create a magnetic lasso selection from pre-computed path points.
    * This is called by useMagneticLasso when the selection is finalized.
    */
-  function createMagneticLassoSelection(points: Point[], mode: SelectionMode): void {
-    if (!selectionCtx.value || points.length < 3) return;
+  function createMagneticLassoSelection(points: Point[], mode: SelectionMode): Point[] | null {
+    if (!selectionCtx.value || points.length < 3) return null;
 
     fillLassoSelection(selectionCtx.value, points, mode);
 
@@ -550,18 +568,20 @@ export function useSelection() {
     }
 
     updateMarchingAnts();
+    return [...points];
   }
 
   /**
-   * Magic wand selection based on color similarity
+   * Magic wand selection based on color similarity. Returns the wand's OWN
+   * refined mask — the gesture, before it met the existing selection.
    */
   function magicWandSelect(
     sourceCtx: CanvasRenderingContext2D,
     point: Point,
     options: WandMaskOptions,
     mode: SelectionMode
-  ): void {
-    if (!selectionCtx.value) return;
+  ): HTMLCanvasElement | null {
+    if (!selectionCtx.value) return null;
 
     // Reset inverted state and feather for new selections
     if (mode === 'new') {
@@ -570,7 +590,7 @@ export function useSelection() {
       currentFeatherRadius.value = 0;
     }
 
-    floodFillSelection(
+    const gesture = floodFillSelection(
       selectionCtx.value,
       sourceCtx,
       point.x,
@@ -582,6 +602,7 @@ export function useSelection() {
     // Magic wand creates pixel-based selection
     selectionShapes.value = [{ type: 'pixels' }];
     updateMarchingAnts();
+    return gesture;
   }
 
   /**

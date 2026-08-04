@@ -56,6 +56,8 @@ const props = defineProps<{
   toolLabel?: string | null
   busy?: boolean
   canRun?: boolean
+  /** Verb for the run button: an iterating session says "Re-run". */
+  runLabel?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -432,7 +434,7 @@ function chipClass(active: boolean, pending = false) {
             :width="320"
             :chevron="false"
             close-on-select
-            aria-label="Recent Regenerate prompts"
+            aria-label="Recent Repaint prompts"
           >
             <template #trigger>
               <ClockIcon class="w-3.5 h-3.5" />
@@ -539,6 +541,7 @@ function chipClass(active: boolean, pending = false) {
             :variations="sub !== 'cutout'"
             :disabled="!canRun"
             :loading="busy"
+            :label="runLabel ?? undefined"
             @run="emit('run')"
             @update:count="emit('set', { candidateCount: $event })"
           />

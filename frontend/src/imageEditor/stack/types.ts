@@ -114,6 +114,17 @@ export interface GenerativeOp extends BaseOp {
   reference_images?: ModelReferenceImage[]
   /** The mask this patch was sampled through. */
   mask_ref?: string
+  /**
+   * The recipe the op's effective mask is composed from, once the mask has
+   * been made composite — same contract as RetouchRegion.mask_components,
+   * with one generative difference: `mask_ref` is NOT cleared. It remains
+   * the record of the mask the existing candidates were SAMPLED through
+   * (and what an older build renders with), while the component list is the
+   * sole authority for compositing and for the next submission. Candidates
+   * keep compositing live through the composed mask; coverage the samples
+   * never painted shows the input until a regenerate settles the debt.
+   */
+  mask_components?: MaskComponent[]
   blend?: OpBlend
   /** null while candidates are staged and none has been picked yet. */
   picked: string | null
@@ -288,6 +299,56 @@ export type RegionMask = RasterMask | LinearGradientMask | RadialGradientMask
 /** The gradient kinds, which carry geometry and own no payload. */
 export type GradientMask = LinearGradientMask | RadialGradientMask
 
+/** How a mask component meets the coverage composed before it. */
+export type MaskComponentMode = 'add' | 'subtract' | 'intersect'
+
+/**
+ * One editable ingredient of a region's effective mask.
+ *
+ * A region has ONE effective mask; components are the recipe it is computed
+ * from — a base plus Add/Subtract/Intersect modifiers, composed in order in
+ * soft alpha (add = max, subtract = ×(1−c), intersect = ×c). The first
+ * component is the base: it seeds the coverage, and its stored mode is `add`.
+ *
+ * Components are authored at different times, so each carries its OWN payload
+ * anchor — the same frame/transform contract a region's single mask has. That
+ * is what lets a gradient modifier added after a crop co-transform correctly
+ * while the base authored before it does too.
+ */
+export interface SelectionSemantic {
+  prompt?: string
+  intent?: 'subject' | 'background'
+}
+
+export interface MaskComponent {
+  id: string
+  mode: MaskComponentMode
+  enabled: boolean
+  label?: string
+  /** Gradient geometry; absent means raster, the region-mask convention. */
+  mask?: RegionMask
+  /** Compact raster coverage payload; gradient components carry none. */
+  mask_ref?: string
+  /** Top-left of the compact payload in this component's authored frame. */
+  payload_origin?: [number, number]
+  /** Complete affine from this component's payload into document space. */
+  payload_to_document?: number[]
+  /** The geometry below the region when THIS component was authored. */
+  payload_frame?: { matrix: number[]; width: number; height: number }
+  /**
+   * What this selection was a selection OF, when it came from a recomputable
+   * semantic gesture ("sky", the subject). The raster payload is the cached
+   * result; this names the thing so it can be re-segmented later.
+   */
+  semantic?: SelectionSemantic
+  /**
+   * The payload stores coverage as opaque white-on-black LUMINANCE rather
+   * than alpha — the convention generative submission masks use. Composition
+   * converts it before mixing with alpha-based components.
+   */
+  luminance?: boolean
+}
+
 /**
  * One editable repair inside a Retouch row. A brush gesture may define its
  * mask, but the region—not any individual dab—is the persistent child.
@@ -304,6 +365,15 @@ export interface RetouchRegion {
   mask_ref?: string
   /** Absent means `{kind:'raster'}` — see RegionMask. */
   mask?: RegionMask
+  /**
+   * The recipe this region's effective mask is composed from, when the mask
+   * has been made composite. Absent — every document written before this
+   * existed, and every region whose mask is still one gesture — means
+   * `mask`/`mask_ref` are the authority, exactly as before. Present means
+   * this list is the SOLE authority and the legacy fields are cleared: a
+   * region holding both would render one and silently ignore the other.
+   */
+  mask_components?: MaskComponent[]
   /**
    * Complete affine from this region's compact payload (or gradient geometry)
    * into permanent document space.

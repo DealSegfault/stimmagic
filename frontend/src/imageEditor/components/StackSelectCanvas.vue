@@ -33,6 +33,14 @@ import {
   radialMaskFromDrag,
   shouldShowGradientChrome,
 } from '../stack/regionMask'
+import {
+  fillRectSelection,
+  fillEllipseSelection,
+  fillLassoSelection,
+  featherSelection,
+} from '../ported/selection'
+import { applySelectionBrushSegment } from '../stack/selectionBrush'
+import { combineFromModifiers } from '../stack/selectionLifecycle'
 import type { GradientMask } from '../stack/types'
 
 const props = withDefaults(defineProps<{
@@ -90,10 +98,24 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
+  /**
+   * The gesture that is ABOUT to publish, as its own coverage — emitted
+   * immediately before the `change` it belongs to, so the host can keep the
+   * selection as a recipe of editable ingredients instead of only the
+   * flattened bitmap. Gradient gestures use the `gradient` event (geometry
+   * beats a raster); AI masks land through applyMask, which the host owns.
+   */
+  gestureCapture: [{
+    coverage: HTMLCanvasElement
+    tool: SelectToolId
+    /** The mode the gesture actually combined with — the island's, or the
+     *  held-modifier override sampled at gesture start. */
+    combine: SelectionMode
+  }]
   change: [HTMLCanvasElement | null]
   /** Object tool click, in source pixels; the host runs segmentation and
-   *  lands the result through applyMask using the island's explicit mode. */
-  objectPick: [{ x: number; y: number }]
+   *  lands the result through applyMask with the given combine mode. */
+  objectPick: [{ x: number; y: number; combine: SelectionMode }]
   /**
    * A NEW ramp, dragged out with a gradient tool armed, in source pixels.
    *
@@ -102,7 +124,7 @@ const emit = defineEmits<{
    * the composite at full resolution per mouse event, and the guides — a few
    * lines and dots — would queue up behind seconds of pixel work.
    */
-  gradient: [mask: GradientMask]
+  gradient: [mask: GradientMask, combine: SelectionMode]
   /**
    * An EXISTING ramp re-aimed by its handles, also once on release.
    * Deliberately a different event: dragging a handle must edit the region it
@@ -117,6 +139,18 @@ const selection = props.model
 const magnetic = useMagneticLasso()
 
 let drawing = false
+/**
+ * The one-shot combine override for the CURRENT gesture, from the modifiers
+ * held when it started (Shift add, Option subtract, both intersect). Never
+ * touches the island's persistent mode; cleared when the gesture ends.
+ */
+let gestureCombine: SelectionMode | null = null
+/** A magnetic lasso spans several clicks; only its FIRST anchor samples. */
+let magneticStarted = false
+
+function effectiveCombine(): SelectionMode {
+  return gestureCombine ?? props.combine
+}
 let lastBrushPoint: Point | null = null
 /** This gesture's brush path, for live feedback until the ants take over. */
 let brushGesture: Point[] = []
@@ -174,6 +208,67 @@ function publish(applyFeather = true) {
   emit('change', selection.hasSelection() ? selection.getSelectionMask() : null)
 }
 
+/**
+ * Rasterise the gesture that just finished, ALONE, and hand it up before the
+ * flattened selection publishes. `fill` draws the gesture's coverage into an
+ * empty source-sized alpha canvas; feather matches what publish() will do to
+ * the combined mask, so the ingredient reads like its combination.
+ */
+function captureGesture(
+  fill: (ctx: CanvasRenderingContext2D) => void,
+  applyFeather = true,
+) {
+  if (!props.source || !props.armed) return
+  const canvas = document.createElement('canvas')
+  canvas.width = props.source.width
+  canvas.height = props.source.height
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!
+  fill(ctx)
+  if (applyFeather && props.featherPx > 0) featherSelection(ctx, props.featherPx)
+  emit('gestureCapture', {
+    coverage: canvas,
+    tool: props.armed,
+    combine: effectiveCombine(),
+  })
+}
+
+/**
+ * Replay this drag's brush path into a gesture-only coverage canvas — the
+ * same per-segment compact regions the live stroke used, because the segment
+ * shader scans whatever region it is given.
+ */
+function captureBrushGesture(points: Point[]) {
+  if (!props.source || !points.length) return
+  const radius = (props.brushSize * scale.value) / 2
+  captureGesture(ctx => {
+    let from: Point | null = null
+    for (const to of points) {
+      const start = from ?? to
+      const minX = Math.max(0, Math.floor(Math.min(start.x, to.x) - radius))
+      const minY = Math.max(0, Math.floor(Math.min(start.y, to.y) - radius))
+      const maxX = Math.min(ctx.canvas.width, Math.ceil(Math.max(start.x, to.x) + radius))
+      const maxY = Math.min(ctx.canvas.height, Math.ceil(Math.max(start.y, to.y) + radius))
+      const width = maxX - minX
+      const height = maxY - minY
+      if (width > 0 && height > 0) {
+        const region = ctx.getImageData(minX, minY, width, height)
+        applySelectionBrushSegment(
+          region.data,
+          width,
+          height,
+          from ? { x: from.x - minX, y: from.y - minY } : null,
+          { x: to.x - minX, y: to.y - minY },
+          radius,
+          0.6,
+          'add',
+        )
+        ctx.putImageData(region, minX, minY)
+      }
+      from = to
+    }
+  }, false)
+}
+
 // -- gestures ---------------------------------------------------------------
 
 function onPointerDown(event: PointerEvent) {
@@ -183,11 +278,18 @@ function onPointerDown(event: PointerEvent) {
   // marquee in progress.
   if (event.button !== 0) return
   const point = pointFrom(event)
+  // Photoshop's grammar: the modifiers held at the PRESS pick the combine
+  // mode for this one gesture. Shift during the drag still constrains.
+  const override = combineFromModifiers(event.shiftKey, event.altKey)
 
   // Object select is a click, not a drag: hand the point to the host and let
   // the async mask land through applyMask when segmentation returns.
   if (props.armed === 'object') {
-    emit('objectPick', { x: point.x, y: point.y })
+    emit('objectPick', {
+      x: point.x,
+      y: point.y,
+      combine: override ?? props.combine,
+    })
     return
   }
 
@@ -195,6 +297,7 @@ function onPointerDown(event: PointerEvent) {
   // where it has died away entirely.
   if (props.armed === 'linear' || props.armed === 'radial') {
     drawing = true
+    gestureCombine = override
     overlay.value?.setPointerCapture(event.pointerId)
     gradientStart = point
     draftGradient.value = gradientFrom(point, point)
@@ -206,15 +309,18 @@ function onPointerDown(event: PointerEvent) {
   overlay.value?.setPointerCapture(event.pointerId)
 
   if (props.armed === 'wand') {
+    const combine = override ?? props.combine
     const ctx = props.source.getContext('2d', { willReadFrequently: true })
     if (ctx) {
-      selection.magicWandSelect(ctx, point, {
+      const gesture = selection.magicWandSelect(ctx, point, {
         threshold: props.tolerance,
         spread: props.wandSpread,
         growPx: props.wandGrowPx,
         featherPx: props.featherPx,
         antialias: props.wandAntialias,
-      }, props.combine)
+      }, combine)
+      // The wand's refined mask is already the gesture alone; no re-feather.
+      if (gesture) emit('gestureCapture', { coverage: gesture, tool: 'wand', combine })
     }
     drawing = false
     // The wand refines its temporary mask before combining it. Publishing
@@ -223,9 +329,10 @@ function onPointerDown(event: PointerEvent) {
     return
   }
   if (props.armed === 'brush') {
+    gestureCombine = override
     // `New` replaces per GESTURE, so the first stroke starts over and further
     // strokes of the same drag extend it — matching how every brush works.
-    if (props.combine === 'new') selection.clearSelection()
+    if (effectiveCombine() === 'new') selection.clearSelection()
     lastBrushPoint = null
     brushGesture = []
     brushTo(point)
@@ -235,6 +342,12 @@ function onPointerDown(event: PointerEvent) {
     // The live-wire traces edges from a gradient map of the image, so it has to
     // be initialised against whatever the step is being drawn over.
     if (!magnetic.isReady()) magnetic.initialize(props.source)
+    // The whole multi-click lasso is one gesture; its first anchor's
+    // modifiers pick the mode.
+    if (!magneticStarted) {
+      magneticStarted = true
+      gestureCombine = override
+    }
     // placeAnchor returns true when the click closed the loop on the first
     // anchor, which is the gesture that finishes a magnetic lasso.
     if (magnetic.placeAnchor(point)) closeMagnetic()
@@ -242,6 +355,7 @@ function onPointerDown(event: PointerEvent) {
     startAnts()
     return
   }
+  gestureCombine = override
   if (props.armed === 'rect') selection.startRectSelection(point)
   else if (props.armed === 'ellipse') selection.startEllipseSelection(point)
   else selection.startLassoSelection(point)
@@ -264,8 +378,8 @@ function onPointerMove(event: PointerEvent) {
   }
   if (props.armed === 'brush') brushTo(point)
   else if (props.armed === 'magnetic') magnetic.updatePreview(point)
-  else if (props.armed === 'rect') selection.updateRectSelection(point, props.combine, event.shiftKey)
-  else if (props.armed === 'ellipse') selection.updateEllipseSelection(point, props.combine, event.shiftKey)
+  else if (props.armed === 'rect') selection.updateRectSelection(point, effectiveCombine(), event.shiftKey)
+  else if (props.armed === 'ellipse') selection.updateEllipseSelection(point, effectiveCombine(), event.shiftKey)
   else selection.continueLassoSelection(point)
   if (props.armed !== 'brush') draw()
 }
@@ -288,6 +402,7 @@ function onPointerUp(event: PointerEvent) {
     // invisible region: nothing was persisted during the drag, so leaving the
     // selection exactly as it was is all it takes.
     if (!mask || !gradientWorthKeeping(mask)) {
+      gestureCombine = null
       draw()
       return
     }
@@ -296,14 +411,30 @@ function onPointerUp(event: PointerEvent) {
   }
   drawing = false
   if (props.armed === 'brush') {
+    captureBrushGesture(brushGesture)
     lastBrushPoint = null
     brushGesture = []
+    gestureCombine = null
     publish(false)
     return
   }
-  if (props.armed === 'rect') selection.finishRectSelection(point, props.combine, event.shiftKey)
-  else if (props.armed === 'ellipse') selection.finishEllipseSelection(point, props.combine, event.shiftKey)
-  else selection.finishLassoSelection(props.combine)
+  if (props.armed === 'rect') {
+    const shape = selection.finishRectSelection(point, effectiveCombine(), event.shiftKey)
+    if (shape) {
+      captureGesture(ctx =>
+        fillRectSelection(ctx, shape.x, shape.y, shape.width, shape.height, 'new'))
+    }
+  } else if (props.armed === 'ellipse') {
+    const shape = selection.finishEllipseSelection(point, effectiveCombine(), event.shiftKey)
+    if (shape) {
+      captureGesture(ctx => fillEllipseSelection(
+        ctx, shape.centerX, shape.centerY, shape.radiusX, shape.radiusY, 'new'))
+    }
+  } else {
+    const path = selection.finishLassoSelection(effectiveCombine())
+    if (path) captureGesture(ctx => fillLassoSelection(ctx, path, 'new'))
+  }
+  gestureCombine = null
   stopAnts()
   publish()
 }
@@ -336,13 +467,15 @@ function gradientWorthKeeping(mask: GradientMask): boolean {
  * masked-adjustment region persists so its handles stay live.
  */
 function commitGradient(mask: GradientMask) {
+  const combine = effectiveCombine()
   if (props.source) {
     selection.applyMaskCanvas(
       gradientMaskCanvas(mask, props.source.width, props.source.height),
-      props.combine,
+      combine,
     )
   }
-  emit('gradient', mask)
+  emit('gradient', mask, combine)
+  gestureCombine = null
   // The ramp IS the edge treatment; feathering it again only blurs a blur.
   publish(false)
 }
@@ -425,7 +558,7 @@ function pointFromClient(event: PointerEvent): Point {
 
 function brushTo(point: Point) {
   const radius = (props.brushSize * scale.value) / 2
-  selection.brushStroke(lastBrushPoint, point, radius, props.combine)
+  selection.brushStroke(lastBrushPoint, point, radius, effectiveCombine())
   lastBrushPoint = point
   brushGesture.push(point)
   draw()
@@ -438,8 +571,13 @@ function onDoubleClick() {
 
 function closeMagnetic() {
   const path = magnetic.closeSelection()
-  if (path.length > 2) selection.createMagneticLassoSelection(path, props.combine)
+  if (path.length > 2) {
+    const committed = selection.createMagneticLassoSelection(path, effectiveCombine())
+    if (committed) captureGesture(ctx => fillLassoSelection(ctx, committed, 'new'))
+  }
   magnetic.cancel()
+  magneticStarted = false
+  gestureCombine = null
   drawing = false
   stopAnts()
   publish()
@@ -493,7 +631,7 @@ function draw() {
     for (const point of brushGesture.slice(1)) feedbackCtx.lineTo(point.x, point.y)
     feedbackCtx.stroke()
     feedbackCtx.globalCompositeOperation = 'source-in'
-    feedbackCtx.fillStyle = props.combine === 'subtract'
+    feedbackCtx.fillStyle = effectiveCombine() === 'subtract'
       ? 'rgba(0,0,0,0.3)' : 'rgba(255,255,255,0.3)'
     feedbackCtx.fillRect(0, 0, props.source.width, props.source.height)
     feedbackCtx.restore()
@@ -714,6 +852,8 @@ function stopAnts() {
 function clear() {
   selection.clearSelection()
   magnetic.cancel()
+  magneticStarted = false
+  gestureCombine = null
   publish()
 }
 
@@ -790,6 +930,9 @@ watch(() => props.armed, armed => {
     drawing = false
     cursor.value = null
   }
+  // A tool change ends whatever gesture the modifiers were speaking about.
+  magneticStarted = false
+  gestureCombine = null
   draftGradient.value = null
   handleDraft.value = null
   gradientStart = null

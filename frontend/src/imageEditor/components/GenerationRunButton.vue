@@ -7,6 +7,8 @@ const props = defineProps<{
   disabled?: boolean
   loading?: boolean
   variations?: boolean
+  /** Verb override: an iterating session says "Re-run", not "Run". */
+  label?: string
 }>()
 
 const emit = defineEmits<{
@@ -45,7 +47,7 @@ onUnmounted(() => document.removeEventListener('click', closeOutside))
         @click="emit('run')"
       >
         <Spinner v-if="loading" size="sm" />
-        <template v-else>Run{{ variations !== false && count > 1 ? ` ×${count}` : '' }}</template>
+        <template v-else>{{ label ?? 'Run' }}{{ variations !== false && count > 1 ? ` ×${count}` : '' }}</template>
       </button>
       <button
         v-if="variations !== false"

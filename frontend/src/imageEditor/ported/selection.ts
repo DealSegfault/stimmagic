@@ -154,7 +154,8 @@ export function fillLassoSelection(
 }
 
 /**
- * Magic wand flood fill selection
+ * Magic wand flood fill selection. Returns the refined wand mask itself, so a
+ * caller can retain the GESTURE as well as its combination.
  */
 export function floodFillSelection(
   maskCtx: CanvasRenderingContext2D,
@@ -162,7 +163,7 @@ export function floodFillSelection(
   startX: number, startY: number,
   options: WandMaskOptions,
   mode: 'new' | 'add' | 'subtract' | 'intersect'
-): void {
+): HTMLCanvasElement {
   const { width, height } = maskCtx.canvas;
 
   const sourceData = sourceCtx.getImageData(0, 0, width, height);
@@ -208,6 +209,7 @@ export function floodFillSelection(
     maskCtx.drawImage(resultCanvas, 0, 0);
     maskCtx.globalCompositeOperation = 'source-over';
   }
+  return resultCanvas;
 }
 
 /**

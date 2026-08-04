@@ -16,6 +16,7 @@
  * is the output stage's upscale, which runs at save.
  */
 import { ref, computed, onMounted, onBeforeUnmount, onActivated, onDeactivated, onUpdated, watch, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
 import axios from 'axios'
 import {
   ArrowUturnLeftIcon,
@@ -32,6 +33,10 @@ import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import Spinner from '../components/ui/Spinner.vue'
 import StatusDot from '../components/ui/StatusDot.vue'
 import ImageCompareSlider from '../components/ImageCompareSlider.vue'
+import SlideshowInfoPanel from '../components/SlideshowInfoPanel.vue'
+import ExportModal from '../components/ExportModal.vue'
+import ShareDialog from '../components/ShareDialog.vue'
+import { MediaContextMenu } from '../components/media'
 import { AutoMarkPicker } from '../components/generation'
 import BaseRow from '../imageEditor/components/BaseRow.vue'
 import { DROP_LINE } from '../imageEditor/components/rowLayout'
@@ -68,6 +73,7 @@ import {
 import { applyAdjust, applyAnnotations } from '../imageEditor/stack/opExecutors'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { useMediaApi } from '../composables/useMediaApi'
+import { useAssetApi } from '../composables/useAssetApi'
 import { useMarkers } from '../composables/useMarkers'
 import {
   nameStepFromCrop,
@@ -124,6 +130,7 @@ import {
 } from '../imageEditor/stack/regionMask'
 import {
   combineAfterSelectionChange,
+  combineFromModifiers,
   editorEscapeAction,
   selectionMatteAction,
 } from '../imageEditor/stack/selectionLifecycle'
@@ -131,8 +138,23 @@ import {
   captureAdjustmentScope,
 } from '../imageEditor/stack/adjustmentScope'
 import type {
+  AdjustmentScopeSemantic,
   AdjustmentScopeSnapshot,
 } from '../imageEditor/stack/adjustmentScope'
+import {
+  composeMaskCanvases,
+  generativeOpHasEditableMask,
+  hasMaskComponents,
+  luminanceToAlphaCanvas,
+  opMaskComponents,
+  regionMaskComponents,
+  regionWithMaskComponents,
+} from '../imageEditor/stack/maskComponents'
+import {
+  GESTURE_TOOL_LABELS,
+  appendWorkspaceMaskGesture,
+} from '../imageEditor/stack/workspaceMaskRecipe'
+import type { WorkspaceMaskGesture } from '../imageEditor/stack/workspaceMaskRecipe'
 import { FragileEntryTracker } from '../imageEditor/stack/fragileEntries'
 import {
   CROP_ASPECTS, cropRectForAspect, adjustLabel,
@@ -146,6 +168,7 @@ import { useSelection } from '../imageEditor/ported/useSelection'
 import type {
   GenerativeOp,
   GradientMask,
+  MaskComponent,
   ModelReferenceImage,
   RetouchRegion,
   RetouchRegionKind,
@@ -196,8 +219,10 @@ import {
   clearEditorLivePreview,
   publishEditorLivePreview,
 } from '../imageEditor/liveEditorPreview'
+import { openImageEditor } from '../imageEditor/stack/openImageEditor'
 
 const props = defineProps<{ assetId: string; revisionId?: string }>()
+const router = useRouter()
 
 const stack = useStackDocument()
 const {
@@ -210,7 +235,14 @@ const loraPool = useLoraPool()
 const { availableMarkers, init: initMarkers } = useMarkers()
 // <img> cannot send the X-Profile-ID header the profile middleware requires,
 // which is why media URLs carry their database in the path.
-const { getMediaFileUrl } = useMediaApi()
+const { getMediaFileUrl, getMediaFaces } = useMediaApi()
+const {
+  getAssetBrowserItem,
+  getProjects: getAssetProjects,
+  getBoards: getAssetBoards,
+  addMarker: addAssetMarker,
+  removeMarker: removeAssetMarker,
+} = useAssetApi()
 
 const loading = ref(true)
 /** KeepAlive preserves the document, but hidden editors must do no background UI work. */
@@ -219,6 +251,18 @@ let editorReady = false
 let toolCatalogListenerAttached = false
 const error = ref<string | null>(null)
 const baseInfo = ref<any>(null)
+const infoItem = ref<any>(null)
+const infoLoading = ref(false)
+const infoProjects = ref<any[]>([])
+const infoBoards = ref<any[]>([])
+const infoFaces = ref<any[]>([])
+const infoDescendants = ref<any[]>([])
+const infoInspiredDescendants = ref<any[]>([])
+const infoChat = ref<any>(null)
+const infoMarkerUpdateTrigger = ref(0)
+const infoExportOpen = ref(false)
+const infoShareOpen = ref(false)
+let infoLoadToken = 0
 const initialToolPrefs = readToolPrefs()
 const newAssetMarkerIds = ref<number[]>(
   Array.isArray(initialToolPrefs.newAssetMarkerIds)
@@ -507,6 +551,51 @@ const selectionIsGradient = ref(false)
  */
 const workspaceGradient = ref<GradientMask | null>(null)
 const workspaceGradientKey = ref<string | null>(null)
+/**
+ * The live selection's SEMANTIC identity, when it has one: the whole
+ * selection is a single recomputable AI gesture ("sky", the subject). An
+ * Adjust click scopes with the name attached, so the step's base component
+ * keeps what it was a selection OF next to the cached raster. Follows the
+ * same key discipline as `workspaceGradient`.
+ */
+const workspaceSemantic = ref<AdjustmentScopeSemantic | null>(null)
+const workspaceSemanticKey = ref<string | null>(null)
+/** One-shot: the AI gesture landing right now, consumed by onSelectionChange. */
+let aiGestureLanding: {
+  semantic: AdjustmentScopeSemantic | null
+  replaces: boolean
+  /** The gesture's own coverage at source size. */
+  coverage: HTMLCanvasElement | null
+  /** Combine mode the mask was applied with (captured at request time). */
+  mode: SelectionMode
+  /** Object-pick granularity cycling: re-lands over the pre-click selection. */
+  cycling?: boolean
+} | null = null
+/** One-shot: the geometry of the gradient gesture landing right now. */
+let lastGestureGradient: GradientMask | null = null
+/** The combine mode that gradient gesture actually used (modifier override). */
+let lastGestureGradientCombine: SelectionMode | null = null
+/** One-shot: a drawn gesture's own coverage, from the selection canvas. */
+let pendingGestureCapture: {
+  coverage: HTMLCanvasElement
+  tool: SelectToolId
+  combine: SelectionMode
+} | null = null
+/**
+ * The combine mode the HELD modifiers would give the next gesture, for the
+ * island to preview (Shift add, Option subtract, both intersect). Display
+ * only — each gesture samples its own modifiers at the press.
+ */
+const heldCombineOverride = ref<SelectionMode | null>(null)
+/**
+ * The workspace selection as a RECIPE of tracked gestures, so a scoped
+ * adjustment can keep every ingredient editable. Best-effort bookkeeping:
+ * anything it cannot describe (invert, morph, a gesture over an untracked
+ * selection, a frame change) nulls it, and consumers fall back to the
+ * flattened raster. Key discipline matches `workspaceGradient`.
+ */
+let workspaceMaskRecipe: WorkspaceMaskGesture<HTMLCanvasElement>[] | null = null
+let workspaceMaskRecipeKey: string | null = null
 
 // Retouch
 const retouchRef = ref<InstanceType<typeof StackPaintCanvas> | null>(null)
@@ -514,6 +603,34 @@ const retouchOpId = ref<string | null>(null)
 const retouchInput = ref<HTMLCanvasElement | null>(null)
 const selectedRetouchRegionId = ref<string | null>(null)
 const hoveredRetouchRegionId = ref<string | null>(null)
+/** The selected/hovered mask COMPONENT inside the selected region, if any. */
+const selectedMaskComponentId = ref<string | null>(null)
+const hoveredMaskComponentId = ref<string | null>(null)
+/** A semantic base being re-segmented; blocks a second overlapping run. */
+const recomputingMaskComponentId = ref<string | null>(null)
+/**
+ * A GENERATIVE op whose mask is selected/armed for component editing. The op
+ * plays the role a region plays for scoped adjustments; component selection
+ * state (`selectedMaskComponentId`) is shared.
+ */
+const selectedGenerativeMaskOpId = ref<string | null>(null)
+/**
+ * The workspace selection IS the session step's composed mask right now.
+ *
+ * While bound, the marching ants are the mask's honest display, every
+ * selection tool edits it (gestures land as components and the ants resync
+ * to the composed result), and Deselect/Escape end the session leaving the
+ * step's mask intact. The blue wash returns to what it was meant to be:
+ * hover and component preview, never a phantom editing surface.
+ */
+const maskSessionBound = ref(false)
+/** Programmatic loads of the bound selection must not re-capture themselves. */
+let syncingBoundSelection = false
+const hoveredGenerativeMaskOpId = ref<string | null>(null)
+/** Coverage debt by op id, published after each render (0..1). */
+const maskDebtByOp = ref<Record<string, number>>({})
+/** Debt below this share is feather noise, not missing pixels. */
+const MASK_DEBT_ADVISORY_THRESHOLD = 0.01
 const selectedRetouchMask = ref<HTMLCanvasElement | null>(null)
 const hoveredRetouchMask = ref<HTMLCanvasElement | null>(null)
 const selectedRetouchSource = ref<{ x: number; y: number } | null>(null)
@@ -1186,6 +1303,9 @@ async function renderSnapshot(requestRevision: number) {
     ) {
       scheduleHeadCache(doc, rendered)
     }
+    // Coverage debt is measured while the compositor recomputes generative
+    // ops; publish the fresh readings for the rows' amber advisories.
+    maskDebtByOp.value = Object.fromEntries(compositor.maskDebt)
     // The selection lives at the head, so whatever this render did to the
     // geometry under it (crop edits, toggles, an expand's new frame) is
     // carried into it here — the one funnel every such change passes through.
@@ -1960,6 +2080,34 @@ async function setEnabledWithGeometry(opId: string, enabled: boolean) {
 
 // -- running a generative step ---------------------------------------------
 
+/**
+ * The generative op the top bar is ITERATING on: the sticky session's op,
+ * while no workspace selection exists and the open sub-tool matches its verb.
+ * Run then re-rolls THIS step — same base (the composite below it), current
+ * prompt, current composed mask — appending a candidate batch, instead of
+ * stacking a new step on a shifted base. A live workspace selection always
+ * means a NEW operation and outranks the session.
+ */
+const iterationOp = computed<GenerativeOp | null>(() => {
+  // A BOUND selection is the session's own mask, not a new operation's scope.
+  if (selection.value && !maskSessionBound.value) return null
+  if (family.value !== 'generate') return null
+  const id = selectedGenerativeMaskOpId.value
+  const op = id ? stack.opById(id) as any : null
+  if (!generativeOpHasEditableMask(op)) return null
+  if (sub.value === 'repaint' && op.operation === 'repaint') return op as GenerativeOp
+  if (sub.value === 'remove' && op.operation === 'remove') return op as GenerativeOp
+  return null
+})
+
+// Entering an iteration session shows the step's OWN prompt in the bar — the
+// text about to be re-rolled, not whatever the last unrelated run typed.
+watch(iterationOp, (op, previous) => {
+  if (!op || op === previous || (op as any).operation !== 'repaint') return
+  const opPrompt = ((op as any).params?.prompt ?? '') as string
+  if (opPrompt && opPrompt !== prompt.value) prompt.value = opPrompt
+})
+
 const canRun = computed(() => {
   if (!composite.value || busy.value) return false
   const referencesValid =
@@ -1969,7 +2117,8 @@ const canRun = computed(() => {
     family.value === 'generate'
     && (sub.value === 'remove' || sub.value === 'repaint')
   ) {
-    return !!selection.value && !!activeToolId.value && referencesValid
+    return (!!selection.value || !!iterationOp.value)
+      && !!activeToolId.value && referencesValid
   }
   // Remove background is whole-image: the model finds the subject itself.
   if (family.value === 'generate' && sub.value === 'cutout') {
@@ -2278,6 +2427,32 @@ function onSubbarSet(patch: Record<string, any>, continuous = false) {
 async function run() {
   if (!canRun.value || !stack.doc.value || !composite.value) return
 
+  // The sticky iteration: no workspace selection and a session op whose verb
+  // matches the bar. Run means "re-roll THIS step" — same base, the current
+  // prompt, the current composed mask — appending a batch. Never a new step
+  // on a shifted base; that mistake costs real money.
+  const iterating = iterationOp.value
+  if (iterating && (sub.value === 'repaint' || sub.value === 'remove')) {
+    busy.value = true
+    error.value = null
+    try {
+      if (
+        sub.value === 'repaint'
+        && prompt.value !== ((iterating.params as any)?.prompt ?? '')
+      ) {
+        stack.setParams(
+          iterating.id,
+          { prompt: prompt.value },
+          `iterate-prompt:${iterating.id}`,
+        )
+      }
+      await resample(iterating.id)
+    } finally {
+      busy.value = false
+    }
+    return
+  }
+
   busy.value = true
   error.value = null
   let reusedRepaintOpId: string | null = null
@@ -2370,7 +2545,7 @@ async function run() {
     const label = action === 'remove'
       ? 'Remove object'
       : action === 'repaint'
-        ? 'Regenerate'
+        ? 'Repaint'
         : action === 'expand'
           ? 'Expand'
           : 'Remove background'
@@ -2477,10 +2652,19 @@ async function run() {
       })
     }
 
-    // The patch owns its own mask copy, while the workspace selection remains
-    // available for another pass. This is the common Remove/Regenerate loop:
-    // judge the result, revise the prompt or settings, and run the same region
-    // again without rebuilding the selection.
+    // The selection lives on as the step's editable mask, and the step
+    // becomes the sticky iteration session: the ants you selected with ARE
+    // the mask now (bound), the tools keep editing it, and Run re-rolls THIS
+    // step on the same base. Deselect/Escape or a New selection walk away.
+    if (action === 'remove' || action === 'repaint') {
+      selectedOpId.value = opId
+      selectedGenerativeMaskOpId.value = opId
+      maskedGenerativeOpId = opId
+      maskSessionBound.value = selModel.hasSelection()
+      workspaceMaskRecipe = null
+      workspaceMaskRecipeKey = null
+      selectedRetouchFeedbackVisible.value = false
+    }
   } catch (err: any) {
     if (reusedRepaintOpId) {
       const next = new Set(resampledOpIds.value)
@@ -2567,7 +2751,8 @@ async function resample(opId: string) {
   }
 
   const maskRef = (op as any).mask_ref
-  if (!maskRef) {
+  const maskComponents = (op as any).mask_components as MaskComponent[] | undefined
+  if (!maskRef && !maskComponents?.length) {
     error.value = 'That step has no mask to resample through.'
     return
   }
@@ -2577,26 +2762,46 @@ async function resample(opId: string) {
     // The op's input composite, not the head: a step re-samples against what it
     // actually sits on.
     const inputCanvas = await compositor.renderUpTo(doc, index)
-    const image = await loadImage(stack.payloadUrl(maskRef))
-    const canonical = (op.payload_to_document as Affine | undefined)
-      ?? (op.payload_frame
-        ? payloadToDocumentTransform(op.payload_frame) ?? undefined
-        : undefined)
-    const now = geometryBelow(doc, index)
-    const mask = canonical
-      ? rewritePayload(
-          image,
-          multiply(now.matrix, canonical),
-          inputCanvas.width,
-          inputCanvas.height,
-        )
-      : (() => {
-          const canvas = document.createElement('canvas')
-          canvas.width = inputCanvas.width
-          canvas.height = inputCanvas.height
-          canvas.getContext('2d')!.drawImage(image, 0, 0, canvas.width, canvas.height)
-          return canvas
-        })()
+    let mask: HTMLCanvasElement
+    if (maskComponents?.length) {
+      // The composed effective mask IS the submission: regenerating is what
+      // settles the coverage debt the edited recipe created. Rendered as the
+      // white-on-black luminance shape every mask consumer expects.
+      const composed = await generativeMaskFeedback(opId)
+      if (!composed) {
+        error.value = 'The mask is empty — nothing to resample through.'
+        return
+      }
+      const flattened = document.createElement('canvas')
+      flattened.width = inputCanvas.width
+      flattened.height = inputCanvas.height
+      const ctx = flattened.getContext('2d')!
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, flattened.width, flattened.height)
+      ctx.drawImage(composed, 0, 0, flattened.width, flattened.height)
+      mask = flattened
+    } else {
+      const image = await loadImage(stack.payloadUrl(maskRef))
+      const canonical = (op.payload_to_document as Affine | undefined)
+        ?? (op.payload_frame
+          ? payloadToDocumentTransform(op.payload_frame) ?? undefined
+          : undefined)
+      const now = geometryBelow(doc, index)
+      mask = canonical
+        ? rewritePayload(
+            image,
+            multiply(now.matrix, canonical),
+            inputCanvas.width,
+            inputCanvas.height,
+          )
+        : (() => {
+            const canvas = document.createElement('canvas')
+            canvas.width = inputCanvas.width
+            canvas.height = inputCanvas.height
+            canvas.getContext('2d')!.drawImage(image, 0, 0, canvas.width, canvas.height)
+            return canvas
+          })()
+    }
     const resampledToDocument = payloadTransform(index)
 
     // Marked BEFORE the submit: the first candidate back auto-applies, which is
@@ -2732,6 +2937,10 @@ function activeAdjustmentScope(): AdjustmentScopeSnapshot<HTMLCanvasElement> | n
     workspaceGradient.value,
     workspaceGradientKey.value,
     selectionAppliedKey,
+    workspaceSemantic.value,
+    workspaceSemanticKey.value,
+    workspaceMaskRecipe,
+    workspaceMaskRecipeKey,
   )
 }
 
@@ -2770,7 +2979,14 @@ function addScopedLevelEdit(
     createScopedGradientStep(opId, regionId, scope.gradient)
     return
   }
-  queueMaskedAdjustmentMask(scope.mask)
+  if (scope.kind === 'recipe') {
+    queueMaskedAdjustmentMask(null, null, scope.entries)
+  } else {
+    queueMaskedAdjustmentMask(scope.mask, scope.semantic ?? null)
+  }
+  // The selection moved INTO the step's mask; leaving it live would make the
+  // next gesture flatten on top of coverage the mask already owns.
+  consumeWorkspaceSelection()
 }
 
 /**
@@ -2810,11 +3026,11 @@ function createScopedGradientStep(
   } as any)
   selectedOpId.value = opId
   selectedRetouchRegionId.value = regionId
-  // Ownership moves from the transient workspace selection to this region.
-  // Keep `selectionIsGradient` true so the overlay shows the selected region's
-  // handles instead of the compatibility bitmap's marching ants.
-  workspaceGradient.value = null
-  workspaceGradientKey.value = null
+  selectedMaskComponentId.value = null
+  // Ownership moves from the transient workspace selection to this region:
+  // the region's own geometry now drives the handles, and the compatibility
+  // bitmap is consumed so the next gesture starts clean.
+  consumeWorkspaceSelection()
   // The ramp's guides say where it is; a second wash would double up.
   selectedRetouchFeedbackVisible.value = false
   void render().then(refreshRetouchInput)
@@ -3031,7 +3247,12 @@ function addScopedLook(
     createScopedGradientStep(opId, regionId, scope.gradient)
     return
   }
-  queueMaskedAdjustmentMask(scope.mask)
+  if (scope.kind === 'recipe') {
+    queueMaskedAdjustmentMask(null, null, scope.entries)
+  } else {
+    queueMaskedAdjustmentMask(scope.mask, scope.semantic ?? null)
+  }
+  consumeWorkspaceSelection()
 }
 
 /**
@@ -3155,27 +3376,49 @@ async function limitSelectedAdjustToSelection() {
     ...values,
   }
 
-  const gradient =
-    workspaceGradient.value && workspaceGradientKey.value === selectionAppliedKey
-      ? workspaceGradient.value
-      : null
+  // The full scope snapshot: a matching gradient stays parametric, a tracked
+  // multi-gesture selection keeps its ingredients, a semantic single gesture
+  // keeps its name — the same contract creating a scoped step has.
+  const scope = activeAdjustmentScope()
+  if (!scope) return
   let region: RetouchRegion
-  if (gradient) {
+  if (scope.kind === 'gradient') {
     const canonical = frame
       ? payloadToDocumentTransform(frame) ?? undefined
       : undefined
-    const authored = authoredGradient(gradient, frame, canonical, inPlace ? index : -1)
+    const authored = authoredGradient(
+      scope.gradient, frame, canonical as Affine | undefined, inPlace ? index : -1,
+    )
     if (!authored) return
     region = {
       id: regionId,
       kind,
       enabled: true,
       mask: authored,
-      payload_to_document: canonical,
+      payload_to_document: canonical as number[] | undefined,
       payload_frame: frame,
       sampled_input_hash: null,
       settings,
     }
+  } else if (
+    scope.kind === 'recipe'
+    || (scope.kind === 'raster' && scope.semantic)
+  ) {
+    const entries = scope.kind === 'recipe'
+      ? scope.entries
+      : [{ mode: 'add' as const, mask: scope.mask, semantic: scope.semantic }]
+    const components = await buildRecipeComponents(
+      entries, opId, regionId, inPlace ? index : undefined,
+    )
+    if (!components) return
+    region = regionWithMaskComponents({
+      id: regionId,
+      kind,
+      enabled: true,
+      payload_frame: frame,
+      sampled_input_hash: null,
+      settings,
+    } as RetouchRegion, components)
   } else {
     const compact = compactSelectionMask(mask)
     if (!compact) return
@@ -3224,13 +3467,13 @@ async function limitSelectedAdjustToSelection() {
   maskedAdjustSpec = null
   selectedOpId.value = opId
   selectedRetouchRegionId.value = regionId
-  if (gradient) {
-    // The converted region now owns the exact same geometry. Keep the canvas
-    // in gradient-display mode, but send future edits to the persisted region.
-    workspaceGradient.value = null
-    workspaceGradientKey.value = null
-  }
-  selectedRetouchFeedbackVisible.value = false
+  selectedMaskComponentId.value = null
+  // The selection moved into the step's mask. Consuming it keeps the next
+  // gesture a clean single component instead of a flatten on top of coverage
+  // the mask already owns.
+  consumeWorkspaceSelection()
+  // A ramp's guides say where it is; every other mask gets the wash.
+  selectedRetouchFeedbackVisible.value = scope.kind !== 'gradient'
   await render()
   await refreshRetouchInput()
   await refreshRetouchFeedback()
@@ -3242,7 +3485,16 @@ async function limitSelectedAdjustToSelection() {
  * is given up. One undo step.
  */
 async function unscopeSelectedRegion() {
-  const location = retouchRegionLocation(selectedRetouchRegionId.value)
+  await unscopeRegion(selectedRetouchRegionId.value)
+}
+
+/**
+ * Removing a step's Mask MEANS Whole image — explicitly, never as a silent
+ * reinterpretation of whatever components were left. The values survive; the
+ * mask, its components and its blend dials are what is given up.
+ */
+async function unscopeRegion(regionId: string | null) {
+  const location = retouchRegionLocation(regionId)
   const doc = stack.doc.value
   if (!location || !doc) return
   const { op, region } = location
@@ -3295,7 +3547,23 @@ function armScopedMaskEditing() {
   maskedAdjustOpId = location.op.id
   maskedAdjustRegionId = location.region.id
   maskedAdjustSpec = null
+  // The session edits the STEP's mask: bind it as the live selection so the
+  // tools start from what the step actually covers.
+  if (!maskSessionBound.value) void bindMaskSessionSelection()
   armSelectTool(lastSelectTool.value ?? 'brush', true)
+}
+
+/**
+ * Replace the base component: the NEXT gesture — and only it — lands with
+ * combine New as the new base, keeping every modifier. One-shot and explicit,
+ * because an ordinary New gesture means "fresh workspace selection", never a
+ * silent base swap. Set after arming, because arming a brush deliberately
+ * rewrites the combine to Add.
+ */
+function armMaskBaseReplace() {
+  armScopedMaskEditing()
+  selectCombine.value = 'new'
+  maskBaseReplaceArmed = true
 }
 
 /**
@@ -4059,6 +4327,10 @@ let maskedAdjustCommitQueue: Promise<void> = Promise.resolve()
 let maskedAdjustRegionId: string | null = null
 /** Its container op — one single-region container per scoped Adjust step. */
 let maskedAdjustOpId: string | null = null
+/** A generative op whose mask session is armed: gestures land as ITS components. */
+let maskedGenerativeOpId: string | null = null
+/** One-shot: the next New gesture replaces the armed step's base component. */
+let maskBaseReplaceArmed = false
 /**
  * Creation-time identity for the armed scoped step: what an Adjust click
  * chose. Consumed by the mask commit when the region does not exist yet;
@@ -4076,6 +4348,7 @@ function disarmMaskedAdjustmentEditing() {
   maskedAdjustRegionId = null
   maskedAdjustOpId = null
   maskedAdjustSpec = null
+  maskBaseReplaceArmed = false
 }
 
 /**
@@ -4224,52 +4497,147 @@ function copyCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
  * later completed selection gesture republishes the whole mask, so refinement
  * strokes replace the payload instead of creating more rows.
  */
+/**
+ * Materialise tracked workspace gestures as mask components, each with its
+ * own uploaded compact payload or authored gradient geometry, anchored at the
+ * frame the target op sits in. Null when nothing usable survived.
+ */
+async function buildRecipeComponents(
+  entries: WorkspaceMaskGesture<HTMLCanvasElement>[],
+  opId: string,
+  regionId: string,
+  opIndex: number | undefined,
+): Promise<MaskComponent[] | null> {
+  const frame = payloadFrame(opIndex)
+  const canonical = frame
+    ? payloadToDocumentTransform(frame) ?? undefined
+    : undefined
+  const components: MaskComponent[] = []
+  for (const entry of entries) {
+    if (entry.gradient) {
+      const authored = authoredGradient(
+        entry.gradient, frame, canonical as Affine | undefined, opIndex ?? -1,
+      )
+      if (!authored) continue
+      components.push({
+        id: newOpId(),
+        mode: entry.mode,
+        enabled: true,
+        mask: authored,
+        ...(canonical ? { payload_to_document: canonical as number[] } : {}),
+        ...(frame ? { payload_frame: frame } : {}),
+        ...(entry.label ? { label: entry.label } : {}),
+      })
+      continue
+    }
+    if (!entry.mask) continue
+    const compact = compactSelectionMask(entry.mask)
+    if (!compact) continue
+    const maskRef = await stack.uploadPayload(
+      `${opId}-${regionId}-mask-${newOpId()}.png`,
+      await canvasToBlob(compact.mask),
+    )
+    if (fragileRetouchRegions.isCancelled(regionId)) return null
+    payloadCache.set(`${maskRef}@0`, compact.mask)
+    components.push({
+      id: newOpId(),
+      mode: entry.mode,
+      enabled: true,
+      mask_ref: maskRef,
+      payload_origin: compact.origin,
+      payload_to_document: payloadTransform(opIndex, compact.origin),
+      payload_frame: frame,
+      ...(entry.semantic ? { semantic: { ...entry.semantic } } : {}),
+      ...(entry.label ? { label: entry.label } : {}),
+    })
+  }
+  return components.length ? components : null
+}
+
 async function commitMaskedAdjustmentMask(
-  sourceMask: HTMLCanvasElement,
+  sourceMask: HTMLCanvasElement | null,
   opId: string,
   regionId: string,
   spec: typeof maskedAdjustSpec,
+  semantic: AdjustmentScopeSemantic | null = null,
+  recipe: WorkspaceMaskGesture<HTMLCanvasElement>[] | null = null,
 ) {
   const doc = stack.doc.value
   if (!doc) return
   if (fragileRetouchRegions.isCancelled(regionId)) return
-  const compact = compactSelectionMask(sourceMask)
-  if (!compact) return
+
+  // A semantic single-gesture scope is a recipe of one: the name and the
+  // cached raster belong together on a base component either way.
+  const entries = recipe
+    ?? (semantic && sourceMask
+      ? [{ mode: 'add' as const, mask: sourceMask, semantic }]
+      : null)
 
   const existingOp = stack.opById(opId) as any
+  const opIndexBefore = doc.edits.findIndex(op => op.id === opId)
+  const anchorIndex = opIndexBefore >= 0 ? opIndexBefore : undefined
+
+  let withComponents: RetouchRegion
+  if (entries) {
+    const components = await buildRecipeComponents(entries, opId, regionId, anchorIndex)
+    if (!components) return
+    if (fragileRetouchRegions.isCancelled(regionId)) return
+    const selected = ((stack.opById(opId) as any)?.regions ?? [] as RetouchRegion[])
+      .find((region: RetouchRegion) =>
+        region.id === regionId && isMaskedAdjustmentKind(region.kind))
+    withComponents = regionWithMaskComponents({
+      ...(selected ?? {}),
+      id: regionId,
+      kind: selected?.kind ?? spec?.kind ?? 'light',
+      enabled: selected?.enabled ?? true,
+      mask: undefined,
+      mask_ref: undefined,
+      result_ref: undefined,
+      payload_origin: undefined,
+      payload_to_document: undefined,
+      payload_frame: payloadFrame(anchorIndex),
+      sampled_input_hash: null,
+      settings: selected?.settings
+        ? { ...selected.settings }
+        : { ...DEFAULT_RETOUCH_REGION_SETTINGS, ...(spec?.seed ?? {}) },
+    } as RetouchRegion, components)
+  } else {
+    if (!sourceMask) return
+    const compact = compactSelectionMask(sourceMask)
+    if (!compact) return
+    const maskRef = await stack.uploadPayload(
+      `${opId}-${regionId}-mask-${newOpId()}.png`,
+      await canvasToBlob(compact.mask),
+    )
+    if (fragileRetouchRegions.isCancelled(regionId)) return
+    payloadCache.set(`${maskRef}@0`, compact.mask)
+    const selected = ((stack.opById(opId) as any)?.regions ?? [] as RetouchRegion[])
+      .find((region: RetouchRegion) =>
+        region.id === regionId && isMaskedAdjustmentKind(region.kind))
+    withComponents = {
+      ...(selected ?? {}),
+      id: regionId,
+      kind: selected?.kind ?? spec?.kind ?? 'light',
+      enabled: selected?.enabled ?? true,
+      mask_ref: maskRef,
+      // A republished raster replaces a parametric ramp outright — a region
+      // holding both would render the stale gradient and ignore the pixels.
+      mask: undefined,
+      mask_components: undefined,
+      result_ref: undefined,
+      payload_origin: compact.origin,
+      payload_to_document: payloadTransform(anchorIndex, compact.origin),
+      payload_frame: payloadFrame(anchorIndex),
+      sampled_input_hash: null,
+      settings: selected?.settings
+        ? { ...selected.settings }
+        : { ...DEFAULT_RETOUCH_REGION_SETTINGS, ...(spec?.seed ?? {}) },
+    }
+  }
   const existingRegions = (existingOp?.regions ?? []) as RetouchRegion[]
   const selected = existingRegions.find(
     region => region.id === regionId && isMaskedAdjustmentKind(region.kind),
   )
-  const maskRef = await stack.uploadPayload(
-    `${opId}-${regionId}-mask-${newOpId()}.png`,
-    await canvasToBlob(compact.mask),
-  )
-  if (fragileRetouchRegions.isCancelled(regionId)) return
-  payloadCache.set(`${maskRef}@0`, compact.mask)
-
-  const opIndex = doc.edits.findIndex(op => op.id === opId)
-  const region: RetouchRegion = {
-    ...(selected ?? {}),
-    id: regionId,
-    kind: selected?.kind ?? spec?.kind ?? 'light',
-    enabled: selected?.enabled ?? true,
-    mask_ref: maskRef,
-    // A republished raster replaces a parametric ramp outright — a region
-    // holding both would render the stale gradient and ignore the pixels.
-    mask: undefined,
-    result_ref: undefined,
-    payload_origin: compact.origin,
-    payload_to_document: payloadTransform(
-      opIndex >= 0 ? opIndex : undefined,
-      compact.origin,
-    ),
-    payload_frame: payloadFrame(opIndex >= 0 ? opIndex : undefined),
-    sampled_input_hash: null,
-    settings: selected?.settings
-      ? { ...selected.settings }
-      : { ...DEFAULT_RETOUCH_REGION_SETTINGS, ...(spec?.seed ?? {}) },
-  }
 
   if (!existingOp) {
     stack.addOp({
@@ -4279,43 +4647,325 @@ async function commitMaskedAdjustmentMask(
       label: spec?.label ?? 'Adjust',
       exec: { kind: 'retouch-regions', version: 1 },
       defaults: { ...DEFAULT_RETOUCH_REGION_SETTINGS },
-      regions: [region],
+      regions: [withComponents],
     } as any)
   } else if (selected) {
     stack.setRegions(
       opId,
-      existingRegions.map(candidate => candidate.id === regionId ? region : candidate),
+      existingRegions.map(candidate => candidate.id === regionId ? withComponents : candidate),
     )
   } else {
-    stack.setRegions(opId, [...existingRegions, region])
+    stack.setRegions(opId, [...existingRegions, withComponents])
   }
 
   selectedOpId.value = opId
   selectedRetouchRegionId.value = regionId
-  // The workspace selection remains the visible source of truth after the
-  // adjustment lands. Keep the region's separate diagnostic wash off so it
-  // does not double up with the marching-ants feedback.
-  selectedRetouchFeedbackVisible.value = false
+  selectedMaskComponentId.value = null
+  // Bound ants carry the coverage display; the wash only stands in when the
+  // selection is not bound to this step's mask.
+  selectedRetouchFeedbackVisible.value = !maskSessionBound.value
   await render()
   await refreshRetouchInput()
   await refreshRetouchFeedback()
+  // The step exists; its mask becomes the live selection, the same bound
+  // state every other mask session lands in.
+  if (!maskSessionBound.value && selectedRetouchRegionId.value === regionId) {
+    await bindMaskSessionSelection()
+    if (maskSessionBound.value) selectedRetouchFeedbackVisible.value = false
+  }
 }
 
-/** Publish the current mask to the ARMED scoped step (see the module vars). */
-function queueMaskedAdjustmentMask(mask: HTMLCanvasElement) {
+/** Publish the captured scope to the ARMED scoped step (see the module vars). */
+function queueMaskedAdjustmentMask(
+  mask: HTMLCanvasElement | null,
+  semantic: AdjustmentScopeSemantic | null = null,
+  recipe: WorkspaceMaskGesture<HTMLCanvasElement>[] | null = null,
+) {
   const opId = maskedAdjustOpId
   const regionId = maskedAdjustRegionId
   if (!opId || !regionId) return
   const spec = maskedAdjustSpec
   // Snapshot synchronously: the workspace canvas is mutable and the next
-  // gesture may arrive before this payload upload finishes.
-  const snapshot = copyCanvas(mask)
+  // gesture may arrive before this payload upload finishes. Recipe coverages
+  // were already captured by copy at scope time.
+  const snapshot = mask ? copyCanvas(mask) : null
   maskedAdjustCommitQueue = maskedAdjustCommitQueue
-    .then(() => commitMaskedAdjustmentMask(snapshot, opId, regionId, spec))
+    .then(() => commitMaskedAdjustmentMask(snapshot, opId, regionId, spec, semantic, recipe))
     .catch(err => {
       console.error('[imageStack] masked adjustment commit failed', err)
       error.value = apiErrorMessage(err, 'Could not save the adjustment mask.')
     })
+}
+
+/**
+ * The workspace selection has been consumed — into a new step's mask, or into
+ * a captured mask component. Clear it without letting the clear rewrite the
+ * combine mode the person set: the mode belongs to their next gesture.
+ */
+function consumeWorkspaceSelection() {
+  const combine = selectCombine.value
+  clearSelection()
+  selectCombine.value = combine
+}
+
+/** What a landed gesture becomes inside an armed step's mask. */
+interface MaskComponentCapture {
+  /** The island's combine mode at gesture time; `new` replaces the base. */
+  mode: SelectionMode
+  /** Parametric identity when the gesture was a gradient drag. */
+  gradient: GradientMask | null
+  /** Semantic identity when the gesture was a recomputable AI selection. */
+  semantic: AdjustmentScopeSemantic | null
+  /** Tool name for the component row (Rectangle, Brush…), when known. */
+  label?: string | null
+}
+
+/**
+ * Land one completed selection gesture as ONE mask component of the armed
+ * scoped step. The workspace is empty between gestures while mask editing is
+ * armed, so the published bitmap IS the gesture — nothing gets flattened, and
+ * every ingredient of the mask stays individually editable.
+ */
+function queueMaskComponentCapture(
+  mask: HTMLCanvasElement | null,
+  capture: MaskComponentCapture,
+) {
+  const opId = maskedAdjustOpId
+  const regionId = maskedAdjustRegionId
+  if (!opId || !regionId) return
+  const snapshot = mask ? copyCanvas(mask) : null
+  maskedAdjustCommitQueue = maskedAdjustCommitQueue
+    .then(() => commitMaskComponentCapture(snapshot, opId, regionId, capture))
+    .catch(err => {
+      console.error('[imageStack] mask component capture failed', err)
+      error.value = apiErrorMessage(err, 'Could not save the mask component.')
+    })
+}
+
+async function commitMaskComponentCapture(
+  sourceMask: HTMLCanvasElement | null,
+  opId: string,
+  regionId: string,
+  capture: MaskComponentCapture,
+) {
+  if (!stack.doc.value) return
+  if (fragileRetouchRegions.isCancelled(regionId)) return
+  const location = retouchRegionLocation(regionId)
+  if (!location || location.op.id !== opId) return
+  if (!isMaskedAdjustmentKind(location.region.kind)) return
+
+  // Build the captured component with its own authoring anchor — components
+  // added after a crop record the frame THEY were made in.
+  let component: MaskComponent
+  if (capture.gradient) {
+    const frame = payloadFrame(location.index)
+    const canonical = frame
+      ? payloadToDocumentTransform(frame) ?? undefined
+      : undefined
+    const authored = authoredGradient(
+      capture.gradient, frame, canonical, location.index,
+    )
+    if (!authored) return
+    component = {
+      id: newOpId(),
+      mode: capture.mode === 'new' ? 'add' : capture.mode,
+      enabled: true,
+      mask: authored,
+      ...(canonical ? { payload_to_document: canonical as number[] } : {}),
+      ...(frame ? { payload_frame: frame } : {}),
+    }
+  } else {
+    if (!sourceMask) return
+    const compact = compactSelectionMask(sourceMask)
+    if (!compact) return
+    const maskRef = await stack.uploadPayload(
+      `${opId}-${regionId}-mask-${newOpId()}.png`,
+      await canvasToBlob(compact.mask),
+    )
+    if (fragileRetouchRegions.isCancelled(regionId)) return
+    payloadCache.set(`${maskRef}@0`, compact.mask)
+    // Re-resolve after the await: edits may have moved or removed the region.
+    const current = retouchRegionLocation(regionId)
+    if (!current || current.op.id !== opId) return
+    component = {
+      id: newOpId(),
+      mode: capture.mode === 'new' ? 'add' : capture.mode,
+      enabled: true,
+      mask_ref: maskRef,
+      payload_origin: compact.origin,
+      payload_to_document: payloadTransform(current.index, compact.origin),
+      payload_frame: payloadFrame(current.index),
+      ...(capture.semantic ? { semantic: { ...capture.semantic } } : {}),
+      ...(capture.label ? { label: capture.label } : {}),
+    }
+  }
+
+  const current = retouchRegionLocation(regionId)
+  if (!current || current.op.id !== opId) return
+  // A mask refinement is a substantive edit: the step stops being a
+  // provisional landing place the next Adjust click may replace.
+  fragileRetouchRegions.commit(regionId)
+
+  const existing = JSON.parse(
+    JSON.stringify(regionMaskComponents(current.region)),
+  ) as MaskComponent[]
+  let next: RetouchRegion
+  if (capture.mode === 'new') {
+    const modifiers = existing.slice(1)
+    if (!modifiers.length && !capture.gradient && !capture.semantic) {
+      // Nothing to preserve and nothing to name: stay in the legacy single
+      // mask shape, exactly what republishing has always written.
+      next = {
+        ...current.region,
+        mask: undefined,
+        mask_components: undefined,
+        mask_ref: component.mask_ref,
+        payload_origin: component.payload_origin,
+        payload_to_document: component.payload_to_document,
+        payload_frame: component.payload_frame,
+      }
+    } else if (!modifiers.length && capture.gradient) {
+      // Replacing the whole mask with one ramp: the legacy parametric region
+      // is the smallest honest shape, and its handles stay live.
+      next = {
+        ...current.region,
+        mask: component.mask,
+        mask_components: undefined,
+        mask_ref: undefined,
+        payload_origin: undefined,
+        payload_to_document: component.payload_to_document,
+        payload_frame: component.payload_frame,
+      }
+    } else {
+      // Replace the base, keep the modifiers.
+      next = regionWithMaskComponents(current.region, [component, ...modifiers])
+    }
+  } else {
+    next = regionWithMaskComponents(current.region, [...existing, component])
+  }
+
+  stack.setRegions(
+    current.op.id,
+    current.op.regions.map((candidate: RetouchRegion) =>
+      candidate.id === regionId ? next : candidate,
+    ),
+  )
+  selectedOpId.value = opId
+  selectedRetouchRegionId.value = regionId
+  // A gradient capture selects its component so the handles come up; any
+  // other capture selects the Mask PARENT, so the wash shows the COMPOSED
+  // result — the union the person just built, not the lone new stroke.
+  selectedMaskComponentId.value =
+    capture.gradient && next.mask_components?.length ? component.id : null
+  selectedRetouchFeedbackVisible.value = !maskSessionBound.value
+  await render()
+  await refreshRetouchInput()
+  await refreshRetouchFeedback()
+  if (!maskSessionBound.value && selectedRetouchRegionId.value === regionId) {
+    await bindMaskSessionSelection()
+    if (maskSessionBound.value && !capture.gradient) {
+      selectedRetouchFeedbackVisible.value = false
+    }
+  }
+}
+
+/** Land one gesture as a mask component of the armed GENERATIVE op. */
+function queueGenerativeMaskCapture(
+  mask: HTMLCanvasElement | null,
+  capture: MaskComponentCapture,
+) {
+  const opId = maskedGenerativeOpId
+  if (!opId) return
+  const snapshot = mask ? copyCanvas(mask) : null
+  maskedAdjustCommitQueue = maskedAdjustCommitQueue
+    .then(() => commitGenerativeMaskCapture(snapshot, opId, capture))
+    .catch(err => {
+      console.error('[imageStack] generative mask capture failed', err)
+      error.value = apiErrorMessage(err, 'Could not save the mask component.')
+    })
+}
+
+async function commitGenerativeMaskCapture(
+  sourceMask: HTMLCanvasElement | null,
+  opId: string,
+  capture: MaskComponentCapture,
+) {
+  const doc = stack.doc.value
+  if (!doc) return
+  const index = doc.edits.findIndex(edit => edit.id === opId)
+  if (index < 0) return
+  const op = doc.edits[index] as any
+  if (!generativeOpHasEditableMask(op)) return
+
+  let component: MaskComponent
+  if (capture.gradient) {
+    const frame = payloadFrame(index)
+    const canonical = frame
+      ? payloadToDocumentTransform(frame) ?? undefined
+      : undefined
+    const authored = authoredGradient(
+      capture.gradient, frame, canonical as Affine | undefined, index,
+    )
+    if (!authored) return
+    component = {
+      id: newOpId(),
+      mode: capture.mode === 'new' ? 'add' : capture.mode,
+      enabled: true,
+      mask: authored,
+      ...(canonical ? { payload_to_document: canonical as number[] } : {}),
+      ...(frame ? { payload_frame: frame } : {}),
+    }
+  } else {
+    if (!sourceMask) return
+    const compact = compactSelectionMask(sourceMask)
+    if (!compact) return
+    const maskRef = await stack.uploadPayload(
+      `${opId}-mask-${newOpId()}.png`,
+      await canvasToBlob(compact.mask),
+    )
+    payloadCache.set(`${maskRef}@0`, compact.mask)
+    component = {
+      id: newOpId(),
+      mode: capture.mode === 'new' ? 'add' : capture.mode,
+      enabled: true,
+      mask_ref: maskRef,
+      payload_origin: compact.origin,
+      payload_to_document: payloadTransform(index, compact.origin),
+      payload_frame: payloadFrame(index),
+      ...(capture.semantic ? { semantic: { ...capture.semantic } } : {}),
+      ...(capture.label ? { label: capture.label } : {}),
+    }
+  }
+
+  // Re-resolve after the awaits.
+  const current = stack.doc.value
+  const currentOp = current?.edits.find(edit => edit.id === opId) as any
+  if (!current || !generativeOpHasEditableMask(currentOp)) return
+  const existing = JSON.parse(
+    JSON.stringify(opMaskComponents(currentOp)),
+  ) as MaskComponent[]
+  const next = capture.mode === 'new'
+    // Replace the base, keep the modifiers. mask_ref survives regardless —
+    // it stays the record of what the candidates were sampled through.
+    ? [component, ...existing.slice(1)]
+    : [...existing, component]
+  stack.replaceEdits(current.edits.map((edit: any) =>
+    edit.id === opId ? { ...edit, mask_components: next } : edit,
+  ))
+  selectedOpId.value = opId
+  selectedGenerativeMaskOpId.value = opId
+  // Same rule as region captures: gradients select their component for the
+  // handles; everything else shows the composed union on the Mask parent.
+  selectedMaskComponentId.value = capture.gradient ? component.id : null
+  selectedRetouchFeedbackVisible.value = !maskSessionBound.value
+  await render()
+  await refreshRetouchFeedback()
+  if (!maskSessionBound.value && selectedGenerativeMaskOpId.value === opId) {
+    await bindMaskSessionSelection()
+    if (maskSessionBound.value && !capture.gradient) {
+      selectedRetouchFeedbackVisible.value = false
+    }
+  }
 }
 
 /**
@@ -4484,26 +5134,96 @@ const selectedRetouchRegion = computed<RetouchRegion | null>(
 )
 
 /**
- * The selected region's gradient, mapped into the CURRENT composite frame so
- * its handles land on the pixels they describe. Geometry is authored in the
- * region's own frame, exactly like a payload, so a crop underneath moves the
- * handles with the image instead of leaving them behind.
+ * The gradient the canvas handles should edit, in the region's OWN terms: the
+ * legacy single-gradient region, or the selected gradient component of a
+ * composite mask. Carries the anchors the geometry was authored against.
+ */
+function selectedGradientSource(): {
+  /** The mask owner's id: a region's, or the generative op's own. */
+  ownerId: string
+  region: RetouchRegion | null
+  index: number
+  componentId: string | null
+  mask: GradientMask
+  payload_to_document?: number[]
+  payload_frame?: { matrix: number[]; width: number; height: number }
+} | null {
+  // A generative op's selected gradient component re-opens its handles the
+  // same way a region's does.
+  if (selectedGenerativeMaskOpId.value && selectedMaskComponentId.value) {
+    const doc = stack.doc.value
+    const index = doc?.edits.findIndex(
+      edit => edit.id === selectedGenerativeMaskOpId.value,
+    ) ?? -1
+    const op = index >= 0 ? (doc!.edits[index] as any) : null
+    const component = op?.mask_components?.find(
+      (candidate: MaskComponent) => candidate.id === selectedMaskComponentId.value,
+    )
+    if (!component || !isGradientMask(component.mask)) return null
+    return {
+      ownerId: op.id,
+      region: null,
+      index,
+      componentId: component.id,
+      mask: component.mask,
+      payload_to_document: component.payload_to_document,
+      payload_frame: component.payload_frame,
+    }
+  }
+  const location = retouchRegionLocation(selectedRetouchRegionId.value)
+  if (!location) return null
+  const region = location.region as RetouchRegion
+  if (hasMaskComponents(region)) {
+    const id = selectedMaskComponentId.value
+    const component = id
+      ? region.mask_components!.find(candidate => candidate.id === id)
+      : null
+    if (!component || !isGradientMask(component.mask)) return null
+    return {
+      ownerId: region.id,
+      region,
+      index: location.index,
+      componentId: component.id,
+      mask: component.mask,
+      payload_to_document: component.payload_to_document,
+      payload_frame: component.payload_frame,
+    }
+  }
+  if (!isGradientMask(region.mask)) return null
+  return {
+    ownerId: region.id,
+    region,
+    index: location.index,
+    componentId: null,
+    mask: region.mask,
+    payload_to_document: region.payload_to_document,
+    payload_frame: region.payload_frame,
+  }
+}
+
+/**
+ * The selected gradient, mapped into the CURRENT composite frame so its
+ * handles land on the pixels they describe. Geometry is authored in its own
+ * frame, exactly like a payload, so a crop underneath moves the handles with
+ * the image instead of leaving them behind.
  */
 const selectedGradient = computed<GradientMask | null>(() => {
-  const location = retouchRegionLocation(selectedRetouchRegionId.value)
-  const mask = location?.region.mask
-  if (!location || !isGradientMask(mask)) return null
+  // Touch the reactive dependencies the helper reads through non-reactive
+  // paths, so a component selection change recomputes the handles.
+  void selectedMaskComponentId.value
+  const source = selectedGradientSource()
+  if (!source) return null
   const doc = stack.doc.value
-  if (!doc) return mask
-  const now = geometryBelow(doc, location.index)
-  const canonical = location.region.payload_to_document as Affine | undefined
-  const created = location.region.payload_frame
+  if (!doc) return source.mask
+  const now = geometryBelow(doc, source.index)
+  const canonical = source.payload_to_document as Affine | undefined
+  const created = source.payload_frame
   const carry = canonical
     ? multiply(now.matrix, canonical)
     : created
       ? coTransform(created.matrix as Affine, now.matrix as Affine)
       : null
-  return carry ? transformGradientMask(mask, carry) : mask
+  return carry ? transformGradientMask(source.mask, carry) : source.mask
 })
 
 /**
@@ -4520,7 +5240,7 @@ const activeWorkspaceGradient = computed<GradientMask | null>(() =>
 )
 
 const canvasGradient = computed<GradientMask | null>(() =>
-  selection.value
+  selection.value && !maskSessionBound.value
     ? selectionIsGradient.value
       ? activeWorkspaceGradient.value ?? selectedGradient.value
       : null
@@ -4544,7 +5264,7 @@ const canvasGradientOwnsResult = computed(
  * composite at full resolution per mouse event — which buries the guides under
  * a second of pixel work and makes the tool feel broken.
  */
-function onGradientChange(mask: GradientMask) {
+function onGradientChange(mask: GradientMask, combine?: SelectionMode) {
   // The ramp lands as a workspace selection like every other gesture; what is
   // remembered here is its parametric identity, so an Adjust click can scope
   // with live geometry instead of the frozen raster. The canvas emits the
@@ -4552,11 +5272,18 @@ function onGradientChange(mask: GradientMask) {
   // `gradientGestureLanding` is armed here and consumed by the change handler.
   rememberGradientDefaults(mask)
   gradientGestureLanding = true
+  // The gesture's own geometry, kept regardless of combine: an armed mask
+  // component capture wants the ramp itself even when the workspace copy
+  // would have to flatten.
+  lastGestureGradient = { ...mask }
+  // The mode the gesture ACTUALLY combined with — a held-modifier override
+  // never shows up in the island's persistent control.
+  lastGestureGradientCombine = combine ?? selectCombine.value
   // Combined onto an existing selection, the published raster is a composite
   // and the ramp alone no longer describes it — raster scoping is the honest
   // fallback there.
   workspaceGradient.value =
-    !selection.value || selectCombine.value === 'new' ? mask : null
+    !selection.value || lastGestureGradientCombine === 'new' ? mask : null
 }
 
 /** A handle drag re-aims either the live workspace ramp or the persisted
@@ -4575,15 +5302,9 @@ function onGradientEdit(mask: GradientMask) {
     selectRef.value?.replaceGradient(mask)
     return
   }
-  const into = selectedGradientRegionId()
+  const into = selectedGradientSource()
   if (!into) return
-  persistGradientRegion(mask, { into })
-}
-
-/** The selected region, but only when it is a gradient we can edit in place. */
-function selectedGradientRegionId(): string | null {
-  const region = selectedRetouchRegion.value
-  return region && isGradientMask(region.mask) ? region.id : null
+  persistGradientRegion(mask, { into: into.ownerId, componentId: into.componentId })
 }
 
 function rememberGradientDefaults(mask: GradientMask) {
@@ -4598,13 +5319,14 @@ function rememberGradientDefaults(mask: GradientMask) {
  * then badly wrong.
  */
 function onInspectorGradient(mask: GradientMask) {
-  const into = selectedGradientRegionId()
+  const into = selectedGradientSource()
   if (!into) return
   persistGradientRegion(mask, {
-    into,
+    into: into.ownerId,
+    componentId: into.componentId,
     space: 'authored',
     render: false,
-    coalesceKey: `retouch-gradient:${into}`,
+    coalesceKey: `retouch-gradient:${into.componentId ?? into.ownerId}`,
   })
   scheduleRetouchSettingsPreview()
 }
@@ -4614,36 +5336,91 @@ function commitInspectorGradient() {
 }
 
 /**
- * Re-aim an EXISTING gradient region. Creation goes through Adjust
- * (`addScopedLevelEdit`); this only rewrites geometry the region already has.
+ * Re-aim an EXISTING gradient — a legacy gradient region, or one gradient
+ * component of a composite mask. Creation goes through Adjust
+ * (`addScopedLevelEdit`) or a captured gesture; this only rewrites geometry
+ * that already exists.
  */
 function persistGradientRegion(
   mask: GradientMask,
   options: {
     into: string
+    componentId?: string | null
     space?: 'composite' | 'authored'
     render?: boolean
     coalesceKey?: string
   },
 ) {
   rememberGradientDefaults(mask)
+  // A generative op's gradient component: same re-aim, op-level storage.
+  const generativeOp = options.componentId
+    ? generativeMaskOpFor(options.into, options.into)
+    : null
+  if (generativeOp) {
+    const doc = stack.doc.value
+    const index = doc?.edits.findIndex(edit => edit.id === generativeOp.id) ?? -1
+    const component = (generativeOp.mask_components as MaskComponent[] | undefined)
+      ?.find(candidate => candidate.id === options.componentId)
+    if (!doc || index < 0 || !component || !isGradientMask(component.mask)) return
+    const authored = options.space === 'authored'
+      ? mask
+      : authoredGradient(
+          mask,
+          component.payload_frame,
+          component.payload_to_document as Affine | undefined,
+          index,
+        )
+    if (!authored) return
+    stack.replaceEdits(doc.edits.map((edit: any) =>
+      edit.id === generativeOp.id
+        ? {
+            ...edit,
+            mask_components: edit.mask_components.map((candidate: MaskComponent) =>
+              candidate.id === component.id
+                ? { ...candidate, mask: authored }
+                : candidate,
+            ),
+          }
+        : edit,
+    ), options.coalesceKey)
+    if (options.render !== false) {
+      armedSelectTool.value = null
+      void render().then(refreshRetouchInput)
+    }
+    return
+  }
   const location = retouchRegionLocation(options.into)
   if (!location) return
-  const existing = location.region
-  // An edit maps back into the frame THAT REGION was authored in, which is not
-  // necessarily the frame a new region would get: regions outlive crops.
-  const frame = existing.payload_frame
-  const canonical = existing.payload_to_document as Affine | undefined
+  const existing = location.region as RetouchRegion
+  const component = options.componentId
+    ? existing.mask_components?.find(candidate => candidate.id === options.componentId)
+    : null
+  if (options.componentId && (!component || !isGradientMask(component.mask))) return
 
-  // Handles are dragged in composite space; the region stores them in its own
+  // An edit maps back into the frame the GEOMETRY was authored in, which is
+  // not necessarily the frame a new one would get: masks outlive crops.
+  const frame = component ? component.payload_frame : existing.payload_frame
+  const canonical = (component
+    ? component.payload_to_document
+    : existing.payload_to_document) as Affine | undefined
+
+  // Handles are dragged in composite space; the geometry is stored in its own
   // authored frame, so the inverse of the carry goes back the way it came.
   const authored = options.space === 'authored'
     ? mask
     : authoredGradient(mask, frame, canonical, location.index)
   if (!authored) return
 
+  const next: RetouchRegion = component
+    ? {
+        ...existing,
+        mask_components: existing.mask_components!.map(candidate =>
+          candidate.id === component.id ? { ...candidate, mask: authored } : candidate,
+        ),
+      }
+    : { ...existing, mask: authored }
   stack.setRegions(location.op.id, location.op.regions.map((region: RetouchRegion) =>
-    region.id === options.into ? { ...region, mask: authored } : region
+    region.id === options.into ? next : region
   ), options.coalesceKey)
 
   if (options.render !== false) {
@@ -4672,53 +5449,131 @@ function authoredGradient(
   return back ? transformGradientMask(mask, back) : mask
 }
 
-/** Expand a compact retained mask and carry it into the region's current frame. */
-async function retouchFeedbackMask(regionId: string | null): Promise<HTMLCanvasElement | null> {
-  const location = retouchRegionLocation(regionId)
-  if (!location) return null
-  const { index, region } = location
-  const doc = stack.doc.value!
-  const now = geometryBelow(doc, index)
-  const created = region.payload_frame
-  const canonical = region.payload_to_document as Affine | undefined
+/**
+ * One mask ingredient's coverage, carried into the current frame. A region's
+ * legacy single mask and a mask component share this field shape, so both
+ * feed through here.
+ */
+async function componentFeedbackCanvas(
+  source: Pick<
+    RetouchRegion,
+    'mask' | 'mask_ref' | 'payload_origin' | 'payload_to_document' | 'payload_frame'
+  >,
+  now: { matrix: number[]; width: number; height: number },
+): Promise<HTMLCanvasElement | null> {
+  const created = source.payload_frame
+  const canonical = source.payload_to_document as Affine | undefined
   const authored = document.createElement('canvas')
   authored.width = created?.width ?? now.width
   authored.height = created?.height ?? now.height
-  // A gradient region owns no payload; its coverage comes from the same
-  // rasteriser the compositor uses, so feedback and render agree by construction.
-  if (isGradientMask(region.mask)) {
+  // A gradient owns no payload; its coverage comes from the same rasteriser
+  // the compositor uses, so feedback and render agree by construction.
+  if (isGradientMask(source.mask)) {
     authored.getContext('2d')!.drawImage(
-      gradientMaskCanvas(region.mask, authored.width, authored.height), 0, 0,
+      gradientMaskCanvas(source.mask, authored.width, authored.height), 0, 0,
     )
   } else {
-    if (!region.mask_ref) return null
-    const key = `${region.mask_ref}@0`
+    if (!source.mask_ref) return null
+    const key = `${source.mask_ref}@0`
     let payload = payloadCache.get(key)
     if (!payload) {
       try {
-        payload = await loadImage(stack.payloadUrl(region.mask_ref, 0))
+        payload = await loadImage(stack.payloadUrl(source.mask_ref, 0))
       } catch {
         return null
       }
     }
     if (canonical) {
-      const matrix = multiply(now.matrix, canonical)
+      const matrix = multiply(now.matrix as Affine, canonical)
       return rewritePayload(payload, matrix, now.width, now.height)
     }
-    const [x, y] = region.payload_origin ?? [0, 0]
+    const [x, y] = source.payload_origin ?? [0, 0]
     authored.getContext('2d')!.drawImage(payload, x, y)
   }
   if (canonical) {
-    const matrix = multiply(now.matrix, canonical)
+    const matrix = multiply(now.matrix as Affine, canonical)
     return matrix && !isIdentity(matrix)
       ? rewritePayload(authored, matrix, now.width, now.height)
       : authored
   }
   if (!created) return authored
-  const matrix = coTransform(created.matrix as Affine, now.matrix)
+  const matrix = coTransform(created.matrix as Affine, now.matrix as Affine)
   return matrix && !isIdentity(matrix)
     ? rewritePayload(authored, matrix, now.width, now.height)
     : authored
+}
+
+/**
+ * A region's coverage in its current frame — the whole effective mask, or one
+ * component's when `componentId` names it (a component row's hover/selection
+ * shows what THAT ingredient covers, not the composed result).
+ */
+async function retouchFeedbackMask(
+  regionId: string | null,
+  componentId: string | null = null,
+): Promise<HTMLCanvasElement | null> {
+  const location = retouchRegionLocation(regionId)
+  if (!location) return null
+  const { index, region } = location
+  const doc = stack.doc.value!
+  const now = geometryBelow(doc, index)
+  const components = (region as RetouchRegion).mask_components
+  if (components?.length) {
+    if (componentId) {
+      const component = components.find(candidate => candidate.id === componentId)
+      return component ? componentFeedbackCanvas(component, now) : null
+    }
+    const layers = await Promise.all(components.map(async component => ({
+      source: component.enabled !== false
+        ? await componentFeedbackCanvas(component, now)
+        : null,
+      mode: component.mode,
+      enabled: component.enabled !== false,
+    })))
+    if (!layers.some(layer => layer.enabled && layer.source)) return null
+    return composeMaskCanvases(layers, now.width, now.height)
+  }
+  // Legacy single mask: the base component IS the region's mask, so a
+  // component-addressed request answers with the same coverage.
+  return componentFeedbackCanvas(region, now)
+}
+
+/**
+ * A generative op's mask coverage in its current frame — the composed
+ * effective mask, or one component's when `componentId` names it. Luminance
+ * payloads translate to alpha before composing, so the wash reads coverage
+ * rather than the opaque black around it.
+ */
+async function generativeMaskFeedback(
+  opId: string,
+  componentId: string | null = null,
+): Promise<HTMLCanvasElement | null> {
+  const doc = stack.doc.value
+  if (!doc) return null
+  const index = doc.edits.findIndex(op => op.id === opId)
+  if (index < 0) return null
+  const op = doc.edits[index] as any
+  if (!generativeOpHasEditableMask(op)) return null
+  const components = opMaskComponents(op)
+  if (!components.length) return null
+  const now = geometryBelow(doc, index)
+  const load = async (component: MaskComponent) => {
+    const canvas = await componentFeedbackCanvas(component, now)
+    return canvas && component.luminance
+      ? luminanceToAlphaCanvas(canvas, now.width, now.height)
+      : canvas
+  }
+  if (componentId) {
+    const component = components.find(candidate => candidate.id === componentId)
+    return component ? load(component) : null
+  }
+  const layers = await Promise.all(components.map(async component => ({
+    source: component.enabled !== false ? await load(component) : null,
+    mode: component.mode,
+    enabled: component.enabled !== false,
+  })))
+  if (!layers.some(layer => layer.enabled && layer.source)) return null
+  return composeMaskCanvases(layers, now.width, now.height)
 }
 
 /** Carry a model patch's full-frame mask into its current stack geometry. */
@@ -4792,21 +5647,25 @@ async function refreshRetouchFeedback() {
   const revision = ++retouchFeedbackRevision
   // Identity is the authority. Clear stale canvases synchronously so a
   // deleted/unhovered child cannot remain visible during async payload work.
-  if (!selectedRetouchRegionId.value) {
+  if (!selectedRetouchRegionId.value && !selectedGenerativeMaskOpId.value) {
     selectedRetouchMask.value = null
     selectedRetouchSource.value = null
     selectedRetouchTarget.value = null
     selectedRetouchIsPatch.value = false
   }
-  if (!hoveredRetouchRegionId.value) {
+  if (!hoveredRetouchRegionId.value && !hoveredGenerativeMaskOpId.value) {
     hoveredRetouchMask.value = null
     hoveredRetouchSource.value = null
     hoveredRetouchTarget.value = null
     hoveredRetouchIsPatch.value = false
   }
   const [selected, hovered] = await Promise.all([
-    retouchFeedbackMask(selectedRetouchRegionId.value),
-    retouchFeedbackMask(hoveredRetouchRegionId.value),
+    selectedGenerativeMaskOpId.value
+      ? generativeMaskFeedback(selectedGenerativeMaskOpId.value, selectedMaskComponentId.value)
+      : retouchFeedbackMask(selectedRetouchRegionId.value, selectedMaskComponentId.value),
+    hoveredGenerativeMaskOpId.value
+      ? generativeMaskFeedback(hoveredGenerativeMaskOpId.value, hoveredMaskComponentId.value)
+      : retouchFeedbackMask(hoveredRetouchRegionId.value, hoveredMaskComponentId.value),
   ])
   if (revision !== retouchFeedbackRevision) return
   selectedRetouchMask.value = selected
@@ -4829,6 +5688,90 @@ async function refreshRetouchFeedback() {
   hoveredRetouchIsPatch.value = hoveredLocation?.region.kind === 'patch'
 }
 
+/**
+ * A SELECTED scoped adjustment owns the selection gestures: while its region
+ * (or one of its mask components) is selected, every landed gesture becomes a
+ * component of ITS mask, through the island's combine mode. Deselecting —
+ * Escape, the row toggle, picking anything else — releases the gestures back
+ * to the workspace.
+ */
+function armMaskEditingForSelection(regionId: string | null) {
+  const location = retouchRegionLocation(regionId)
+  if (location && isMaskedAdjustmentKind(location.region.kind)) {
+    maskedAdjustOpId = location.op.id
+    maskedAdjustRegionId = location.region.id
+    maskedAdjustSpec = null
+  } else {
+    disarmMaskedAdjustmentEditing()
+  }
+}
+
+/** End a generative op's mask session and its selection state. */
+function clearGenerativeMaskSelection() {
+  selectedGenerativeMaskOpId.value = null
+  maskedGenerativeOpId = null
+  maskBaseReplaceArmed = false
+}
+
+/**
+ * Load the session step's composed mask INTO the workspace selection: the
+ * ants become the mask's display, the selection tools its editors, and
+ * Deselect/Escape the way out. The wash returns to hover duty.
+ */
+async function bindMaskSessionSelection() {
+  const opId = selectedGenerativeMaskOpId.value
+  const regionId = selectedRetouchRegionId.value
+  const composed = opId
+    ? await generativeMaskFeedback(opId)
+    : await retouchFeedbackMask(regionId)
+  // Re-check after the compose: the session may have moved on.
+  if (
+    opId !== selectedGenerativeMaskOpId.value
+    || regionId !== selectedRetouchRegionId.value
+  ) return
+  if (!composed || !selectRef.value) return
+  syncingBoundSelection = true
+  try {
+    selectRef.value.applyMask(composed, 'new')
+  } finally {
+    syncingBoundSelection = false
+  }
+  // Feedback visibility stays the caller's decision: parent selections keep
+  // the wash off (the ants are the mask), component selections keep it on
+  // (the wash previews the component over the bound ants).
+  maskSessionBound.value = selModel.hasSelection()
+}
+
+/**
+ * Drop the bound selection without touching the step's mask — the projection
+ * leaves with the session it belonged to. The flag flips FIRST so the clear's
+ * change event reads as an ordinary empty workspace, not a session end.
+ */
+function releaseBoundSelection() {
+  if (!maskSessionBound.value) return
+  maskSessionBound.value = false
+  clearSelection()
+}
+
+/** The selection was cleared WHILE bound: that gesture means "I'm done with
+ *  this step's mask" — end the session; the mask itself stays. */
+function endBoundMaskSession() {
+  maskSessionBound.value = false
+  disarmMaskedAdjustmentEditing()
+  clearGenerativeMaskSelection()
+  selectedRetouchRegionId.value = null
+  selectedMaskComponentId.value = null
+  selectedRetouchFeedbackVisible.value = false
+  void refreshRetouchFeedback()
+}
+
+/** A `targetId` that names a patch op addresses the OP's mask. */
+function generativeMaskOpFor(opId: string, targetId: string): any | null {
+  if (opId !== targetId) return null
+  const op = stack.opById(opId) as any
+  return generativeOpHasEditableMask(op) ? op : null
+}
+
 function selectRetouchRegion(opId: string, regionId: string) {
   // Picking a region by hand ends any other step's mask-editing session.
   if (maskedAdjustRegionId && maskedAdjustRegionId !== regionId) {
@@ -4836,16 +5779,267 @@ function selectRetouchRegion(opId: string, regionId: string) {
   }
   selectedOpId.value = opId
   selectedShapeId.value = null
+  if (generativeMaskOpFor(opId, regionId)) {
+    // The generative op's Mask parent: its composed mask binds as the live
+    // selection, and the op's mask session arms.
+    selectedRetouchRegionId.value = null
+    const deselecting = selectedGenerativeMaskOpId.value === opId
+      && !selectedMaskComponentId.value
+    selectedMaskComponentId.value = null
+    selectedGenerativeMaskOpId.value = deselecting ? null : opId
+    maskedGenerativeOpId = deselecting ? null : opId
+    selectedRetouchFeedbackVisible.value = false
+    if (deselecting) releaseBoundSelection()
+    else void bindMaskSessionSelection()
+    void refreshRetouchFeedback()
+    return
+  }
+  if (maskSessionBound.value && selectedGenerativeMaskOpId.value) {
+    releaseBoundSelection()
+  }
+  clearGenerativeMaskSelection()
   const alreadySelected = selectedRetouchRegionId.value === regionId
+    && !selectedMaskComponentId.value
   const deselecting = alreadySelected
   selectedRetouchRegionId.value = deselecting ? null : regionId
-  selectedRetouchFeedbackVisible.value = !deselecting
+  // Region-level selection is the Mask parent: the composed result, no
+  // individual component.
+  selectedMaskComponentId.value = null
+  selectedRetouchFeedbackVisible.value = false
+  armMaskEditingForSelection(deselecting ? null : regionId)
+  if (deselecting) releaseBoundSelection()
+  else void bindMaskSessionSelection()
+  void refreshRetouchFeedback()
+}
+
+/** Select one mask component: its coverage previews, its controls open. */
+function selectMaskComponent(opId: string, targetId: string, componentId: string) {
+  if (maskedAdjustRegionId && maskedAdjustRegionId !== targetId) {
+    disarmMaskedAdjustmentEditing()
+  }
+  selectedOpId.value = opId
+  selectedShapeId.value = null
+  if (generativeMaskOpFor(opId, targetId)) {
+    selectedRetouchRegionId.value = null
+    selectedGenerativeMaskOpId.value = opId
+    maskedGenerativeOpId = opId
+    selectedMaskComponentId.value = componentId
+    // The bound ants keep showing the WHOLE mask; the wash previews the
+    // selected component over them.
+    selectedRetouchFeedbackVisible.value = true
+    if (!maskSessionBound.value) void bindMaskSessionSelection()
+    void refreshRetouchFeedback()
+    return
+  }
+  clearGenerativeMaskSelection()
+  selectedRetouchRegionId.value = targetId
+  selectedMaskComponentId.value = componentId
+  selectedRetouchFeedbackVisible.value = true
+  armMaskEditingForSelection(targetId)
+  if (!maskSessionBound.value) void bindMaskSessionSelection()
   void refreshRetouchFeedback()
 }
 
 function hoverRetouchRegion(regionId: string | null) {
-  hoveredRetouchRegionId.value = regionId
+  // A generative op's Mask parent hovers by the op's own id.
+  const generative = regionId ? generativeMaskOpFor(regionId, regionId) : null
+  hoveredRetouchRegionId.value = generative ? null : regionId
+  hoveredGenerativeMaskOpId.value = generative ? regionId : null
+  hoveredMaskComponentId.value = null
   void refreshRetouchFeedback()
+}
+
+/** Hovering a component row washes that component's own coverage. */
+function hoverMaskComponent(opId: string, targetId: string, componentId: string | null) {
+  if (generativeMaskOpFor(opId, targetId)) {
+    hoveredRetouchRegionId.value = null
+    hoveredGenerativeMaskOpId.value = componentId ? opId : null
+    hoveredMaskComponentId.value = componentId
+  } else {
+    hoveredGenerativeMaskOpId.value = null
+    hoveredRetouchRegionId.value = componentId ? targetId : null
+    hoveredMaskComponentId.value = componentId
+  }
+  void refreshRetouchFeedback()
+}
+
+/**
+ * The component view of a mask target, upgraded for a structural edit. The
+ * target is a retouch region — or, when `targetId` names the op itself, a
+ * generative op's mask. Legacy single masks convert on first touch; the list
+ * becomes the compositing authority (a generative op's `mask_ref` stays put
+ * as the record of what its candidates were sampled through).
+ */
+function componentEditTargets(opId: string, targetId: string) {
+  const op = stack.opById(opId) as any
+  if (!op) return null
+  if (targetId === opId && generativeOpHasEditableMask(op)) {
+    const components = JSON.parse(
+      JSON.stringify(opMaskComponents(op)),
+    ) as MaskComponent[]
+    if (!components.length) return null
+    return { op, region: null as RetouchRegion | null, components, generative: true }
+  }
+  if (op?.exec?.kind !== 'retouch-regions') return null
+  const region = (op.regions ?? []).find(
+    (candidate: RetouchRegion) => candidate.id === targetId,
+  ) as RetouchRegion | undefined
+  if (!region) return null
+  const components = JSON.parse(
+    JSON.stringify(regionMaskComponents(region)),
+  ) as MaskComponent[]
+  if (!components.length) return null
+  return { op, region, components, generative: false }
+}
+
+function commitRegionComponents(
+  op: any,
+  region: RetouchRegion | null,
+  components: MaskComponent[],
+) {
+  if (!region) {
+    // A generative op owns its components directly; the whole-list journal
+    // entry keeps the structural edit one undo step.
+    const doc = stack.doc.value
+    if (!doc) return
+    stack.replaceEdits(doc.edits.map((edit: any) =>
+      edit.id === op.id ? { ...edit, mask_components: components } : edit,
+    ))
+  } else {
+    const next = regionWithMaskComponents(region, components)
+    stack.setRegions(op.id, op.regions.map((candidate: RetouchRegion) =>
+      candidate.id === region.id ? next : candidate,
+    ))
+  }
+  void refreshRetouchFeedback()
+  void render().then(refreshRetouchInput)
+}
+
+function setMaskComponentEnabled(
+  opId: string,
+  regionId: string,
+  componentId: string,
+  enabled: boolean,
+) {
+  const targets = componentEditTargets(opId, regionId)
+  if (!targets) return
+  fragileRetouchRegions.commit(regionId)
+  commitRegionComponents(
+    targets.op,
+    targets.region,
+    targets.components.map(component =>
+      component.id === componentId ? { ...component, enabled } : component,
+    ),
+  )
+}
+
+/**
+ * Any component can go: coverage starts at nothing and every mode means what
+ * it says, so a removal never reinterprets what remains. Removing the LAST
+ * component removes the mask itself — explicitly Whole image, the same act
+ * as trashing the Mask parent.
+ */
+function removeMaskComponent(opId: string, regionId: string, componentId: string) {
+  const targets = componentEditTargets(opId, regionId)
+  if (!targets) return
+  if (!targets.components.some(component => component.id === componentId)) return
+  fragileRetouchRegions.commit(regionId)
+  if (selectedMaskComponentId.value === componentId) {
+    selectedMaskComponentId.value = null
+  }
+  if (hoveredMaskComponentId.value === componentId) {
+    hoveredMaskComponentId.value = null
+  }
+  const remaining = targets.components.filter(
+    component => component.id !== componentId,
+  )
+  if (!remaining.length) {
+    // A scoped adjustment without a mask IS Whole image. A generative op
+    // without one is undefined; its sole component offers no trash.
+    if (!targets.generative) void unscopeRegion(regionId)
+    return
+  }
+  commitRegionComponents(targets.op, targets.region, remaining)
+}
+
+/**
+ * Re-segment a semantic component against the composite its region actually
+ * masks — the pixels below the op — and swap in the fresh cached raster.
+ * The name, the mode, and every other component survive untouched.
+ */
+async function recomputeSemanticComponent(
+  opId: string,
+  regionId: string,
+  componentId: string,
+) {
+  if (recomputingMaskComponentId.value) return
+  const location = retouchRegionLocation(regionId)
+  if (!location || location.op.id !== opId) return
+  const component = (location.region as RetouchRegion).mask_components?.find(
+    candidate => candidate.id === componentId,
+  )
+  const semantic = component?.semantic
+  if (!semantic?.prompt && !semantic?.intent) return
+  recomputingMaskComponentId.value = componentId
+  try {
+    const doc = stack.doc.value!
+    const input = await compositor.renderUpTo(doc, location.index)
+    const sent = aiSelectCanvas(input)
+    const { data } = await axios.post('/api/mask/select', {
+      request_id: globalThis.crypto?.randomUUID?.()
+        ?? `select-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      image_data_url: sent.toDataURL('image/png'),
+      ...(semantic.prompt ? { prompt: semantic.prompt } : {}),
+      ...(semantic.intent ? { intent: semantic.intent } : {}),
+    })
+    if (!data.success || !data.detections?.length) {
+      error.value = data.error || (semantic.prompt
+        ? `No match for “${semantic.prompt}”`
+        : 'Nothing to select')
+      return
+    }
+    const masks = await Promise.all(
+      data.detections.map((d: any) => loadMaskImage(d.mask_data_url)),
+    )
+    const union = document.createElement('canvas')
+    union.width = input.width
+    union.height = input.height
+    const unionCtx = union.getContext('2d')!
+    for (const mask of masks) unionCtx.drawImage(mask, 0, 0, union.width, union.height)
+    const compact = compactSelectionMask(union)
+    if (!compact) return
+    const maskRef = await stack.uploadPayload(
+      `${opId}-${regionId}-mask-${newOpId()}.png`,
+      await canvasToBlob(compact.mask),
+    )
+    payloadCache.set(`${maskRef}@0`, compact.mask)
+
+    // Re-resolve after the awaits; the segmentation ran against the pixels
+    // below the op, so the anchor is the frame AT the op's index.
+    const current = retouchRegionLocation(regionId)
+    if (!current || current.op.id !== opId) return
+    const targets = componentEditTargets(opId, regionId)
+    if (!targets) return
+    commitRegionComponents(
+      targets.op,
+      targets.region,
+      targets.components.map(candidate =>
+        candidate.id === componentId
+          ? {
+              ...candidate,
+              mask_ref: maskRef,
+              payload_origin: compact.origin,
+              payload_to_document: payloadTransform(current.index, compact.origin),
+              payload_frame: payloadFrame(current.index),
+            }
+          : candidate,
+      ),
+    )
+  } catch (e) {
+    error.value = apiErrorMessage(e, 'Could not recompute the selection.')
+  } finally {
+    recomputingMaskComponentId.value = null
+  }
 }
 
 let allRetouchFeedbackRevision = 0
@@ -4861,7 +6055,11 @@ async function hoverRetouchOp(opId: string, hovering: boolean) {
   const revision = ++allRetouchFeedbackRevision
   const op = stack.opById(opId) as any
   if (op?.class === 'patch') {
-    const mask = await modelFeedbackMask(opId)
+    // A composite mask hovers as its composed result; the legacy single
+    // submission mask keeps its original path.
+    const mask = op.mask_components?.length
+      ? await generativeMaskFeedback(opId)
+      : await modelFeedbackMask(opId)
     if (revision !== allRetouchFeedbackRevision || hoveredRetouchOpId.value !== opId) return
     allRetouchFeedback.value = mask ? [{ mask, isPatch: false }] : []
     return
@@ -5025,12 +6223,9 @@ function setRetouchRegionSettings(
   // top-level Adjust step: the person's interaction, not value comparison,
   // is the durable boundary.
   fragileRetouchRegions.commit(location.region.id)
-  // The same boundary ends the step's mask-editing session. While the step
-  // is fresh, selection gestures refine ITS mask (rough-select, then tighten);
-  // once a slider has moved, the adjustment is committed and the next
-  // selection is a new selection — not a silent re-aim of this step.
-  // "Edit mask" in Properties re-arms deliberately.
-  if (maskedAdjustRegionId === location.region.id) disarmMaskedAdjustmentEditing()
+  // A slider move commits the step but does NOT end its mask-editing session:
+  // while the region stays selected, gestures keep landing as components of
+  // its mask. Deselecting is what hands the gestures back.
   const before = { ...location.region.settings }
   // Once a property moves, the person is judging the photograph rather than
   // constructing the region. Keep the mask intact but get its wash and ants
@@ -5057,7 +6252,11 @@ function setRetouchRegionSettings(
       before,
       updated,
       {
-        mask: selectedRetouchMask.value ?? retouchFeedbackMask(location.region.id),
+        // The delta previews the ADJUSTMENT, which renders through the whole
+        // effective mask — a selected component's own coverage is a different
+        // preview and must not stand in for it.
+        mask: (!selectedMaskComponentId.value ? selectedRetouchMask.value : null)
+          ?? retouchFeedbackMask(location.region.id),
         maskStrength: updated.opacity ?? 1,
       },
     )
@@ -5084,6 +6283,7 @@ function removeRetouchRegion(opId: string, regionId: string) {
   // Removing a row can remove the DOM under the pointer, so mouseleave is not
   // guaranteed. End every hover path before mutating the stack.
   hoveredRetouchRegionId.value = null
+  hoveredMaskComponentId.value = null
   hoveredRetouchMask.value = null
   hoveredRetouchOpId.value = null
   allRetouchFeedback.value = []
@@ -5121,17 +6321,101 @@ watch(
     let changed = false
     if (selectedRetouchRegionId.value && !live.has(selectedRetouchRegionId.value)) {
       selectedRetouchRegionId.value = null
+      selectedMaskComponentId.value = null
       selectedRetouchFeedbackVisible.value = false
       changed = true
     }
     if (hoveredRetouchRegionId.value && !live.has(hoveredRetouchRegionId.value)) {
       hoveredRetouchRegionId.value = null
+      hoveredMaskComponentId.value = null
       changed = true
     }
     if (maskedAdjustRegionId && !live.has(maskedAdjustRegionId)) {
       disarmMaskedAdjustmentEditing()
     }
     if (changed) void refreshRetouchFeedback()
+  },
+)
+
+/**
+ * Component selection is referential too: undo, a capture that rebuilt the
+ * list, or a row removal must drop a selected component id that no longer
+ * names anything. The legacy synthesized base id stays addressable.
+ */
+watch(
+  () => {
+    if (selectedGenerativeMaskOpId.value) {
+      const op = stack.opById(selectedGenerativeMaskOpId.value) as any
+      return generativeOpHasEditableMask(op)
+        ? opMaskComponents(op).map(component => component.id)
+        : []
+    }
+    const region = retouchRegionLocation(selectedRetouchRegionId.value)?.region
+    return region
+      ? regionMaskComponents(region as RetouchRegion).map(component => component.id)
+      : []
+  },
+  componentIds => {
+    const id = selectedMaskComponentId.value
+    if (id && !componentIds.includes(id)) {
+      selectedMaskComponentId.value = null
+      void refreshRetouchFeedback()
+    }
+    const hovered = hoveredMaskComponentId.value
+    if (hovered && hoveredRetouchRegionId.value === selectedRetouchRegionId.value
+      && !componentIds.includes(hovered)) {
+      hoveredMaskComponentId.value = null
+      void refreshRetouchFeedback()
+    }
+  },
+)
+
+/**
+ * While bound, the ants track the recipe: component toggles, deletions,
+ * gradient drags, captures, undo — whatever changes the session target's
+ * mask re-projects into the selection. The signature only moves on real
+ * recipe changes, so ordinary renders never reload the ants.
+ */
+watch(
+  () => {
+    if (!maskSessionBound.value) return null
+    if (selectedGenerativeMaskOpId.value) {
+      const op = stack.opById(selectedGenerativeMaskOpId.value) as any
+      return op
+        ? JSON.stringify([op.id, op.mask_components ?? op.mask_ref ?? null])
+        : null
+    }
+    const region = retouchRegionLocation(selectedRetouchRegionId.value)?.region as
+      RetouchRegion | undefined
+    return region
+      ? JSON.stringify([
+          region.id,
+          region.mask_components ?? [region.mask ?? null, region.mask_ref ?? null],
+        ])
+      : null
+  },
+  (signature, previous) => {
+    if (!signature || !previous || signature === previous) return
+    void bindMaskSessionSelection()
+  },
+)
+
+/**
+ * A generative mask selection is referential too: undo or removal that drops
+ * the op (or its editable mask) releases the session in the same tick.
+ */
+watch(
+  () => {
+    const id = selectedGenerativeMaskOpId.value
+    if (!id) return true
+    return generativeOpHasEditableMask(stack.opById(id))
+  },
+  valid => {
+    if (!valid) {
+      clearGenerativeMaskSelection()
+      selectedMaskComponentId.value = null
+      void refreshRetouchFeedback()
+    }
   },
 )
 
@@ -5339,7 +6623,14 @@ async function onStackKeydown(event: KeyboardEvent) {
  * nothing was a dead end.
  */
 function onRowSelect(op: any) {
-  if (maskedAdjustOpId && maskedAdjustOpId !== op.id) disarmMaskedAdjustmentEditing()
+  if (maskedAdjustOpId && maskedAdjustOpId !== op.id) {
+    releaseBoundSelection()
+    disarmMaskedAdjustmentEditing()
+  }
+  if (maskedGenerativeOpId && maskedGenerativeOpId !== op.id) {
+    releaseBoundSelection()
+    clearGenerativeMaskSelection()
+  }
   looksOpen.value = false
   selectedOpId.value = op.id
   // A parent-row click selects the parent, not whichever child happened to be
@@ -5347,19 +6638,37 @@ function onRowSelect(op: any) {
   if (selectedRetouchRegionId.value || hoveredRetouchRegionId.value) {
     selectedRetouchRegionId.value = null
     hoveredRetouchRegionId.value = null
+    selectedMaskComponentId.value = null
+    hoveredMaskComponentId.value = null
     selectedRetouchFeedbackVisible.value = false
     void refreshRetouchFeedback()
   }
   // A scoped Adjust step is one region wearing a row: clicking it should open
-  // its controls, not an empty parent surface.
+  // its controls, not an empty parent surface — and while it is selected, the
+  // selection gestures belong to ITS mask.
   if (
     op.exec?.kind === 'retouch-regions'
     && (op.regions ?? []).length === 1
     && isMaskedAdjustmentKind(op.regions[0].kind)
   ) {
     selectedRetouchRegionId.value = op.regions[0].id
-    selectedRetouchFeedbackVisible.value = true
+    selectedRetouchFeedbackVisible.value = false
+    armMaskEditingForSelection(op.regions[0].id)
+    if (!maskSessionBound.value) void bindMaskSessionSelection()
     void refreshRetouchFeedback()
+  }
+  // Selecting a generative row with an editable mask arms ITS mask session:
+  // the composed mask binds as the live selection, gestures become
+  // components, and Regenerate settles any debt.
+  if (generativeOpHasEditableMask(op)) {
+    selectedGenerativeMaskOpId.value = op.id
+    maskedGenerativeOpId = op.id
+    selectedRetouchFeedbackVisible.value = false
+    if (!maskSessionBound.value) void bindMaskSessionSelection()
+    void refreshRetouchFeedback()
+  } else if (maskedGenerativeOpId === op.id) {
+    releaseBoundSelection()
+    clearGenerativeMaskSelection()
   }
   selectedShapeId.value = op.exec?.kind === 'annotate'
     ? (op.params?.shapes ?? [])[0]?.id ?? null
@@ -5439,6 +6748,11 @@ function disarmSelect() {
   armedSelectTool.value = null
 }
 
+// The preview only means anything while a selection tool can gesture.
+watch(armedSelectTool, armed => {
+  if (!armed) heldCombineOverride.value = null
+})
+
 /** Island-only settings: tuning the armed tool must never disarm it. */
 function onSelectionSet(patch: Record<string, any>) {
   if ('combine' in patch) selectCombine.value = patch.combine
@@ -5486,6 +6800,11 @@ function clearSelection() {
   selectionIsGradient.value = false
   workspaceGradient.value = null
   workspaceGradientKey.value = null
+  workspaceSemantic.value = null
+  workspaceSemanticKey.value = null
+  workspaceMaskRecipe = null
+  workspaceMaskRecipeKey = null
+  pendingGestureCapture = null
   // Combine modes describe how a gesture meets an existing selection. Once
   // there is no existing selection, the next gesture starts a new one.
   selectCombine.value = combineAfterSelectionChange(
@@ -5589,7 +6908,23 @@ function applyAiMask(mask: CanvasImageSource, mode: SelectionMode) {
     selectRef.value?.applyMask(mask, mode)
   } finally {
     applyingAiMask = false
+    // Publish is synchronous, so a landing not consumed by now would only
+    // mislabel some LATER gesture as semantic.
+    aiGestureLanding = null
   }
+}
+
+/** An AI mask comes back at the SENT (possibly downscaled) size; the recipe
+ *  keeps coverage in source pixels like every other gesture. */
+function coverageAtSourceSize(
+  mask: CanvasImageSource,
+  src: HTMLCanvasElement,
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas')
+  canvas.width = src.width
+  canvas.height = src.height
+  canvas.getContext('2d')!.drawImage(mask as any, 0, 0, canvas.width, canvas.height)
+  return canvas
 }
 
 /**
@@ -5684,16 +7019,35 @@ async function runAiSelect(
         mode,
         before: selModel.toSnapshot(),
       }
+      aiGestureLanding = {
+        semantic: null,
+        replaces: mode === 'new' || !selModel.hasSelection(),
+        coverage: coverageAtSourceSize(masks[0], src),
+        mode,
+      }
       applyAiMask(masks[0], mode)
       return
     }
     // A named concept is the union of every instance. BEN2 intents return one
-    // mask and take the same path, preserving its continuous alpha.
+    // mask and take the same path.
     const union = document.createElement('canvas')
     union.width = sent.width
     union.height = sent.height
     const unionCtx = union.getContext('2d')!
     for (const mask of masks) unionCtx.drawImage(mask, 0, 0, union.width, union.height)
+    // A named selection keeps its name — the landing change handler records
+    // it with the gesture's own coverage, so it stays an editable, later
+    // recomputable ingredient whatever it gets combined with.
+    aiGestureLanding = {
+      semantic: request.prompt
+        ? { prompt: request.prompt }
+        : request.intent
+          ? { intent: request.intent }
+          : null,
+      replaces: mode === 'new' || !selModel.hasSelection(),
+      coverage: coverageAtSourceSize(union, src),
+      mode,
+    }
     applyAiMask(union, mode)
   } catch (e: any) {
     // A cancel is an answer, not a failure: the panel returns to rest with no
@@ -5725,7 +7079,7 @@ function objectCycleRadius(src: HTMLCanvasElement): number {
 /** The Object tool's click uses the same explicit combine control as every
  *  other selection tool. Shift remains the geometry constraint for rectangle
  *  and ellipse rather than meaning something different only for Object. */
-function onObjectPick(pick: { x: number; y: number }) {
+function onObjectPick(pick: { x: number; y: number; combine?: SelectionMode }) {
   const src = composite.value
   if (!src) return
   const cycle = objectPickState
@@ -5736,12 +7090,20 @@ function onObjectPick(pick: { x: number; y: number }) {
     cycle.index = (cycle.index + 1) % cycle.masks.length
     if (cycle.before) selModel.loadFromSnapshot(cycle.before)
     else selModel.clearSelection()
+    aiGestureLanding = {
+      semantic: null,
+      replaces: cycle.mode === 'new' || !selModel.hasSelection(),
+      coverage: coverageAtSourceSize(cycle.masks[cycle.index], src),
+      mode: cycle.mode,
+      // The re-land supersedes the previous granularity's recipe entry.
+      cycling: true,
+    }
     applyAiMask(cycle.masks[cycle.index], cycle.mode)
     return
   }
   void runAiSelect(
     { point: { x: pick.x / src.width, y: pick.y / src.height } },
-    selectCombine.value,
+    pick.combine ?? selectCombine.value,
   )
 }
 
@@ -5771,6 +7133,9 @@ function frameAdjust(
 function onSelectionChange(mask: HTMLCanvasElement | null) {
   selectionRevision += 1
   repaintSession = null
+  // Whether a selection existed BEFORE this change — the recipe needs to know
+  // if the landing gesture replaced emptiness or combined onto coverage.
+  const hadSelection = !!selection.value
   // Any change the Object tool didn't publish itself (a drawn gesture, clear,
   // invert) makes its granularity stack stale — cycling would resurrect the
   // pre-click selection over the user's newer edits.
@@ -5784,12 +7149,141 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
   ) {
     armedSelectTool.value = null
   }
+  // Consume the one-shot gesture identity FIRST, whatever the flattened
+  // result was: an intersect or subtract gesture over an empty workspace
+  // publishes null, and the gesture must not vanish with it.
+  const landedAsGradient = gradientGestureLanding
+  gradientGestureLanding = false
+  const landedAsAi = aiGestureLanding
+  aiGestureLanding = null
+  const drawnGesture = pendingGestureCapture
+  pendingGestureCapture = null
+  const gestureMode = landedAsAi?.mode
+    ?? drawnGesture?.combine
+    ?? (landedAsGradient ? lastGestureGradientCombine : null)
+    ?? selectCombine.value
+  const gestureInput: {
+    mask?: HTMLCanvasElement
+    gradient?: GradientMask
+    semantic?: AdjustmentScopeSemantic
+    label?: string
+    replacesPrevious?: boolean
+  } | null = landedAsGradient && lastGestureGradient
+    ? { gradient: { ...lastGestureGradient } }
+    : landedAsAi?.coverage
+      ? {
+          mask: landedAsAi.coverage,
+          semantic: landedAsAi.semantic ?? undefined,
+          label: landedAsAi.semantic ? undefined : GESTURE_TOOL_LABELS.object,
+          replacesPrevious: landedAsAi.cycling,
+        }
+      : drawnGesture
+        ? {
+            mask: drawnGesture.coverage,
+            label: GESTURE_TOOL_LABELS[drawnGesture.tool],
+          }
+        : null
+
+  // A programmatic re-load of the BOUND selection (the session step's
+  // composed mask arriving as ants): bookkeeping only — it must not capture
+  // itself back into the mask or pretend to be a recipe.
+  if (syncingBoundSelection && mask) {
+    selectCombine.value = combineAfterSelectionChange(selectCombine.value, true)
+    selectionMaster = selModel.toSnapshot()
+    const boundHead = payloadFrame()
+    const boundAdjust = boundHead && composite.value
+      ? frameAdjust(
+          boundHead.width, boundHead.height,
+          composite.value.width, composite.value.height,
+        )
+      : null
+    const boundCompositeFromDocument = boundHead && boundAdjust
+      ? multiply(boundAdjust as Affine, boundHead.matrix as Affine)
+      : null
+    selectionToDocument = boundCompositeFromDocument
+      ? invertMatrix(boundCompositeFromDocument)
+      : null
+    selectionAppliedKey = composite.value
+      ? appliedKeyFor(boundHead, composite.value.width, composite.value.height)
+      : null
+    selectionIsGradient.value = false
+    workspaceGradient.value = null
+    workspaceGradientKey.value = null
+    workspaceSemantic.value = null
+    workspaceSemanticKey.value = null
+    workspaceMaskRecipe = null
+    workspaceMaskRecipeKey = null
+    return
+  }
+
+  const wasBound = maskSessionBound.value
+
+  // Which mask a gesture edits is what the workspace answers. BOUND: the
+  // selection IS the session step's mask, so every combining gesture lands as
+  // a component (the ants already show the model's own combination; the
+  // composed result resyncs after the commit) — and `New` is the walk-away,
+  // becoming an ordinary fresh selection. UNBOUND: a live selection takes the
+  // gesture; an empty workspace hands combines to the armed step; `New` never
+  // captures (base Replace arms explicitly from the inspector).
+  const replaceArmed = maskBaseReplaceArmed
+  if (gestureInput) maskBaseReplaceArmed = false
+  const sessionArmed = !suppressMaskedAdjustmentSync
+    && ((maskedAdjustRegionId && maskedAdjustOpId) || !!maskedGenerativeOpId)
+  const captures = !!gestureInput && sessionArmed && (
+    wasBound
+      ? gestureMode !== 'new' || replaceArmed
+      : !hadSelection && (gestureMode !== 'new' || replaceArmed)
+  )
+  if (captures && gestureInput) {
+    const capture: MaskComponentCapture = {
+      mode: gestureMode,
+      gradient: gestureInput.gradient ?? null,
+      semantic: gestureInput.semantic ?? null,
+      label: !gestureInput.gradient && !gestureInput.semantic
+        ? gestureInput.label ?? null
+        : null,
+    }
+    if (maskedGenerativeOpId) {
+      queueGenerativeMaskCapture(gestureInput.mask ?? null, capture)
+    } else {
+      queueMaskComponentCapture(gestureInput.mask ?? null, capture)
+    }
+    if (wasBound) {
+      // Stay bound and keep the tool: the ants already approximate the new
+      // composition, the exact resync follows the commit, and the next
+      // stroke continues the same mask.
+      return
+    }
+    // Unbound legacy capture: the workspace copy is consumed, and the
+    // re-entrant clear resets the bookkeeping this early return skips.
+    consumeWorkspaceSelection()
+    armedSelectTool.value = null
+    return
+  }
+  if (wasBound && mask) {
+    // A gesture the bound mask does not take — `New`. The session ends and
+    // this selection is an ordinary fresh one; the step's mask stays as the
+    // components say.
+    maskSessionBound.value = false
+    disarmMaskedAdjustmentEditing()
+    clearGenerativeMaskSelection()
+    selectedRetouchRegionId.value = null
+    selectedMaskComponentId.value = null
+    selectedRetouchFeedbackVisible.value = false
+    void refreshRetouchFeedback()
+  }
+
   if (!mask) {
+    if (wasBound) endBoundMaskSession()
     selectionMaster = null
     selectionToDocument = null
     selectionAppliedKey = null
     workspaceGradient.value = null
     workspaceGradientKey.value = null
+    workspaceSemantic.value = null
+    workspaceSemanticKey.value = null
+    workspaceMaskRecipe = null
+    workspaceMaskRecipeKey = null
     selectionIsGradient.value = false
     selectCombine.value = combineAfterSelectionChange(
       selectCombine.value, false, armedSelectTool.value,
@@ -5819,8 +7313,6 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
   // with; any other gesture makes the selection drawn pixels. The key pins
   // the frame the ramp was drawn in — geometry changes underneath invalidate
   // it, and the raster (which sync DOES carry) becomes the honest scope.
-  const landedAsGradient = gradientGestureLanding
-  gradientGestureLanding = false
   selectionIsGradient.value = landedAsGradient
   if (landedAsGradient) {
     workspaceGradientKey.value = selectionAppliedKey
@@ -5828,18 +7320,60 @@ function onSelectionChange(mask: HTMLCanvasElement | null) {
     workspaceGradient.value = null
     workspaceGradientKey.value = null
   }
-  if (!suppressMaskedAdjustmentSync && !landedAsGradient && maskedAdjustRegionId) {
-    // A scoped Adjust step is armed for mask edits: every completed gesture
-    // republishes its whole mask. The combine control is explicit — a later
-    // gesture replaces, adds, subtracts or intersects exactly as the island
-    // currently says.
-    queueMaskedAdjustmentMask(mask)
-    // Hand the pointer back after the gesture, but keep the ants visible. This
-    // is especially important for asynchronous AI selection: hiding feedback
-    // here made the successful mask appear only after another selection tool
-    // was armed.
-    armedSelectTool.value = null
+  // Semantic identity follows the gradient's discipline: it survives only
+  // while the selection IS the one recomputable AI gesture. Any drawn
+  // gesture, or an AI mask combined onto existing coverage, flattens it.
+  if (landedAsAi?.semantic && landedAsAi.replaces) {
+    workspaceSemantic.value = { ...landedAsAi.semantic }
+    workspaceSemanticKey.value = selectionAppliedKey
+  } else {
+    workspaceSemantic.value = null
+    workspaceSemanticKey.value = null
   }
+
+  // The recipe: this change as ONE gesture with its own coverage and
+  // identity. A change nothing captured (invert, morph, a snapshot rewrite)
+  // has no gesture to record, and the recipe honestly resigns.
+  if (gestureInput) {
+    workspaceMaskRecipe = appendWorkspaceMaskGesture(
+      workspaceMaskRecipe,
+      { combine: gestureMode, hadSelection, ...gestureInput },
+      mergeCoverageMax,
+    )
+    workspaceMaskRecipeKey = workspaceMaskRecipe ? selectionAppliedKey : null
+  } else {
+    workspaceMaskRecipe = null
+    workspaceMaskRecipeKey = null
+  }
+}
+
+/** Union of two coverage canvases by per-pixel max — the brush's own rule. */
+function mergeCoverageMax(
+  a: HTMLCanvasElement,
+  b: HTMLCanvasElement,
+): HTMLCanvasElement {
+  const out = document.createElement('canvas')
+  out.width = a.width
+  out.height = a.height
+  const ctx = out.getContext('2d', { willReadFrequently: true })!
+  ctx.drawImage(a, 0, 0)
+  const merged = ctx.getImageData(0, 0, out.width, out.height)
+  const scratch = document.createElement('canvas')
+  scratch.width = a.width
+  scratch.height = a.height
+  const scratchCtx = scratch.getContext('2d', { willReadFrequently: true })!
+  scratchCtx.drawImage(b, 0, 0, scratch.width, scratch.height)
+  const other = scratchCtx.getImageData(0, 0, scratch.width, scratch.height)
+  for (let i = 3; i < merged.data.length; i += 4) {
+    if (other.data[i] > merged.data[i]) {
+      merged.data[i] = other.data[i]
+      merged.data[i - 3] = 255
+      merged.data[i - 2] = 255
+      merged.data[i - 1] = 255
+    }
+  }
+  ctx.putImageData(merged, 0, 0)
+  return out
 }
 
 function appliedKeyFor(
@@ -5895,6 +7429,18 @@ function syncSelectionGeometry() {
     selectionIsGradient.value = false
     workspaceGradient.value = null
     workspaceGradientKey.value = null
+  }
+  // Semantic identity is pinned to the frame the gesture segmented; the
+  // transformed raster remains the honest selection after a frame change.
+  if (workspaceSemanticKey.value && workspaceSemanticKey.value !== key) {
+    workspaceSemantic.value = null
+    workspaceSemanticKey.value = null
+  }
+  // Recipe coverages were captured in the old frame too; the carried raster
+  // is the honest selection now.
+  if (workspaceMaskRecipeKey && workspaceMaskRecipeKey !== key) {
+    workspaceMaskRecipe = null
+    workspaceMaskRecipeKey = null
   }
 
   const adjustNow = frameAdjust(head.width, head.height, frameW, frameH)
@@ -5967,9 +7513,122 @@ async function toggleCompare() {
 const defaultUpscaleToolId = ref<string | null>(null)
 const outputPickerOpen = ref(false)
 
-/** Which sidebar panel is showing. The Edits list is the stack and only the
- *  stack; the output stage is a place beside it, not an entry in it. */
-const sidebarTab = ref<'edits' | 'output'>('edits')
+/** Which sidebar panel is showing. Edits owns the stack, Output owns the
+ * terminal stage, and Info reuses the library's media-information body. */
+const sidebarTab = ref<'edits' | 'output' | 'info'>('edits')
+
+async function loadEditorMediaInfo() {
+  const token = ++infoLoadToken
+  infoLoading.value = true
+  try {
+    // This is deliberately the Asset's projected HEAD, not the editor's base
+    // payload. An existing editor autosave is a head revision with its own
+    // Image Editor lineage step and marker state.
+    const item = await getAssetBrowserItem(Number(props.assetId))
+    if (token !== infoLoadToken) return
+    const mediaId = Number(item.media_id)
+    infoItem.value = {
+      ...item,
+      id: mediaId,
+      media_id: mediaId,
+    }
+
+    const [projects, boards, faceResult, lineage, chat] = await Promise.all([
+      getAssetProjects(Number(props.assetId)).catch(() => []),
+      getAssetBoards(Number(props.assetId)).catch(() => []),
+      getMediaFaces(mediaId).catch(() => ({ faces: [] })),
+      axios.get(`/api/media/${mediaId}/lineage?include_descendants=true`)
+        .then(response => response.data)
+        .catch(() => ({ derivatives: [], descendants: [] })),
+      item.chat_item_id
+        ? axios.get(`/api/chats/by-item/${item.chat_item_id}`)
+            .then(response => response.data)
+            .catch(() => null)
+        : Promise.resolve(null),
+    ])
+    if (token !== infoLoadToken) return
+
+    const descendants = [
+      ...(lineage?.derivatives ?? []),
+      ...(lineage?.descendants ?? []),
+    ]
+      .filter(entry => entry?.media?.id)
+      .map(entry => ({
+        ...entry.media,
+        _relationship_type: entry.relationship_type ?? 'derived',
+      }))
+    const uniqueDescendants = [...new Map(
+      descendants.map(descendant => [descendant.id, descendant]),
+    ).values()]
+
+    infoProjects.value = projects
+    infoBoards.value = boards
+    infoFaces.value = faceResult?.faces ?? []
+    infoDescendants.value = uniqueDescendants.filter(
+      descendant => descendant._relationship_type !== 'inspired',
+    )
+    infoInspiredDescendants.value = uniqueDescendants.filter(
+      descendant => descendant._relationship_type === 'inspired',
+    )
+    infoChat.value = chat
+  } catch (infoError) {
+    if (token === infoLoadToken) {
+      console.warn('[imageEditor] could not load media info', infoError)
+      // The editor document still carries enough authoritative information for
+      // the technical facts section, even if the richer media request failed.
+      infoItem.value = {
+        ...baseInfo.value,
+        id: Number(baseInfo.value?.media_id),
+        media_id: Number(baseInfo.value?.media_id),
+        asset_id: Number(props.assetId),
+      }
+    }
+  } finally {
+    if (token === infoLoadToken) infoLoading.value = false
+  }
+}
+
+watch(sidebarTab, tab => {
+  if (tab === 'info') void loadEditorMediaInfo()
+})
+
+async function toggleInfoMarker(markerId: number) {
+  const active = (infoItem.value?.markers ?? []).some((marker: any) => marker.id === markerId)
+  try {
+    if (active) await removeAssetMarker(Number(props.assetId), markerId)
+    else await addAssetMarker(Number(props.assetId), markerId)
+    await loadEditorMediaInfo()
+    infoMarkerUpdateTrigger.value += 1
+  } catch (markerError) {
+    console.error('[imageEditor] could not update marker', markerError)
+  }
+}
+
+function updateInfoTags(_mediaId: number, tags: any[]) {
+  if (infoItem.value) infoItem.value = { ...infoItem.value, tags }
+}
+
+function navigateInfoProject(projectId: number) {
+  void router.push({ name: 'project-overview', params: { id: projectId } })
+}
+
+function navigateInfoBoard(boardId: number) {
+  void router.push({ name: 'board-detail', params: { id: boardId } })
+}
+
+function navigateInfoMedia(mediaId: number) {
+  void openImageEditor(router, mediaId)
+}
+
+function navigateInfoLineage() {
+  if (infoItem.value?.id) {
+    void router.push({ name: 'lineage', params: { mediaId: infoItem.value.id } })
+  }
+}
+
+function navigateInfoChat(chatId: number) {
+  void router.push(`/chat/${chatId}`)
+}
 
 const outputStage = computed(() => {
   const stored = outputOf(stack.doc.value?.output)
@@ -6109,6 +7768,7 @@ async function save(asNew = false) {
     })
     savedRevisionId.value = data.revision_id
     stack.markCommitted(data.asset_id, data.revision_id)
+    if (sidebarTab.value === 'info') void loadEditorMediaInfo()
     savedCursor.value = stack.cursor.value
     // The version commit already succeeded. Persist its working-state boundary
     // separately so a reload cannot turn that state back into "unsaved."
@@ -6221,6 +7881,7 @@ async function autosaveEdits(force = false) {
     })
     savedRevisionId.value = data.revision_id
     stack.markCommitted(data.asset_id, data.revision_id, true)
+    if (sidebarTab.value === 'info') void loadEditorMediaInfo()
     void stack.flush().catch(() => {})
   } catch (err) {
     // Declined (the Asset moved on) or failed: the recipe is persisted and
@@ -6343,6 +8004,7 @@ async function flattenIfNeeded() {
 
 function onKeydown(event: KeyboardEvent) {
   const target = event.target as HTMLElement
+  updateHeldCombine(event)
   // Canvas text editing has no focusable element to hide behind, so the
   // single-key tool shortcuts would eat the typing: 'e' and 'l' switched to
   // Effects and Adjust mid-word and unmounted the editor being typed into.
@@ -6362,7 +8024,15 @@ function onKeydown(event: KeyboardEvent) {
     if (action === 'clear-selection') {
       clearSelection()
     } else if (action === 'dismiss-retouch-feedback') {
+      // Escape steps OUT of the region: feedback off, selection released,
+      // and the mask-editing session with it — the next gesture belongs to
+      // the workspace again.
       selectedRetouchFeedbackVisible.value = false
+      selectedRetouchRegionId.value = null
+      selectedMaskComponentId.value = null
+      disarmMaskedAdjustmentEditing()
+      clearGenerativeMaskSelection()
+      void refreshRetouchFeedback()
     } else if (action === 'leave-family') {
       leaveMode()
     } else if (action === 'clear-shape') {
@@ -6430,9 +8100,22 @@ function onKeydown(event: KeyboardEvent) {
 
 function onKeyup(event: KeyboardEvent) {
   if (event.code === 'Space') spacePanHeld.value = false
+  updateHeldCombine(event)
+}
+
+/**
+ * The island previews what the held modifiers would do to the next gesture.
+ * Display only: each gesture samples its own pointer event's modifiers, so
+ * this can never disagree with what a press actually does.
+ */
+function updateHeldCombine(event: KeyboardEvent) {
+  heldCombineOverride.value = armedSelectTool.value
+    ? combineFromModifiers(event.shiftKey, event.altKey)
+    : null
 }
 
 function clearViewportGestureState() {
+  heldCombineOverride.value = null
   // An abandoned gesture still owns the stage's transform; without the commit
   // the next unrelated render would snap it back to the pre-drag pan.
   const wasPanning = viewPanning.value || middleMousePointerId !== null
@@ -6629,6 +8312,7 @@ onMounted(async () => {
 // shortcuts would keep firing on whatever screen you moved to.
 onActivated(() => {
   editorActive.value = true
+  if (sidebarTab.value === 'info') void loadEditorMediaInfo()
   if (editorReady) candidates.start()
   attachToolCatalogListener()
   window.addEventListener('keydown', onKeydown)
@@ -6926,6 +8610,7 @@ watch(
           :tool-label="activeToolLabel"
           :busy="busy"
           :can-run="canRun"
+          :run-label="iterationOp ? 'Re-run' : null"
           @sub="selectSub"
           @set="onSubbarSet"
           @commit="onSubbarCommit"
@@ -7130,6 +8815,7 @@ watch(
             :gradient-previewing="gradientAdjustmentPreview"
             :gradient-softness="selectGradientSoftness"
             :gradient-feather="selectGradientFeather"
+            @gesture-capture="pendingGestureCapture = $event"
             @change="onSelectionChange"
             @object-pick="onObjectPick"
             @gradient="onGradientChange"
@@ -7175,6 +8861,7 @@ watch(
           :pointer-active="objectSelectActive"
           :has-selection="!!selection"
           :combine="selectCombine"
+          :combine-override="heldCombineOverride"
           :feather-px="selectFeather"
           :tolerance="selectTolerance"
           :spread="selectSpread"
@@ -7218,34 +8905,37 @@ watch(
         class="shrink-0 border-l border-edge-subtle flex flex-col min-h-0"
         :style="{ width: sidebarWidth + 'px' }"
       >
-        <!-- Two panels, not two lists. Edits is the stack and only the stack;
-             Output is the terminal stage, which is a tool with a picker and a
-             schema and therefore needs a place rather than a row. -->
+        <!-- Three panels, not three lists. Edits is the stack, Output is the
+             terminal stage, and Info is the shared media-information body. -->
         <div
           class="px-3 h-11 flex items-center gap-1 shrink-0 bg-surface-raised/60
                  border-b border-edge-strong"
         >
-          <button
+          <template
             v-for="tab in [
               { id: 'edits', label: 'Edits' },
               { id: 'output', label: 'Output' },
+              { id: 'info', label: 'Info' },
             ]"
             :key="tab.id"
-            type="button"
-            class="px-2 py-1 text-xs font-medium uppercase tracking-wide rounded-md
-                   transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
-            :class="sidebarTab === tab.id
-              ? 'text-content bg-selection/15'
-              : 'text-content-tertiary hover:text-content-secondary'"
-            @click="sidebarTab = tab.id as 'edits' | 'output'"
           >
-            {{ tab.label }}
-            <span
-              v-if="tab.id === 'output' && outputLabel(outputStage)"
-              class="ml-1 text-accent normal-case tracking-normal tabular-nums"
-            >{{ outputLabel(outputStage) }}</span>
-          </button>
-          <div class="flex-1" />
+            <div v-if="tab.id === 'info'" class="flex-1" />
+            <button
+              type="button"
+              class="px-2 py-1 text-xs font-medium uppercase tracking-wide rounded-md
+                     transition-colors focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
+              :class="sidebarTab === tab.id
+                ? 'text-content bg-selection/15'
+                : 'text-content-tertiary hover:text-content-secondary'"
+              @click="sidebarTab = tab.id as 'edits' | 'output' | 'info'"
+            >
+              {{ tab.label }}
+              <span
+                v-if="tab.id === 'output' && outputLabel(outputStage)"
+                class="ml-1 text-accent normal-case tracking-normal tabular-nums"
+              >{{ outputLabel(outputStage) }}</span>
+            </button>
+          </template>
           <Spinner v-if="rendering" size="sm" />
         </div>
 
@@ -7262,11 +8952,44 @@ watch(
           @close-picker="outputPickerOpen = false"
         />
 
+        <div
+          v-else-if="sidebarTab === 'info'"
+          class="flex-1 min-h-0 flex flex-col"
+        >
+          <div v-if="infoLoading && !infoItem" class="flex-1 grid place-items-center">
+            <Spinner size="sm" />
+          </div>
+          <SlideshowInfoPanel
+            v-else
+            content-only
+            :show-edit-action="false"
+            :current-item="infoItem"
+            :available-markers="availableMarkers"
+            :marker-update-trigger="infoMarkerUpdateTrigger"
+            :media-projects="infoProjects"
+            :media-boards="infoBoards"
+            :faces="infoFaces"
+            :descendants="infoDescendants"
+            :inspired-descendants="infoInspiredDescendants"
+            :chat-info="infoChat"
+            :chat-info-loading="infoLoading"
+            @download="infoExportOpen = true"
+            @share-to-cloud="infoShareOpen = true"
+            @toggle-marker="toggleInfoMarker"
+            @tags-updated="updateInfoTags"
+            @navigate-to-project="navigateInfoProject"
+            @navigate-to-board="navigateInfoBoard"
+            @navigate-to-source-media="navigateInfoMedia"
+            @view-lineage="navigateInfoLineage"
+            @jump-to-chat="navigateInfoChat"
+          />
+        </div>
+
         <!-- One dragover on the list, resolved with closest(): per-row
              handlers miss the gaps (the list's padding) and leave a stale line
              behind, and dragenter is unreliable in WKWebView. -->
         <div
-          v-else
+          v-else-if="sidebarTab === 'edits'"
           class="flex-1 overflow-y-auto custom-scrollbar p-1.5"
           @keydown="onStackKeydown"
           @dragover.prevent="onListDragOver"
@@ -7292,6 +9015,11 @@ watch(
               :dragging="dragOpId === row.op.id"
               :preview="stepPreviews[row.op.id]"
               :selected-region-id="selectedRetouchRegionId"
+              :selected-mask-component-id="selectedMaskComponentId"
+              :recomputing-mask-component-id="recomputingMaskComponentId"
+              :generative-mask-selected="selectedGenerativeMaskOpId === row.op.id"
+              :coverage-debt="maskDebtByOp[row.op.id] ?? 0"
+              :coverage-debt-threshold="MASK_DEBT_ADVISORY_THRESHOLD"
               @select="onRowSelect(row.op)"
               @toggle="setEnabledWithGeometry(row.op.id, $event)"
               @pick="stack.pickCandidate(row.op.id, $event); render()"
@@ -7301,6 +9029,11 @@ watch(
               @remove-region="removeRetouchRegion(row.op.id, $event)"
               @select-region="selectRetouchRegion(row.op.id, $event)"
               @hover-region="hoverRetouchRegion($event)"
+              @select-mask-component="(targetId, componentId) => selectMaskComponent(row.op.id, targetId, componentId)"
+              @hover-mask-component="(targetId, componentId) => hoverMaskComponent(row.op.id, targetId, componentId)"
+              @toggle-mask-component="(targetId, componentId, enabled) => setMaskComponentEnabled(row.op.id, targetId, componentId, enabled)"
+              @remove-mask-component="(targetId, componentId) => removeMaskComponent(row.op.id, targetId, componentId)"
+              @remove-mask="unscopeRegion($event)"
               @hover-retouch="hoverRetouchOp(row.op.id, $event)"
               @intent-hover="intentOpId = $event ? row.op.id : null"
               @drag-start="onDragStart(row.op.id, $event)"
@@ -7373,6 +9106,8 @@ watch(
           <div class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
             <RetouchInspector
               :region="selectedRetouchRegion"
+              :selected-component-id="selectedMaskComponentId"
+              :recomputing-component-id="recomputingMaskComponentId"
               :histogram="toneCurveHistogram"
               :picking="pointPicking"
               :clip-shadows="clipShadows"
@@ -7385,6 +9120,10 @@ watch(
               @gradient-commit="commitInspectorGradient"
               @gradient-adjusting="gradientAdjustmentPreview = $event"
               @edit-mask="armScopedMaskEditing"
+              @replace-base="armMaskBaseReplace"
+              @recompute-base="componentId => selectedRetouchRegionId
+                && selectedOpId
+                && recomputeSemanticComponent(selectedOpId, selectedRetouchRegionId, componentId)"
               @unscope="unscopeSelectedRegion"
             />
           </div>
@@ -7652,5 +9391,17 @@ watch(
       @confirm="revertToSaved"
       @cancel="confirmingRevert = false"
     />
+
+    <ExportModal
+      :show="infoExportOpen"
+      :media-ids="infoItem?.id ? [infoItem.id] : []"
+      :media-items="infoItem ? [infoItem] : []"
+      @close="infoExportOpen = false"
+    />
+    <ShareDialog
+      v-model="infoShareOpen"
+      :media-item="infoItem"
+    />
+    <MediaContextMenu />
   </div>
 </template>

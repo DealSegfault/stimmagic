@@ -124,7 +124,7 @@ export const TOOL_FAMILIES: ToolFamily[] = [
       // "Regenerate": the base is a generated image, and this generates the
       // selection again under new instructions — not "Repaint", which read as
       // manual brushwork with a Paint family nearby.
-      { id: 'repaint', label: 'Regenerate', icon: 'sparkles', labeled: true, hint: 'Regenerate — replace the selection with what you describe' },
+      { id: 'repaint', label: 'Repaint', icon: 'sparkles', labeled: true, hint: 'Repaint — replace the selection with what you describe' },
       // Whole-frame like cutout, no selection: outpaint-image tools take the
       // original and grow the canvas themselves from the four edge percents.
       { id: 'expand', label: 'Expand', icon: 'expand', labeled: true, hint: 'Expand — grow the canvas outward' },

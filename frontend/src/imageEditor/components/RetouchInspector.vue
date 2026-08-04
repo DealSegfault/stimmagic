@@ -6,9 +6,10 @@
  * They belong to the region, never the parent Retouch row.
  */
 import { computed, onBeforeUnmount } from 'vue'
-import type { GradientMask, RetouchRegion, RetouchRegionSettings } from '../stack/types'
+import type { GradientMask, MaskComponent, RetouchRegion, RetouchRegionSettings } from '../stack/types'
 import { adjustControl, lookById, photoAdjustmentGroup } from '../stack/adjustSections'
 import { gradientSliderOf, isGradientMask, withGradientSlider } from '../stack/regionMask'
+import { maskComponentLabel, regionMaskComponents } from '../stack/maskComponents'
 import type { ToneCurveHistogram } from '../stack/toneCurve'
 import LookControls from './LookControls.vue'
 import PhotoAdjustmentControls from './PhotoAdjustmentControls.vue'
@@ -17,6 +18,10 @@ import { MAX_FEATHER_PX } from '../stack/featherScale'
 
 const props = defineProps<{
   region: RetouchRegion
+  /** Selected mask component inside this region, when one is. */
+  selectedComponentId?: string | null
+  /** A semantic component being re-segmented right now. */
+  recomputingComponentId?: string | null
   histogram?: ToneCurveHistogram
   /** Point color only: the canvas eyedropper is currently armed. */
   picking?: boolean
@@ -37,19 +42,47 @@ const emit = defineEmits<{
   gradientAdjusting: [boolean]
   /** Route the next selection gestures into this region's mask. */
   editMask: []
+  /** The next gesture replaces the base component, keeping the modifiers. */
+  replaceBase: []
+  /** Re-segment a semantic base against the current pixels below the step. */
+  recomputeBase: [string]
   /** Convert this scoped step to a whole-image one, keeping its values. */
   unscope: []
 }>()
 
-/**
- * A gradient region's shape is editable HERE as well as on the canvas: the
- * handles set where the ramp runs, and this sets how abruptly it gets there.
- * Drawn regions have no equivalent — their shape is the pixels they were
- * painted with — so the section only exists for gradients.
- */
-const gradient = computed<GradientMask | null>(
-  () => isGradientMask(props.region.mask) ? props.region.mask : null
+/** The mask components view of this region — legacy single masks included. */
+const components = computed<MaskComponent[]>(() => regionMaskComponents(props.region))
+const selectedComponent = computed<MaskComponent | null>(() => {
+  const id = props.selectedComponentId
+  if (!id) return null
+  return components.value.find(component => component.id === id) ?? null
+})
+const selectedComponentIsBase = computed(() =>
+  !!selectedComponent.value && components.value[0]?.id === selectedComponent.value.id
 )
+/** The base offers Recompute only when it knows what it was a selection OF. */
+const baseSemantic = computed(() => {
+  const base = components.value[0]
+  return base?.semantic?.prompt
+    || base?.semantic?.intent
+    ? base
+    : null
+})
+
+/**
+ * A gradient's shape is editable HERE as well as on the canvas: the handles
+ * set where the ramp runs, and this sets how abruptly it gets there. Drawn
+ * masks have no equivalent — their shape is the pixels they were painted
+ * with — so the section only exists for gradients: the legacy single-gradient
+ * region, or the selected gradient component of a composite mask.
+ */
+const gradient = computed<GradientMask | null>(() => {
+  if (props.region.mask_components?.length) {
+    const mask = selectedComponent.value?.mask
+    return isGradientMask(mask) ? mask : null
+  }
+  return isGradientMask(props.region.mask) ? props.region.mask : null
+})
 const gradientSlider = computed(
   () => gradient.value ? gradientSliderOf(gradient.value) : null
 )
@@ -159,11 +192,12 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
       />
     </section>
 
-    <!-- Scope: an adjustment region is a scoped Adjust step. Its mask can be
-         re-edited with the selection tools, or dropped to cover the whole
-         image (the values survive; the mask and its blend dials do not). -->
+    <!-- Mask: an adjustment region is a scoped Adjust step with ONE effective
+         mask. It can be refined with the selection tools (each gesture lands
+         as an editable component), or dropped to cover the whole image (the
+         values survive; the mask and its blend dials do not). -->
     <section v-if="isAdjustment" class="mt-5 space-y-1.5">
-      <h3 class="text-xs font-semibold text-content-secondary">Scope</h3>
+      <h3 class="text-xs font-semibold text-content-secondary">Mask</h3>
       <div class="flex items-center gap-2">
         <span class="min-w-0 flex-1 text-xs text-content-tertiary">Selection</span>
         <button
@@ -171,7 +205,7 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
           class="shrink-0 whitespace-nowrap px-2 py-1.5 text-xs rounded-md border border-edge-subtle
                  text-content-secondary hover:text-content hover:bg-overlay-subtle"
           aria-label="Edit selection mask"
-          title="Edit selection mask"
+          title="Edit the mask — each gesture lands as a component, using the combine mode"
           @click="emit('editMask')"
         >
           Edit
@@ -185,6 +219,39 @@ function setPhotoValue(patch: Record<string, any>, coalesceKey: string) {
           @click="emit('unscope')"
         >
           Whole image
+        </button>
+      </div>
+      <!-- The base component's verbs: swap its coverage for a new gesture, or
+           re-segment what it names against the current picture. -->
+      <div
+        v-if="selectedComponentIsBase || baseSemantic"
+        class="flex items-center gap-2"
+      >
+        <span class="min-w-0 flex-1 text-xs text-content-tertiary truncate">
+          {{ maskComponentLabel(components[0]) }}
+        </span>
+        <button
+          type="button"
+          class="shrink-0 whitespace-nowrap px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle"
+          aria-label="Replace the base component"
+          title="Replace the base — the next gesture becomes the new base, modifiers stay"
+          @click="emit('replaceBase')"
+        >
+          Replace
+        </button>
+        <button
+          v-if="baseSemantic"
+          type="button"
+          class="shrink-0 whitespace-nowrap px-2 py-1.5 text-xs rounded-md border border-edge-subtle
+                 text-content-secondary hover:text-content hover:bg-overlay-subtle
+                 disabled:opacity-50"
+          :disabled="recomputingComponentId === baseSemantic.id"
+          aria-label="Recompute the base selection"
+          title="Re-segment this selection against the current picture"
+          @click="emit('recomputeBase', baseSemantic.id)"
+        >
+          {{ recomputingComponentId === baseSemantic.id ? 'Recomputing…' : 'Recompute' }}
         </button>
       </div>
     </section>

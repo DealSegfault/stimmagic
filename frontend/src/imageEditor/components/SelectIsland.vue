@@ -40,6 +40,12 @@ const props = defineProps<{
   lastUsed?: SelectToolId | null
   hasSelection: boolean
   combine: SelectionMode
+  /**
+   * The held-modifier combine preview (Shift add, Option subtract, both
+   * intersect): what the NEXT gesture will use, without touching this
+   * control's persistent mode.
+   */
+  combineOverride?: SelectionMode | null
   featherPx: number
   tolerance: number
   spread: number
@@ -180,9 +186,11 @@ function onGroupButtonClick(id: SelectToolId, event: MouseEvent) {
 }
 
 function onOutsidePointerDown(event: PointerEvent) {
-  if (!openGroup.value) return
   const target = event.target as HTMLElement | null
-  if (!target?.closest(`[data-select-group="${openGroup.value}"]`)) {
+  if (
+    openGroup.value
+    && !target?.closest(`[data-select-group="${openGroup.value}"]`)
+  ) {
     openGroup.value = null
   }
 }
@@ -605,11 +613,14 @@ function buttonClass(active: boolean, enabled = true) {
 
     <span class="w-px h-5 bg-edge-subtle mx-1" />
 
+    <!-- Held modifiers preview the NEXT gesture's mode without moving the
+         persistent control: the overridden option lights up while the sticky
+         choice stays where the person put it. -->
     <Tooltip v-for="option in SELECTION_MODES" :key="option.id" :text="option.label">
       <button
         type="button"
         class="p-1.5 rounded-md transition-colors"
-        :class="buttonClass(combine === option.id, combineEnabled)"
+        :class="buttonClass((combineOverride ?? combine) === option.id, combineEnabled)"
         :aria-label="option.label"
         :aria-pressed="combine === option.id"
         :disabled="!combineEnabled"

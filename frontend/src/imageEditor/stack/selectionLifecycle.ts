@@ -6,6 +6,25 @@ export function emptySelectionCombine(tool: SelectToolId | null): SelectionMode 
 }
 
 /**
+ * The held-modifier combine override, Photoshop's grammar: Shift adds,
+ * Alt/Option subtracts, both intersect. Null means the island's persistent
+ * mode applies.
+ *
+ * Sampled at gesture START only — Shift pressed DURING a marquee drag still
+ * means aspect-constrain, which is how the two Shift meanings coexist. The
+ * override is one-shot: it never rewrites the island's control.
+ */
+export function combineFromModifiers(
+  shift: boolean,
+  alt: boolean,
+): SelectionMode | null {
+  if (shift && alt) return 'intersect'
+  if (alt) return 'subtract'
+  if (shift) return 'add'
+  return null
+}
+
+/**
  * Combine is explicit while a selection exists. Publishing a mask must never
  * rewrite the next gesture from New to Add; once the mask is empty, combine
  * returns to the only meaningful starting state.

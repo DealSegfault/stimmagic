@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   combineAfterSelectionChange,
+  combineFromModifiers,
   editorEscapeAction,
   emptySelectionCombine,
   selectionMatteAction,
@@ -79,4 +80,11 @@ test('an empty-matte click clears a selection before changing tools', () => {
 test('a subsequent empty-matte click can release the armed tool', () => {
   assert.equal(selectionMatteAction(false, true), 'disarm-tool')
   assert.equal(selectionMatteAction(false, false), 'none')
+})
+
+test('held modifiers speak the standard combine grammar', () => {
+  assert.equal(combineFromModifiers(false, false), null)
+  assert.equal(combineFromModifiers(true, false), 'add')
+  assert.equal(combineFromModifiers(false, true), 'subtract')
+  assert.equal(combineFromModifiers(true, true), 'intersect')
 })

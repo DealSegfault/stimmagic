@@ -39,7 +39,12 @@ import {
 } from './opExecutors'
 import { featherAlpha } from './featherAlpha'
 import { gradientMaskCanvas, isGradientMask } from './regionMask'
-import type { GradientMask } from './types'
+import {
+  composeMaskCanvases,
+  luminanceToAlphaCanvas,
+  type MaskComposeLayer,
+} from './maskComponents'
+import type { GradientMask, MaskComponent } from './types'
 import { retouchRegionAlpha } from './retouchRegionAlpha'
 import { cutoutAlpha } from './cutoutAlpha'
 import { maskedRetouchAdjustmentParams } from './adjustSections'
@@ -358,6 +363,31 @@ export function extractPatch(
   return canvas
 }
 
+/**
+ * The share of a mask's coverage the picked sample cannot supply: composed
+ * coverage weighted where the positioned patch has no pixels. Zero for
+ * shrink-only edits — the whole point of live recompositing — and grows as
+ * the mask is pushed past what the model actually painted.
+ */
+export function measureCoverageDebt(
+  prepared: PreparedPatchMask,
+  patch: CanvasImageSource,
+): number {
+  const scratch = makeCanvas(prepared.width, prepared.height)
+  const ctx = scratch.getContext('2d', { willReadFrequently: true })!
+  ctx.drawImage(patch, -prepared.x, -prepared.y)
+  const data = ctx.getImageData(0, 0, prepared.width, prepared.height).data
+  let covered = 0
+  let owed = 0
+  for (let p = 0, i = 3; p < prepared.alpha.length; p++, i += 4) {
+    const want = prepared.alpha[p]
+    if (!want) continue
+    covered += want
+    if (data[i] < 16) owed += want
+  }
+  return covered ? owed / covered : 0
+}
+
 export function canvasToBlob(canvas: HTMLCanvasElement, type = 'image/png'): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(blob => (blob ? resolve(blob) : reject(new Error('canvas encode failed'))), type)
@@ -445,6 +475,12 @@ export class StackCompositor {
   private readonly maxPreparedPatchMaskBytes = 32 * 1024 * 1024
   /** Ops that could not be applied on the last render, for the UI to report. */
   readonly failedOpIds = new Set<string>()
+  /**
+   * Coverage debt per generative op with a composite mask: the share of its
+   * composed coverage the picked sample never painted (0..1). Written when
+   * the op is actually recomputed; a cached stage keeps its last value.
+   */
+  readonly maskDebt = new Map<string, number>()
   private readonly maxCacheBytes: number
   private readonly maxHeadBytes: number
 
@@ -459,6 +495,7 @@ export class StackCompositor {
   clear() {
     this.cache.clear()
     this.cacheBytes = 0
+    this.maskDebt.clear()
     this.heads.clear()
     this.headBytes = 0
     this.bases.clear()
@@ -762,6 +799,11 @@ export class StackCompositor {
    * geometry is rasterised in the authored frame right here, and then travels
    * the identical positioning path, so a ramp co-transforms with a later crop
    * exactly the way a brushed mask does.
+   *
+   * A composite region positions every component through that same path —
+   * each with its OWN authored anchor — and composes them in soft alpha. The
+   * component list is the sole authority when present; the legacy single-mask
+   * fields keep answering for every document written before it existed.
    */
   private async loadRegionMask(
     region: any,
@@ -770,6 +812,22 @@ export class StackCompositor {
     width: number,
     height: number,
   ): Promise<CanvasImageSource | null> {
+    const components = region.mask_components as MaskComponent[] | undefined
+    if (components?.length) {
+      const layers: MaskComposeLayer[] = []
+      for (const component of components) {
+        const enabled = component.enabled !== false
+        layers.push({
+          source: enabled
+            ? await this.loadComponentMask(component, doc, index, width, height)
+            : null,
+          mode: component.mode,
+          enabled,
+        })
+      }
+      if (!layers.some(layer => layer.enabled && layer.source)) return null
+      return composeMaskCanvases(layers, width, height)
+    }
     const mask = region.mask
     if (isGradientMask(mask)) {
       const previewScale = Number((doc as any)._preview_scale ?? 1) || 1
@@ -784,6 +842,47 @@ export class StackCompositor {
     }
     if (!region.mask_ref) return null
     return this.loadRetouchPayload(region.mask_ref, region, doc, index, width, height)
+  }
+
+  /**
+   * One component's positioned coverage. The component carries the same
+   * anchor fields a region does, so it rides the identical positioning path.
+   * An unreadable component contributes nothing rather than blanking the
+   * whole recipe — the same posture one unreadable op takes toward the stack.
+   */
+  private async loadComponentMask(
+    component: MaskComponent,
+    doc: StackDocument,
+    index: number,
+    width: number,
+    height: number,
+  ): Promise<CanvasImageSource | null> {
+    try {
+      const mask = component.mask
+      if (isGradientMask(mask)) {
+        const previewScale = Number((doc as any)._preview_scale ?? 1) || 1
+        const frame = component.payload_frame
+        const authoredWidth = Math.max(1, Math.round(frame?.width ?? width / previewScale))
+        const authoredHeight = Math.max(1, Math.round(frame?.height ?? height / previewScale))
+        const rasterised = this.rasteriseGradient(mask, authoredWidth, authoredHeight)
+        return this.positionRetouchPayload(
+          rasterised, { ...component, payload_origin: [0, 0] }, doc, index, width, height,
+        )
+      }
+      if (!component.mask_ref) return null
+      const positioned = await this.loadRetouchPayload(
+        component.mask_ref, component, doc, index, width, height,
+      )
+      // Generative submission masks keep coverage as opaque luminance;
+      // composition mixes in alpha. Translate after positioning, so the
+      // opaque black outside the shape does not read as full coverage.
+      return component.luminance
+        ? luminanceToAlphaCanvas(positioned, width, height)
+        : positioned
+    } catch (error) {
+      console.warn('[imageStack] mask component could not be loaded', error)
+      return null
+    }
   }
 
   /**
@@ -951,8 +1050,12 @@ export class StackCompositor {
           opacity: anyOp.blend?.opacity ?? 1,
         })
       }
-      // The patch was generated FOR this mask in the same frame, so the two
-      // travel together.
+      // The patch was generated FOR a mask in the same frame, so the two
+      // travel together. A composite mask recipe outranks the stored
+      // submission mask: candidates recomposite LIVE through the composed
+      // coverage — shrinking it needs no resample, and coverage the samples
+      // never painted honestly shows the input beneath.
+      const components = anyOp.mask_components as MaskComponent[] | undefined
       const [patch, mask] = await Promise.all([
         this.loadAnchored(picked.patch_ref, doc, index, width, height, {
           payloadToDocument: picked.payload_to_document,
@@ -960,16 +1063,25 @@ export class StackCompositor {
           payloadFrame: anyOp.payload_frame,
           revision: anyOp._revision ?? 0,
         }),
-        this.loadAnchored(anyOp.mask_ref, doc, index, width, height, {
-          payloadToDocument: anyOp.payload_to_document,
-          payloadFrame: anyOp.payload_frame,
-          revision: anyOp._revision ?? 0,
-        }),
+        components?.length
+          ? this.loadRegionMask({ mask_components: components }, doc, index, width, height)
+          : this.loadAnchored(anyOp.mask_ref, doc, index, width, height, {
+              payloadToDocument: anyOp.payload_to_document,
+              payloadFrame: anyOp.payload_frame,
+              revision: anyOp._revision ?? 0,
+            }),
       ])
+      // A recipe composed to nothing keeps the input untouched — and owes
+      // nothing.
+      if (!mask) {
+        this.maskDebt.delete(op.id)
+        return input
+      }
       const featherPx = anyOp.blend?.feather_px ?? 6
       const geometry = geometryBelow(doc, index)
       const maskCacheKey = JSON.stringify([
         anyOp.mask_ref,
+        components ?? null,
         anyOp._revision ?? 0,
         anyOp.payload_to_document ?? anyOp.payload_frame ?? null,
         geometry.matrix,
@@ -985,6 +1097,16 @@ export class StackCompositor {
         height,
         featherPx,
       )
+      // Coverage debt: the share of the composed mask the picked sample never
+      // painted. Only a composite mask can grow past its samples; the legacy
+      // single mask is exactly what they were generated for.
+      if (components?.length) {
+        this.maskDebt.set(op.id, preparedMask
+          ? measureCoverageDebt(preparedMask, patch)
+          : 0)
+      } else {
+        this.maskDebt.delete(op.id)
+      }
       return compositePatch(input, patch, mask, width, height, {
         // Both payloads are already projected into this stage. Keeping a
         // second origin here was the crop-reorder bug.

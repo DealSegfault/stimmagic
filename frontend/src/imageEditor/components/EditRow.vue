@@ -39,7 +39,14 @@ import { getTaskTypeIconSvg } from '../../utils/taskTypeIcons'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 import { ROW_SQUARE, ROW_COLUMN, ROW_COLUMN_INLINE } from './rowLayout'
 import { photoAdjustmentGroup } from '../stack/adjustSections'
-import type { Op } from '../stack/types'
+import {
+  generativeOpHasEditableMask,
+  maskComponentLabel,
+  maskComponentModeLabel,
+  opMaskComponents,
+  regionMaskComponents,
+} from '../stack/maskComponents'
+import type { MaskComponent, Op, RetouchRegion } from '../stack/types'
 import type { Staleness } from '../stack/stackState'
 import {
   adjacentCandidateIndex,
@@ -79,6 +86,16 @@ const props = defineProps<{
   preview?: string
   /** Selected child in the one hierarchical Retouch row. */
   selectedRegionId?: string | null
+  /** Selected mask component inside the selected adjustment region. */
+  selectedMaskComponentId?: string | null
+  /** A semantic component being re-segmented right now. */
+  recomputingMaskComponentId?: string | null
+  /** This generative op's mask (parent or a component) is the selection. */
+  generativeMaskSelected?: boolean
+  /** Share of this op's composed mask its picked sample never painted. */
+  coverageDebt?: number
+  /** Debt below this is feather noise, not missing pixels. */
+  coverageDebtThreshold?: number
 }>()
 
 const emit = defineEmits<{
@@ -93,6 +110,13 @@ const emit = defineEmits<{
   removeRegion: [string]
   selectRegion: [string]
   hoverRegion: [string | null]
+  /** Mask component rows under a scoped adjustment's Mask sub-item. */
+  selectMaskComponent: [string, string]
+  hoverMaskComponent: [string, string | null]
+  toggleMaskComponent: [string, string, boolean]
+  removeMaskComponent: [string, string]
+  /** Trash on the Mask parent: apply the adjustment to the whole image. */
+  removeMask: [string]
   /** Hovering a Retouch parent previews every child location. */
   hoverRetouch: [boolean]
   /** Hovering a gesture affordance — drives the blast-radius tint. */
@@ -160,6 +184,81 @@ watch(
   },
 )
 
+/**
+ * A scoped adjustment is one region wearing a row, and its ONE effective mask
+ * is a child worth naming: the Mask sub-item lists the editable components
+ * the mask is calculated from. Real Retouch containers (repairs) keep their
+ * flat region list instead — a repair's mask is the repair.
+ */
+const adjustmentMaskRegion = computed<RetouchRegion | null>(() => {
+  if (retouchRegions.value.length !== 1) return null
+  const region = retouchRegions.value[0] as RetouchRegion
+  const isAdjustment = region.kind === 'adjust'
+    || region.kind === 'look'
+    || !!photoAdjustmentGroup(String(region.kind))
+  return isAdjustment ? region : null
+})
+const maskComponents = computed<MaskComponent[]>(() =>
+  adjustmentMaskRegion.value
+    ? regionMaskComponents(adjustmentMaskRegion.value)
+    : [],
+)
+/**
+ * The row's ONE mask target: a scoped adjustment's region, or a generative
+ * op's own editable mask (Remove, Regenerate — never Expand or a cutout).
+ * Only a region's mask is removable into "Whole image"; a maskless
+ * generative edit is undefined, so its Mask parent carries no trash.
+ */
+const maskTarget = computed<{
+  id: string
+  components: MaskComponent[]
+  removable: boolean
+} | null>(() => {
+  if (adjustmentMaskRegion.value && maskComponents.value.length) {
+    return {
+      id: adjustmentMaskRegion.value.id,
+      components: maskComponents.value,
+      removable: true,
+    }
+  }
+  if (generativeOpHasEditableMask(anyOp.value)) {
+    const components = opMaskComponents(anyOp.value)
+    if (components.length) {
+      return { id: props.op.id, components, removable: false }
+    }
+  }
+  return null
+})
+/**
+ * The Mask parent reads selected while the step's mask session is armed with
+ * no individual component picked — the visible "gestures land here" signal.
+ */
+const maskParentActive = computed(() =>
+  !props.selectedMaskComponentId
+  && !!maskTarget.value
+  && (props.generativeMaskSelected
+    || maskTarget.value.id === props.selectedRegionId),
+)
+const maskExpanded = ref(false)
+// Selecting a component from anywhere (a fresh capture included) reveals it.
+watch(
+  () => props.selectedMaskComponentId,
+  id => {
+    if (id && maskTarget.value?.components.some(component => component.id === id)) {
+      maskExpanded.value = true
+    }
+  },
+)
+// A mask that has grown real structure is worth showing when its row opens.
+watch(
+  () => props.selected,
+  selected => {
+    if (selected && (maskTarget.value?.components.length ?? 0) > 1) {
+      maskExpanded.value = true
+    }
+  },
+)
+
 function regionLabel(region: any): string {
   if (region.label) return region.label
   const kind = String(region.kind || 'region')
@@ -217,7 +316,32 @@ function onCandidateKeydown(event: KeyboardEvent, index: number) {
   emit('pick', candidates.value[next].id)
 }
 
-const advisory = computed(() => props.staleness === 'advisory')
+/**
+ * Coverage debt: the composed mask asks for pixels the picked sample never
+ * painted. Wears the same amber dot as input staleness — informational,
+ * never a blocker — and Resample is what settles it.
+ */
+const measuredDebt = computed(() =>
+  (props.coverageDebt ?? 0) >= (props.coverageDebtThreshold ?? 0.01)
+  && !!(anyOp.value.mask_components?.length),
+)
+/**
+ * Staged candidates cannot be measured against the mask (nothing composites
+ * until a pick), but a recipe existing at all means the mask was edited
+ * after they were sampled — the advisory holds either way.
+ */
+const debtAdvisory = computed(() =>
+  measuredDebt.value
+  || (!!(anyOp.value.mask_components?.length) && staged.value),
+)
+const advisory = computed(() => props.staleness === 'advisory' || debtAdvisory.value)
+const advisoryText = computed(() => {
+  if (measuredDebt.value) {
+    return `${Math.max(1, Math.round((props.coverageDebt ?? 0) * 100))}% of the mask has no generated pixels · Re-run`
+  }
+  if (debtAdvisory.value) return 'Mask edited after sampling · Re-run'
+  return 'Sampled against an earlier state · Re-run'
+})
 const previewTint = computed(() =>
   props.previewStaleness === 'advisory' ? 'ring-1 ring-amber-500/20' : ''
 )
@@ -277,7 +401,7 @@ const previewTint = computed(() =>
           {{ op.label }}
         </span>
         <!-- Advisory: informational, never a blocker. Pixel-deterministic. -->
-        <Tooltip v-if="advisory" text="Sampled against an earlier state · Resample">
+        <Tooltip v-if="advisory" :text="advisoryText">
           <span class="w-1.5 h-1.5 rounded-full bg-amber-400/80 shrink-0" />
         </Tooltip>
       </div>
@@ -285,6 +409,107 @@ const previewTint = computed(() =>
            not identity: it is the same for a whole session's worth of rows, so
            it earns none of a 320px panel and says nothing about the step. The
            step's name says what it did; the receipt lives in the metadata. -->
+
+      <!-- The step's single effective Mask — a scoped adjustment's, or a
+           generative edit's — expandable into the editable components it is
+           calculated from. The edit, its Mask, and the components are three
+           distinct things, and the hierarchy says so. -->
+      <template v-if="maskTarget">
+        <div
+          class="group/mask mt-1 -mr-[62px] min-w-0 flex items-center gap-1 py-0.5
+                 text-xs text-content-secondary rounded-md cursor-default"
+          :class="maskParentActive ? 'bg-selection/15' : 'hover:bg-overlay-subtle'"
+          @click.stop="emit('selectRegion', maskTarget.id)"
+          @mouseenter="emit('hoverRegion', maskTarget.id)"
+          @mouseleave="emit('hoverRegion', null)"
+        >
+          <button
+            type="button"
+            class="-ml-0.5 inline-flex items-center text-content-tertiary
+                   hover:text-content-secondary rounded-sm focus-visible:outline-none
+                   focus-visible:ring-2 ring-accent/60"
+            :aria-expanded="maskExpanded"
+            aria-label="Show mask components"
+            @click.stop="maskExpanded = !maskExpanded"
+          >
+            <ChevronDownIcon v-if="maskExpanded" class="w-3 h-3" />
+            <ChevronRightIcon v-else class="w-3 h-3" />
+          </button>
+          <span class="min-w-0 flex-1 truncate">Mask</span>
+          <Tooltip v-if="maskTarget.removable" text="Remove the mask — apply to the whole image">
+            <IconButton
+              variant="danger"
+              class="opacity-0 group-hover/mask:opacity-100 focus-visible:opacity-100"
+              @click.stop="emit('removeMask', maskTarget.id)"
+            >
+              <TrashIcon class="w-3.5 h-3.5" />
+            </IconButton>
+          </Tooltip>
+        </div>
+        <div v-if="maskExpanded" class="-mr-[62px] flex flex-col">
+          <div
+            v-for="(component, componentIndex) in maskTarget.components"
+            :key="component.id"
+            class="group/component min-w-0 flex items-center gap-1 py-0.5 pl-4 text-xs
+                   text-content-secondary rounded-md cursor-default"
+            :class="[
+              component.enabled === false && 'opacity-45',
+              selectedMaskComponentId === component.id
+                ? 'bg-selection/15'
+                : 'hover:bg-overlay-subtle',
+            ]"
+            @click.stop="emit('selectMaskComponent', maskTarget.id, component.id)"
+            @mouseenter="emit('hoverMaskComponent', maskTarget.id, component.id)"
+            @mouseleave="emit('hoverMaskComponent', maskTarget.id, null)"
+          >
+            <span class="min-w-0 flex-1 truncate">
+              <template v-if="maskComponentModeLabel(component, componentIndex)">
+                <span class="text-content-tertiary">
+                  {{ maskComponentModeLabel(component, componentIndex) }} ·
+                </span>
+                {{ maskComponentLabel(component) }}
+              </template>
+              <template v-else>{{ maskComponentLabel(component) }}</template>
+            </span>
+            <ArrowPathIcon
+              v-if="recomputingMaskComponentId === component.id"
+              class="w-3.5 h-3.5 shrink-0 animate-spin text-content-tertiary"
+            />
+            <Tooltip :text="component.enabled === false ? 'Show this component' : 'Hide this component'">
+              <IconButton
+                @click.stop="emit(
+                  'toggleMaskComponent',
+                  maskTarget.id,
+                  component.id,
+                  component.enabled === false,
+                )"
+              >
+                <EyeIcon v-if="component.enabled !== false" class="w-3.5 h-3.5" />
+                <EyeSlashIcon v-else class="w-3.5 h-3.5" />
+              </IconButton>
+            </Tooltip>
+            <!-- Every component deletes individually — coverage starts at
+                 nothing and each mode means what it says, so no removal ever
+                 reinterprets what remains. Deleting the LAST one deletes the
+                 mask itself, so it only exists where that has a meaning:
+                 an adjustment goes back to Whole image; a generative edit
+                 keeps its final component. -->
+            <Tooltip
+              v-if="maskTarget.removable || maskTarget.components.length > 1"
+              :text="maskTarget.components.length === 1
+                ? 'Remove the mask — apply to the whole image'
+                : 'Remove this component'"
+            >
+              <IconButton
+                variant="danger"
+                @click.stop="emit('removeMaskComponent', maskTarget.id, component.id)"
+              >
+                <TrashIcon class="w-3.5 h-3.5" />
+              </IconButton>
+            </Tooltip>
+          </div>
+        </div>
+      </template>
 
       <!-- Retouch is the stack's one hierarchy level. Gestures are folded
            into editable regions inside one top-level edit, never promoted to
@@ -398,9 +623,19 @@ const previewTint = computed(() =>
          the controls sit on the title's line and not above it. The only
          control that costs anything is a button. -->
     <div :class="[ROW_COLUMN_INLINE, 'shrink-0']">
-    <Tooltip v-if="isGenerative" text="Resample with the current input">
+    <!-- Resample hides at rest because it costs money — but when the amber
+         advisory says a resample is the ANSWER (stale input, or mask
+         coverage the samples never painted), the answer must be visible. -->
+    <Tooltip
+      v-if="isGenerative"
+      :text="debtAdvisory
+        ? 'Re-run through the edited mask'
+        : 'Re-run with the current input'"
+    >
       <IconButton
-        class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+        :class="advisory
+          ? 'text-amber-400/90 hover:text-amber-300'
+          : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'"
         :disabled="resampling"
         @click.stop="emit('resample')"
       >

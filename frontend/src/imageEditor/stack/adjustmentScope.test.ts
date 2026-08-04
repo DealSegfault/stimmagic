@@ -52,3 +52,33 @@ test('Adjust activation has no scope when no selection is active', () => {
     null,
   )
 })
+
+test('Adjust activation carries semantic identity while the selection is that gesture', () => {
+  const captured = captureAdjustmentScope(
+    { selected: true },
+    source => ({ ...source }),
+    null,
+    null,
+    'frame-a',
+    { prompt: 'sky' },
+    'frame-a',
+  )
+  assert.deepEqual(captured, {
+    kind: 'raster',
+    mask: { selected: true },
+    semantic: { prompt: 'sky' },
+  })
+})
+
+test('Adjust activation drops semantic identity pinned to another frame', () => {
+  const captured = captureAdjustmentScope(
+    { selected: true },
+    source => ({ ...source }),
+    null,
+    null,
+    'current-frame',
+    { intent: 'subject' },
+    'old-frame',
+  )
+  assert.deepEqual(captured, { kind: 'raster', mask: { selected: true } })
+})
