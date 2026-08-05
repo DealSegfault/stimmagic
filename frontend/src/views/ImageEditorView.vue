@@ -8594,8 +8594,11 @@ watch(
   <div class="h-full flex flex-col bg-base">
     <div class="flex-1 flex min-h-0">
       <div class="flex-1 flex flex-col min-w-0 min-h-0">
-      <!-- Toolbar 1: the families. -->
-      <div class="flex items-center gap-3 px-3 h-11 shrink-0 border-b border-edge-subtle">
+      <!-- Toolbar 1: the families. A container so the family buttons can drop
+           their labels from the ROW's width — the viewport says nothing about
+           this column once the resizable sidebar takes its share. Clipped so a
+           still-too-long row can never paint under the sidebar. -->
+      <div class="@container flex items-center gap-3 px-3 h-11 shrink-0 min-w-0 overflow-hidden border-b border-edge-subtle">
         <h1 class="text-sm font-medium text-content shrink-0">Edit</h1>
         <StatusDot
           v-if="stack.dirtySinceSave.value"
@@ -8920,7 +8923,7 @@ watch(
         <!-- Three panels, not three lists. Edits is the stack, Output is the
              terminal stage, and Info is the shared media-information body. -->
         <div
-          class="px-3 h-11 flex items-center gap-1 shrink-0 bg-surface-raised/60
+          class="px-3 h-11 flex items-center gap-1 shrink-0 bg-surface-raised
                  border-b border-edge-strong"
         >
           <template

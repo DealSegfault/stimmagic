@@ -39,10 +39,13 @@ const families = computed(() =>
         :class="active === family.id
           ? 'bg-accent/15 text-accent-hi'
           : 'text-content-secondary hover:text-content hover:bg-overlay-subtle'"
+        :aria-label="family.label"
         @click="emit('select', family.id)"
       >
         <span class="w-[15px] h-[15px] shrink-0" v-html="family.svg" />
-        {{ family.label }}
+        <!-- Below ~@3xl the labels are what overflow the row; the icons plus
+             tooltips carry the names alone. -->
+        <span class="hidden @3xl:inline">{{ family.label }}</span>
       </button>
     </Tooltip>
   </div>

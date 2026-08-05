@@ -67,7 +67,9 @@ const changed = computed(() => hasExpansion(props.edges))
 
 <template>
   <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-    <div class="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+    <!-- 2×2 or 1×4 by the BAR's width (container query), not the viewport's:
+         with the resizable sidebar next door the two are unrelated. -->
+    <div class="grid grid-cols-2 gap-x-3 gap-y-1 @2xl:grid-cols-4">
       <label
         v-for="field in FIELDS"
         :key="field.edge"

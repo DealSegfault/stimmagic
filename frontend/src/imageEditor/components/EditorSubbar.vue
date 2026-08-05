@@ -198,8 +198,10 @@ function chipClass(active: boolean, pending = false) {
 </script>
 
 <template>
+  <!-- A container: every narrow-state decision in here keys off the BAR's
+       width, not the viewport's — the resizable sidebar makes them unrelated. -->
   <div
-    class="flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface px-4 py-2"
+    class="@container flex items-center gap-1.5 flex-wrap border-b border-edge-subtle bg-surface px-4 py-2"
   >
     <!-- Sub-tools, for the families that have them. Retouch lays its own out:
          its bar is two jobs, not one list. -->
@@ -220,7 +222,12 @@ function chipClass(active: boolean, pending = false) {
             @click="emit('sub', option.id)"
           >
             <ToolIcon v-if="option.icon" :name="option.icon" />
-            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
+            <!-- In a narrow bar the labels are what force the chip row to
+                 wrap; iconed chips drop them and keep their tooltips. -->
+            <span
+              v-if="!option.icon || option.labeled"
+              :class="option.icon && 'hidden @xl:inline'"
+            >{{ option.label }}</span>
           </button>
         </Tooltip>
       </template>
@@ -245,7 +252,12 @@ function chipClass(active: boolean, pending = false) {
             @click="emit('sub', option.id)"
           >
             <ToolIcon v-if="option.icon" :name="option.icon" />
-            <span v-if="!option.icon || option.labeled">{{ option.label }}</span>
+            <!-- In a narrow bar the labels are what force the chip row to
+                 wrap; iconed chips drop them and keep their tooltips. -->
+            <span
+              v-if="!option.icon || option.labeled"
+              :class="option.icon && 'hidden @xl:inline'"
+            >{{ option.label }}</span>
           </button>
         </Tooltip>
       </template>
@@ -483,7 +495,7 @@ function chipClass(active: boolean, pending = false) {
         <!-- Subject: Expand's four edges, inline — they ARE the tool's input. -->
         <ExpandEdgesControl
           v-else-if="sub === 'expand'"
-          class="min-w-0 flex-1 basis-[29rem]"
+          class="min-w-0 flex-1 basis-80 @2xl:basis-[29rem]"
           :edges="state.expandEdges"
           :frame-width="state.frameWidth"
           :frame-height="state.frameHeight"
@@ -498,10 +510,14 @@ function chipClass(active: boolean, pending = false) {
             : 'Select the area to remove, then Run.' }}
         </p>
 
-        <div class="ml-auto flex shrink-0 items-center gap-2">
+        <!-- No ml-auto: on a shared line the flex-1 subject already pushes the
+             cluster to the right edge, and on its own (wrapped) line it sits
+             flush left under the subject instead of drifting to the far right
+             with dead space beside it. -->
+        <div class="flex min-w-0 max-w-full items-center gap-2">
           <button
             type="button"
-            class="inline-flex max-w-56 items-center gap-1.5 truncate rounded-md px-2 py-1.5
+            class="inline-flex min-w-0 max-w-56 items-center gap-1.5 truncate rounded-md px-2 py-1.5
                    text-xs text-content-secondary hover:bg-overlay-subtle hover:text-content"
             @click="emit('openToolPicker', $event)"
           >
