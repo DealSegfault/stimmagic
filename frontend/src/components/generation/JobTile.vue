@@ -6,10 +6,7 @@
     <div
       :class="[
         'relative w-full rounded-media overflow-hidden cursor-pointer bg-matte',
-        naturalAspect === null ? 'aspect-square' : '',
-        currentMediaId != null && job.result_media_id === currentMediaId
-          ? 'ring-2 ring-selection ring-inset'
-          : ''
+        naturalAspect === null ? 'aspect-square' : ''
       ]"
       :style="naturalAspect !== null ? { aspectRatio: String(naturalAspect) } : {}"
       @click="handleJobClick"
@@ -77,6 +74,12 @@
     <div v-else-if="job.result_media_id" class="w-full h-full flex items-center justify-center bg-surface">
       <Spinner size="lg" />
     </div>
+      <!-- Keep selection above the contact-sheet artwork. An inset ring on the
+           tile itself paints below its media child and is nearly invisible. -->
+      <div
+        v-if="currentMediaId != null && job.result_media_id === currentMediaId"
+        class="pointer-events-none absolute inset-0 z-chrome rounded-media ring-2 ring-inset ring-selection"
+      />
       <div class="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
         <div class="text-xs text-white line-clamp-2">{{ getJobPrompt(job) }}</div>
       </div>

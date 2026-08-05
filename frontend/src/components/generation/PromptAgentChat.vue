@@ -380,7 +380,7 @@
                 :disabled="loadingOptionsByCategory[item.category]"
                 :title="loadingOptionsByCategory[item.category] ? 'Loading options...' : (item.subitems && item.subitems.length > 0 ? `${item.label} (click for options)` : item.instruction)"
                 :class="[
-                  'px-2.5 py-1 rounded-full text-xs transition-all duration-200',
+                  'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-all duration-200',
                   loadingOptionsByCategory[item.category]
                     ? 'bg-surface-raised text-content-muted shimmer cursor-wait'
                     : activeSubmenu?.label === item.label
@@ -388,9 +388,9 @@
                       : getCategoryClass(item.category)
                 ]"
               >
-                {{ item.label }}
-                <Spinner v-if="loadingOptionsByCategory[item.category]" size="sm" class="ml-0.5 inline" />
-                <ChevronDownIcon v-else-if="item.subitems && item.subitems.length > 0" class="w-3 h-3 ml-0.5 text-content-tertiary inline" />
+                <span>{{ item.label }}</span>
+                <Spinner v-if="loadingOptionsByCategory[item.category]" size="sm" />
+                <ChevronDownIcon v-else-if="item.subitems && item.subitems.length > 0" class="w-3 h-3 text-content-tertiary" />
               </button>
               <!-- Refresh pill at end — recomputes the sections AND their options. -->
               <button
