@@ -773,7 +773,7 @@
               ref="stageVideoRef"
               :poster="getThumbnailUrl(stageCurrentHash, 1024, { mode: 'fit' })"
               class="w-full h-full object-contain object-top"
-              :muted="videoMuted"
+              muted
               playsinline
               draggable="true"
               @dragstart.stop="onHeroDragStart($event)"
@@ -805,7 +805,7 @@
         <!-- Jump to newest (top-left, on the image) -->
         <button
           v-if="stageCurrentJob && !stageOnNewest"
-          @click.stop="stagePinnedMediaId = null"
+          @click.stop="stageJumpToNewest()"
           class="absolute top-7 left-7 z-10 flex items-center gap-1.5 bg-black/55 backdrop-blur-sm text-white font-mono text-[11px] px-3 py-1.5 rounded hover:bg-black/70 transition-colors"
         >
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19.5v-15m0 0-6.75 6.75M12 4.5l6.75 6.75" /></svg>
@@ -852,7 +852,14 @@
           <span class="flex-1"></span>
 
           <div v-if="stageCurrentMediaId != null" class="flex gap-1">
-            <VideoVolumeControl v-if="outputsVideo" scope="toolview" @click.stop />
+            <VideoAuditionControl
+              v-if="outputsVideo && stageHasAudio"
+              scope="toolview"
+              :active="stageAuditionActive"
+              :progress="stageAuditionProgress"
+              @toggle="toggleStageAudition"
+              @click.stop
+            />
             <button
               @click.stop="handleRemixMedia(stageCurrentMediaId)"
               class="w-8 h-8 rounded backdrop-blur-sm flex items-center justify-center bg-black/55 hover:bg-accent/80 text-white/50 hover:text-white transition-all"
@@ -1103,7 +1110,7 @@ import ForeverModeButton from '../components/ForeverModeButton.vue'
 import BatchRunButton from '../components/BatchRunButton.vue'
 import ConnectionError from '../components/ConnectionError.vue'
 import { MediaContextMenu, MediaImage } from '../components/media'
-import { AudioPlayer, VideoVolumeControl } from '../components/viewers'
+import { AudioPlayer, VideoAuditionControl } from '../components/viewers'
 import { useScopedVideoPlayback, useManagedMediaElement } from '../composables/useMediaPlayback'
 import { useMediaContextMenu } from '../composables/useMediaContextMenu'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
@@ -1180,18 +1187,104 @@ const queueThumbnailSize = computed(() => layoutMode.value === 'stage' ? 512 : 1
 const stagePinnedMediaId = ref<number | null>(null)
 const stageMenuOpen = ref(false)
 
-// Stage hero video sound: its own persisted channel (profile + 'toolview'
-// scoped), independent of the slideshow's video channel. Registering the
-// element gives it audible-exclusivity and ghost prevention; volume is a DOM
-// property so it's applied via watcher.
+// Stage hero video sound: always loops muted; sound is a one-shot "audition"
+// event, not a persistent mute state. A user-initiated staging (pin, arrow
+// nav, jump-to-newest) gets one audible pass from the start of the clip, then
+// fades back to the muted loop; the speaker button replays a pass on demand.
+// Background arrivals land muted. The audition volume level is its own
+// persisted channel (profile + 'toolview' scoped), independent of the
+// slideshow's video channel. Registering the element gives it
+// audible-exclusivity and ghost prevention; volume is a DOM property so it's
+// applied via watcher.
 const stageVideoRef = ref<HTMLVideoElement | null>(null)
 const stageViewActive = ref(true)
 const stageWindowFocused = ref(typeof document === 'undefined' ? true : document.hasFocus())
-const { muted: videoMuted, volume: videoVolume } = useScopedVideoPlayback('toolview')
+// Fade length at the end of an audible pass, so the return to the muted loop
+// doesn't read as a glitch. The volume floor keeps a slider dragged to the
+// bottom from turning "play sound once" into a silent no-op.
+const AUDITION_FADE_S = 0.15
+const AUDITION_MIN_VOLUME = 0.05
+const { volume: videoVolume } = useScopedVideoPlayback('toolview')
 useManagedMediaElement(stageVideoRef)
 watch([stageVideoRef, videoVolume], ([el, vol]) => {
-  if (el) el.volume = vol as number
+  if (el) el.volume = Math.max(AUDITION_MIN_VOLUME, vol as number)
 }, { immediate: true })
+
+const stageHasAudio = ref(false)
+const stageAuditionActive = ref(false)
+const stageAuditionProgress = ref(0)
+let stageAuditionRaf: number | null = null
+// Media id whose next ready playback gets the free audible pass — set only by
+// user-initiated staging, so background arrivals never start sound unprompted.
+let pendingAuditionMediaId: number | null = null
+
+function auditionVolume(): number {
+  return Math.max(AUDITION_MIN_VOLUME, videoVolume.value)
+}
+
+function stopStageAudition() {
+  if (stageAuditionRaf != null) {
+    cancelAnimationFrame(stageAuditionRaf)
+    stageAuditionRaf = null
+  }
+  if (!stageAuditionActive.value) return
+  stageAuditionActive.value = false
+  stageAuditionProgress.value = 0
+  const el = stageVideoRef.value
+  if (el) {
+    el.muted = true
+    el.volume = auditionVolume()
+  }
+}
+
+function startStageAudition() {
+  const el = stageVideoRef.value
+  const playback = stageMsePlayback
+  if (!el || !playback || !(playback.duration > 0) || !stageHasAudio.value) return
+  if (!stageVideoIsForeground()) return
+  stopStageAudition()
+  // Audio joined mid-loop is useless for judging the clip — always restart.
+  playback.seekLogical(0)
+  el.volume = auditionVolume()
+  el.muted = false
+  stageAuditionActive.value = true
+  stageAuditionProgress.value = 0
+  void el.play().catch(() => {})
+  let lastLogical = 0
+  const tick = () => {
+    if (!stageAuditionActive.value) return
+    if (stageMsePlayback !== playback || stageVideoRef.value !== el) {
+      stopStageAudition()
+      return
+    }
+    const logical = playback.logicalCurrentTime
+    if (logical < lastLogical - 0.05) {
+      // Wrapped past the loop boundary: the pass is over.
+      stopStageAudition()
+      return
+    }
+    lastLogical = Math.max(lastLogical, logical)
+    stageAuditionProgress.value = Math.min(1, logical / playback.duration)
+    const remaining = playback.duration - logical
+    if (remaining < AUDITION_FADE_S) {
+      el.volume = auditionVolume() * Math.max(0, remaining / AUDITION_FADE_S)
+    }
+    stageAuditionRaf = requestAnimationFrame(tick)
+  }
+  stageAuditionRaf = requestAnimationFrame(tick)
+}
+
+function toggleStageAudition() {
+  if (stageAuditionActive.value) stopStageAudition()
+  else startStageAudition()
+}
+
+// A user-initiated staging of a different clip earns the free audible pass;
+// the pass starts when that clip's playback reports ready (and has audio).
+function requestStageAudition(mediaId: number | null | undefined) {
+  if (mediaId == null || mediaId === stageCurrentMediaId.value) return
+  pendingAuditionMediaId = mediaId
+}
 
 // Width of the Stage controls sidebar, draggable via the seam. Default is ~20%
 // wider than the old fixed 380px. Session-local (not persisted yet).
@@ -1366,8 +1459,14 @@ function stageVideoIsForeground(): boolean {
 function syncStageVideoPlayback() {
   const element = stageVideoRef.value
   if (!element) return
-  if (stageVideoIsForeground()) void element.play().catch(() => {})
-  else element.pause()
+  if (stageVideoIsForeground()) {
+    void element.play().catch(() => {})
+  } else {
+    // Losing the foreground ends any audible pass rather than suspending it —
+    // resuming with sound later would be a surprise.
+    stopStageAudition()
+    element.pause()
+  }
 }
 
 function updateStageWindowFocus() {
@@ -1385,11 +1484,25 @@ function destroyStageMsePlayback() {
 onMounted(() => {
   watch([stageVideoRef, stageCurrentHash], ([element, fileHash]) => {
     destroyStageMsePlayback()
+    stopStageAudition()
+    stageHasAudio.value = false
+    // A pending free pass is only honored by the clip it was requested for.
+    if (pendingAuditionMediaId != null && pendingAuditionMediaId !== stageCurrentMediaId.value) {
+      pendingAuditionMediaId = null
+    }
     if (!element || !fileHash) return
-    element.muted = videoMuted.value
-    element.volume = videoVolume.value
+    element.muted = true
+    element.volume = auditionVolume()
     const playback = new MseLoopPlayback(element, getMseLoopUrls(fileHash), {
       shouldPlay: stageVideoIsForeground,
+      onReady: (pb: MseLoopPlayback) => {
+        if (stageMsePlayback !== playback) return
+        stageHasAudio.value = Boolean(pb.hasAudio)
+        if (pendingAuditionMediaId != null && pendingAuditionMediaId === stageCurrentMediaId.value) {
+          pendingAuditionMediaId = null
+          startStageAudition()
+        }
+      },
       onError: (error: unknown) => {
         if (stageMsePlayback !== playback) return
         console.warn('[ToolView] Seamless video playback failed, falling back to native loop:', error)
@@ -1417,6 +1530,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', updateStageWindowFocus)
 })
 onUnmounted(() => {
+  stopStageAudition()
   destroyStageMsePlayback()
   window.removeEventListener('focus', updateStageWindowFocus)
   window.removeEventListener('blur', updateStageWindowFocus)
@@ -1463,6 +1577,7 @@ function stagePinJob(job: any) {
     if (job.result_media_id === stageCurrentMediaId.value) {
       handleJobClick(job)
     } else {
+      requestStageAudition(job.result_media_id)
       stagePinnedMediaId.value = job.result_media_id
     }
   } else {
@@ -1488,7 +1603,14 @@ function stageNav(delta: number) {
   let idx = list.findIndex((j: any) => j.id === curId)
   if (idx < 0) idx = 0
   const next = Math.max(0, Math.min(list.length - 1, idx + delta))
+  requestStageAudition(list[next].result_media_id)
   stagePinnedMediaId.value = list[next].result_media_id
+}
+
+// "Jump to newest" is a deliberate staging too — it earns the audible pass.
+function stageJumpToNewest() {
+  requestStageAudition(stageCompletedJobs.value[0]?.result_media_id)
+  stagePinnedMediaId.value = null
 }
 function stageKeydown(e: KeyboardEvent) {
   if (layoutMode.value !== 'stage' || slideshowState.active) return
@@ -1498,6 +1620,8 @@ function stageKeydown(e: KeyboardEvent) {
   else if (e.key === 'ArrowLeft' || e.key === 'a') { e.preventDefault(); stageNav(-1) }
   else if (e.key === 'Home') { e.preventDefault(); stageNav(-Infinity) }
   else if (e.key === 'End') { e.preventDefault(); stageNav(Infinity) }
+  // Slideshow muscle memory: m auditions the staged clip (one audible pass).
+  else if (e.key === 'm' && outputsVideo.value && stageHasAudio.value) { e.preventDefault(); toggleStageAudition() }
 }
 onMounted(() => window.addEventListener('keydown', stageKeydown))
 onUnmounted(() => window.removeEventListener('keydown', stageKeydown))

@@ -888,7 +888,9 @@
               'absolute bg-black/70 backdrop-blur-xl rounded-lg border border-white/10 shadow-[0_4px_20px_rgba(0,0,0,0.4)] z-menu',
               controlBarOrientation === 'vertical'
                 ? 'left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-2 flex items-center gap-2'
-                : 'bottom-full mb-2 left-1/2 -translate-x-1/2 px-2 py-2 flex flex-col items-center gap-2'
+                : volumePopupOpensDown
+                  ? 'top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-2 flex flex-col items-center gap-2'
+                  : 'bottom-full mb-2 left-1/2 -translate-x-1/2 px-2 py-2 flex flex-col items-center gap-2'
             ]"
             @mousedown.stop
           >
@@ -3581,12 +3583,17 @@ function toggleMute() {
 }
 
 let volumeHoverTimer = null
+// The control bar is user-draggable, so the popup flips downward when there
+// isn't room above the speaker button (~150px popup + margin).
+const volumePopupOpensDown = ref(false)
 function onVolumeHoverEnter() {
   if (!isVideo.value) return
   if (volumeHoverTimer) {
     clearTimeout(volumeHoverTimer)
     volumeHoverTimer = null
   }
+  const buttonTop = volumeButtonRef.value?.getBoundingClientRect().top ?? Infinity
+  volumePopupOpensDown.value = buttonTop < 170
   showVolumeSlider.value = true
 }
 function onVolumeHoverLeave() {

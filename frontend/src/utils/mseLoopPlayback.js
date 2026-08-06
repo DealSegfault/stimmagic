@@ -88,6 +88,7 @@ export class MseLoopPlayback {
     this.bufferAheadLoops = options.bufferAheadLoops || DEFAULT_BUFFER_AHEAD_LOOPS
     this.retainBehindLoops = options.retainBehindLoops || DEFAULT_RETAIN_BEHIND_LOOPS
     this.duration = 0
+    this.hasAudio = false
     this.destroyed = false
     this.appendedLoops = 0
     this.lastObservedLoop = 0
@@ -128,6 +129,7 @@ export class MseLoopPlayback {
 
       this.duration = Number(manifest.duration)
       if (!(this.duration > 0)) throw new Error('MSE manifest has no valid duration')
+      this.hasAudio = Boolean(manifest.has_audio)
 
       if (this.applyFaceCrop && manifest.face_object_position) {
         const { x, y } = manifest.face_object_position
