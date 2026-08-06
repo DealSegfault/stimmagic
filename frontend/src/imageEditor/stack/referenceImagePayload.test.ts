@@ -62,3 +62,37 @@ test('lineage keeps a null target slot so reference ids cannot shift roles', () 
   assert.deepEqual(positionalImageMediaIds(state()), [null, 42, 84])
   assert.deepEqual(extractParameters(config, state()).input_media_ids, [null, 42, 84])
 })
+
+test('hidden frame-picker state cannot override the visible image picker', () => {
+  const pickerState = state()
+  pickerState.globalPrefs.inputImages = [{ path: '/visible/replacement.png', mediaId: 22 }]
+  pickerState.globalPrefs.inpaintRefImages = []
+  pickerState.videoImages.startImage = { path: '/hidden/stale.png', mediaId: 11 }
+
+  const parameters = extractParameters(config, pickerState)
+  assert.deepEqual(parameters.input_images, ['/visible/replacement.png'])
+  assert.deepEqual(parameters.input_media_ids, [22])
+})
+
+test('declared frame picker still submits its positioned frame state', () => {
+  const pickerState = state()
+  pickerState.globalPrefs.inputImages = [{ path: '/hidden/generic.png', mediaId: 22 }]
+  pickerState.globalPrefs.inpaintRefImages = []
+  pickerState.videoImages.startImage = { path: '/visible/start.png', mediaId: 11 }
+  pickerState.videoImages.endImage = { path: '/visible/end.png', mediaId: 12 }
+  const frameConfig: PayloadBuilderConfig = {
+    ...config,
+    tool: {
+      ...config.tool,
+      parameter_schema: {
+        properties: {
+          input_images: { type: 'array', 'x-control': 'video_frame_picker' },
+        },
+      },
+    },
+  }
+
+  const parameters = extractParameters(frameConfig, pickerState)
+  assert.deepEqual(parameters.input_images, ['/visible/start.png', '/visible/end.png'])
+  assert.deepEqual(parameters.input_media_ids, [11, 12])
+})

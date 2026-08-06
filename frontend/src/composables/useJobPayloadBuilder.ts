@@ -68,6 +68,19 @@ function allPickedImages(s: PayloadBuilderState) {
   return [...s.globalPrefs.inputImages, ...(s.globalPrefs.inpaintRefImages ?? [])]
 }
 
+function usesVideoFramePicker(config: PayloadBuilderConfig): boolean {
+  return config.tool.parameter_schema?.properties?.input_images?.['x-control'] === 'video_frame_picker'
+}
+
+function activePickedImages(config: PayloadBuilderConfig, state: PayloadBuilderState) {
+  if (!usesVideoFramePicker(config)) return allPickedImages(state)
+  return [state.videoImages.startImage, state.videoImages.endImage].filter(Boolean) as Array<{
+    path: string
+    mediaId?: number
+    _videoSource?: { mediaId?: number } | null
+  }>
+}
+
 /**
  * Media lineage must remain positional with input_images. An editor composite
  * is uploaded for the first slot and has no library id; filtering that null
@@ -88,27 +101,9 @@ const paramExtractors: Record<string, (s: PayloadBuilderState) => any> = {
 
   // Image inputs (unified array)
   'input_images': (s) => {
-    // For videoFramePicker, images come from videoImages state
-    // For imagePicker, images come from globalPrefs.inputImages
-    if (s.videoImages.startImage) {
-      const images = [s.videoImages.startImage.path]
-      if (s.videoImages.endImage?.path) images.push(s.videoImages.endImage.path)
-      return images
-    }
     return allPickedImages(s).map(i => i.path)
   },
-  'input_media_ids': (s) => {
-    if (s.videoImages.startImage) {
-      // Positional with input_images (start, end) — pad with null rather than
-      // dropping a missing id, so e.g. an id-less start doesn't shift end's id
-      // into the start slot on the backend.
-      const startId = lineageMediaId(s.videoImages.startImage) ?? null
-      if (!s.videoImages.endImage) return startId == null ? [] : [startId]
-      const endId = lineageMediaId(s.videoImages.endImage) ?? null
-      return startId == null && endId == null ? [] : [startId, endId]
-    }
-    return positionalImageMediaIds(s)
-  },
+  'input_media_ids': (s) => positionalImageMediaIds(s),
 
   // Video inputs (unified array)
   'input_videos': (s) => s.globalPrefs.inputVideos.map(v => v.path),
@@ -199,7 +194,7 @@ export function resolveEffectiveTaskType(config: PayloadBuilderConfig, state: Pa
 
   // If tool supports image-to-video and we have a start frame, use image-to-video
   if (taskTypes.includes('image-to-video') && primaryTaskType === 'text-to-video') {
-    if (state.videoImages?.startImage?.path) {
+    if (usesVideoFramePicker(config) && state.videoImages?.startImage?.path) {
       return 'image-to-video'
     }
   }
@@ -236,6 +231,10 @@ export function extractParameters(config: PayloadBuilderConfig, state: PayloadBu
   const params: Record<string, any> = {}
 
   for (const fieldName of Object.keys(props)) {
+    if (fieldName === 'input_images' && usesVideoFramePicker(config)) {
+      params.input_images = activePickedImages(config, state).map(image => image.path)
+      continue
+    }
     const extractor = paramExtractors[fieldName]
     if (extractor) {
       const value = extractor(state)
@@ -275,7 +274,7 @@ export function extractParameters(config: PayloadBuilderConfig, state: PayloadBu
   // source video's id (stashed on _videoSource) so the generated output still
   // links back to it.
   if ('input_images' in props) {
-    if (state.videoImages.startImage) {
+    if (usesVideoFramePicker(config) && state.videoImages.startImage) {
       // VideoFramePicker mode — media IDs from videoImages, positional with
       // input_images (start, end); pad with null so a missing id doesn't
       // shift the other slot's id into the wrong role.
@@ -301,7 +300,7 @@ export function extractParameters(config: PayloadBuilderConfig, state: PayloadBu
 
   // Reference image prep: send original paths + all preprocessing metadata for
   // lineage. Positional over the full input_images payload (target + refs).
-  const images = allPickedImages(state)
+  const images = activePickedImages(config, state)
   const hasPrep = images.some((i: any) => i._preprocessor || i._paintLayerPath || i._extendPadding || i._scale || i._flip || i._crop)
   if (hasPrep) {
     params._original_input_paths = images.map((i: any) => i._originalPath || i.path)
