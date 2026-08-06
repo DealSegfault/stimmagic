@@ -329,8 +329,8 @@ function getChipDisplayName(path: string): LoraDisplayName {
   // path-derived name so they get the same brief treatment as the picker.
   const item = allItems.value.find(i => i.lora === path)
   if (item?.name && !item.name.includes('/')) {
-    const stripped = item.name.replace(/\.[^.]+$/i, '')
-    return { primary: stripped, secondary: '' }
+    return computeDisplayNames([item.name], props.modelName || undefined)[item.name]
+      || { primary: getRawDisplayName(item.name), secondary: '' }
   }
   return smartNames.value[path] || { primary: getRawDisplayName(path), secondary: '' }
 }

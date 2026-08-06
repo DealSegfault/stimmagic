@@ -103,6 +103,7 @@ function isModelRedundantToken(token: string, modelTokens: string[]): boolean {
 
 function isTrainingSuffixToken(token: string): boolean {
   return (
+    /^(?:checkpoint|ckpt|step|epoch)[-_]?\d+$/i.test(token) ||
     /^r(?:ank)?[-_]?(\d+)$/i.test(token) ||
     /^(adamw|adamw8bit|adafactor|lion|sgd|optimizer|weighted|bf16|fp16|fp8|lora)$/i.test(token) ||
     /^\(?\d+\)?$/.test(token) ||
@@ -147,8 +148,10 @@ function extractSecondaryChips(path: string, modelTokens: string[]): string[] {
   const segments = splitPath(stripExtension(path))
 
   for (const segment of segments) {
-    const checkpointMatch = segment.match(/^(checkpoint|ckpt|step|epoch)[-_]?(\d+)$/i)
-    if (checkpointMatch) {
+    const checkpointMatches = Array.from(
+      segment.matchAll(/(?:^|[\s_-])(checkpoint|ckpt|step|epoch)[-_]?(\d+)(?=$|[\s_-])/gi)
+    )
+    for (const checkpointMatch of checkpointMatches) {
       const tag = checkpointMatch[1].toLowerCase()
       const value = formatLargeNumber(checkpointMatch[2]).toLowerCase()
       const chip = `${tag}-${value}`
@@ -156,7 +159,6 @@ function extractSecondaryChips(path: string, modelTokens: string[]): string[] {
         seen.add(chip)
         chips.push(chip)
       }
-      continue
     }
 
     const versionMatches = Array.from(segment.matchAll(/(?:^|[_-])(v\d+(?:[._]\d+)?)(?=$|[_-])/gi))
@@ -181,8 +183,14 @@ function extractSecondaryChips(path: string, modelTokens: string[]): string[] {
       }
     }
 
+    // Remove named checkpoint markers before looking for bare training-step
+    // numbers so `checkpoint-12000` does not also produce a `step-12k` chip.
+    const rawStepSegment = normalizedSegment.replace(
+      /(?:^|[\s_-])(?:checkpoint|ckpt|step|epoch)[-_]?\d+(?=$|[\s_-])/gi,
+      ' '
+    )
     const rawStepMatches = Array.from(
-      normalizedSegment.matchAll(/(?:^|[_-])(\d{4,})(?=$|[_-])/g)
+      rawStepSegment.matchAll(/(?:^|[\s_-])(\d{4,})(?=$|[\s_-])/g)
     )
     for (const match of rawStepMatches) {
       if (isModelRedundantToken(match[1], modelTokens)) continue
