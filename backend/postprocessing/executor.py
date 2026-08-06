@@ -647,6 +647,21 @@ async def _apply_prompt_pipeline(
         except (TypeError, ValueError):
             return None
 
+    h3_task: Optional[str] = None
+    h3_duration: Optional[float] = None
+    h3_media_ids: List[Optional[int]] = []
+    h3_generate_audio = True
+    from model_family import model_family
+    if model_family(model) == "minimax-h3":
+        h3_task = "i2va" if input_media_id is not None else "t2va"
+        try:
+            raw_duration = params.get("duration")
+            h3_duration = float(raw_duration) if raw_duration is not None else None
+        except (TypeError, ValueError):
+            h3_duration = None
+        h3_media_ids = [input_media_id] if input_media_id is not None else []
+        h3_generate_audio = params.get("generate_audio") is not False
+
     return await run_prompt_pipeline(
         db,
         prompt,
@@ -660,6 +675,10 @@ async def _apply_prompt_pipeline(
         input_image_count=1 if ("input_images" in schema_props or "input_image" in schema_props) else 0,
         # Enables the image-aware cinematography path for i2v steps.
         media_id=input_media_id,
+        h3_task=h3_task,
+        h3_duration=h3_duration,
+        h3_media_ids=h3_media_ids,
+        h3_generate_audio=h3_generate_audio,
         # Ideogram JSON composes layout for the real canvas when the step sets one.
         width=_dim("width"),
         height=_dim("height"),

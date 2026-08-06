@@ -234,6 +234,47 @@ def _prompt_media_id(parameters: Dict[str, Any], effective_task: str) -> Optiona
     return None
 
 
+def _prompt_h3_context(parameters: Dict[str, Any]) -> tuple[str, Optional[float], List[Optional[int]], bool]:
+    """Derive H3's Context-IR task from positional first/last-frame inputs."""
+    input_images = parameters.get("input_images")
+    image_count = _count_value(input_images)
+
+    # Some providers expose named frame fields instead of Stimma's unified
+    # input_images array. Respect those roles when present, including last-only.
+    first_present = _count_value(parameters.get("first_frame")) > 0
+    last_present = _count_value(parameters.get("last_frame")) > 0
+    if first_present or last_present:
+        if first_present and last_present:
+            task = "fl2va"
+        elif last_present:
+            task = "l2va"
+        else:
+            task = "i2va"
+    elif image_count >= 2:
+        task = "fl2va"
+    elif image_count == 1:
+        task = "i2va"
+    else:
+        task = "t2va"
+
+    raw_ids = parameters.get("input_media_ids")
+    media_ids: List[Optional[int]] = []
+    if isinstance(raw_ids, list):
+        for value in raw_ids[:2]:
+            media_ids.append(value if isinstance(value, int) and not isinstance(value, bool) else None)
+    elif isinstance(raw_ids, int) and not isinstance(raw_ids, bool):
+        media_ids = [raw_ids]
+
+    duration: Optional[float]
+    try:
+        raw_duration = parameters.get("duration")
+        duration = float(raw_duration) if raw_duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    generate_audio = parameters.get("generate_audio") is not False
+    return task, duration, media_ids, generate_audio
+
+
 async def _retain_generation_inputs(
     session: AsyncSession, parameters: Dict[str, Any]
 ) -> None:
@@ -337,6 +378,13 @@ async def _apply_generation_prompt_pipeline(
     profile_id = get_current_profile()
     db = get_database_registry().get_database(profile_id)
     model, model_vendor, effective_task, schema_props = _prompt_pipeline_context(tool_id, task_type, prompt_options)
+    from model_family import model_family
+    h3_task: Optional[str] = None
+    h3_duration: Optional[float] = None
+    h3_media_ids: List[Optional[int]] = []
+    h3_generate_audio = True
+    if model_family(model) == "minimax-h3":
+        h3_task, h3_duration, h3_media_ids, h3_generate_audio = _prompt_h3_context(parameters)
     processed_prompt = await run_prompt_pipeline(
         db,
         prompt,
@@ -348,6 +396,10 @@ async def _apply_generation_prompt_pipeline(
         input_image_count=_prompt_input_image_count(parameters, schema_props, effective_task),
         audio_conditioned=_prompt_audio_conditioned(parameters, schema_props),
         media_id=_prompt_media_id(parameters, effective_task),
+        h3_task=h3_task,
+        h3_duration=h3_duration,
+        h3_media_ids=h3_media_ids,
+        h3_generate_audio=h3_generate_audio,
         width=_optional_int(parameters, "width"),
         height=_optional_int(parameters, "height"),
         profile_id=profile_id,

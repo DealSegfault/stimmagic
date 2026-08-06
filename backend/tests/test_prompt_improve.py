@@ -8,6 +8,8 @@ import pytest
 
 from routes.prompt_enhancement import (
     _audio_guidance,
+    _h3_audio_guidance,
+    _h3_task_guidance,
     _protected_text_guidance,
     _strip_hallucinated_placeholders,
     _input_images_phrase,
@@ -59,6 +61,10 @@ def test_no_input_images_stays_prose():
 
 def test_video_wins_over_edit():
     assert enhancement_mode(model_family("wan-2.7"), is_video=True, is_image_edit=True) == "cinematography"
+
+
+def test_minimax_h3_gets_structured_video_mode():
+    assert enhancement_mode(model_family("minimax-h3-i2v"), is_video=True) == "minimax-h3"
 
 
 def test_audio_mode_is_task_driven():
@@ -117,6 +123,17 @@ def test_improve_request_defaults_input_image_count_zero():
             "improve_audio_system_prompt",
             "Please improve this prompt with a light touch:",
         ),
+        (
+            ImprovePromptRequest(
+                prompt="a baker opens the shop",
+                model="minimax-h3-t2v",
+                is_video=True,
+                h3_task="t2va",
+                h3_duration=5,
+            ),
+            "improve_minimax_h3_system_prompt",
+            "Rewrite this request as MiniMax H3 T2VA Context-IR",
+        ),
     ],
 )
 async def test_improve_prompt_selects_expected_variant_without_source_image(
@@ -158,6 +175,55 @@ async def test_improve_prompt_selects_i2v_source_image_variant(prompt_variant_pr
     assert user_content[0]["type"] == "text"
     assert "first frame" in user_content[0]["text"]
     assert user_content[1]["image_url"]["url"] == "data:image/jpeg;base64,abc123"
+
+
+async def test_h3_fl2va_attaches_both_frames_in_order(prompt_variant_probe, monkeypatch):
+    import routes.prompt_enhancement as pe
+
+    async def fake_source_image(session, media_id):
+        return f"image-{media_id}"
+
+    monkeypatch.setattr(pe, "_load_source_image_b64", fake_source_image)
+    await pe.improve_prompt(
+        ImprovePromptRequest(
+            prompt="she opens the umbrella",
+            model="minimax-h3-i2v",
+            is_video=True,
+            h3_task="fl2va",
+            h3_duration=8,
+            h3_media_ids=[11, 22],
+        ),
+        session=object(),
+    )
+
+    assert prompt_variant_probe["prompt_keys"] == ["improve_minimax_h3_system_prompt"]
+    content = prompt_variant_probe["messages"][1]["content"]
+    assert "FL2VA Context-IR for a 8.00-second" in content[0]["text"]
+    assert [part["text"] for part in content[1::2]] == [
+        "Picture 1 (first frame):",
+        "Picture 2 (last frame):",
+    ]
+    assert [part["image_url"]["url"] for part in content[2::2]] == [
+        "data:image/jpeg;base64,image-11",
+        "data:image/jpeg;base64,image-22",
+    ]
+
+
+def test_h3_task_guidance_uses_exact_alignment_and_duration():
+    i2va = _h3_task_guidance("i2va", 5)
+    assert "at 0.00 seconds" in i2va
+    assert "<Picture 1> (from [Shot 1]) is fully referenced" in i2va
+    fl2va = _h3_task_guidance("fl2va", 8)
+    assert "Picture 2 (from Shot N)" in fl2va
+    assert "8.00-second mark" in fl2va
+    l2va = _h3_task_guidance("l2va", 6.5)
+    assert "6.50-second mark" in l2va
+
+
+def test_h3_audio_disabled_keeps_schema_but_forces_na():
+    guidance = _h3_audio_guidance(False)
+    assert "overall_soundscape: N/A" in guidance
+    assert "non_diegetic_music: N/A" in guidance
 
 
 # --- _input_images_phrase ----------------------------------------------------

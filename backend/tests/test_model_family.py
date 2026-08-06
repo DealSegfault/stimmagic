@@ -37,6 +37,9 @@ FIXTURES = [
     ("wan2.2_t2v_high_noise_14B_fp8.safetensors", "wan-2.2"),
     ("wan2.1-i2v-14b-720p", "wan-2.1"),
     ("hunyuan_video_t2v_720p_bf16.safetensors", "hunyuan-video"),
+    ("minimax_h3_fl2va_pruned_fp8_scaled.safetensors", "minimax-h3"),
+    ("minimax-h3-i2v", "minimax-h3"),
+    ("Hailuo-03", "minimax-h3"),
     ("ltx-video-2b-v0.9.safetensors", "ltx-video"),
     # --- Upscale ---
     ("seedvr2_ema_7b_fp16.safetensors", "seedvr2"),

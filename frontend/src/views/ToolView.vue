@@ -3158,6 +3158,7 @@ const enhanceUsesImage = computed(() => {
   const source: any = videoImages.startImage
   return !!(source?.path || source?.file_path || source?.filePath)
 })
+const enhanceIsMiniMaxH3 = computed(() => /(?:minimax[\s._-]*h3|hailuo[\s._-]*(?:h3|0?3|3(?:\.0)?))/i.test(toolModelString.value || ''))
 
 // Server-owned prompt warm pool: while generate-forever is running, tells the
 // server how many LLM-enhanced prompt variants to keep ready so submits pick
@@ -3175,7 +3176,10 @@ const { clear: clearPromptWarmPool } = usePromptWarmPool({
   autoImproveEnabled: computed(() =>
     (globalPrefs.value.promptOptions?.autoImprove?.enabled ?? false) &&
     enhanceMode.value === 'text' &&
-    !enhanceUsesImage.value
+    !enhanceUsesImage.value &&
+    // H3 Context-IR depends on live duration/audio/keyframe parameters, not
+    // prompt text alone, so it must be enhanced at submission time.
+    !enhanceIsMiniMaxH3.value
   ),
   autoImproveInstructions: computed(() => globalPrefs.value.promptOptions?.autoImprove?.instructions ?? null),
   model: computed(() => toolModelString.value || null),

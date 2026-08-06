@@ -556,6 +556,11 @@ class GenerationQueue:
                 input_image_count=intent['input_image_count'],
                 audio_conditioned=intent['audio_conditioned'],
                 media_id=None,
+                h3_task=None,
+                h3_duration=None,
+                h3_media_ids=None,
+                h3_generate_audio=True,
+                project_id=None,
             )
         except asyncio.CancelledError:
             raise

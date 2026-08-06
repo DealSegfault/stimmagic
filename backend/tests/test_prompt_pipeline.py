@@ -21,6 +21,17 @@ class TestVerbatim:
         assert pp.verify_verbatim_preserved("text __VERBATIM_A__ text", segments)
         assert not pp.verify_verbatim_preserved("text without placeholder", segments)
 
+    def test_h3_existing_structure_is_not_mistaken_for_verbatim(self):
+        prompt = (
+            "integrated_multimodal_description: [Shot 1] A woman says: "
+            "<d>[Hindi] [exact words]</d>"
+        )
+        processed, segments = pp.extract_verbatim(prompt, preserve_h3_structure=True)
+        assert "[Shot 1]" in processed
+        assert "<d>[Hindi]" in processed
+        assert "__VERBATIM_A__" in processed
+        assert [segment["original"] for segment in segments] == ["exact words"]
+
     def test_unwrap(self):
         assert pp.unwrap_verbatim("a [red car] here") == "a red car here"
 
@@ -93,6 +104,124 @@ def _db(session_factory=None):
 
 
 class TestRunPromptPipeline:
+    async def test_h3_context_reaches_enhancer_and_skips_generic_translation(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        seen = {}
+
+        async def fake_improve(request, session):
+            seen["request"] = request
+            return pe.ImprovePromptResponse(
+                improved_prompt="How the reference pictures align with the target video — "
+                "Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; "
+                "Picture 2 (from Shot 1) aligns with the 8.00-second mark of the target video.\n\n"
+                "integrated_multimodal_description: [Shot 1] A cyclist rides.\n\n"
+                "overall_soundscape: Wind and tires.\n\nnon_diegetic_music: N/A"
+            )
+
+        async def fail_translate(request):
+            raise AssertionError("H3 Context-IR must remain English and must not be generically translated")
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+        monkeypatch.setattr(pe, "translate_prompt", fail_translate)
+
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "a cyclist rides",
+            {
+                "autoImprove": {"enabled": True},
+                "translate": {"enabled": True, "language": "zh-Hans"},
+            },
+            model="minimax-h3-i2v",
+            is_video=True,
+            h3_task="fl2va",
+            h3_duration=8,
+            h3_media_ids=[11, 22],
+            h3_generate_audio=False,
+            prompt_preload={
+                "originalPrompt": "a cyclist rides",
+                "processedPrompt": "a cyclist rides",
+                "improvedPrompt": "stale generic warm result",
+                "instructions": None,
+                "model": "minimax-h3-i2v",
+                "isVideo": True,
+                "isAudio": False,
+                "inputImageCount": 0,
+                "promptSourcesSignature": pp.prompt_sources_signature([], []),
+            },
+        )
+
+        request = seen["request"]
+        assert request.h3_task == "fl2va"
+        assert request.h3_duration == 8
+        assert request.h3_media_ids == [11, 22]
+        assert request.h3_generate_audio is False
+        assert out.startswith("How the reference pictures align with the target video —")
+        assert "[Shot 1]" in out
+
+    async def test_h3_retries_when_context_ir_shape_is_missing(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        attempts = []
+
+        async def fake_improve(request, session):
+            attempts.append(request)
+            if len(attempts) == 1:
+                return pe.ImprovePromptResponse(improved_prompt="a generic cinematic paragraph")
+            return pe.ImprovePromptResponse(
+                improved_prompt="integrated_multimodal_description: [Shot 1] A baker works.\n\n"
+                "overall_soundscape: Quiet room tone.\n\nnon_diegetic_music: N/A"
+            )
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "a baker works",
+            {"autoImprove": {"enabled": True}},
+            model="minimax-h3-t2v",
+            is_video=True,
+            h3_task="t2va",
+            h3_duration=5,
+        )
+
+        assert len(attempts) == 2
+        assert out.startswith("integrated_multimodal_description:")
+        assert "[Shot 1]" in out
+
+    async def test_h3_preserves_structure_but_unwraps_user_verbatim(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        async def fake_improve(request, session):
+            assert "__VERBATIM_A__" in request.prompt
+            return pe.ImprovePromptResponse(
+                improved_prompt="integrated_multimodal_description: [Shot 1] "
+                "The sign reads __VERBATIM_A__ as a woman (S1) says: "
+                "<d>[English] Welcome.</d>\n\noverall_soundscape: Room tone.\n\n"
+                "non_diegetic_music: N/A"
+            )
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "the sign reads [OPEN LATE]",
+            {"autoImprove": {"enabled": True}},
+            model="minimax-h3-t2v",
+            is_video=True,
+            h3_task="t2va",
+            h3_duration=5,
+        )
+
+        assert "[Shot 1]" in out
+        assert "<d>[English] Welcome.</d>" in out
+        assert "reads OPEN LATE" in out
+        assert "[OPEN LATE]" not in out
+
     async def test_enhance_then_translate_then_resolve(self, generation_app, generation_db_session, monkeypatch):
         import routes.prompt_enhancement as pe
 

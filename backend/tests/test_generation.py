@@ -219,6 +219,28 @@ class TestPromptPipelineRouting:
             "image-to-video",
         ) == 123
 
+    def test_h3_context_derives_task_duration_frames_and_audio(self):
+        assert generation_routes._prompt_h3_context({"duration": 5}) == (
+            "t2va", 5.0, [], True,
+        )
+        assert generation_routes._prompt_h3_context({
+            "input_images": ["first.png"],
+            "input_media_ids": [123],
+            "duration": 6.5,
+        }) == ("i2va", 6.5, [123], True)
+        assert generation_routes._prompt_h3_context({
+            "input_images": ["first.png", "last.png"],
+            "input_media_ids": [123, 456],
+            "duration": 8,
+            "generate_audio": False,
+        }) == ("fl2va", 8.0, [123, 456], False)
+
+    def test_h3_context_supports_named_last_frame_only(self):
+        assert generation_routes._prompt_h3_context({
+            "last_frame": "last.png",
+            "duration": "7.5",
+        })[:2] == ("l2va", 7.5)
+
     def test_prompt_context_uses_descriptor_metadata_and_name_fallbacks(self, monkeypatch):
         descriptor = SimpleNamespace(
             model=None,

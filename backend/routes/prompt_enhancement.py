@@ -3,7 +3,7 @@ from core.logging import get_logger
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import asyncio
 import json
 import re
@@ -38,7 +38,7 @@ _KEYWORD_FAMILIES = frozenset({
 })
 _VIDEO_FAMILIES = frozenset({
     "stable-video-diffusion", "wan-2.2", "wan-2.1", "wan-other",
-    "hunyuan-video", "ltx-video", "mochi", "cogvideo",
+    "hunyuan-video", "minimax-h3", "ltx-video", "mochi", "cogvideo",
     "veo-3", "veo-2", "kling", "runway-gen", "sora", "seedance",
 })
 
@@ -61,6 +61,8 @@ def enhancement_mode(
     """
     if is_audio:
         return "audio"
+    if family == "minimax-h3" and (is_video or family in _VIDEO_FAMILIES):
+        return "minimax-h3"
     if is_video or family in _VIDEO_FAMILIES:
         return "cinematography"
     if family == "ideogram":
@@ -78,6 +80,7 @@ def enhancement_mode(
 _IMPROVE_PROMPT_BY_MODE = {
     "keyword": "improve_keyword_system_prompt",
     "cinematography": "improve_cinematography_system_prompt",
+    "minimax-h3": "improve_minimax_h3_system_prompt",
     "edit": "improve_image_edit_system_prompt",
     "audio": "improve_audio_system_prompt",
     "prose": "improve_system_prompt",
@@ -118,6 +121,56 @@ def _audio_guidance(*, audio_conditioned: bool, image_variant: bool) -> str:
         frame_clause=" in the frame" if image_variant else ""
     )
 
+
+def _h3_task_guidance(task: Optional[str], duration: Optional[float]) -> str:
+    """Exact MiniMax H3 Context-IR alignment rules for the active task."""
+    seconds = max(0.0, float(duration or 0.0))
+    end_time = f"{seconds:.2f}"
+    if task == "i2va":
+        return (
+            "This is I2VA. The output MUST begin with this exact line, followed by one blank line:\n"
+            "For the target video, at 0.00 seconds into the target video, <Picture 1> "
+            "(from [Shot 1]) is fully referenced.\n"
+            "Start Shot 1 by anchoring its style, subjects, composition, scene, colors, key objects, "
+            "and spatial relationships to Picture 1, then describe action onset, continuous development, "
+            "and the result or reaction. Preserve visual identity and layout."
+        )
+    if task == "fl2va":
+        return (
+            "This is FL2VA. Prefer one continuous shot unless the user explicitly requests cuts. The "
+            "output MUST begin with an alignment line in exactly this form, followed by one blank line:\n"
+            "How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns "
+            f"with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the {end_time}-second mark of the target video.\n"
+            "Replace N with the actual final shot number (normally 1). Describe the observable path from "
+            "Picture 1 through intermediate changes until pose, objects, composition, camera, and lighting "
+            "land on Picture 2 at the end; do not merely describe two static images."
+        )
+    if task == "l2va":
+        return (
+            "This is L2VA. The output MUST begin with an alignment line in exactly this form, followed by one blank line:\n"
+            "How the reference pictures align with the target video — <Picture 1> (from [Shot N]) "
+            f"aligns with the {end_time}-second mark of the target video.\n"
+            "Replace N with the actual final shot number. Infer a plausible preceding state and describe "
+            "a continuous path that converges on Picture 1's exact final composition."
+        )
+    return (
+        "This is T2VA. Do not add an image-alignment instruction; begin directly with "
+        "integrated_multimodal_description. Build the complete audiovisual timeline from the user's text."
+    )
+
+
+def _h3_audio_guidance(generate_audio: bool) -> str:
+    if generate_audio:
+        return (
+            "Audio generation is enabled. Preserve requested dialogue verbatim and describe requested "
+            "ambience, physical sounds, and score in their proper sections. Do not invent dialogue or music."
+        )
+    return (
+        "Audio generation is disabled. Keep the three required fields, but write overall_soundscape: N/A "
+        "and non_diegetic_music: N/A. Describe visible speaking or sound-causing actions only as visible "
+        "motion; do not invent audio content."
+    )
+
 # Raster formats we can hand to a VLM. Source frames in other formats (or video)
 # are simply not shown — enhancement falls back to the text-only path.
 _VLM_IMAGE_FORMATS = frozenset({"jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff"})
@@ -134,7 +187,7 @@ _DIALOGUE_QUOTE_RE = re.compile(r'["“][^"“”]+["”]')
 
 def _protected_text_guidance(
     prompt: str, *, keyword_mode: bool = False, cinematography: bool = False,
-    audio_conditioned: bool = False,
+    audio_conditioned: bool = False, audio_disabled: bool = False,
 ) -> str:
     """Build the 'PRESERVING PROTECTED TEXT' block for the spans actually present.
 
@@ -153,7 +206,13 @@ def _protected_text_guidance(
     """
     bullets: List[str] = []
     if cinematography and _DIALOGUE_QUOTE_RE.search(prompt):
-        if audio_conditioned:
+        if audio_disabled:
+            bullets.append(
+                '- Quoted dialogue (e.g. she says, "..."): keep the words exactly as written and '
+                "attribute them to the speaker as a visible performance cue, but do not claim the "
+                "audio-disabled model will voice them."
+            )
+        elif audio_conditioned:
             bullets.append(
                 '- Quoted dialogue (e.g. she says, "..."): keep the spoken words exactly as '
                 "written and attribute them to the speaker — they mark what is being said in "
@@ -301,6 +360,12 @@ class ImprovePromptRequest(BaseModel):
     # on the cinematography path, the frame is shown to the model so the prompt
     # animates the real image. Ignored for other styles.
     media_id: Optional[int] = None
+    # MiniMax H3's local base model consumes a task-specific Context-IR shape.
+    # These are derived from the live generation parameters by the submit route.
+    h3_task: Optional[str] = None
+    h3_duration: Optional[float] = None
+    h3_media_ids: List[Optional[int]] = Field(default_factory=list)
+    h3_generate_audio: bool = True
     # Project whose model override should apply, when the editor is scoped
     # to one. Absent -> the profile's Tool Assistant setting.
     project_id: Optional[int] = None
@@ -675,12 +740,21 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
     # i2v: on the cinematography path, show the source frame to the model so the
     # prompt animates the real image. Best-effort — if the frame can't be loaded
     # we fall back to the text-only cinematography prompt.
-    source_image_b64: Optional[str] = None
-    if mode == "cinematography" and request.media_id is not None:
-        source_image_b64 = await _load_source_image_b64(session, request.media_id)
+    source_images_b64: List[tuple[int, str]] = []
+    if mode == "minimax-h3":
+        for picture_number, media_id in enumerate(request.h3_media_ids, start=1):
+            if media_id is None:
+                continue
+            loaded = await _load_source_image_b64(session, media_id)
+            if loaded:
+                source_images_b64.append((picture_number, loaded))
+    elif mode == "cinematography" and request.media_id is not None:
+        loaded = await _load_source_image_b64(session, request.media_id)
+        if loaded:
+            source_images_b64.append((1, loaded))
 
     prompt_key = _IMPROVE_PROMPT_BY_MODE.get(mode, "improve_system_prompt")
-    if source_image_b64:
+    if source_images_b64 and mode == "cinematography":
         prompt_key = "improve_cinematography_image_system_prompt"
     prompt_from_file = get_prompt("prompt_enhancement", prompt_key)
     if not prompt_from_file and prompt_key != "improve_system_prompt":
@@ -697,26 +771,42 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         "{audio_guidance}",
         _audio_guidance(
             audio_conditioned=request.audio_conditioned,
-            image_variant=bool(source_image_b64),
+            image_variant=bool(source_images_b64),
         ),
+    )
+    system_prompt = system_prompt.replace(
+        "{h3_task_guidance}", _h3_task_guidance(request.h3_task, request.h3_duration)
+    )
+    system_prompt = system_prompt.replace(
+        "{h3_audio_guidance}", _h3_audio_guidance(request.h3_generate_audio)
     )
     system_prompt = system_prompt.replace(
         "{protected_text_guidance}",
         _protected_text_guidance(
             request.prompt,
             keyword_mode=(mode == "keyword"),
-            cinematography=(mode == "cinematography"),
+            cinematography=(mode in {"cinematography", "minimax-h3"}),
             audio_conditioned=request.audio_conditioned,
+            audio_disabled=(mode == "minimax-h3" and not request.h3_generate_audio),
         ),
     )
     system_prompt = re.sub(r"\n{3,}", "\n\n", system_prompt)
     log.info(
-        f"Prompt improve mode={mode} image={'yes' if source_image_b64 else 'no'} "
+        f"Prompt improve mode={mode} images={len(source_images_b64)} "
         f"audio_conditioned={request.audio_conditioned}"
     )
 
     # Build the user message
-    if source_image_b64:
+    if mode == "minimax-h3":
+        instr = (f"\n\nAdditional instructions: {request.instructions.strip()}"
+                 if request.instructions and request.instructions.strip() else "")
+        user_content = (
+            f"Rewrite this request as MiniMax H3 {str(request.h3_task or 't2va').upper()} "
+            f"Context-IR for a {float(request.h3_duration or 0):.2f}-second target video. "
+            "Return only the final model prompt:\n\n"
+            f"{request.prompt}{instr}"
+        )
+    elif source_images_b64:
         # i2v: the attached frame is reference; the user's text is direction for
         # the clip, to be turned into motion/camera — not a prompt to "improve".
         instr = (f"\n\nAdditional instructions: {request.instructions.strip()}"
@@ -736,13 +826,21 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
     else:
         user_content = f"Please improve this prompt with a light touch:\n\n{request.prompt}"
 
-    if source_image_b64:
-        # Multimodal: the source frame rides alongside the prompt text.
+    if source_images_b64:
+        # Multimodal: H3 may carry first and last frames; generic I2V carries one.
+        image_parts = []
+        for picture_number, image_b64 in source_images_b64:
+            if mode == "minimax-h3":
+                role = "first frame" if picture_number == 1 else "last frame"
+                image_parts.append({"type": "text", "text": f"Picture {picture_number} ({role}):"})
+            image_parts.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+            )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": [
                 {"type": "text", "text": user_content},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{source_image_b64}"}},
+                *image_parts,
             ]},
         ]
     else:

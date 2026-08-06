@@ -42,11 +42,18 @@ _MAX_LLM_RETRIES = 3
 
 # --- promptProcessor.ts ports -------------------------------------------------
 
-def extract_verbatim(prompt: str) -> Tuple[str, List[Dict[str, str]]]:
+def extract_verbatim(
+    prompt: str, *, preserve_h3_structure: bool = False
+) -> Tuple[str, List[Dict[str, str]]]:
     """Extract [verbatim] segments and replace with placeholders (before LLM)."""
     segments: List[Dict[str, str]] = []
 
     def _repl(match: re.Match) -> str:
+        if preserve_h3_structure and (
+            re.fullmatch(r"Shot\s+\d+", match.group(1), re.IGNORECASE)
+            or prompt[max(0, match.start() - 3):match.start()] == "<d>"
+        ):
+            return match.group(0)
         placeholder = f"__VERBATIM_{chr(65 + len(segments))}__"  # A, B, C, ...
         segments.append({"placeholder": placeholder, "original": match.group(1)})
         return placeholder
@@ -55,11 +62,14 @@ def extract_verbatim(prompt: str) -> Tuple[str, List[Dict[str, str]]]:
     return processed, segments
 
 
-def restore_verbatim(prompt: str, segments: List[Dict[str, str]]) -> str:
+def restore_verbatim(
+    prompt: str, segments: List[Dict[str, str]], *, include_brackets: bool = True
+) -> str:
     """Restore [verbatim] segments from placeholders (after LLM)."""
     result = prompt
     for segment in segments:
-        result = result.replace(segment["placeholder"], f"[{segment['original']}]", 1)
+        restored = f"[{segment['original']}]" if include_brackets else segment["original"]
+        result = result.replace(segment["placeholder"], restored, 1)
     return result
 
 
@@ -128,6 +138,7 @@ def process_final_prompt(
     prompt: str,
     wildcards: Optional[List[Dict[str, Any]]] = None,
     segments: Optional[List[Dict[str, Any]]] = None,
+    preserve_brackets: bool = False,
 ) -> str:
     """Final resolve: {{name}} first (segment content gets further processing),
     then strip comments, unwrap verbatim, expand inline wildcards."""
@@ -135,7 +146,8 @@ def process_final_prompt(
     if wildcards or segments:
         result = expand_named_wildcards(result, wildcards or [], segments)
     result = strip_comments(result)
-    result = unwrap_verbatim(result)
+    if not preserve_brackets:
+        result = unwrap_verbatim(result)
     result = expand_wildcards(result)
     return result
 
@@ -175,12 +187,22 @@ async def _improve_with_verbatim_protection(
     input_image_count: int,
     audio_conditioned: bool,
     media_id: Optional[int],
+    h3_task: Optional[str],
+    h3_duration: Optional[float],
+    h3_media_ids: Optional[List[Optional[int]]],
+    h3_generate_audio: bool,
     project_id: Optional[int],
 ) -> str:
     from routes.prompt_enhancement import ImprovePromptRequest, improve_prompt
 
-    prompt_with_placeholders, segments = extract_verbatim(prompt)
+    prompt_with_placeholders, segments = extract_verbatim(
+        prompt,
+        preserve_h3_structure=(
+            h3_task is not None and "integrated_multimodal_description:" in prompt
+        ),
+    )
 
+    last_candidate: Optional[str] = None
     for attempt in range(_MAX_LLM_RETRIES):
         request = ImprovePromptRequest(
             prompt=prompt_with_placeholders,
@@ -191,18 +213,70 @@ async def _improve_with_verbatim_protection(
             input_image_count=input_image_count,
             audio_conditioned=audio_conditioned,
             media_id=media_id,
+            h3_task=h3_task,
+            h3_duration=h3_duration,
+            h3_media_ids=h3_media_ids or [],
+            h3_generate_audio=h3_generate_audio,
             project_id=project_id,
         )
         async with db.async_session_maker() as session:
             candidate = (await improve_prompt(request, session)).improved_prompt
+        last_candidate = candidate
+        if h3_task is not None and not _valid_h3_context_ir(candidate, h3_task, h3_duration):
+            log.warning(
+                f"[prompt-pipeline] Improve attempt {attempt + 1}: invalid H3 Context-IR, retrying..."
+            )
+            continue
         if not segments:
             return candidate
         if verify_verbatim_preserved(candidate, segments):
-            return restore_verbatim(candidate, segments)
+            return restore_verbatim(
+                candidate, segments, include_brackets=(h3_task is None)
+            )
         log.warning(f"[prompt-pipeline] Improve attempt {attempt + 1}: verbatim placeholders dropped, retrying...")
 
-    log.warning("[prompt-pipeline] All improve retries failed to preserve verbatim text, using original prompt")
+    if h3_task is not None and last_candidate is not None and not segments:
+        log.warning("[prompt-pipeline] H3 enhancement never passed schema validation; using last candidate")
+        return last_candidate
+    log.warning("[prompt-pipeline] All improve retries failed validation, using original prompt")
     return prompt
+
+
+def _valid_h3_context_ir(prompt: str, task: str, duration: Optional[float]) -> bool:
+    """Cheap structural guardrail for the official H3 Base prompt schema."""
+    fields = (
+        "integrated_multimodal_description:",
+        "overall_soundscape:",
+        "non_diegetic_music:",
+    )
+    positions = [prompt.find(field) for field in fields]
+    if positions[0] < 0 or positions != sorted(positions):
+        return False
+    stripped = prompt.strip()
+    if task == "t2va":
+        return stripped.startswith(fields[0])
+    if task == "i2va":
+        return stripped.startswith(
+            "For the target video, at 0.00 seconds into the target video, <Picture 1> "
+            "(from [Shot 1]) is fully referenced."
+        )
+    end_time = f"{max(0.0, float(duration or 0.0)):.2f}-second mark"
+    if task == "fl2va":
+        return (
+            stripped.startswith("How the reference pictures align with the target video —")
+            and "Picture 1 (from Shot 1)" in stripped
+            and "Picture 2 (from Shot " in stripped
+            and end_time in stripped
+            and "Shot N" not in stripped
+        )
+    if task == "l2va":
+        return (
+            stripped.startswith("How the reference pictures align with the target video —")
+            and "<Picture 1> (from [Shot " in stripped
+            and end_time in stripped
+            and "Shot N" not in stripped
+        )
+    return False
 
 
 async def _translate_with_verbatim_protection(
@@ -368,6 +442,10 @@ async def run_prompt_pipeline(
     input_image_count: int = 0,
     audio_conditioned: bool = False,
     media_id: Optional[int] = None,
+    h3_task: Optional[str] = None,
+    h3_duration: Optional[float] = None,
+    h3_media_ids: Optional[List[Optional[int]]] = None,
+    h3_generate_audio: bool = True,
     width: Optional[int] = None,
     height: Optional[int] = None,
     profile_id: Optional[str] = None,
@@ -402,7 +480,7 @@ async def run_prompt_pipeline(
     instructions = (auto_improve.get("instructions") or "").strip() or None
 
     preloaded_improved: Optional[str] = None
-    if enhance_on and not ideogram_json_mode:
+    if enhance_on and not ideogram_json_mode and h3_task is None:
         preloaded_improved = _validated_prompt_preload(
             prompt_preload,
             prompt=prompt,
@@ -433,18 +511,27 @@ async def run_prompt_pipeline(
             input_image_count=input_image_count,
             audio_conditioned=audio_conditioned,
             media_id=media_id,
+            h3_task=h3_task,
+            h3_duration=h3_duration,
+            h3_media_ids=h3_media_ids,
+            h3_generate_audio=h3_generate_audio,
             project_id=project_id,
         )
 
     # 3) Translate.
-    if translate.get("enabled") and translate.get("language"):
+    # H3 Base's Context-IR field names and prose must remain English; the H3
+    # enhancer itself preserves dialogue/lyrics and visible text in their source
+    # language. A generic translation pass would corrupt that required schema.
+    if translate.get("enabled") and translate.get("language") and h3_task is None:
         processed = await _translate_with_verbatim_protection(
             processed, translate["language"], project_id
         )
 
     # 4) Final cleanup: comments, verbatim, and any wildcard syntax introduced
     # by the LLM.
-    processed = process_final_prompt(processed, wildcards, segments)
+    processed = process_final_prompt(
+        processed, wildcards, segments, preserve_brackets=(h3_task is not None)
+    )
 
     # 5) Ideogram JSON — on the fully resolved prompt (last step).
     if ideogram_json_mode:
