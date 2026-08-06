@@ -103,6 +103,38 @@ class TestH3ReferenceContextValidation:
             manifest,
         )
 
+    def test_rejects_dialogue_not_grounded_in_user_input(self):
+        silent = (
+            "integrated_multimodal_description: [Shot 1] The sign reads \"OPEN LATE\".\n\n"
+            "overall_soundscape: Room tone.\n\nnon_diegetic_music: N/A"
+        )
+        invented = silent.replace(
+            "The sign reads \"OPEN LATE\".",
+            "The sign reads \"OPEN LATE\" as a woman (S1) says: <d>[English] Welcome.</d>",
+        )
+        assert pp._valid_h3_context_ir(
+            silent, "t2va", 5, source_prompt='the sign reads "OPEN LATE"'
+        )
+        assert not pp._valid_h3_context_ir(
+            invented, "t2va", 5, source_prompt='the sign reads "OPEN LATE"'
+        )
+
+    def test_accepts_only_user_supplied_dialogue_words(self):
+        supplied = (
+            "integrated_multimodal_description: [Shot 1] A woman (S1) says: "
+            "<d>[English] Welcome.</d>\n\noverall_soundscape: Room tone.\n\n"
+            "non_diegetic_music: N/A"
+        )
+        assert pp._valid_h3_context_ir(
+            supplied, "t2va", 5, source_prompt='a woman says "Welcome."'
+        )
+        assert not pp._valid_h3_context_ir(
+            supplied.replace("Welcome.", "Welcome home."),
+            "t2va",
+            5,
+            source_prompt='a woman says "Welcome."',
+        )
+
     def test_full_resolution_order(self):
         # {{name}} expands first so segment content gets further processing.
         out = pp.process_final_prompt(
@@ -217,6 +249,36 @@ class TestRunPromptPipeline:
         assert out.startswith("integrated_multimodal_description:")
         assert "[Shot 1]" in out
 
+    async def test_h3_falls_back_to_original_when_every_attempt_invents_dialogue(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        attempts = []
+
+        async def fake_improve(request, session):
+            attempts.append(request)
+            return pe.ImprovePromptResponse(
+                improved_prompt="integrated_multimodal_description: [Shot 1] "
+                "A baker (S1) says: <d>[English] Fresh bread!</d>\n\n"
+                "overall_soundscape: Quiet room tone.\n\nnon_diegetic_music: N/A"
+            )
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+        original = "a baker opens the shop"
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            original,
+            {"autoImprove": {"enabled": True}},
+            model="minimax-h3-t2v",
+            is_video=True,
+            h3_task="t2va",
+            h3_duration=5,
+        )
+
+        assert len(attempts) == 3
+        assert out == original
+
     async def test_h3_preserves_structure_but_unwraps_user_verbatim(
         self, generation_app, generation_db_session, monkeypatch
     ):
@@ -226,8 +288,7 @@ class TestRunPromptPipeline:
             assert "__VERBATIM_A__" in request.prompt
             return pe.ImprovePromptResponse(
                 improved_prompt="integrated_multimodal_description: [Shot 1] "
-                "The sign reads __VERBATIM_A__ as a woman (S1) says: "
-                "<d>[English] Welcome.</d>\n\noverall_soundscape: Room tone.\n\n"
+                "The sign reads __VERBATIM_A__.\n\noverall_soundscape: Room tone.\n\n"
                 "non_diegetic_music: N/A"
             )
 
@@ -243,7 +304,7 @@ class TestRunPromptPipeline:
         )
 
         assert "[Shot 1]" in out
-        assert "<d>[English] Welcome.</d>" in out
+        assert "<d>" not in out
         assert "reads OPEN LATE" in out
         assert "[OPEN LATE]" not in out
 

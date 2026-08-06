@@ -203,6 +203,59 @@ def _h3_audio_guidance(generate_audio: bool) -> str:
         "motion; do not invent audio content."
     )
 
+
+_H3_DIALOGUE_BLOCK_RE = re.compile(r"<d>.*?</d>", re.IGNORECASE | re.DOTALL)
+_H3_DIALOGUE_INTENT_RE = re.compile(
+    r"\b(?:dialogue|voiceover|narration|narrator|speaks?|says?|asks?|replies?|"
+    r"shouts?|whispers?|yells?|sings?|chants?)\b",
+    re.IGNORECASE,
+)
+_H3_NEGATED_DIALOGUE_RE = re.compile(
+    r"\b(?:(?:no|without)\s+(?:spoken\s+)?(?:dialogue|speech|voiceover|narration|singing)|"
+    r"(?:does\s+not|doesn't|never)\s+(?:speak|say|sing|narrate))\b",
+    re.IGNORECASE,
+)
+_H3_VISIBLE_TEXT_ATTRIBUTION_RE = re.compile(
+    r"\b(?:sign|banner|label|screen|poster|caption|subtitle|text)\s+"
+    r"(?:reads?|says?|shows?|displays?)\b",
+    re.IGNORECASE,
+)
+_H3_SCRIPT_LINE_RE = re.compile(r"(?m)^\s*[A-Z][A-Z0-9 _-]{0,30}:\s*\S+")
+
+
+def _h3_input_has_dialogue(prompt: str) -> bool:
+    """Whether the user actually supplied or requested spoken words."""
+    if _H3_DIALOGUE_BLOCK_RE.search(prompt):
+        return True
+    without_negations = _H3_NEGATED_DIALOGUE_RE.sub("", prompt)
+    without_visible_text = _H3_VISIBLE_TEXT_ATTRIBUTION_RE.sub("", without_negations)
+    return bool(
+        _H3_DIALOGUE_INTENT_RE.search(without_visible_text)
+        or _H3_SCRIPT_LINE_RE.search(without_visible_text)
+    )
+
+
+def _h3_dialogue_guidance(prompt: str) -> str:
+    if not _h3_input_has_dialogue(prompt):
+        return (
+            "NO DIALOGUE: The user's input contains no requested spoken, sung, narrated, or "
+            "voiceover words. Do not introduce speaker IDs, speech attribution, <d> blocks, "
+            "singing, narration, or voiceover. Do not turn visible text into speech. Characters "
+            "produce no intelligible words unless the user explicitly supplied them. If the user "
+            "requested visible talking without supplying words, describe only the visible nonverbal "
+            "performance and do not compose a line."
+        )
+    return (
+        "PRESERVING DIALOGUE: Use only spoken, sung, narrated, or voiceover words explicitly "
+        "supplied by the user. Never compose, complete, paraphrase, or infer a line. Preserve the "
+        "original language and every word and punctuation mark. Give each speaker a stable ID such "
+        "as (S1), reused across shots. Put delivery outside the dialogue block and the exact supplied "
+        "words inside <d>[Language] ...</d>. For voiceover, use the exact phrase \"says in an "
+        "off-screen voiceover\" and immediately state that the corresponding on-screen character's "
+        "lips remain completely closed. Use <scenetrans> for a supplied line continuing across a cut "
+        "and <cutoff> when supplied speech is truncated by the video ending."
+    )
+
 # Raster formats we can hand to a VLM. Source frames in other formats (or video)
 # are simply not shown — enhancement falls back to the text-only path.
 _VLM_IMAGE_FORMATS = frozenset({"jpg", "jpeg", "png", "webp", "bmp", "gif", "tiff"})
@@ -814,6 +867,9 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
     )
     system_prompt = system_prompt.replace(
         "{h3_audio_guidance}", _h3_audio_guidance(request.h3_generate_audio)
+    )
+    system_prompt = system_prompt.replace(
+        "{h3_dialogue_guidance}", _h3_dialogue_guidance(request.prompt)
     )
     system_prompt = system_prompt.replace(
         "{protected_text_guidance}",

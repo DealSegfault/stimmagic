@@ -225,7 +225,11 @@ async def _improve_with_verbatim_protection(
             candidate = (await improve_prompt(request, session)).improved_prompt
         last_candidate = candidate
         if h3_task is not None and not _valid_h3_context_ir(
-            candidate, h3_task, h3_duration, h3_reference_manifest
+            candidate,
+            h3_task,
+            h3_duration,
+            h3_reference_manifest,
+            source_prompt=prompt_with_placeholders,
         ):
             log.warning(
                 f"[prompt-pipeline] Improve attempt {attempt + 1}: invalid H3 Context-IR, retrying..."
@@ -240,8 +244,8 @@ async def _improve_with_verbatim_protection(
         log.warning(f"[prompt-pipeline] Improve attempt {attempt + 1}: verbatim placeholders dropped, retrying...")
 
     if h3_task is not None and last_candidate is not None and not segments:
-        log.warning("[prompt-pipeline] H3 enhancement never passed schema validation; using last candidate")
-        return last_candidate
+        log.warning("[prompt-pipeline] H3 enhancement never passed validation; using original prompt")
+        return prompt
     log.warning("[prompt-pipeline] All improve retries failed validation, using original prompt")
     return prompt
 
@@ -251,6 +255,8 @@ def _valid_h3_context_ir(
     task: str,
     duration: Optional[float],
     reference_manifest: Optional[List[Dict[str, Any]]] = None,
+    *,
+    source_prompt: Optional[str] = None,
 ) -> bool:
     """Cheap structural guardrail for the official H3 Base prompt schema."""
     fields = (
@@ -260,6 +266,8 @@ def _valid_h3_context_ir(
     )
     positions = [prompt.find(field) for field in fields]
     if positions[0] < 0 or positions != sorted(positions):
+        return False
+    if source_prompt is not None and not _h3_dialogue_is_grounded(prompt, source_prompt):
         return False
     stripped = prompt.strip()
     if task == "t2va":
@@ -294,6 +302,36 @@ def _valid_h3_context_ir(
             and "Shot N" not in stripped
         )
     return False
+
+
+_H3_DIALOGUE_CONTENT_RE = re.compile(r"<d>(.*?)</d>", re.IGNORECASE | re.DOTALL)
+_H3_DIALOGUE_CONTROL_RE = re.compile(
+    r"(?:^\s*\[[^\[\]\n]+\]\s*|</?(?:scenetrans|cutoff)>|</?d>)",
+    re.IGNORECASE,
+)
+
+
+def _normalized_h3_dialogue(value: str) -> str:
+    value = _H3_DIALOGUE_CONTROL_RE.sub(" ", value)
+    return " ".join(re.findall(r"\w+", value.lower(), flags=re.UNICODE))
+
+
+def _h3_dialogue_is_grounded(candidate: str, source_prompt: str) -> bool:
+    """Reject H3 dialogue that is absent from or adds words to the user input."""
+    from routes.prompt_enhancement import _h3_input_has_dialogue
+
+    blocks = _H3_DIALOGUE_CONTENT_RE.findall(candidate)
+    if not _h3_input_has_dialogue(source_prompt):
+        return not blocks
+    if not blocks:
+        return False
+
+    normalized_source = _normalized_h3_dialogue(source_prompt)
+    return all(
+        bool(normalized := _normalized_h3_dialogue(block))
+        and normalized in normalized_source
+        for block in blocks
+    )
 
 
 async def _translate_with_verbatim_protection(

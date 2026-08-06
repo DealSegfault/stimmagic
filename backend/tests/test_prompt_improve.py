@@ -9,6 +9,8 @@ import pytest
 from routes.prompt_enhancement import (
     _audio_guidance,
     _h3_audio_guidance,
+    _h3_dialogue_guidance,
+    _h3_input_has_dialogue,
     _h3_task_guidance,
     _protected_text_guidance,
     _strip_hallucinated_placeholders,
@@ -242,6 +244,20 @@ def test_h3_audio_disabled_keeps_schema_but_forces_na():
     guidance = _h3_audio_guidance(False)
     assert "overall_soundscape: N/A" in guidance
     assert "non_diegetic_music: N/A" in guidance
+
+
+def test_h3_dialogue_guidance_is_conditional():
+    silent = _h3_dialogue_guidance('a storefront sign reads "OPEN LATE"')
+    assert "NO DIALOGUE" in silent
+    assert "Exact words" not in silent
+    assert not _h3_input_has_dialogue("a woman with no dialogue waves")
+    assert not _h3_input_has_dialogue('a sign says "OPEN LATE"')
+    assert not _h3_input_has_dialogue("two people talking across a table")
+
+    spoken = _h3_dialogue_guidance('a woman says "Welcome."')
+    assert "PRESERVING DIALOGUE" in spoken
+    assert "<d>[Language] ...</d>" in spoken
+    assert _h3_input_has_dialogue("WOMAN: Welcome.")
 
 
 # --- _input_images_phrase ----------------------------------------------------
