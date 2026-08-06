@@ -1613,7 +1613,12 @@ function stageJumpToNewest() {
   stagePinnedMediaId.value = null
 }
 function stageKeydown(e: KeyboardEvent) {
-  if (layoutMode.value !== 'stage' || slideshowState.active) return
+  // Tool views are KeepAlive'd, so this window listener stays bound while the
+  // view is backgrounded (deactivation never reaches onUnmounted). Without the
+  // stageViewActive gate, arrowing through results in ONE tool navigates the
+  // hero of every other cached stage-mode tool — and preventDefault steals the
+  // key from the view actually on screen.
+  if (!stageViewActive.value || layoutMode.value !== 'stage' || slideshowState.active) return
   const ae = document.activeElement as HTMLElement | null
   if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable || ae.closest?.('.cm-editor'))) return
   if (e.key === 'ArrowRight' || e.key === 'd') { e.preventDefault(); stageNav(1) }
