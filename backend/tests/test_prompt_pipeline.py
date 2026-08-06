@@ -78,6 +78,31 @@ class TestProcessFinalPrompt:
         )
         assert out == "a red fox\n# keep as guidance\n[exact tone]"
 
+
+class TestH3ReferenceContextValidation:
+    def test_requires_every_model_visible_reference_tag(self):
+        manifest = [
+            {"label": "Picture 1", "kind": "image"},
+            {"label": "Audio 1", "kind": "video_audio"},
+            {"label": "Video 1", "kind": "video"},
+            {"label": "Audio 2", "kind": "audio"},
+        ]
+        complete = (
+            "integrated_multimodal_description: <Picture 1> supplies the subject; "
+            "<Audio 1> supplies the voice; <Video 1> supplies the movement; "
+            "<Audio 2> supplies the score.\n"
+            "overall_soundscape: Use the referenced voice.\n"
+            "non_diegetic_music: Use the referenced score."
+        )
+
+        assert pp._valid_h3_context_ir(complete, "ref2va", 8, manifest)
+        assert not pp._valid_h3_context_ir(
+            complete.replace("<Video 1>", "the video"),
+            "ref2va",
+            8,
+            manifest,
+        )
+
     def test_full_resolution_order(self):
         # {{name}} expands first so segment content gets further processing.
         out = pp.process_final_prompt(

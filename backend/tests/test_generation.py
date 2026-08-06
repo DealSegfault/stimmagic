@@ -221,19 +221,47 @@ class TestPromptPipelineRouting:
 
     def test_h3_context_derives_task_duration_frames_and_audio(self):
         assert generation_routes._prompt_h3_context({"duration": 5}) == (
-            "t2va", 5.0, [], True,
+            "t2va", 5.0, [], True, [],
         )
         assert generation_routes._prompt_h3_context({
             "input_images": ["first.png"],
             "input_media_ids": [123],
             "duration": 6.5,
-        }) == ("i2va", 6.5, [123], True)
+        }) == ("i2va", 6.5, [123], True, [])
         assert generation_routes._prompt_h3_context({
             "input_images": ["first.png", "last.png"],
             "input_media_ids": [123, 456],
             "duration": 8,
             "generate_audio": False,
-        }) == ("fl2va", 8.0, [123, 456], False)
+        }) == ("fl2va", 8.0, [123, 456], False, [])
+
+    def test_h3_reference_context_matches_model_presentation_order(self):
+        task, duration, media_ids, generate_audio, manifest = (
+            generation_routes._prompt_h3_context(
+                {
+                    "input_images": ["one.png", "two.png"],
+                    "input_media_ids": [101, 102],
+                    "input_videos": ["one.mp4", "two.mp4"],
+                    "input_audios": ["voice.wav", "music.wav"],
+                    "duration": 9,
+                },
+                "reference-to-video",
+            )
+        )
+
+        assert (task, duration, media_ids, generate_audio) == (
+            "ref2va", 9.0, [101, 102], True,
+        )
+        assert [(item["label"], item["kind"]) for item in manifest] == [
+            ("Picture 1", "image"),
+            ("Picture 2", "image"),
+            ("Audio 1", "video_audio"),
+            ("Video 1", "video"),
+            ("Audio 2", "video_audio"),
+            ("Video 2", "video"),
+            ("Audio 3", "audio"),
+            ("Audio 4", "audio"),
+        ]
 
     def test_h3_context_supports_named_last_frame_only(self):
         assert generation_routes._prompt_h3_context({

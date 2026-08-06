@@ -1,6 +1,6 @@
 """Prompt enhancement routes for AI-assisted prompt editing."""
 from core.logging import get_logger
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
@@ -122,10 +122,42 @@ def _audio_guidance(*, audio_conditioned: bool, image_variant: bool) -> str:
     )
 
 
-def _h3_task_guidance(task: Optional[str], duration: Optional[float]) -> str:
+def _h3_task_guidance(
+    task: Optional[str],
+    duration: Optional[float],
+    reference_manifest: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     """Exact MiniMax H3 Context-IR alignment rules for the active task."""
     seconds = max(0.0, float(duration or 0.0))
     end_time = f"{seconds:.2f}"
+    if task == "ref2va":
+        entries = []
+        for item in reference_manifest or []:
+            label = str(item.get("label") or "").strip()
+            kind = str(item.get("kind") or "reference")
+            if not label:
+                continue
+            if kind == "video_audio":
+                meaning = "the soundtrack extracted from the same-numbered reference video"
+            elif kind == "video":
+                meaning = "reference video frames"
+            elif kind == "image":
+                meaning = "reference image"
+            else:
+                meaning = "standalone reference audio"
+            entries.append(f"- <{label}>: {meaning}")
+        mapping = "\n".join(entries) or "- No references were supplied (invalid request)."
+        return (
+            "This is REF2VA. Do not write first-frame, last-frame, or timeline-alignment instructions. "
+            "Begin directly with integrated_multimodal_description. The model receives references in "
+            "the exact presentation order below; these tags are positional and must not be renamed, "
+            "renumbered, swapped, or described as keyframes:\n"
+            f"{mapping}\n"
+            "Use every listed tag at least once in integrated_multimodal_description. State concretely "
+            "what identity, appearance, style, motion, camera behavior, or voice each reference controls. "
+            "A paired <Audio N> appears immediately before its matching <Video N> in the model input, "
+            "but they remain distinct tags and should be assigned distinct audio/video roles."
+        )
     if task == "i2va":
         return (
             "This is I2VA. The output MUST begin with this exact line, followed by one blank line:\n"
@@ -365,6 +397,7 @@ class ImprovePromptRequest(BaseModel):
     h3_task: Optional[str] = None
     h3_duration: Optional[float] = None
     h3_media_ids: List[Optional[int]] = Field(default_factory=list)
+    h3_reference_manifest: List[Dict[str, Any]] = Field(default_factory=list)
     h3_generate_audio: bool = True
     # Project whose model override should apply, when the editor is scoped
     # to one. Absent -> the profile's Tool Assistant setting.
@@ -775,7 +808,9 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         ),
     )
     system_prompt = system_prompt.replace(
-        "{h3_task_guidance}", _h3_task_guidance(request.h3_task, request.h3_duration)
+        "{h3_task_guidance}", _h3_task_guidance(
+            request.h3_task, request.h3_duration, request.h3_reference_manifest
+        )
     )
     system_prompt = system_prompt.replace(
         "{h3_audio_guidance}", _h3_audio_guidance(request.h3_generate_audio)
@@ -831,7 +866,11 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         image_parts = []
         for picture_number, image_b64 in source_images_b64:
             if mode == "minimax-h3":
-                role = "first frame" if picture_number == 1 else "last frame"
+                role = (
+                    "reference image"
+                    if request.h3_task == "ref2va"
+                    else ("first frame" if picture_number == 1 else "last frame")
+                )
                 image_parts.append({"type": "text", "text": f"Picture {picture_number} ({role}):"})
             image_parts.append(
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}

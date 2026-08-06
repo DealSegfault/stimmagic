@@ -220,6 +220,24 @@ def test_h3_task_guidance_uses_exact_alignment_and_duration():
     assert "6.50-second mark" in l2va
 
 
+def test_h3_reference_guidance_preserves_exact_model_order_and_roles():
+    manifest = [
+        {"label": "Picture 1", "kind": "image", "index": 0},
+        {"label": "Audio 1", "kind": "video_audio", "index": 0},
+        {"label": "Video 1", "kind": "video", "index": 0},
+        {"label": "Audio 2", "kind": "audio", "index": 0},
+    ]
+
+    guidance = _h3_task_guidance("ref2va", 8, manifest)
+
+    positions = [guidance.index(f"<{item['label']}>") for item in manifest]
+    assert positions == sorted(positions)
+    assert "soundtrack extracted from the same-numbered reference video" in guidance
+    assert "standalone reference audio" in guidance
+    assert "Do not write first-frame, last-frame, or timeline-alignment" in guidance
+    assert "Use every listed tag at least once" in guidance
+
+
 def test_h3_audio_disabled_keeps_schema_but_forces_na():
     guidance = _h3_audio_guidance(False)
     assert "overall_soundscape: N/A" in guidance

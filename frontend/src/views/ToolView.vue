@@ -419,6 +419,7 @@
           :reorderable="mediaInputConfig.reorderable"
           :label="mediaInputConfig.label"
           :description="mediaInputConfig.description"
+          :slot-labels="slotLabelsForConfig(mediaInputConfig)"
           :controlnet-options="controlnetOptions"
           :batch-mode="globalPrefs.batchMode"
           :frame-mode-key="fullToolIdFromProps"
@@ -427,6 +428,26 @@
           @suggest-resolution="onSuggestResolution"
           @suggest-aspect="onSuggestAspect"
           @explode="explodeBatch"
+        />
+
+        <!-- Additional visual reference sections. Reference-to-video models
+             expose pictures and videos simultaneously; keeping them separate
+             mirrors the model's per-type numbering and preserves reorder intent. -->
+        <MediaPicker
+          v-for="config in additionalVisualMediaInputConfigs"
+          :key="config.paramKey"
+          :model-value="mediaItemsForConfig(config)"
+          @update:model-value="items => updateMediaItemsForConfig(config, items)"
+          :accept="config.accept"
+          :min-items="config.min"
+          :max-items="config.max"
+          :reorderable="config.reorderable"
+          :label="config.label"
+          :description="config.description"
+          :slot-labels="slotLabelsForConfig(config)"
+          :allow-sets="false"
+          @view-media="openSingleImageSlideshow"
+          @view-media-batch="openMediaBatchSlideshow"
         />
 
         <!-- Inpaint: Combined source image + Mask editor -->
@@ -497,6 +518,7 @@
           :reorderable="audioInputConfig.reorderable"
           :label="audioInputConfig.label"
           :description="audioInputConfig.description"
+          :slot-labels="referenceAudioSlotLabels"
         />
 
         <!-- Video Parameters: Duration (for tools using duration param) -->
@@ -1056,6 +1078,7 @@ import { useProvidersApi, type ProviderTool } from '../composables/useProvidersA
 import { useToolState, type ToolState } from '../composables/useToolState'
 import { usePresetsApi } from '../composables/usePresetsApi'
 import { useToolSchemaFeatures } from '../composables/useToolSchemaFeatures'
+import type { MediaInputConfig } from '../composables/useToolSchemaFeatures'
 import { useVideoFrameExtraction, type FramePosition } from '../composables/useVideoFrameExtraction'
 import { useTelemetry } from '../composables/useTelemetry'
 import { makeGlobalKey, makeToolDbKey } from '../utils/storageKeys'
@@ -1813,6 +1836,42 @@ const mediaInputItems = computed(() => {
   return mediaInputConfig.value.paramKey === 'input_images'
     ? globalPrefs.value.inputImages
     : globalPrefs.value.inputVideos
+})
+
+const additionalVisualMediaInputConfigs = computed(() =>
+  visualMediaInputConfigs.value.slice(1)
+)
+
+function mediaItemsForConfig(config: MediaInputConfig): any[] {
+  return config.paramKey === 'input_videos'
+    ? globalPrefs.value.inputVideos
+    : globalPrefs.value.inputImages
+}
+
+function updateMediaItemsForConfig(config: MediaInputConfig, items: any[]) {
+  if (config.paramKey === 'input_videos') globalPrefs.value.inputVideos = items
+  else globalPrefs.value.inputImages = items
+}
+
+const isReferenceToVideo = computed(() =>
+  (tool.value?.task_types || [tool.value?.task_type]).includes('reference-to-video')
+)
+
+function slotLabelsForConfig(config: MediaInputConfig | null): string[] {
+  if (!config || !isReferenceToVideo.value) return []
+  if (config.paramKey === 'input_images') {
+    return Array.from({ length: config.max }, (_, i) => `Picture ${i + 1}`)
+  }
+  return Array.from({ length: config.max }, (_, i) => `Audio ${i + 1} · Video ${i + 1}`)
+}
+
+const referenceAudioSlotLabels = computed(() => {
+  if (!audioInputConfig.value || !isReferenceToVideo.value) return []
+  const offset = globalPrefs.value.inputVideos.length
+  return Array.from(
+    { length: audioInputConfig.value.max },
+    (_, i) => `Audio ${offset + i + 1}`,
+  )
 })
 
 // Update handler for media input items
@@ -3069,6 +3128,7 @@ const {
   outputsAudio,
   isFromScratch,
   mediaInputConfig,
+  visualMediaInputConfigs,
   audioInputConfig,
   aspectRatioChoices,
   imageSizeChoices,
@@ -3273,8 +3333,13 @@ const inputFieldChecks: Record<string, () => boolean> = {
     if (hasVideoFrames.value) return !!videoImages.startImage
     return globalPrefs.value.inputImages?.length > 0
   },
-  'input_videos': () => globalPrefs.value.inputVideos?.length >= (mediaInputConfig.value?.min || 2),
-  'input_audios': () => globalPrefs.value.inputAudios?.length >= (audioInputConfig.value?.min || 1),
+  'input_videos': () => {
+    const config = visualMediaInputConfigs.value.find(c => c.paramKey === 'input_videos')
+    // A zero schema minimum means this typed section is optional, but when it
+    // satisfies an anyOf branch it still has to contain an actual reference.
+    return globalPrefs.value.inputVideos?.length >= Math.max(1, config?.min ?? 1)
+  },
+  'input_audios': () => globalPrefs.value.inputAudios?.length >= Math.max(1, audioInputConfig.value?.min ?? 1),
   'mask': () => !!maskDataUrl.value,
   'prompt': () => true, // Prompts are always optional (unconditional generation)
   'negative_prompt': () => true, // Always optional
@@ -3306,6 +3371,21 @@ const canSubmit = computed(() => {
   for (const field of required) {
     const check = inputFieldChecks[field]
     if (check && !check()) return false
+  }
+
+  // Standard JSON Schema cross-field alternatives. A reference-to-video tool
+  // uses this to require at least one non-empty typed reference array without
+  // falsely requiring every media type.
+  const anyOf = tool.value.parameter_schema?.anyOf
+  if (Array.isArray(anyOf) && anyOf.length > 0) {
+    const branchSatisfied = anyOf.some((branch: any) => {
+      const fields = Array.isArray(branch?.required) ? branch.required : []
+      return fields.length > 0 && fields.every((field: string) => {
+        const check = inputFieldChecks[field]
+        return check ? check() : true
+      })
+    })
+    if (!branchSatisfied) return false
   }
 
   if (!taskTypeValidation.value.ok) return false

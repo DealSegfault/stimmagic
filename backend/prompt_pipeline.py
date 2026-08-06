@@ -190,6 +190,7 @@ async def _improve_with_verbatim_protection(
     h3_task: Optional[str],
     h3_duration: Optional[float],
     h3_media_ids: Optional[List[Optional[int]]],
+    h3_reference_manifest: Optional[List[Dict[str, Any]]],
     h3_generate_audio: bool,
     project_id: Optional[int],
 ) -> str:
@@ -216,13 +217,16 @@ async def _improve_with_verbatim_protection(
             h3_task=h3_task,
             h3_duration=h3_duration,
             h3_media_ids=h3_media_ids or [],
+            h3_reference_manifest=h3_reference_manifest or [],
             h3_generate_audio=h3_generate_audio,
             project_id=project_id,
         )
         async with db.async_session_maker() as session:
             candidate = (await improve_prompt(request, session)).improved_prompt
         last_candidate = candidate
-        if h3_task is not None and not _valid_h3_context_ir(candidate, h3_task, h3_duration):
+        if h3_task is not None and not _valid_h3_context_ir(
+            candidate, h3_task, h3_duration, h3_reference_manifest
+        ):
             log.warning(
                 f"[prompt-pipeline] Improve attempt {attempt + 1}: invalid H3 Context-IR, retrying..."
             )
@@ -242,7 +246,12 @@ async def _improve_with_verbatim_protection(
     return prompt
 
 
-def _valid_h3_context_ir(prompt: str, task: str, duration: Optional[float]) -> bool:
+def _valid_h3_context_ir(
+    prompt: str,
+    task: str,
+    duration: Optional[float],
+    reference_manifest: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
     """Cheap structural guardrail for the official H3 Base prompt schema."""
     fields = (
         "integrated_multimodal_description:",
@@ -255,6 +264,14 @@ def _valid_h3_context_ir(prompt: str, task: str, duration: Optional[float]) -> b
     stripped = prompt.strip()
     if task == "t2va":
         return stripped.startswith(fields[0])
+    if task == "ref2va":
+        if not stripped.startswith(fields[0]):
+            return False
+        return all(
+            f"<{item.get('label')}>" in stripped
+            for item in (reference_manifest or [])
+            if item.get("label")
+        )
     if task == "i2va":
         return stripped.startswith(
             "For the target video, at 0.00 seconds into the target video, <Picture 1> "
@@ -445,6 +462,7 @@ async def run_prompt_pipeline(
     h3_task: Optional[str] = None,
     h3_duration: Optional[float] = None,
     h3_media_ids: Optional[List[Optional[int]]] = None,
+    h3_reference_manifest: Optional[List[Dict[str, Any]]] = None,
     h3_generate_audio: bool = True,
     width: Optional[int] = None,
     height: Optional[int] = None,
@@ -514,6 +532,7 @@ async def run_prompt_pipeline(
             h3_task=h3_task,
             h3_duration=h3_duration,
             h3_media_ids=h3_media_ids,
+            h3_reference_manifest=h3_reference_manifest,
             h3_generate_audio=h3_generate_audio,
             project_id=project_id,
         )

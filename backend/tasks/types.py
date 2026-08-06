@@ -10,6 +10,7 @@ class TaskType(str, Enum):
     IMAGE_TO_IMAGE = "image-to-image"
     FILTER = "filter"
     IMAGE_TO_VIDEO = "image-to-video"
+    REFERENCE_TO_VIDEO = "reference-to-video"
     TEXT_TO_VIDEO = "text-to-video"
     VIDEO_TO_VIDEO = "video-to-video"
     UPSCALE_IMAGE = "upscale-image"
@@ -44,6 +45,8 @@ class TaskType(str, Enum):
             "edit": cls.IMAGE_TO_IMAGE,
             "image-edit": cls.IMAGE_TO_IMAGE,  # backward compat alias
             "i2v": cls.IMAGE_TO_VIDEO,
+            "r2v": cls.REFERENCE_TO_VIDEO,
+            "ref2v": cls.REFERENCE_TO_VIDEO,
             "t2v": cls.TEXT_TO_VIDEO,
             "v2v": cls.VIDEO_TO_VIDEO,
             "upscale": cls.UPSCALE_IMAGE,

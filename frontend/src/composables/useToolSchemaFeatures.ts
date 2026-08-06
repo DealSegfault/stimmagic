@@ -151,6 +151,7 @@ export interface UseToolSchemaFeaturesReturn {
 
   // Media input configuration
   mediaInputConfig: ComputedRef<MediaInputConfig | null>
+  visualMediaInputConfigs: ComputedRef<MediaInputConfig[]>
   // Audio input configuration (separate section, audio-conditioned tools)
   audioInputConfig: ComputedRef<MediaInputConfig | null>
 
@@ -322,9 +323,12 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
     return (AUDIO_TASK_TYPES as readonly string[]).includes(taskType)
   })
 
-  // Unified media input configuration
-  const mediaInputConfig = computed((): MediaInputConfig | null => {
+  // Visual media inputs in schema/model presentation order. Most tools have
+  // one; multimodal reference tools intentionally render both image and video
+  // sections so their positional tags remain visible and deterministic.
+  const visualMediaInputConfigs = computed((): MediaInputConfig[] => {
     const props = tool.value?.parameter_schema?.properties || {}
+    const configs: MediaInputConfig[] = []
 
     // Images (input_images) — skip if using videoFramePicker. Frame tools render
     // their own MediaPicker instance (named Start/End slots) wired to videoImages
@@ -333,27 +337,26 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
       const schema = props.input_images
       const control = schema?.['x-control']
       if (control === 'video_frame_picker') {
-        return null
-      }
-      const max = schema?.['x-max-items'] || schema?.maxItems || 3
-      // Normally an image slot (with the usual video → frame-grab bridge), but
-      // a tool can narrow it to video-only via x-accept-media — e.g. a
-      // temporal filter like reverse that only makes sense on a whole clip,
-      // never a still. Mirrors the backend's schema (filters/schemas.py).
-      const declaredAccept: string[] | null = Array.isArray(schema?.['x-accept-media']) ? schema['x-accept-media'] : null
-      const accept: 'image' | 'video' = declaredAccept && !declaredAccept.includes('image') && declaredAccept.includes('video')
-        ? 'video'
-        : 'image'
-      const defaultLabel = accept === 'video' ? 'Input Video' : (max > 1 ? 'Reference Images' : 'Input Image')
-      return {
-        accept,
-        paramKey: 'input_images',
-        min: schema?.['x-min-items'] ?? schema?.minItems ?? 1,
-        max,
-        reorderable: accept === 'image' && max > 1,
-        label: schema?.['x-label'] || defaultLabel,
-        description: schema?.description,
-        control,
+        // Named first/last-frame UI is rendered separately below.
+      } else {
+        const max = schema?.['x-max-items'] || schema?.maxItems || 3
+        // Normally an image slot (with the usual video -> frame-grab bridge), but
+        // a tool can narrow it to video-only via x-accept-media.
+        const declaredAccept: string[] | null = Array.isArray(schema?.['x-accept-media']) ? schema['x-accept-media'] : null
+        const accept: 'image' | 'video' = declaredAccept && !declaredAccept.includes('image') && declaredAccept.includes('video')
+          ? 'video'
+          : 'image'
+        const defaultLabel = accept === 'video' ? 'Input Video' : (max > 1 ? 'Reference Images' : 'Input Image')
+        configs.push({
+          accept,
+          paramKey: 'input_images',
+          min: schema?.['x-min-items'] ?? schema?.minItems ?? 1,
+          max,
+          reorderable: accept === 'image' && max > 1,
+          label: schema?.['x-label'] || defaultLabel,
+          description: schema?.description,
+          control,
+        })
       }
     }
 
@@ -361,7 +364,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
     if ('input_videos' in props) {
       const schema = props.input_videos
       const control = schema?.['x-control']
-      return {
+      configs.push({
         accept: 'video',
         paramKey: 'input_videos',
         min: schema?.['x-min-items'] ?? schema?.minItems ?? 2,
@@ -370,11 +373,13 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
         label: schema?.['x-label'] || 'Input Videos',
         description: schema?.description,
         control,
-      }
+      })
     }
-
-    return null
+    return configs
   })
+
+  // Backward-compatible primary slot for existing single-input behavior.
+  const mediaInputConfig = computed(() => visualMediaInputConfigs.value[0] ?? null)
 
   // Audio input — its OWN section, independent of the visual media input above.
   // Audio-conditioned tools (lip-sync, avatar) take a visual input (image/video)
@@ -401,7 +406,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
 
   // Whether this tool generates "from scratch" (no required input media)
   const isFromScratch = computed(() => {
-    return !mediaInputConfig.value && !audioInputConfig.value && !hasVideoFrames.value
+    return visualMediaInputConfigs.value.length === 0 && !audioInputConfig.value && !hasVideoFrames.value
   })
 
   // Schema-derived choices
@@ -612,6 +617,7 @@ export function useToolSchemaFeatures(options: UseToolSchemaFeaturesOptions): Us
 
     // Media input configuration
     mediaInputConfig,
+    visualMediaInputConfigs,
     audioInputConfig,
 
     // Schema-derived choices

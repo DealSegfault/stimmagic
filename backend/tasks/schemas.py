@@ -73,6 +73,13 @@ TASK_SCHEMA_REQUIREMENTS: Dict[str, Dict[str, List[str]]] = {
         "optional_input": ["prompt", "negative_prompt"],
         "required_output": ["assets"],
     },
+    # Multimodal references -> video. The three typed arrays are the stable
+    # interface; runtime validation enforces that at least one is non-empty.
+    TaskType.REFERENCE_TO_VIDEO.value: {
+        "required_input": ["prompt", "input_images", "input_videos", "input_audios"],
+        "optional_input": [],
+        "required_output": ["assets"],
+    },
     TaskType.TEXT_TO_VIDEO.value: {
         "required_input": ["prompt"],
         "optional_input": ["negative_prompt"],

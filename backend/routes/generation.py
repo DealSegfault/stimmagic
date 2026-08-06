@@ -234,16 +234,22 @@ def _prompt_media_id(parameters: Dict[str, Any], effective_task: str) -> Optiona
     return None
 
 
-def _prompt_h3_context(parameters: Dict[str, Any]) -> tuple[str, Optional[float], List[Optional[int]], bool]:
-    """Derive H3's Context-IR task from positional first/last-frame inputs."""
+def _prompt_h3_context(
+    parameters: Dict[str, Any], effective_task: Optional[str] = None
+) -> tuple[str, Optional[float], List[Optional[int]], bool, List[Dict[str, Any]]]:
+    """Derive H3's task and its exact model-visible reference presentation."""
     input_images = parameters.get("input_images")
     image_count = _count_value(input_images)
+
+    is_ref2va = effective_task == "reference-to-video"
 
     # Some providers expose named frame fields instead of Stimma's unified
     # input_images array. Respect those roles when present, including last-only.
     first_present = _count_value(parameters.get("first_frame")) > 0
     last_present = _count_value(parameters.get("last_frame")) > 0
-    if first_present or last_present:
+    if is_ref2va:
+        task = "ref2va"
+    elif first_present or last_present:
         if first_present and last_present:
             task = "fl2va"
         elif last_present:
@@ -260,7 +266,8 @@ def _prompt_h3_context(parameters: Dict[str, Any]) -> tuple[str, Optional[float]
     raw_ids = parameters.get("input_media_ids")
     media_ids: List[Optional[int]] = []
     if isinstance(raw_ids, list):
-        for value in raw_ids[:2]:
+        limit = None if is_ref2va else 2
+        for value in raw_ids[:limit]:
             media_ids.append(value if isinstance(value, int) and not isinstance(value, bool) else None)
     elif isinstance(raw_ids, int) and not isinstance(raw_ids, bool):
         media_ids = [raw_ids]
@@ -272,7 +279,25 @@ def _prompt_h3_context(parameters: Dict[str, Any]) -> tuple[str, Optional[float]
     except (TypeError, ValueError):
         duration = None
     generate_audio = parameters.get("generate_audio") is not False
-    return task, duration, media_ids, generate_audio
+
+    manifest: List[Dict[str, Any]] = []
+    if is_ref2va:
+        video_count = _count_value(parameters.get("input_videos"))
+        audio_count = _count_value(parameters.get("input_audios"))
+        for index in range(image_count):
+            manifest.append({"label": f"Picture {index + 1}", "kind": "image", "index": index})
+        # Stimma's reference-video node always presents the uploaded video's
+        # extracted soundtrack immediately before the corresponding video.
+        for index in range(video_count):
+            manifest.append({"label": f"Audio {index + 1}", "kind": "video_audio", "index": index})
+            manifest.append({"label": f"Video {index + 1}", "kind": "video", "index": index})
+        for index in range(audio_count):
+            manifest.append({
+                "label": f"Audio {video_count + index + 1}",
+                "kind": "audio",
+                "index": index,
+            })
+    return task, duration, media_ids, generate_audio, manifest
 
 
 async def _retain_generation_inputs(
@@ -382,9 +407,12 @@ async def _apply_generation_prompt_pipeline(
     h3_task: Optional[str] = None
     h3_duration: Optional[float] = None
     h3_media_ids: List[Optional[int]] = []
+    h3_reference_manifest: List[Dict[str, Any]] = []
     h3_generate_audio = True
     if model_family(model) == "minimax-h3":
-        h3_task, h3_duration, h3_media_ids, h3_generate_audio = _prompt_h3_context(parameters)
+        h3_task, h3_duration, h3_media_ids, h3_generate_audio, h3_reference_manifest = _prompt_h3_context(
+            parameters, effective_task
+        )
     processed_prompt = await run_prompt_pipeline(
         db,
         prompt,
@@ -399,6 +427,7 @@ async def _apply_generation_prompt_pipeline(
         h3_task=h3_task,
         h3_duration=h3_duration,
         h3_media_ids=h3_media_ids,
+        h3_reference_manifest=h3_reference_manifest,
         h3_generate_audio=h3_generate_audio,
         width=_optional_int(parameters, "width"),
         height=_optional_int(parameters, "height"),
