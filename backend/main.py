@@ -17,24 +17,11 @@ if not any('--multiprocessing' in arg or 'from multiprocessing' in arg for arg i
         except OSError:
             pass  # May fail if already a process group leader
 
-# Augment PATH with common binary locations so we can find ffmpeg, ffprobe, etc.
-# macOS apps launched from Finder/Dock get a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin)
-# that doesn't include Homebrew or MacPorts paths.
-_extra_paths = [
-    "/opt/homebrew/bin",       # Homebrew (Apple Silicon)
-    "/usr/local/bin",          # Homebrew (Intel) / manual installs
-    "/opt/local/bin",          # MacPorts
-]
-if os.name == "nt":
-    _extra_paths = [
-        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Links"),  # winget
-        os.path.expandvars(r"%ProgramFiles%\ffmpeg\bin"),
-        os.path.expandvars(r"%ChocolateyInstall%\bin") if os.environ.get("ChocolateyInstall") else "",
-    ]
-_current_path = os.environ.get("PATH", "")
-_dirs_to_add = [p for p in _extra_paths if p and p not in _current_path and os.path.isdir(p)]
-if _dirs_to_add:
-    os.environ["PATH"] = _current_path + os.pathsep + os.pathsep.join(_dirs_to_add)
+# Desktop launchers can inherit a stale or minimal PATH. Refresh it before any
+# services check for external tools such as ffmpeg and ffprobe.
+from executable_path import augment_executable_path
+
+augment_executable_path()
 
 # Watch for parent death - when parent dies, we get reparented to init/launchd (PID 1)
 # This ensures cleanup even if parent is killed with SIGKILL
