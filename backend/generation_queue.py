@@ -76,6 +76,70 @@ def generation_job_payload(job: GenerationJob, asset: Asset | None = None) -> di
     return payload
 
 
+def visible_job_conditions():
+    """WHERE clauses selecting jobs whose result is still user-visible.
+
+    Requires the query to outerjoin MediaItem on result_media_id and Asset on
+    result_asset_id. Shared by job listing and history counting so the two can
+    never disagree about which jobs exist.
+
+    Excludes completed jobs whose media row is deleted or gone, completed jobs
+    with a NULL result_media_id (ghosts from an older deletion path), durable
+    Asset results whose Asset root is no longer active, and internal one-shot
+    flow-as-tool jobs (stamped with _ephemeral_run_id in their params).
+    """
+    from sqlalchemy import or_, and_
+
+    return [
+        or_(
+            # Include jobs without a result_media_id that aren't completed
+            # (queued / assigned / processing / failed legitimately have no result)
+            and_(
+                GenerationJob.result_media_id.is_(None),
+                GenerationJob.status != 'completed',
+            ),
+            # Include jobs where media exists (id is not null from the join) and is not deleted
+            and_(
+                MediaItem.id.isnot(None),
+                MediaItem.deleted_at.is_(None),
+                or_(
+                    # Durable Tool results exist only while their
+                    # Asset root is active. Retained Media is not a
+                    # second Tool View result identity.
+                    and_(
+                        GenerationJob.result_asset_id.is_not(None),
+                        Asset.id.is_not(None),
+                        Asset.state == 'active',
+                        Asset.deleted_at.is_(None),
+                    ),
+                    # Provisional context/container results can be
+                    # shown before their final Asset is committed.
+                    and_(
+                        GenerationJob.result_asset_id.is_(None),
+                        GenerationJob.output_disposition != 'asset',
+                    ),
+                ),
+            ),
+        ),
+        func.json_extract(GenerationJob.parameters, '$._ephemeral_run_id').is_(None),
+    ]
+
+
+def completed_before_condition(completed_before: datetime, completed_before_id: Optional[int]):
+    """Keyset condition: completed strictly before (completed_at, id) descending."""
+    from sqlalchemy import or_, and_
+
+    if completed_before_id is None:
+        return GenerationJob.completed_at < completed_before
+    return or_(
+        GenerationJob.completed_at < completed_before,
+        and_(
+            GenerationJob.completed_at == completed_before,
+            GenerationJob.id < completed_before_id,
+        ),
+    )
+
+
 def compute_size_from_image(image_path: str, megapixels: float, step: int = 64) -> tuple[int, int]:
     """Compute output size from input image aspect ratio and target megapixels.
 
@@ -1645,67 +1709,31 @@ class GenerationQueue:
         status: Optional[str] = None,
         generator_instance_id: Optional[str] = None,
         limit: int = 100,
-        offset: int = 0
+        offset: int = 0,
+        order: str = "created_at",
+        completed_before: Optional[datetime] = None,
+        completed_before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """List generation jobs whose canonical result Asset is still active.
 
         Returns job dicts with inline media data (file_hash, markers, generation_time) to avoid N+1 queries.
+
+        order="completed_at" sorts by (completed_at DESC, id DESC) — the
+        slideshow's canonical completed-history order. completed_before /
+        completed_before_id apply a keyset cursor in that same order, letting
+        clients page history strictly older than an anchor job.
         """
-        from sqlalchemy import or_, and_, func
         # Filter by current profile and use that profile's database
         profile_id = get_current_profile()
 
         async with self._get_db(profile_id).async_session_maker() as session:
-            # Use outerjoin to check if referenced media still exists and isn't deleted
-            # We want to exclude completed jobs where:
-            # - result_media_id is set, but the media item is deleted (deleted_at is not null)
-            # - result_media_id is set, but the media item no longer exists
-            # Belt-and-suspenders: a 'completed' job with a NULL result_media_id is a
-            # ghost (its result was permanently deleted under an older code path).
-            # The scrub now deletes the row outright, but filter defensively in case
-            # any other path nulls it.
-            # Select both job and media to include media data in response
+            # Select both job and media to include media data in response;
+            # visible_job_conditions() relies on these outerjoins.
             query = (
                 select(GenerationJob, MediaItem, Asset)
                 .outerjoin(MediaItem, GenerationJob.result_media_id == MediaItem.id)
                 .outerjoin(Asset, GenerationJob.result_asset_id == Asset.id)
-                .where(
-                    or_(
-                        # Include jobs without a result_media_id that aren't completed
-                        # (queued / assigned / processing / failed legitimately have no result)
-                        and_(
-                            GenerationJob.result_media_id.is_(None),
-                            GenerationJob.status != 'completed',
-                        ),
-                        # Include jobs where media exists (id is not null from the join) and is not deleted
-                        and_(
-                            MediaItem.id.isnot(None),
-                            MediaItem.deleted_at.is_(None),
-                            or_(
-                                # Durable Tool results exist only while their
-                                # Asset root is active. Retained Media is not a
-                                # second Tool View result identity.
-                                and_(
-                                    GenerationJob.result_asset_id.is_not(None),
-                                    Asset.id.is_not(None),
-                                    Asset.state == 'active',
-                                    Asset.deleted_at.is_(None),
-                                ),
-                                # Provisional context/container results can be
-                                # shown before their final Asset is committed.
-                                and_(
-                                    GenerationJob.result_asset_id.is_(None),
-                                    GenerationJob.output_disposition != 'asset',
-                                ),
-                            ),
-                        )
-                    )
-                )
-                # Internal one-shot flow-as-tool jobs are stamped with _ephemeral_run_id in
-                # their params; they must never appear in the user's generation history/queue.
-                .where(
-                    func.json_extract(GenerationJob.parameters, '$._ephemeral_run_id').is_(None)
-                )
+                .where(*visible_job_conditions())
             )
 
             if status:
@@ -1714,7 +1742,17 @@ class GenerationQueue:
             if generator_instance_id:
                 query = query.where(GenerationJob.generator_instance_id == generator_instance_id)
 
-            query = query.order_by(GenerationJob.created_at.desc())
+            if completed_before is not None:
+                query = query.where(
+                    completed_before_condition(completed_before, completed_before_id)
+                )
+
+            if order == "completed_at":
+                query = query.order_by(
+                    GenerationJob.completed_at.desc(), GenerationJob.id.desc()
+                )
+            else:
+                query = query.order_by(GenerationJob.created_at.desc())
             query = query.limit(limit).offset(offset)
 
             result = await session.execute(query)
@@ -1788,6 +1826,38 @@ class GenerationQueue:
                 jobs_list.append(job_dict)
 
             return jobs_list
+
+    async def count_completed_jobs(
+        self,
+        generator_instance_id: Optional[str] = None,
+        completed_before: Optional[datetime] = None,
+        completed_before_id: Optional[int] = None,
+    ) -> int:
+        """Count user-visible completed jobs, optionally strictly older than a
+        (completed_at, id) anchor. Same visibility rules as list_jobs."""
+        profile_id = get_current_profile()
+
+        async with self._get_db(profile_id).async_session_maker() as session:
+            query = (
+                select(func.count())
+                .select_from(GenerationJob)
+                .outerjoin(MediaItem, GenerationJob.result_media_id == MediaItem.id)
+                .outerjoin(Asset, GenerationJob.result_asset_id == Asset.id)
+                .where(*visible_job_conditions())
+                .where(GenerationJob.status == 'completed')
+                .where(GenerationJob.result_media_id.is_not(None))
+            )
+
+            if generator_instance_id:
+                query = query.where(GenerationJob.generator_instance_id == generator_instance_id)
+
+            if completed_before is not None:
+                query = query.where(
+                    completed_before_condition(completed_before, completed_before_id)
+                )
+
+            result = await session.execute(query)
+            return int(result.scalar() or 0)
 
     async def cancel_job(self, job_id: int) -> bool:
         """

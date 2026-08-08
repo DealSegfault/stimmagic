@@ -2906,7 +2906,7 @@ const slideshowState = reactive({
 
 const slideshowTotalCount = computed(() =>
   slideshowState.autoAdvanceOnNew
-    ? (jobsManager?.totalCompletedCount.value || 0)
+    ? (jobsManager?.slideshowCompletedTotal.value || 0)
     : slideshowState.totalCount
 )
 
@@ -6457,8 +6457,12 @@ async function openSlideshow(job: any) {
   const index = jobsManager.sortedCompletedJobs.value.findIndex((j: any) => j.id === job.id)
   if (index === -1) return
 
+  // Freshen the older-than-window history count so the slideshow's total covers
+  // the full backend history from the first frame, not just the capped window.
+  void jobsManager.refreshCompletedHistoryCount()
+
   enterSlideshow({
-    totalCount: jobsManager.totalCompletedCount.value,
+    totalCount: jobsManager.slideshowCompletedTotal.value,
     startIndex: index,
     pageProvider: jobsManager.fetchGeneratedImages,
     randomized: false,

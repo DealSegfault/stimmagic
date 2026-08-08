@@ -2152,23 +2152,61 @@ async def submit_media_batch_jobs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _parse_completed_before(completed_before: Optional[str]):
+    if completed_before is None:
+        return None
+    try:
+        return datetime.fromisoformat(completed_before)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid completed_before timestamp")
+
+
 @router.get("/jobs")
 async def list_generation_jobs(
     status: Optional[str] = None,
     generator_instance_id: Optional[str] = None,
     limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    order: str = Query("created_at", pattern="^(created_at|completed_at)$"),
+    completed_before: Optional[str] = None,
+    completed_before_id: Optional[int] = None
 ):
-    """List generation jobs with optional filters."""
+    """List generation jobs with optional filters.
+
+    order=completed_at pages history in (completed_at DESC, id DESC) order;
+    completed_before/completed_before_id anchor a keyset cursor in that order
+    (jobs strictly older than the anchor).
+    """
     from generation_queue import get_generation_queue
     generation_queue = get_generation_queue()
     jobs = await generation_queue.list_jobs(
         status=status,
         generator_instance_id=generator_instance_id,
         limit=limit,
-        offset=offset
+        offset=offset,
+        order=order,
+        completed_before=_parse_completed_before(completed_before),
+        completed_before_id=completed_before_id
     )
     return {"jobs": jobs, "count": len(jobs)}
+
+
+@router.get("/jobs/completed-count")
+async def count_completed_generation_jobs(
+    generator_instance_id: Optional[str] = None,
+    completed_before: Optional[str] = None,
+    completed_before_id: Optional[int] = None
+):
+    """Count visible completed jobs, optionally strictly older than a
+    (completed_at, id) anchor. Used by the slideshow to size its full history."""
+    from generation_queue import get_generation_queue
+    generation_queue = get_generation_queue()
+    count = await generation_queue.count_completed_jobs(
+        generator_instance_id=generator_instance_id,
+        completed_before=_parse_completed_before(completed_before),
+        completed_before_id=completed_before_id
+    )
+    return {"count": count}
 
 
 @router.get("/jobs/status")

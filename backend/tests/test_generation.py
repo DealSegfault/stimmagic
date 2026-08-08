@@ -1336,6 +1336,185 @@ class TestReferencePrepCrop:
         assert (result["width"], result["height"]) == (1000, 500)
 
 
+class TestCompletedHistoryPaging:
+    """Tests for order=completed_at keyset paging on GET /api/generate/jobs and
+    the /api/generate/jobs/completed-count endpoint (slideshow history)."""
+
+    async def _seed_completed_jobs(self, generation_db_session, instance_id, count=5):
+        """Create `count` completed jobs with strictly increasing completed_at.
+
+        Returns jobs in creation order (oldest first)."""
+        from datetime import datetime, timedelta
+        from tests.helpers import create_generation_job
+
+        base = datetime.utcnow() - timedelta(days=1)
+        jobs = []
+        async with generation_db_session() as session:
+            for i in range(count):
+                media = await create_media_item(session)
+                job = await create_generation_job(
+                    session,
+                    status="completed",
+                    generator_instance_id=instance_id,
+                    result_media_id=media.id,
+                    completed_at=base + timedelta(seconds=i),
+                    output_disposition="context",
+                )
+                jobs.append(job)
+        return jobs
+
+    async def test_completed_order_is_completed_at_desc(
+        self, generation_client, generation_db_session
+    ):
+        instance = "history-order-instance"
+        jobs = await self._seed_completed_jobs(generation_db_session, instance, count=4)
+
+        response = await generation_client.get(
+            "/api/generate/jobs",
+            params={
+                "status": "completed",
+                "order": "completed_at",
+                "generator_instance_id": instance,
+            },
+        )
+        assert response.status_code == 200
+        listed_ids = [j["id"] for j in response.json()["jobs"]]
+        assert listed_ids == [j.id for j in reversed(jobs)]
+
+    async def test_keyset_cursor_pages_strictly_older_jobs(
+        self, generation_client, generation_db_session
+    ):
+        instance = "history-cursor-instance"
+        jobs = await self._seed_completed_jobs(generation_db_session, instance, count=5)
+        anchor = jobs[2]  # jobs[0], jobs[1] are strictly older
+
+        response = await generation_client.get(
+            "/api/generate/jobs",
+            params={
+                "status": "completed",
+                "order": "completed_at",
+                "generator_instance_id": instance,
+                "completed_before": anchor.completed_at.isoformat(),
+                "completed_before_id": anchor.id,
+            },
+        )
+        assert response.status_code == 200
+        listed_ids = [j["id"] for j in response.json()["jobs"]]
+        assert listed_ids == [jobs[1].id, jobs[0].id]
+
+        # Offset pages within the cursor window
+        response = await generation_client.get(
+            "/api/generate/jobs",
+            params={
+                "status": "completed",
+                "order": "completed_at",
+                "generator_instance_id": instance,
+                "completed_before": anchor.completed_at.isoformat(),
+                "completed_before_id": anchor.id,
+                "offset": 1,
+                "limit": 10,
+            },
+        )
+        assert response.status_code == 200
+        assert [j["id"] for j in response.json()["jobs"]] == [jobs[0].id]
+
+    async def test_cursor_breaks_completed_at_ties_by_id(
+        self, generation_client, generation_db_session
+    ):
+        from datetime import datetime, timedelta
+        from tests.helpers import create_generation_job
+
+        instance = "history-tie-instance"
+        tie_at = datetime.utcnow() - timedelta(days=2)
+        jobs = []
+        async with generation_db_session() as session:
+            for _ in range(3):
+                media = await create_media_item(session)
+                jobs.append(await create_generation_job(
+                    session,
+                    status="completed",
+                    generator_instance_id=instance,
+                    result_media_id=media.id,
+                    completed_at=tie_at,
+                    output_disposition="context",
+                ))
+
+        # Same completed_at throughout: order and cursor fall back to id DESC.
+        response = await generation_client.get(
+            "/api/generate/jobs",
+            params={
+                "status": "completed",
+                "order": "completed_at",
+                "generator_instance_id": instance,
+                "completed_before": jobs[2].completed_at.isoformat(),
+                "completed_before_id": jobs[2].id,
+            },
+        )
+        assert response.status_code == 200
+        assert [j["id"] for j in response.json()["jobs"]] == [jobs[1].id, jobs[0].id]
+
+    async def test_completed_count_matches_visibility_and_cursor(
+        self, generation_client, generation_db_session
+    ):
+        from datetime import datetime
+        from tests.helpers import create_generation_job
+
+        instance = "history-count-instance"
+        jobs = await self._seed_completed_jobs(generation_db_session, instance, count=5)
+
+        async with generation_db_session() as session:
+            # Deleted media: invisible to both listing and count
+            deleted_media = await create_media_item(session)
+            deleted_media.deleted_at = datetime.utcnow()
+            await create_generation_job(
+                session,
+                status="completed",
+                generator_instance_id=instance,
+                result_media_id=deleted_media.id,
+                completed_at=jobs[0].completed_at,
+                output_disposition="context",
+            )
+            # Non-completed job: never counted
+            await create_generation_job(
+                session,
+                status="queued",
+                generator_instance_id=instance,
+            )
+            await session.commit()
+
+        response = await generation_client.get(
+            "/api/generate/jobs/completed-count",
+            params={"generator_instance_id": instance},
+        )
+        assert response.status_code == 200
+        assert response.json()["count"] == 5
+
+        anchor = jobs[2]
+        response = await generation_client.get(
+            "/api/generate/jobs/completed-count",
+            params={
+                "generator_instance_id": instance,
+                "completed_before": anchor.completed_at.isoformat(),
+                "completed_before_id": anchor.id,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["count"] == 2
+
+    async def test_invalid_completed_before_returns_400(self, generation_client):
+        response = await generation_client.get(
+            "/api/generate/jobs",
+            params={"completed_before": "not-a-timestamp"},
+        )
+        assert response.status_code == 400
+
+        response = await generation_client.get(
+            "/api/generate/jobs/completed-count",
+            params={"completed_before": "not-a-timestamp"},
+        )
+        assert response.status_code == 400
+
+
 # =============================================================================
 # Fixtures for this test file
 # =============================================================================

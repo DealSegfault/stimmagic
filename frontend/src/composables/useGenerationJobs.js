@@ -1,4 +1,4 @@
-import { ref, computed, unref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, unref, watch, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 import { useWebSocket } from './useWebSocket'
 import { useMediaApi } from './useMediaApi'
@@ -8,6 +8,19 @@ import { getApiBase } from '../apiConfig'
 
 function getAPIBase() {
   return getApiBase()
+}
+
+// Canonical completed-history order: (completed_at DESC, id DESC). Compares the
+// raw ISO strings — lexicographic order equals chronological order for ISO-8601
+// and preserves the backend's full microsecond precision, so this order matches
+// the backend's order=completed_at keyset paging exactly. (new Date() truncates
+// to milliseconds and could disagree with the backend inside a fast burst.)
+function compareCompletedDesc(a, b) {
+  const atA = a.completed_at || ''
+  const atB = b.completed_at || ''
+  if (atA !== atB) return atA < atB ? 1 : -1
+  if (typeof a.id === 'number' && typeof b.id === 'number') return b.id - a.id
+  return 0
 }
 
 /**
@@ -136,7 +149,7 @@ export function useGenerationJobs(options = {}) {
       .filter(j => j.status === 'completed' &&
         !jobIdsWithActiveChain.value.has(j.id) &&
         !mediaLoadingJobIds.value.has(j.id))
-      .sort(sortByDate)
+      .sort(compareCompletedDesc)
       .slice(0, 100)
 
     return [
@@ -918,15 +931,10 @@ export function useGenerationJobs(options = {}) {
         j.result_media_id &&
         !failedMediaLoads.value.has(j.result_media_id)
       )
-      .sort((a, b) => {
-        // Must match allJobs' completed ordering exactly (including the id
-        // tie-break) — the slideshow's arrival pinning and page provider both
-        // read this list and assume one stable order.
-        const diff = new Date(b.completed_at) - new Date(a.completed_at)
-        if (diff !== 0) return diff
-        if (typeof a.id === 'number' && typeof b.id === 'number') return b.id - a.id
-        return 0
-      })
+      // Must match allJobs' completed ordering exactly (including the id
+      // tie-break) — the slideshow's arrival pinning and page provider both
+      // read this list and assume one stable order.
+      .sort(compareCompletedDesc)
   })
 
   // Create page provider for slideshow
@@ -940,44 +948,133 @@ export function useGenerationJobs(options = {}) {
     }
   }
 
+  // Resolve a job to a slideshow item, using cached media data when available.
+  // Failures return a placeholder rather than dropping the item: pages are
+  // index-addressed, so a dropped item would shift every later slot on the page.
+  async function slideshowItemForJob(job) {
+    const mediaId = job.result_media_id
+
+    if (mediaData.value[mediaId]) {
+      return {
+        ...projectGeneratedAsset(mediaData.value[mediaId], job),
+        _slideshowItemKey: job.id
+      }
+    }
+
+    try {
+      const response = await axios.get(`${getAPIBase()}/media/${mediaId}`)
+      // Cache it for future use
+      mediaData.value = { ...mediaData.value, [mediaId]: response.data }
+      return {
+        ...projectGeneratedAsset(response.data, job),
+        _slideshowItemKey: job.id
+      }
+    } catch (err) {
+      console.error(`Failed to fetch media ${mediaId}:`, err)
+      return { id: mediaId, file_hash: null, _placeholder: true, _slideshowItemKey: job.id }
+    }
+  }
+
+  // Fetch completed jobs strictly OLDER than the in-memory window's tail, in the
+  // same (completed_at DESC, id DESC) order the window itself uses. Anchoring on
+  // the tail (rather than raw global offsets) keeps backend pages aligned with
+  // the window under live churn: jobs newer than the tail — including completed
+  // jobs the frontend is still holding back while their media prefetches — can
+  // never appear here, and the set of jobs older than a given anchor only
+  // changes on deletion.
+  async function fetchCompletedHistoryJobs(tailJob, offset, limit) {
+    const params = new URLSearchParams({
+      status: 'completed',
+      order: 'completed_at',
+      limit: String(limit),
+      offset: String(offset)
+    })
+    if (generatorInstanceId) params.set('generator_instance_id', generatorInstanceId)
+    if (tailJob?.completed_at) {
+      params.set('completed_before', tailJob.completed_at)
+      if (typeof tailJob.id === 'number') params.set('completed_before_id', String(tailJob.id))
+    }
+    const response = await axios.get(`${getAPIBase()}/generate/jobs?${params}`)
+    return response.data.jobs || []
+  }
+
+  // Slideshow page provider over the virtual completed list: the live in-memory
+  // window (sortedCompletedJobs, capped) followed by backend history older than
+  // its tail. Indices below the window length are served from memory so they
+  // always match liveItemIds coordinates; deeper indices page the backend.
   async function fetchGeneratedImages(page, pageSize) {
     const completedJobsList = sortedCompletedJobs.value
+    const windowLength = completedJobsList.length
 
     const start = page * pageSize
     const end = start + pageSize
-    const pageJobs = completedJobsList.slice(start, end)
 
-    // Use cached media data when available, only fetch if missing
-    const items = await Promise.all(
-      pageJobs.map(async (job) => {
-        const mediaId = job.result_media_id
+    const memoryJobs = start < windowLength
+      ? completedJobsList.slice(start, Math.min(end, windowLength))
+      : []
 
-        // Return cached data if available
-        if (mediaData.value[mediaId]) {
-          return {
-            ...projectGeneratedAsset(mediaData.value[mediaId], job),
-            _slideshowItemKey: job.id
-          }
-        }
+    let historyJobs = []
+    if (end > windowLength) {
+      const tailJob = windowLength > 0 ? completedJobsList[windowLength - 1] : null
+      const historyOffset = Math.max(0, start - windowLength)
+      const historyLimit = end - Math.max(start, windowLength)
+      historyJobs = await fetchCompletedHistoryJobs(tailJob, historyOffset, historyLimit)
+    }
 
-        // Fallback: fetch from API if not in cache (shouldn't normally happen)
-        try {
-          const response = await axios.get(`${getAPIBase()}/media/${mediaId}`)
-          // Cache it for future use
-          mediaData.value = { ...mediaData.value, [mediaId]: response.data }
-          return {
-            ...projectGeneratedAsset(response.data, job),
-            _slideshowItemKey: job.id
-          }
-        } catch (err) {
-          console.error(`Failed to fetch media ${mediaId}:`, err)
-          return null
-        }
-      })
-    )
-
-    return items.filter(item => item !== null)
+    return Promise.all([...memoryJobs, ...historyJobs].map(slideshowItemForJob))
   }
+
+  // Count of visible completed jobs strictly older than the in-memory window's
+  // tail. windowLength + this = the slideshow's full navigable history, so the
+  // capped window never truncates the slideshow (items scrolling out of the
+  // window stay reachable via backend paging instead of silently evicting).
+  const completedHistoryCount = ref(0)
+  let historyCountEpoch = 0
+  let historyCountTimer = null
+
+  async function refreshCompletedHistoryCount() {
+    const epoch = ++historyCountEpoch
+    const list = sortedCompletedJobs.value
+    const tailJob = list.length > 0 ? list[list.length - 1] : null
+
+    const params = new URLSearchParams()
+    if (generatorInstanceId) params.set('generator_instance_id', generatorInstanceId)
+    if (tailJob?.completed_at) {
+      params.set('completed_before', tailJob.completed_at)
+      if (typeof tailJob.id === 'number') params.set('completed_before_id', String(tailJob.id))
+    }
+
+    try {
+      const response = await axios.get(`${getAPIBase()}/generate/jobs/completed-count?${params}`)
+      if (epoch === historyCountEpoch && typeof response.data?.count === 'number') {
+        completedHistoryCount.value = response.data.count
+      }
+    } catch (err) {
+      console.error('Failed to refresh completed history count:', err)
+    }
+  }
+
+  // The tail moves whenever the capped window evicts (every arrival once full)
+  // or the list shrinks, and the older-than-tail count moves in step. Debounced:
+  // bursts move the tail several times a second and one trailing count query is
+  // enough — a briefly stale count only delays reach into the deepest history.
+  watch(
+    () => {
+      const list = sortedCompletedJobs.value
+      return list.length > 0 ? list[list.length - 1]?.id : null
+    },
+    () => {
+      if (historyCountTimer) clearTimeout(historyCountTimer)
+      historyCountTimer = setTimeout(() => {
+        historyCountTimer = null
+        void refreshCompletedHistoryCount()
+      }, 1000)
+    }
+  )
+
+  const slideshowCompletedTotal = computed(() =>
+    sortedCompletedJobs.value.length + completedHistoryCount.value
+  )
 
   // Initialize: load data and set up WebSocket listeners
   async function init() {
@@ -1036,6 +1133,10 @@ export function useGenerationJobs(options = {}) {
   function cleanup() {
     unsubscribers.forEach(unsub => unsub())
     unsubscribers.length = 0
+    if (historyCountTimer) {
+      clearTimeout(historyCountTimer)
+      historyCountTimer = null
+    }
     window.removeEventListener('markers-changed', loadMarkers)
   }
 
@@ -1055,6 +1156,7 @@ export function useGenerationJobs(options = {}) {
     failedMediaLoads,
     isLoading,
     totalCompletedCount,
+    slideshowCompletedTotal,
     batches,
     batchJobs,
     chainRuns,
@@ -1080,6 +1182,7 @@ export function useGenerationJobs(options = {}) {
     getJobPrompt,
     getGenerationTime,
     fetchGeneratedImages,
+    refreshCompletedHistoryCount,
     addPendingJob,
     removePendingJob,
     cancelPendingJob,

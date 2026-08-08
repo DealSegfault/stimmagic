@@ -109,6 +109,8 @@ async def create_generation_job(
     height: int = 512,
     result_media_id: Optional[int] = None,
     error: Optional[str] = None,
+    completed_at: Optional[datetime] = None,
+    output_disposition: Optional[str] = None,
 ) -> GenerationJob:
     """Create a generation job directly in the database.
 
@@ -160,9 +162,12 @@ async def create_generation_job(
         folder_path=folder_path,
         generator_instance_id=generator_instance_id,
         created_at=datetime.utcnow(),
+        completed_at=completed_at,
         result_media_id=result_media_id,
         error=error,
     )
+    if output_disposition is not None:
+        job.output_disposition = output_disposition
     session.add(job)
     await session.commit()
     await session.refresh(job)
