@@ -27,65 +27,61 @@ def extract_prompt_from_exif(file_path: Path) -> tuple[Optional[str], Optional[s
     parsed_prompt = None
 
     try:
-        # For PNG files, check PNG chunks first
+        # For PNG files, check PNG chunks first. Keep the image open so the
+        # no-prompt path does not reopen it, and only ask Pillow for EXIF when
+        # an eXIf chunk is actually present. Calling getexif() on an ordinary
+        # PNG may scan/decode the complete image.
         if file_path.suffix.lower() == '.png':
-            raw_metadata = extract_from_png_chunks(file_path)
-            if raw_metadata:
-                parsed_prompt = parse_prompt_from_metadata(raw_metadata)
-                return raw_metadata, parsed_prompt
+            with Image.open(file_path) as img:
+                raw_metadata = _extract_from_png_info(img.info)
+                if raw_metadata:
+                    parsed_prompt = parse_prompt_from_metadata(raw_metadata)
+                    return raw_metadata, parsed_prompt
+                if "exif" not in img.info:
+                    return None, None
+                return _extract_prompt_from_open_image(img)
 
         # Try EXIF data
         with Image.open(file_path) as img:
-            # Get EXIF data
-            exif_data = img.getexif()
-            if not exif_data:
-                return None, None
-
-            # Convert to readable format (IFD0 tags)
-            exif_dict = {
-                TAGS.get(key, key): value
-                for key, value in exif_data.items()
-            }
-
-            # Also check Exif IFD for UserComment (tag 37510) - PIL's getexif()
-            # only returns IFD0 tags, but UserComment is in the Exif sub-IFD
-            if 'UserComment' not in exif_dict:
-                try:
-                    exif_ifd = exif_data.get_ifd(0x8769)  # Exif IFD
-                    if exif_ifd and 37510 in exif_ifd:
-                        user_comment_raw = exif_ifd[37510]
-                        if isinstance(user_comment_raw, bytes):
-                            # Decode based on charset marker
-                            user_comment_text = _decode_exif_user_comment(user_comment_raw)
-                            if user_comment_text:
-                                exif_dict['UserComment'] = user_comment_text
-                except Exception:
-                    pass
-
-            # Check common prompt fields
-            for field in ['prompt', 'Prompt', 'UserComment', 'ImageDescription', 'XPComment']:
-                if field in exif_dict:
-                    value = exif_dict[field]
-                    if isinstance(value, bytes):
-                        try:
-                            value = value.decode('utf-8', errors='ignore')
-                        except:
-                            continue
-
-                    # Clean up the value
-                    value = str(value).strip()
-
-                    # Check if it looks like a prompt (not empty, not just metadata)
-                    if value and len(value) > 10:
-                        raw_metadata = value
-                        parsed_prompt = parse_prompt_from_metadata(value)
-                        return raw_metadata, parsed_prompt
-
-            return None, None
+            return _extract_prompt_from_open_image(img)
 
     except Exception as e:
         log.debug(f"Failed to extract EXIF from {file_path}: {e}")
         return None, None
+
+
+def _extract_prompt_from_open_image(img: Image.Image) -> tuple[Optional[str], Optional[str]]:
+    """Extract prompt fields from an already-open image."""
+    exif_data = img.getexif()
+    if not exif_data:
+        return None, None
+
+    exif_dict = {TAGS.get(key, key): value for key, value in exif_data.items()}
+    if 'UserComment' not in exif_dict:
+        try:
+            exif_ifd = exif_data.get_ifd(0x8769)
+            if exif_ifd and 37510 in exif_ifd:
+                user_comment_raw = exif_ifd[37510]
+                if isinstance(user_comment_raw, bytes):
+                    user_comment_text = _decode_exif_user_comment(user_comment_raw)
+                    if user_comment_text:
+                        exif_dict['UserComment'] = user_comment_text
+        except Exception:
+            pass
+
+    for field in ['prompt', 'Prompt', 'UserComment', 'ImageDescription', 'XPComment']:
+        if field not in exif_dict:
+            continue
+        value = exif_dict[field]
+        if isinstance(value, bytes):
+            try:
+                value = value.decode('utf-8', errors='ignore')
+            except Exception:
+                continue
+        value = str(value).strip()
+        if value and len(value) > 10:
+            return value, parse_prompt_from_metadata(value)
+    return None, None
 
 
 def _is_comfyui_format(data: dict) -> bool:
@@ -308,21 +304,25 @@ def extract_from_png_chunks(file_path: Path) -> Optional[str]:
     """
     try:
         with Image.open(file_path) as img:
-            if hasattr(img, 'info'):
-                # Check fields in priority order
-                for field in ['parameters', 'Parameters', 'prompt', 'Prompt', 'Dream', 'dream', 'Comment']:
-                    if field in img.info:
-                        value = img.info[field]
-                        if isinstance(value, bytes):
-                            value = value.decode('utf-8', errors='ignore')
-                        value = str(value).strip()
-                        if value and len(value) > 10:
-                            return value  # Return raw, don't parse
-        return None
+            return _extract_from_png_info(img.info)
 
     except Exception as e:
         log.debug(f"Failed to extract PNG chunks from {file_path}: {e}")
         return None
+
+
+def _extract_from_png_info(info: dict) -> Optional[str]:
+    """Extract prompt metadata from Pillow's already-parsed PNG chunks."""
+    for field in ['parameters', 'Parameters', 'prompt', 'Prompt', 'Dream', 'dream', 'Comment']:
+        if field not in info:
+            continue
+        value = info[field]
+        if isinstance(value, bytes):
+            value = value.decode('utf-8', errors='ignore')
+        value = str(value).strip()
+        if value and len(value) > 10:
+            return value
+    return None
 
 
 def extract_stimma_metadata(file_path: Path) -> Optional[str]:

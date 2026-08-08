@@ -131,6 +131,8 @@ async def create_asset_from_media(
     origin_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
     expires_at: Optional[datetime] = None,
+    mirror_associations: bool = True,
+    assume_new: bool = False,
 ) -> Asset:
     """Promote Media into a stable Asset with its first immutable Revision.
 
@@ -138,9 +140,11 @@ async def create_asset_from_media(
     object cannot be the primary payload of two Asset identities.
     """
     media = await _live_media(session, media_id)
-    existing_revision = await session.scalar(
-        select(AssetRevision).where(AssetRevision.primary_media_id == media_id)
-    )
+    existing_revision = None
+    if not assume_new:
+        existing_revision = await session.scalar(
+            select(AssetRevision).where(AssetRevision.primary_media_id == media_id)
+        )
     if existing_revision is not None:
         asset = await session.get(Asset, existing_revision.asset_id)
         if asset is None or asset.deleted_at is not None:
@@ -166,22 +170,33 @@ async def create_asset_from_media(
     session.add(revision)
     await session.flush()
     asset.current_revision_id = revision.id
-    await acquire_media_owner(
-        session,
-        media_id=media.id,
-        root_kind="asset_revision",
-        root_id=revision.id,
-        role="primary",
-        idempotency_key=idempotency_key,
-    )
+    if assume_new:
+        session.add(MediaOwner(
+            media_id=media.id,
+            root_kind="asset_revision",
+            root_id=str(revision.id),
+            role="primary",
+            idempotency_key=idempotency_key,
+        ))
+        await session.flush()
+    else:
+        await acquire_media_owner(
+            session,
+            media_id=media.id,
+            root_kind="asset_revision",
+            root_id=revision.id,
+            role="primary",
+            idempotency_key=idempotency_key,
+        )
     # Promotion consumes any provisional pre-Asset staging rows (legacy
     # media_markers/media_tags/project_media/board_items) so every promotion
     # site — not just the organization routes — upholds the staging contract.
-    from asset_association_service import mirror_media_associations_to_asset
+    if mirror_associations:
+        from asset_association_service import mirror_media_associations_to_asset
 
-    await mirror_media_associations_to_asset(
-        session, media_id=media.id, asset_id=asset.id
-    )
+        await mirror_media_associations_to_asset(
+            session, media_id=media.id, asset_id=asset.id
+        )
     await session.flush()
     return asset
 

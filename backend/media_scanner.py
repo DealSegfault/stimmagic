@@ -3,13 +3,15 @@ import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Tuple, AsyncGenerator
-from PIL import Image, ImageOps
+from PIL import Image
 import asyncio
 
 from core.logging import get_logger
 from utils.image_ops import has_alpha_channel
 
 log = get_logger(__name__)
+
+STAT_ERROR_EXAMPLE_LIMIT = 3
 
 # Supported file extensions
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'}
@@ -67,17 +69,34 @@ def compute_file_hash(file_path: Path) -> str:
     """Compute SHA256 hash of file."""
     sha256 = hashlib.sha256()
     with open(file_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
+        # Large reads spend substantially less time crossing the Python/file
+        # boundary while remaining small enough for many concurrent workers.
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
             sha256.update(chunk)
     return sha256.hexdigest()
 
 
 def get_image_dimensions(file_path: Path) -> Tuple[int, int, bool]:
-    """Get width, height, and alpha-channel presence of an image, honoring EXIF orientation."""
+    """Get dimensions and alpha presence without decoding image pixels.
+
+    ``ImageOps.exif_transpose`` creates a transposed image and therefore
+    decodes the complete pixel payload. For ingestion we only need the final
+    dimensions, so reading the orientation tag and swapping the header values
+    is equivalent and several orders of magnitude cheaper for large images.
+    """
     with Image.open(file_path) as img:
         has_alpha = has_alpha_channel(img)
-        rotated = ImageOps.exif_transpose(img)
-        width, height = rotated.size
+        width, height = img.size
+
+        # PNG's getexif() can scan/decode the full image when there is no eXIf
+        # chunk. Pillow exposes a present eXIf chunk in info, so avoid that
+        # expensive fallback. JPEG/WebP/TIFF EXIF lives in the image header and
+        # is safe to inspect directly.
+        orientation = None
+        if "exif" in img.info or img.format in {"JPEG", "WEBP", "TIFF"}:
+            orientation = img.getexif().get(274)
+        if orientation in {5, 6, 7, 8}:
+            width, height = height, width
         return width, height, has_alpha
 
 
@@ -185,6 +204,8 @@ async def fast_scan_directories(
     log.debug(f"FAST DISCOVERY: Starting ultra-fast scan of {len(paths)} path(s)")
     files = []
     untrusted_roots: set[str] = set()
+    stat_error_count = 0
+    stat_error_examples: list[tuple[Path, OSError]] = []
     excluded_roots = [
         Path(path).expanduser().resolve(strict=False)
         for path in (excluded_paths or [])
@@ -276,12 +297,23 @@ async def fast_scan_directories(
                                 'modified_date': datetime.utcfromtimestamp(stat.st_mtime),
                             })
                         except (OSError, IOError) as e:
-                            log.warning(f"FAST DISCOVERY: Cannot stat {file_path}: {e}")
+                            stat_error_count += 1
+                            if len(stat_error_examples) < STAT_ERROR_EXAMPLE_LIMIT:
+                                stat_error_examples.append((file_path, e))
+                                log.warning(f"FAST DISCOVERY: Cannot stat {file_path}: {e}")
                             continue
 
                 # Yield control periodically
                 if len(files) % 1000 == 0:
                     await asyncio.sleep(0)
+
+    if stat_error_count:
+        suppressed = stat_error_count - len(stat_error_examples)
+        log.warning(
+            "FAST DISCOVERY: Skipped "
+            f"{stat_error_count} media entries that could not be stat'ed"
+            + (f" ({suppressed} similar warnings suppressed)" if suppressed else "")
+        )
 
     log.debug(f"FAST DISCOVERY: Completed - found {len(files)} files in RAM")
     return files, untrusted_roots

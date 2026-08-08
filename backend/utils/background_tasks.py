@@ -368,13 +368,20 @@ async def monitor_processing_stats(ws_manager):
     process and can't access WebSocket connections, so this task queries the DB
     and broadcasts stats from the main web server process.
 
-    Uses a single aggregated query and 2-second interval to minimize DB load.
+    Uses a single aggregated query and 1-second interval. The query returns
+    only counters (never media rows), while changed snapshots let first-run
+    imports visibly advance without coupling UI cadence to SQLite batch size.
     Aggregates stats across ALL profile databases.
+
+    This monitor deliberately keeps the same interval while idle. Source-folder
+    changes happen in another process and can begin and finish between polls;
+    backing off to the general 60-second reconciliation interval leaves OOBE
+    imports with no progress or live Asset refresh for up to a minute.
     """
     from sqlalchemy import case
 
     last_phase_stats = None
-    sleep_seconds = 5
+    sleep_seconds = 1
     while True:
         try:
             await asyncio.sleep(sleep_seconds)
@@ -415,19 +422,29 @@ async def monitor_processing_stats(ws_manager):
                         for status in ['pending', 'processing', 'completed', 'failed']:
                             phase_stats[phase][status] += getattr(row, f"{phase}_{status}") or 0
 
-            active = any(
-                counts['pending'] or counts['processing']
-                for counts in phase_stats.values()
-            )
-            sleep_seconds = 5 if active else IDLE_RECONCILIATION_SECONDS
-
             # An unchanged snapshot cannot update the UI. Avoid generating a
             # websocket event and its downstream render/reconciliation work.
             if phase_stats != last_phase_stats:
+                previous_metadata_completed = (
+                    last_phase_stats.get('metadata', {}).get('completed', 0)
+                    if last_phase_stats is not None
+                    else 0
+                )
+                metadata_completed = phase_stats['metadata']['completed']
                 await ws_manager.broadcast(
                     'processing_stats', {'phase_stats': phase_stats},
                     include_profile=False,
                 )
+                # Metadata completion materializes Source files as Assets in
+                # the ingestion subprocess. Bridge that cross-process change
+                # back to Asset views, which otherwise remain empty/stale
+                # until an unrelated navigation or manual refresh.
+                if metadata_completed != previous_metadata_completed:
+                    await ws_manager.broadcast(
+                        'assets_updated',
+                        {'fields': ['source_ingestion']},
+                        include_profile=False,
+                    )
                 last_phase_stats = phase_stats
 
         except asyncio.CancelledError:

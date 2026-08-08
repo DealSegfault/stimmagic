@@ -410,46 +410,40 @@ export function useMediaList(options: UseMediaListOptions) {
   async function silentReload(): Promise<boolean> {
     try {
       const params = filterParams.value || buildFilterParams()
+      // Refresh one fixed-size grid page, not the whole library. Updating only
+      // the count left a populated grid's cached first page intact, so a new
+      // "Newest" Source asset stayed invisible until a hard reload.
       const response = await fetchMedia({
         ...params,
         page: 1,
-        page_size: 1
+        page_size: gridPageSize
       })
 
       const newTotal = response.total
       const oldTotal = totalCount.value
+      const firstCachedItem = itemsCache.value.get(0)
+      const firstNewItem = response.items[0]
+      const firstPageChanged = (
+        firstCachedItem && firstNewItem
+          ? browserIdentity(firstCachedItem) !== browserIdentity(firstNewItem)
+          : firstCachedItem !== firstNewItem
+      )
 
-      if (newTotal !== oldTotal) {
-        // Total count changed - update it
-        // The grid will watch totalCount and rebuild appropriately
+      if (newTotal !== oldTotal || firstPageChanged) {
         totalCount.value = newTotal
 
-        // Clear loaded pages to force fresh data on next scroll
-        // Keep itemsCache so grid can still show something while re-fetching
-        loadedPages.value = new Set()
+        const newCache = new Map(itemsCache.value)
+        response.items.forEach((item, index) => newCache.set(index, item))
+        for (let index = response.items.length; index < gridPageSize; index++) {
+          newCache.delete(index)
+        }
+        itemsCache.value = newCache
+        // Other pages may have shifted. Retain only the freshly reconciled
+        // first page as authoritative; off-screen pages reload on demand.
+        loadedPages.value = new Set([`0:${gridPageSize}`])
 
         notifyCacheChanged()
         return true
-      }
-
-      // Count is the same - check if first page items are different
-      // This catches cases where items were replaced but count stayed same
-      if (itemsCache.value.size > 0) {
-        const firstPageResponse = await fetchMedia({
-          ...params,
-          page: 1,
-          page_size: Math.min(20, gridPageSize) // Just check first few items
-        })
-
-        const firstCachedItem = itemsCache.value.get(0)
-        const firstNewItem = firstPageResponse.items[0]
-
-        if (firstCachedItem && firstNewItem && browserIdentity(firstCachedItem) !== browserIdentity(firstNewItem)) {
-          // First item is different - data has changed, clear cache
-          loadedPages.value = new Set()
-          notifyCacheChanged()
-          return true
-        }
       }
 
       return false

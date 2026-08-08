@@ -3,7 +3,7 @@
 from collections import defaultdict
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import (
@@ -620,3 +620,22 @@ async def mirror_media_associations_to_asset(
     if marker_rows or tag_ids or board_items:
         await clear_asset_expiration(session, asset_id)
     await session.flush()
+
+
+async def media_ids_with_staged_associations(
+    session: AsyncSession,
+    media_ids: list[int] | set[int],
+) -> set[int]:
+    """Return batch members that have legacy organization rows to migrate."""
+    ids = list(media_ids)
+    if not ids:
+        return set()
+    rows = await session.scalars(
+        union_all(
+            select(MediaMarker.media_id).where(MediaMarker.media_id.in_(ids)),
+            select(MediaTag.media_id).where(MediaTag.media_id.in_(ids)),
+            select(ProjectMedia.media_id).where(ProjectMedia.media_id.in_(ids)),
+            select(BoardItem.media_id).where(BoardItem.media_id.in_(ids)),
+        )
+    )
+    return set(rows)

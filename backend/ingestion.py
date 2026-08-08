@@ -9,6 +9,8 @@ import random
 import json
 
 from database import (
+    Asset,
+    AssetRevision,
     AssetMarker,
     DeleteOperation,
     Face,
@@ -18,6 +20,7 @@ from database import (
     MediaKeyword,
     MediaMarker,
 )
+from sqlalchemy.orm import aliased
 from database_registry import get_database_registry
 from media_scanner import (
     scan_directories, fast_scan_directories, extract_metadata,
@@ -35,8 +38,10 @@ from background_work_filters import media_eligible_for_background_work
 
 log = get_logger(__name__)
 
-# Thread pool for CPU-bound operations (file I/O, hashing)
-_io_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="file_io")
+# Metadata permits 16 items in flight. Match the executor to that limit so
+# filesystem work is not silently serialized down to four items.
+METADATA_IO_WORKERS = 16
+_io_executor = ThreadPoolExecutor(max_workers=METADATA_IO_WORKERS, thread_name_prefix="file_io")
 
 # Processing phases (metadata must come first - others depend on it)
 PHASES = ['metadata', 'clip', 'face_detection', 'vlm_caption']
@@ -47,6 +52,7 @@ RETRY_BACKOFF = [60, 300, 1800, 7200, 86400]  # 1min, 5min, 30min, 2hr, 24hr
 
 # Visual media types that can be CLIP analyzed, face detected, and captioned
 VISUAL_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+DISCOVERY_INSERT_BATCH_SIZE = 500
 
 
 def is_visual_media(file_path: Path) -> bool:
@@ -56,6 +62,14 @@ def is_visual_media(file_path: Path) -> bool:
     """
     ext = get_file_extension(file_path)
     return ext in VISUAL_EXTENSIONS
+
+
+def extract_ingestion_metadata(file_path: Path) -> tuple[dict, Optional[str], Optional[str], Optional[str]]:
+    """Read all inexpensive ingest metadata in one executor job."""
+    metadata = extract_metadata(file_path)
+    raw_metadata, parsed_prompt = extract_prompt_from_exif(file_path)
+    stimma_metadata = extract_stimma_metadata(file_path)
+    return metadata, raw_metadata, parsed_prompt, stimma_metadata
 
 
 async def save_keywords_to_normalized_tables(session: AsyncSession, media_id: int, keywords_str: str):
@@ -692,6 +706,16 @@ class MediaIngestion:
         # Find added and removed profiles
         old_profile_ids = {p.id for p in self.settings.profiles}
         new_profile_ids = {p.id for p in new_settings.profiles}
+        old_source_folders = {
+            (profile.id, folder.path)
+            for profile in self.settings.profiles
+            for folder in profile.folders
+        }
+        new_source_folders = {
+            (profile.id, folder.path)
+            for profile in new_settings.profiles
+            for folder in profile.folders
+        }
 
         removed_ids = old_profile_ids - new_profile_ids
         added_ids = new_profile_ids - old_profile_ids
@@ -720,9 +744,16 @@ class MediaIngestion:
         self.settings = new_settings
         await self._init_caption_service()
 
-        # If profiles were added, trigger work check and file scan
-        if added_ids:
-            log.info(f"INGESTION: New profiles added, triggering scan: {added_ids}")
+        # A config reload runs in a monitor task while the main ingestion loop
+        # may be sleeping for up to five minutes. Adding a Source must wake that
+        # loop and force discovery immediately; merely reloading the path leaves
+        # a newly configured folder looking empty until the periodic timeout.
+        source_folders_changed = old_source_folders != new_source_folders
+        if added_ids or source_folders_changed:
+            if added_ids:
+                log.info(f"INGESTION: New profiles added, triggering scan: {added_ids}")
+            if source_folders_changed:
+                log.info("INGESTION: Source folders changed, triggering scan")
             self.last_scan_time = None  # Force file scan on next loop iteration
             self._work_available.set()
 
@@ -1158,25 +1189,45 @@ class MediaIngestion:
             return (False, None)
 
     async def _insert_batch(self, session: AsyncSession, files_metadata: list[dict]):
-        """Insert a batch of files into the database."""
-        for metadata in files_metadata:
-            # Add random sort value for stable random sorting
-            metadata['random_sort_value'] = random.random()
-            item = MediaItem(**metadata)
-            session.add(item)
-        await session.flush()
+        """Insert discovered files without retaining the whole import in the ORM."""
+        total = len(files_metadata)
+        for offset in range(0, total, DISCOVERY_INSERT_BATCH_SIZE):
+            batch = files_metadata[offset:offset + DISCOVERY_INSERT_BATCH_SIZE]
+            for metadata in batch:
+                # Copy rather than mutating the scanner's in-memory snapshot.
+                values = {**metadata, 'random_sort_value': random.random()}
+                session.add(MediaItem(**values))
+
+            # A large first scan can contain tens of thousands of files. Keep
+            # both SQLite transactions and SQLAlchemy's identity map bounded,
+            # and make completed chunks visible instead of withholding the
+            # entire library behind one enormous flush.
+            await session.commit()
+            session.expunge_all()
+            await asyncio.sleep(0)
 
     async def _process_pending_items(self) -> bool:
-        """Process items needing work for each phase IN PARALLEL. Returns True if any work was done."""
-        # Run all phases concurrently - each will grab what it needs and process
-        # Metadata must run first to unblock other phases
-        results = await asyncio.gather(
-            self._process_metadata(),
-            self._process_clip(),
-            self._process_face_detection(),
-            self._process_vlm_captions(),
-            return_exceptions=True
+        """Process pending work, prioritizing library materialization.
+
+        Visual analysis is intentionally held until the metadata backlog is
+        empty. Running ONNX inference during a large first import consumed the
+        CPU needed to make Assets visible and collapsed metadata throughput.
+        Once the browser-visible library is ready, the slower enrichments run
+        concurrently as before.
+        """
+        metadata_result = await asyncio.gather(
+            self._process_metadata(), return_exceptions=True
         )
+        if await self._has_pending_metadata():
+            results = [metadata_result[0], 0, 0, 0]
+        else:
+            analysis_results = await asyncio.gather(
+                self._process_clip(),
+                self._process_face_detection(),
+                self._process_vlm_captions(),
+                return_exceptions=True,
+            )
+            results = [metadata_result[0], *analysis_results]
 
         # Count total processed and log any exceptions
         phase_names = ['metadata', 'clip', 'face_detection', 'vlm_caption']
@@ -1196,6 +1247,24 @@ class MediaIngestion:
             # Needs per-phase success/failure counts from the results to be meaningful.
             # E.g.: get_telemetry_client().track("ingestion_completed", {"count": total_processed})
         return total_processed > 0
+
+    async def _has_pending_metadata(self) -> bool:
+        """Whether any profile still has browser-blocking metadata work."""
+        for profile in self.settings.profiles:
+            db = await self._get_profile_db(profile.id)
+            async with db.async_session_maker() as session:
+                pending_id = await session.scalar(
+                    select(MediaItem.id)
+                    .where(
+                        MediaItem.metadata_status == 'pending',
+                        media_eligible_for_background_work(),
+                        MediaItem.ephemeral_run_id.is_(None),
+                    )
+                    .limit(1)
+                )
+                if pending_id is not None:
+                    return True
+        return False
 
     async def _reset_stale_processing(self) -> int:
         """Reset items stuck in 'processing' status due to crashes or timeouts across all profiles.
@@ -1288,11 +1357,18 @@ class MediaIngestion:
                     item.metadata_processed_at = datetime.utcnow()
                 await session.commit()
 
-                # Create tasks for this profile's items
-                for item in items:
-                    task = asyncio.create_task(self._extract_metadata_for_item(profile.id, item.id, item.file_path))
-                    self.active_workers['metadata'].add(task)
-                    tasks.append(task)
+                # Extract the batch concurrently, then materialize it in one
+                # SQLite transaction. SQLite has one writer; one transaction
+                # per file made the workers contend and forced thousands of
+                # unnecessary commits during first-run import.
+                task = asyncio.create_task(
+                    self._extract_metadata_batch(
+                        profile.id,
+                        [(item.id, item.file_path) for item in items],
+                    )
+                )
+                self.active_workers['metadata'].add(task)
+                tasks.append(task)
 
                 available_slots -= len(items)
                 total_processed += len(items)
@@ -1311,148 +1387,164 @@ class MediaIngestion:
 
         return total_processed
 
-    async def _extract_metadata_for_item(self, profile_id: str, item_id: int, file_path_str: str):
-        """Extract metadata for a single item (runs in background)."""
+    async def _extract_metadata_batch(
+        self,
+        profile_id: str,
+        items: list[tuple[int, str]],
+    ) -> None:
+        """Extract a batch concurrently and persist it with one commit."""
         try:
             db = await self._get_profile_db(profile_id)
         except ValueError:
-            # Profile was removed while task was queued - expected during config reload
-            log.debug(f"METADATA: Skipping item {item_id}, profile '{profile_id}' was removed")
+            log.debug(f"METADATA: Skipping batch; profile '{profile_id}' was removed")
             return
-        try:
-            file_path = Path(file_path_str)
-            loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        extracted = await asyncio.gather(*(
+            loop.run_in_executor(_io_executor, extract_ingestion_metadata, Path(file_path))
+            for _item_id, file_path in items
+        ), return_exceptions=True)
 
-            # Extract metadata (hash, dimensions) in thread pool
-            metadata = await loop.run_in_executor(
-                _io_executor,
-                extract_metadata,
-                file_path
+        async with db.async_session_maker() as session:
+            item_ids = [item_id for item_id, _file_path in items]
+            rows = await session.execute(
+                select(MediaItem).where(MediaItem.id.in_(item_ids))
             )
-
-            if metadata is None:
-                raise ValueError("Failed to extract metadata")
-
-            # Extract EXIF prompt if available
-            raw_metadata, parsed_prompt = await loop.run_in_executor(
-                _io_executor,
-                extract_prompt_from_exif,
-                file_path
+            media_by_id = {item.id: item for item in rows.scalars()}
+            from asset_association_service import media_ids_with_staged_associations
+            association_media_ids = await media_ids_with_staged_associations(
+                session, item_ids
             )
-
-            # Extract stimma generation metadata if available
-            stimma_metadata = await loop.run_in_executor(
-                _io_executor,
-                extract_stimma_metadata,
-                file_path
-            )
-
-            # Update database
-            async with db.async_session_maker() as session:
-                result = await session.execute(
-                    select(MediaItem).where(MediaItem.id == item_id)
+            # One batch preflight replaces four idempotency/history queries per
+            # ordinary first-import item. Anything that already has a revision
+            # or shares a path with retained history uses the careful path.
+            existing_revision_ids = set(await session.scalars(
+                select(AssetRevision.primary_media_id).where(
+                    AssetRevision.primary_media_id.in_(item_ids)
                 )
-                item = result.scalar_one_or_none()
-
-                if item:
-                    # Detect dimension changes (e.g. EXIF orientation fix) —
-                    # visual AI results were computed on differently-shaped
-                    # pixels and must be redone.
-                    dims_changed = (
-                        item.width and item.height and
-                        (item.width, item.height) != (metadata['width'], metadata['height'])
-                    )
-
-                    # Update metadata fields
-                    item.file_hash = metadata['file_hash']
-                    item.width = metadata['width']
-                    item.height = metadata['height']
-                    item.has_alpha = metadata.get('has_alpha')
-                    item.megapixels = metadata['megapixels']
-                    item.duration = metadata.get('duration')
-
-                    if dims_changed:
-                        for phase_attr in ('clip_status', 'face_detection_status', 'vlm_caption_status'):
-                            if getattr(item, phase_attr) in ('completed', 'failed'):
-                                setattr(item, phase_attr, 'pending')
-                        log.info(f"METADATA: Dimensions changed for {file_path_str}, reset visual AI phases")
-
-                    # Update audio-specific metadata
-                    item.audio_sample_rate = metadata.get('audio_sample_rate')
-                    item.audio_channels = metadata.get('audio_channels')
-                    item.audio_bit_depth = metadata.get('audio_bit_depth')
-                    item.audio_bitrate = metadata.get('audio_bitrate')
-                    item.audio_codec = metadata.get('audio_codec')
-
-                    # Update EXIF if found
-                    if raw_metadata:
-                        item.raw_metadata = raw_metadata
-                    if parsed_prompt:
-                        item.extracted_prompt = parsed_prompt
-
-                    # Update generation metadata if found
-                    if stimma_metadata:
-                        item.generation_metadata = stimma_metadata
-                    elif raw_metadata and not item.generation_metadata:
-                        # Parse external metadata (A1111, etc.) if no stimma metadata
-                        from exif_extractor import parse_external_metadata
-                        parsed_external = parse_external_metadata(raw_metadata)
-                        if parsed_external:
-                            item.generation_metadata = json.dumps(parsed_external)
-
-                    # Mark metadata as completed with current config version
-                    item.metadata_status = 'completed'
-                    item.metadata_config_version = self.config_mgr.get_version('metadata')
-                    item.metadata_processed_at = datetime.utcnow()
-
-                    # Check if this file type should skip AI processing
-                    # Audio and structured types (text, sets, grids) don't have visual content
-                    file_ext = file_path.suffix.lower()
-                    # Also check compound extensions for structured types
-                    file_name = file_path.name.lower()
-                    is_non_visual = (
-                        file_ext in AUDIO_EXTENSIONS or
-                        any(file_name.endswith(ext) for ext in STRUCTURED_EXTENSIONS)
-                    )
-
-                    if is_non_visual:
-                        # Skip all AI processing phases
-                        item.clip_status = 'skipped'
-                        item.face_detection_status = 'skipped'
-                        item.vlm_caption_status = 'skipped'
-                        log.debug(f"METADATA: Skipping AI processing for non-visual type: {file_path_str}")
-
-                        # For structured types, store parsed JSON in raw_metadata
-                        if metadata.get('raw_metadata'):
-                            item.raw_metadata = metadata['raw_metadata']
-
-                    # Folder-scanned files remain user-owned external sources.
-                    # The expected hash makes later in-place changes create a
-                    # new Media identity instead of mutating old history.
-                    from storage_service import register_external_asset
-                    await register_external_asset(session, media=item)
-
-                    await session.commit()
-                    log.debug(f"METADATA: Extracted for {file_path_str}")
-
-        except Exception as e:
-            log.error(f"METADATA: Failed to extract for {file_path_str}: {e}")
-            # Mark as failed
-            async with db.async_session_maker() as session:
-                result = await session.execute(
-                    select(MediaItem).where(MediaItem.id == item_id)
+            ))
+            prior_media = aliased(MediaItem)
+            file_paths = [file_path for _item_id, file_path in items]
+            existing_paths = set(await session.scalars(
+                select(prior_media.file_path)
+                .join(AssetRevision, AssetRevision.primary_media_id == prior_media.id)
+                .join(Asset, Asset.current_revision_id == AssetRevision.id)
+                .where(
+                    prior_media.file_path.in_(file_paths),
+                    or_(
+                        (Asset.state == 'active') & Asset.deleted_at.is_(None),
+                        Asset.state == 'trashed',
+                    ),
                 )
-                item = result.scalar_one_or_none()
-                if item:
-                    item.metadata_status = 'failed'
-                    item.metadata_error = str(e)
-                    item.metadata_retry_count += 1
+            ))
 
-                    # Also mark downstream phases as skipped since metadata failed
-                    item.clip_status = 'failed'
-                    item.vlm_caption_status = 'failed'
+            for (item_id, file_path_str), result in zip(items, extracted):
+                item = media_by_id.get(item_id)
+                if item is None:
+                    continue
+                if isinstance(result, BaseException):
+                    self._mark_metadata_failed(item, result, file_path_str)
+                    continue
+                try:
+                    await self._apply_extracted_metadata(
+                        session,
+                        item,
+                        Path(file_path_str),
+                        result,
+                        mirror_associations=item.id in association_media_ids,
+                        assume_new=(
+                            item.id not in existing_revision_ids
+                            and file_path_str not in existing_paths
+                        ),
+                    )
+                except Exception as exc:
+                    self._mark_metadata_failed(item, exc, file_path_str)
 
-                    await session.commit()
+            await session.commit()
+
+    async def _apply_extracted_metadata(
+        self,
+        session: AsyncSession,
+        item: MediaItem,
+        file_path: Path,
+        result: tuple[dict, Optional[str], Optional[str], Optional[str]],
+        *,
+        mirror_associations: bool = True,
+        assume_new: bool = False,
+    ) -> None:
+        metadata, raw_metadata, parsed_prompt, stimma_metadata = result
+        if metadata is None:
+            raise ValueError("Failed to extract metadata")
+
+        dims_changed = (
+            item.width and item.height and
+            (item.width, item.height) != (metadata['width'], metadata['height'])
+        )
+        item.file_hash = metadata['file_hash']
+        item.width = metadata['width']
+        item.height = metadata['height']
+        item.has_alpha = metadata.get('has_alpha')
+        item.megapixels = metadata['megapixels']
+        item.duration = metadata.get('duration')
+        if dims_changed:
+            for phase_attr in ('clip_status', 'face_detection_status', 'vlm_caption_status'):
+                if getattr(item, phase_attr) in ('completed', 'failed'):
+                    setattr(item, phase_attr, 'pending')
+            log.info(f"METADATA: Dimensions changed for {file_path}, reset visual AI phases")
+
+        item.audio_sample_rate = metadata.get('audio_sample_rate')
+        item.audio_channels = metadata.get('audio_channels')
+        item.audio_bit_depth = metadata.get('audio_bit_depth')
+        item.audio_bitrate = metadata.get('audio_bitrate')
+        item.audio_codec = metadata.get('audio_codec')
+        if raw_metadata:
+            item.raw_metadata = raw_metadata
+        if parsed_prompt:
+            item.extracted_prompt = parsed_prompt
+        if stimma_metadata:
+            item.generation_metadata = stimma_metadata
+        elif raw_metadata and not item.generation_metadata:
+            from exif_extractor import parse_external_metadata
+            parsed_external = parse_external_metadata(raw_metadata)
+            if parsed_external:
+                item.generation_metadata = json.dumps(parsed_external)
+
+        item.metadata_status = 'completed'
+        item.metadata_config_version = self.config_mgr.get_version('metadata')
+        item.metadata_processed_at = datetime.utcnow()
+
+        file_name = file_path.name.lower()
+        is_non_visual = (
+            file_path.suffix.lower() in AUDIO_EXTENSIONS or
+            any(file_name.endswith(ext) for ext in STRUCTURED_EXTENSIONS)
+        )
+        if is_non_visual:
+            item.clip_status = 'skipped'
+            item.face_detection_status = 'skipped'
+            item.vlm_caption_status = 'skipped'
+            if metadata.get('raw_metadata'):
+                item.raw_metadata = metadata['raw_metadata']
+
+        from storage_service import register_external_asset
+        await register_external_asset(
+            session,
+            media=item,
+            mirror_associations=mirror_associations,
+            assume_new=assume_new,
+        )
+        log.debug(f"METADATA: Extracted for {file_path}")
+
+    @staticmethod
+    def _mark_metadata_failed(item: MediaItem, error: BaseException, file_path: str) -> None:
+        log.error(f"METADATA: Failed to extract for {file_path}: {error}")
+        item.metadata_status = 'failed'
+        item.metadata_error = str(error)
+        item.metadata_retry_count += 1
+        item.clip_status = 'failed'
+        item.vlm_caption_status = 'failed'
+
+    async def _extract_metadata_for_item(self, profile_id: str, item_id: int, file_path_str: str):
+        """Compatibility wrapper for callers processing a single item."""
+        await self._extract_metadata_batch(profile_id, [(item_id, file_path_str)])
 
     async def _process_clip(self):
         """Process CLIP embeddings using slot-based concurrency across all profiles."""

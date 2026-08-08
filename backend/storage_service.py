@@ -306,6 +306,8 @@ async def register_external_asset(
     session: AsyncSession,
     *,
     media: MediaItem,
+    mirror_associations: bool = True,
+    assume_new: bool = False,
 ):
     """Register watched bytes and give the user-addressable item Asset identity."""
     media_path = Path(media.file_path).expanduser().resolve(strict=False)
@@ -331,25 +333,27 @@ async def register_external_asset(
     # whose Asset sits in the trash must never resurface as a fresh active
     # Asset just because the scanner saw their file again.
     prior_media = aliased(MediaItem)
-    existing = (
-        await session.execute(
-            select(Asset, prior_media)
-            .join(AssetRevision, AssetRevision.id == Asset.current_revision_id)
-            .join(prior_media, prior_media.id == AssetRevision.primary_media_id)
-            .where(
-                # Trashed Assets carry deleted_at but still own their bytes;
-                # matching them prevents resurrection as a fresh active Asset.
-                or_(
-                    (Asset.state == "active") & Asset.deleted_at.is_(None),
-                    Asset.state == "trashed",
-                ),
-                prior_media.file_path == media.file_path,
-                prior_media.id != media.id,
+    existing = None
+    if not assume_new:
+        existing = (
+            await session.execute(
+                select(Asset, prior_media)
+                .join(AssetRevision, AssetRevision.id == Asset.current_revision_id)
+                .join(prior_media, prior_media.id == AssetRevision.primary_media_id)
+                .where(
+                    # Trashed Assets carry deleted_at but still own their bytes;
+                    # matching them prevents resurrection as a fresh active Asset.
+                    or_(
+                        (Asset.state == "active") & Asset.deleted_at.is_(None),
+                        Asset.state == "trashed",
+                    ),
+                    prior_media.file_path == media.file_path,
+                    prior_media.id != media.id,
+                )
+                .order_by(Asset.updated_at.desc())
+                .limit(1)
             )
-            .order_by(Asset.updated_at.desc())
-            .limit(1)
-        )
-    ).first()
+        ).first()
 
     if existing is not None:
         existing_asset, prior_payload = existing
@@ -387,10 +391,15 @@ async def register_external_asset(
             origin_type="watched_file",
             origin_id=media.file_path,
             idempotency_key=f"watched-file:{media.id}",
+            mirror_associations=mirror_associations,
+            assume_new=assume_new,
         )
-    await mirror_media_associations_to_asset(
-        session, media_id=media.id, asset_id=asset.id
-    )
+    # New Asset creation already mirrors staged associations. A changed file
+    # advances an existing Asset, so it still needs the compatibility move.
+    if existing is not None and mirror_associations:
+        await mirror_media_associations_to_asset(
+            session, media_id=media.id, asset_id=asset.id
+        )
     return storage, asset
 
 

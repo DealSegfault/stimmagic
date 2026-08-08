@@ -9,6 +9,7 @@ Tests cover:
 
 import pytest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from sqlalchemy import select
@@ -133,6 +134,41 @@ class TestEnabledFlagChecks:
 
         # Returns 0 because no profiles, but the enabled check passed
         assert result == 0
+
+    async def test_processing_prioritizes_metadata_backlog(self):
+        """Visual inference must not starve first-run Asset materialization."""
+        import ingestion
+
+        worker = MagicMock(spec=ingestion.MediaIngestion)
+        worker._process_metadata = AsyncMock(return_value=16)
+        worker._has_pending_metadata = AsyncMock(return_value=True)
+        worker._process_clip = AsyncMock(return_value=4)
+        worker._process_face_detection = AsyncMock(return_value=2)
+        worker._process_vlm_captions = AsyncMock(return_value=3)
+
+        worked = await ingestion.MediaIngestion._process_pending_items(worker)
+
+        assert worked is True
+        worker._process_clip.assert_not_awaited()
+        worker._process_face_detection.assert_not_awaited()
+        worker._process_vlm_captions.assert_not_awaited()
+
+    async def test_processing_starts_analysis_after_metadata_is_materialized(self):
+        import ingestion
+
+        worker = MagicMock(spec=ingestion.MediaIngestion)
+        worker._process_metadata = AsyncMock(return_value=0)
+        worker._has_pending_metadata = AsyncMock(return_value=False)
+        worker._process_clip = AsyncMock(return_value=4)
+        worker._process_face_detection = AsyncMock(return_value=2)
+        worker._process_vlm_captions = AsyncMock(return_value=3)
+
+        worked = await ingestion.MediaIngestion._process_pending_items(worker)
+
+        assert worked is True
+        worker._process_clip.assert_awaited_once()
+        worker._process_face_detection.assert_awaited_once()
+        worker._process_vlm_captions.assert_awaited_once()
 
     async def test_init_caption_service_skips_llm_resolution_when_disabled(self):
         """Caption service init should not resolve LLM config when captioning is disabled."""
@@ -281,6 +317,66 @@ class TestConfigReload:
         # Settings should be updated
         assert mock_ingestion.settings == mock_settings_new
         assert mock_ingestion.settings.clip.enabled == True
+
+    async def test_reload_config_triggers_scan_when_source_folders_change(self):
+        """Adding a Source wakes discovery instead of waiting for the periodic scan."""
+        import ingestion
+
+        initial_profile = MagicMock()
+        initial_profile.id = "profile-1"
+        initial_profile.folders = []
+        new_profile = MagicMock()
+        new_profile.id = "profile-1"
+        new_profile.folders = [SimpleNamespace(path="/external/media")]
+
+        initial_settings = MagicMock()
+        initial_settings.profiles = [initial_profile]
+        new_settings = MagicMock()
+        new_settings.profiles = [new_profile]
+
+        mock_ingestion = MagicMock(spec=ingestion.MediaIngestion)
+        mock_ingestion.settings = initial_settings
+        mock_ingestion.registry = MagicMock()
+        mock_ingestion.folder_to_profile = {}
+        mock_ingestion.last_scan_time = datetime.now()
+        mock_ingestion._work_available = MagicMock()
+
+        with patch('config.reload_settings', return_value=new_settings):
+            await ingestion.MediaIngestion._reload_config(mock_ingestion)
+
+        assert mock_ingestion.last_scan_time is None
+        mock_ingestion._work_available.set.assert_called_once()
+
+    async def test_reload_config_does_not_scan_for_unrelated_setting_change(self):
+        """Background-work changes reload settings without forcing filesystem I/O."""
+        import ingestion
+
+        folder = SimpleNamespace(path="/external/media")
+        initial_profile = MagicMock(id="profile-1", folders=[folder])
+        initial_profile.id = "profile-1"
+        initial_profile.folders = [folder]
+        new_profile = MagicMock(id="profile-1", folders=[folder])
+        new_profile.id = "profile-1"
+        new_profile.folders = [folder]
+
+        initial_settings = MagicMock()
+        initial_settings.profiles = [initial_profile]
+        new_settings = MagicMock()
+        new_settings.profiles = [new_profile]
+
+        mock_ingestion = MagicMock(spec=ingestion.MediaIngestion)
+        mock_ingestion.settings = initial_settings
+        mock_ingestion.registry = MagicMock()
+        mock_ingestion.folder_to_profile = {}
+        previous_scan_time = datetime.now()
+        mock_ingestion.last_scan_time = previous_scan_time
+        mock_ingestion._work_available = MagicMock()
+
+        with patch('config.reload_settings', return_value=new_settings):
+            await ingestion.MediaIngestion._reload_config(mock_ingestion)
+
+        assert mock_ingestion.last_scan_time == previous_scan_time
+        mock_ingestion._work_available.set.assert_not_called()
 
 
 @pytest.mark.asyncio

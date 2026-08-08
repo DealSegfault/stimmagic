@@ -527,6 +527,7 @@ function clearSimilarSearch() {
 // WebSocket for live updates
 const { on: wsOn, connected: wsConnected } = useWebSocket()
 const wsUnsubscribers = []
+let sourceIngestionReloadTimer = null
 
 // Slideshow composable
 const { slideshowState, enterSlideshow: enterSlideshowBase, exitSlideshow: exitSlideshowBase, updateCurrentMediaId } = useSlideshow()
@@ -1153,12 +1154,17 @@ async function reconcileRemoval(removedIds) {
 // Soft reload - updates data without showing loading state or unmounting the grid
 // Used for live updates (websocket events) where we want seamless visual updates
 async function softReloadMedia() {
-  // silentReload invalidates the media cache without blinking the grid. Do not
-  // update totalCount here; the grid reads mediaList.effectiveTotal directly.
+  // silentReload invalidates the media cache without blinking the grid. Keep
+  // the view-level count in sync as well: it controls whether VirtualMediaGrid
+  // is mounted at all, so leaving it at zero makes first-run Source imports
+  // invisible until a hard reload even though mediaList has the new total.
   await Promise.all([
     mediaList?.silentReload(),
     loadImplicitMarkers(),
   ])
+  if (mediaList) {
+    totalCount.value = mediaList.totalCount.value
+  }
 }
 
 async function searchSimilar(mediaIds) {
@@ -2135,8 +2141,19 @@ onMounted(async () => {
     softReloadMedia()
   }))
 
-  wsUnsubscribers.push(wsOn('assets_updated', () => {
+  wsUnsubscribers.push(wsOn('assets_updated', (data) => {
     softReloadMedia()
+    if (data?.fields?.includes('source_ingestion')) {
+      // The notification is bridged from the ingestion subprocess through a
+      // stats observer. A reader in the web process can briefly retain its
+      // previous SQLite snapshot, so reconcile once more after that boundary
+      // instead of making the user hard-refresh the browser.
+      if (sourceIngestionReloadTimer) clearTimeout(sourceIngestionReloadTimer)
+      sourceIngestionReloadTimer = setTimeout(() => {
+        sourceIngestionReloadTimer = null
+        softReloadMedia()
+      }, 1000)
+    }
   }))
 
   // Listen for profile changes
@@ -2243,6 +2260,7 @@ async function handleSetCreated() {
 }
 
 onUnmounted(() => {
+  if (sourceIngestionReloadTimer) clearTimeout(sourceIngestionReloadTimer)
   wsUnsubscribers.forEach(unsubscribe => {
     try {
       unsubscribe()

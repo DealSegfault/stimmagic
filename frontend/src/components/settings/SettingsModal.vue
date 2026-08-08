@@ -302,6 +302,22 @@ async function handleToolsUpdated() {
   }
 }
 
+async function handleAssetsUpdated() {
+  if (!props.show || activeSection.value !== 'folders') return
+  try {
+    const refreshed = await fetchSettings()
+    if (settings.value) {
+      settings.value = {
+        ...settings.value,
+        folders: refreshed.folders,
+        profiles: refreshed.profiles,
+      }
+    }
+  } catch (err) {
+    console.error('Failed to refresh Source counts after ingestion:', err)
+  }
+}
+
 function close() {
   emit('close')
 }
@@ -328,12 +344,14 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   on('provider_status_changed', handleProviderStatusChanged)
   on('tools_updated', handleToolsUpdated)
+  on('assets_updated', handleAssetsUpdated)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   off('provider_status_changed', handleProviderStatusChanged)
   off('tools_updated', handleToolsUpdated)
+  off('assets_updated', handleAssetsUpdated)
 })
 
 async function loadSettings() {
