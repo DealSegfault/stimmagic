@@ -112,23 +112,38 @@ def _format_image_results(results: list[dict]) -> str:
 
 async def _fetch(url: str, max_length: int) -> str:
     try:
-        import trafilatura
+        raw, content_type = await fetch_url_bytes(url, max_size_mb=10)
 
-        def _do_fetch():
-            downloaded = trafilatura.fetch_url(url)
-            if not downloaded:
-                return None
-            return trafilatura.extract(
-                downloaded,
-                include_links=True,
-                include_tables=True,
-                favor_recall=True,
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return (
+                f"{url} returned binary content ({content_type or 'unknown type'}); "
+                "use action='download' to save it to the workspace instead."
             )
 
-        content = await asyncio.get_event_loop().run_in_executor(None, _do_fetch)
+        ct = (content_type or "").lower()
+        head = text.lstrip()[:512].lower()
+        is_html = "html" in ct or head.startswith(("<!doctype", "<html"))
 
-        if not content:
-            return f"Could not extract content from {url}"
+        if is_html:
+            import trafilatura
+
+            content = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: trafilatura.extract(
+                    text,
+                    include_links=True,
+                    include_tables=True,
+                    favor_recall=True,
+                ),
+            )
+            if not content:
+                return f"Could not extract content from {url}"
+        else:
+            # Plain text, markdown, JSON, llms.txt-style files: already readable,
+            # and trafilatura's HTML extractor would return nothing for them.
+            content = text
 
         max_length = min(max_length, MAX_CONTENT)
         if len(content) > max_length:
