@@ -32,7 +32,8 @@
     "targets": "all",
     "createUpdaterArtifacts": "v1Compatible",
     "macOS": {
-      "entitlements": "Entitlements.plist"
+      "entitlements": "Entitlements.plist",
+      "minimumSystemVersion": "15.0"
     },
     "externalBin": [
       "binaries/stimma-watchdog"
