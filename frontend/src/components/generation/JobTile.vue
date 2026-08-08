@@ -80,6 +80,15 @@
         v-if="currentMediaId != null && job.result_media_id === currentMediaId"
         class="pointer-events-none absolute inset-0 z-chrome rounded-media ring-2 ring-inset ring-selection"
       />
+      <!-- Compact rail (Stage) hides the marker strip below the tile — surface
+           existing markers as small read-only badges so marked items stay
+           findable in the strip. -->
+      <MarkerBadges
+        v-if="compactOverlays && tileMarkers.length > 0"
+        :markers="tileMarkers"
+        small
+        class="absolute bottom-1 right-1 z-chrome pointer-events-none"
+      />
       <div class="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
         <div class="text-xs text-white line-clamp-2">{{ getJobPrompt(job) }}</div>
       </div>
@@ -149,6 +158,7 @@
 import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
 import { useExpirationClock } from '../../composables/useExpirationClock'
 import { MediaImage, AppImage } from '../media'
+import MarkerBadges from '../MarkerBadges.vue'
 import Spinner from '../ui/Spinner.vue'
 import { useMediaApi } from '../../composables/useMediaApi'
 import { useMediaContextMenu } from '../../composables/useMediaContextMenu'
@@ -277,6 +287,9 @@ function releaseVideo() {
 }
 
 onBeforeUnmount(releaseVideo)
+const tileMarkers = computed<Marker[]>(() =>
+  props.job.result_media_id ? (props.mediaMarkers[props.job.result_media_id] || []) : []
+)
 function hasMarker(mediaId: number, markerId: number): boolean {
   return (props.mediaMarkers[mediaId] || []).some(m => m.id === markerId)
 }

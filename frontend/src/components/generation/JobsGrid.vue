@@ -146,6 +146,14 @@
                   <span class="w-4 h-4 flex items-center justify-center icon-container" v-html="sanitizeSvg(marker.icon_svg)" />
                 </button>
               </div>
+              <!-- Compact rail (Stage) hides the marker toggles — surface
+                   existing markers as small read-only badges instead. -->
+              <MarkerBadges
+                v-if="compactOverlays && item.batch.output_set_id && (mediaMarkers[item.batch.output_set_id] || []).length > 0"
+                :markers="mediaMarkers[item.batch.output_set_id]"
+                small
+                class="absolute bottom-1 left-1 z-chrome pointer-events-none"
+              />
               <!-- Set title overlay (bottom center, matching browser) -->
               <div
                 v-if="item.batch.output_set_title"
@@ -251,6 +259,7 @@ import PipelineProgressBar from './postprocessing/PipelineProgressBar.vue'
 import FailedJobRow from './FailedJobRow.vue'
 import JobTile from './JobTile.vue'
 import BatchGroup from './BatchGroup.vue'
+import MarkerBadges from '../MarkerBadges.vue'
 import { useMediaApi } from '../../composables/useMediaApi'
 import { useMediaContextMenu } from '../../composables/useMediaContextMenu'
 import { createDragPreview, handleDragEnd } from '../../composables/useDragPreview'
