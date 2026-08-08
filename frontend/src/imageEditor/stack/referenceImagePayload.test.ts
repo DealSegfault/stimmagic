@@ -96,3 +96,32 @@ test('declared frame picker still submits its positioned frame state', () => {
   assert.deepEqual(parameters.input_images, ['/visible/start.png', '/visible/end.png'])
   assert.deepEqual(parameters.input_media_ids, [11, 12])
 })
+
+test('video inputs carry internal media ids even when the provider schema omits them', () => {
+  const videoState = state()
+  videoState.globalPrefs.inputImages = []
+  videoState.globalPrefs.inpaintRefImages = []
+  videoState.globalPrefs.inputVideos = [
+    { path: '/staging/path-only.mp4' },
+    { path: '/library/generated.mp4', mediaId: 52 },
+  ]
+  const videoConfig: PayloadBuilderConfig = {
+    ...config,
+    tool: {
+      ...config.tool,
+      task_type: 'upscale-video',
+      parameter_schema: {
+        properties: {
+          input_videos: { type: 'array', 'x-control': 'video_picker' },
+        },
+      },
+    },
+  }
+
+  const parameters = extractParameters(videoConfig, videoState)
+  assert.deepEqual(parameters.input_videos, [
+    '/staging/path-only.mp4',
+    '/library/generated.mp4',
+  ])
+  assert.deepEqual(parameters.input_video_media_ids, [null, 52])
+})

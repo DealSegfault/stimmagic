@@ -293,6 +293,18 @@ export function extractParameters(config: PayloadBuilderConfig, state: PayloadBu
     }
   }
 
+  // Provider schemas describe only the file-path input. Media IDs are
+  // Stimma-internal lineage/lifecycle metadata, so input_video_media_ids is
+  // normally absent from the schema and cannot rely on the extractor loop
+  // above. Keep the array positional so a missing identity cannot make a
+  // later video's ID attach to the wrong path.
+  if ('input_videos' in props) {
+    const videoMediaIds = state.globalPrefs.inputVideos.map(v => v.mediaId ?? null)
+    if (videoMediaIds.some(id => id != null)) {
+      params.input_video_media_ids = videoMediaIds
+    }
+  }
+
   // Add media IDs for audio inputs (lineage) — audio-conditioned tools
   if ('input_audios' in props && state.globalPrefs.inputAudios.some(a => a.mediaId)) {
     params.input_audio_media_ids = state.globalPrefs.inputAudios.map(a => a.mediaId).filter(Boolean)
