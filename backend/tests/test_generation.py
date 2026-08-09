@@ -999,6 +999,32 @@ class TestConfigFromMedia:
         assert data.get("loras") == []
         assert data.get("disable_all_loras") is True
 
+    async def test_video_config_preserves_duration(
+        self,
+        generation_client: httpx.AsyncClient,
+        generation_db_session,
+    ):
+        """Modern duration-based video tools retain duration when remixed."""
+        from tests.helpers import create_media_item
+
+        async with generation_db_session() as session:
+            media = await create_media_item(
+                session,
+                file_format="mp4",
+                generation_metadata=json.dumps({
+                    "tool_id": "test:text-to-video:duration-model",
+                    "prompt": "A slow camera move",
+                    "parameters": {"duration": 8, "seed": 123},
+                }),
+            )
+
+        response = await generation_client.post(
+            f"/api/generate/config-from-media/{media.id}",
+        )
+
+        assert response.status_code == 200
+        assert response.json()["duration"] == 8
+
 
 # =============================================================================
 # Job Listing Tests

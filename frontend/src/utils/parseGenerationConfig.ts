@@ -60,6 +60,8 @@ export interface ParseOptions {
   hasPrompt: boolean
   /** Whether the tool has frame_count param (video generation) */
   hasFrameCount: boolean
+  /** Whether the tool has a duration param (modern video generation) */
+  hasDuration: boolean
   /** Whether the tool has resolution param (upscale) */
   hasResolution: boolean
   /** Whether the tool uses video frames (start_image in parameter_schema) */
@@ -139,6 +141,9 @@ export function parseGenerationConfig(
   if (data.shift !== undefined) result.modelParams.shift = data.shift
 
   // Video generation specific (tools with frame_count param)
+  if (options.hasDuration && data.duration !== undefined) {
+    result.modelParams.duration = data.duration
+  }
   if (options.hasFrameCount) {
     if (data.frame_count !== undefined) result.modelParams.frameCount = data.frame_count
     if (data.fps !== undefined) result.modelParams.fps = data.fps

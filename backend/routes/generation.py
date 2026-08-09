@@ -2639,6 +2639,8 @@ async def generate_config_from_media(
                     video_config["frame_count"] = params["frame_count"]
                 if params.get("fps") is not None:
                     video_config["fps"] = params["fps"]
+                if params.get("duration") is not None:
+                    video_config["duration"] = params["duration"]
                 # Include loras
                 video_config["loras"] = params.get("loras", [])
                 # Post-processing chain recorded in lineage (the steps that ran)
@@ -3166,6 +3168,7 @@ class ToolHopRequest(BaseModel):
     negative_prompt: str = ""
     input_images: List[dict] = []  # [{path, filename, hash, mediaId, width, height}]
     current_loras: List[dict] = []  # [{lora, weight, enabled}]
+    duration: Optional[float] = None
 
 
 @router.post("/config-for-tool-hop")
@@ -3221,6 +3224,10 @@ async def get_config_for_tool_hop(request: ToolHopRequest):
         "negative_prompt": request.negative_prompt,
         "input_images": request.input_images,
         "matched_loras": matched_loras,
+        **({"duration": request.duration} if (
+            request.duration is not None
+            and "duration" in target_tool_descriptor.parameter_schema.get("properties", {})
+        ) else {}),
     }
 
 

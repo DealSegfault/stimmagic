@@ -4188,6 +4188,7 @@ async function loadPendingGeneration() {
     const update = parseGenerationConfig(data, {
       hasPrompt: hasPrompt.value,
       hasFrameCount: hasFrameCount.value,
+      hasDuration: hasDuration.value,
       hasResolution: hasResolution.value,
       hasVideoFrames: hasVideoFrames.value,
     })
@@ -4330,6 +4331,7 @@ async function loadRemix(mediaId: string) {
     const update = parseGenerationConfig(data, {
       hasPrompt: hasPrompt.value,
       hasFrameCount: hasFrameCount.value,
+      hasDuration: hasDuration.value,
       hasResolution: hasResolution.value,
       hasVideoFrames: hasVideoFrames.value,
     })
@@ -4459,7 +4461,8 @@ async function handleHopToTool(targetTool: { full_tool_id: string; name: string 
       prompt: globalPrefs.value.prompt || '',
       negative_prompt: modelParams.value.negative_prompt || '',
       input_images: allInputImages,
-      current_loras: currentLoras
+      current_loras: currentLoras,
+      duration: hasDuration.value ? modelParams.value.duration : undefined,
     })
 
     const hopConfig = response.data
@@ -4478,6 +4481,7 @@ async function handleHopToTool(targetTool: { full_tool_id: string; name: string 
       prompt: hopConfig.prompt,
       negative_prompt: hopConfig.negative_prompt,
       loras: hopConfig.matched_loras,
+      ...(hopConfig.duration !== undefined ? { duration: hopConfig.duration } : {}),
       // Carry the ORIGINAL (pre-prep) path plus all non-destructive prep settings
       // so the target tool re-applies them rather than baking onto an already-prepped image.
       source_inputs: (hopConfig.input_images || []).map((img: any) => ({
