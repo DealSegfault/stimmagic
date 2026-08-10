@@ -82,7 +82,8 @@ class ExecutionProgress:
 
     progress: float  # 0.0 to 1.0
     stage: str  # Human-readable stage: "sampling", "encoding", "upscaling"
-    preview_data: Optional[bytes] = None  # Optional preview image (PNG bytes)
+    preview_data: Optional[bytes] = None  # Optional in-flight preview frame bytes
+    preview_mime: Optional[str] = None  # Mime of preview_data, e.g. "image/jpeg"
     message: Optional[str] = None  # Optional progress message
 
 
@@ -145,6 +146,12 @@ class ToolProvider(ABC):
         Used for routing and feature detection.
         """
         pass
+
+    @property
+    def capabilities(self) -> Dict[str, Any]:
+        """Capabilities the provider advertised at registration (e.g.
+        cancel, preview_frames). Empty for providers without a handshake."""
+        return {}
 
     @property
     @abstractmethod

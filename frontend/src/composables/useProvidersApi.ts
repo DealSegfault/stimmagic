@@ -58,6 +58,7 @@ export interface ProviderTool {
   model_vendor?: string  // STP model_vendor (brand mark hint)
   model?: string  // STP model identifier
   availability: ToolAvailability  // "available", "disconnected", "unconfigured"
+  preview_frames?: boolean  // Provider streams in-flight preview frames
 }
 
 /**

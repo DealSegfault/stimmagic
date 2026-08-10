@@ -26,19 +26,60 @@
             </button>
           </div>
         </SettingRow>
+
+        <SettingRow
+          label="Show generation previews"
+          description="Show in-progress frames on generating items, for tools that provide them. Turning this off also stops the tool from producing them."
+          :divider="true"
+        >
+          <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">
+            <input
+              type="checkbox"
+              :checked="showGenerationPreviews"
+              @change="updateGenerationPreviewsSetting($event.target.checked)"
+              class="sr-only peer"
+            />
+            <div class="w-9 h-5 bg-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+          </label>
+        </SettingRow>
       </div>
     </section>
   </div>
 </template>
 
 <script setup>
+import { ref, onMounted } from 'vue'
 import { useTheme } from '../../../composables/useTheme'
 import { useSettingsApi } from '../../../composables/useSettingsApi'
 import SettingRow from '../SettingRow.vue'
+import { setGenerationPreviews } from '../../../appConfig'
 
 // Theme
 const { themePreference, setTheme } = useTheme()
-const { updateTheme } = useSettingsApi()
+const { updateTheme, fetchSettings, updateGenerationPreviews } = useSettingsApi()
+
+// Live generation previews (global). This section owns no other settings
+// payload, so it reads its own value on mount rather than threading the whole
+// settings object through the modal.
+const showGenerationPreviews = ref(true)
+onMounted(async () => {
+  try {
+    const settings = await fetchSettings()
+    showGenerationPreviews.value = settings?.show_generation_previews !== false
+  } catch (err) {
+    console.error('Failed to load generation previews setting:', err)
+  }
+})
+
+function updateGenerationPreviewsSetting(enabled) {
+  showGenerationPreviews.value = enabled
+  // Apply immediately app-wide; tool descriptors carry only the provider
+  // capability, so the setting is ANDed client-side.
+  setGenerationPreviews(enabled)
+  updateGenerationPreviews(enabled).catch(err => {
+    console.error('Failed to persist generation previews setting:', err)
+  })
+}
 
 const THEME_OPTIONS = [
   { value: 'light', label: 'Light', icon: 'M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z' },

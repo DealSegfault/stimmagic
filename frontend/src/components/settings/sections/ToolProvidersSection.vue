@@ -136,6 +136,7 @@
         </span>
       </button>
     </div>
+
     </template>
 
     <section v-else-if="selectedProvider && detailView === 'tools'" class="max-w-3xl">

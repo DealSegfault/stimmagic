@@ -69,6 +69,42 @@ export function textClass(bucket: StatusBucket): string {
   return TEXT_CLASS[bucket]
 }
 
+// Ring/border tint for a status-framed surface (e.g. a generating tile's
+// hairline, a failed tile's frame). Kept here so components don't reach for a
+// raw palette class and drift from the table above.
+const RING_CLASS: Record<StatusBucket, string> = {
+  queued: 'ring-zinc-500/30',
+  running: 'ring-blue-500/40',
+  special: 'ring-purple-500/40',
+  awaiting: 'ring-accent/40',
+  done: 'ring-green-500/30',
+  failed: 'ring-red-500/30',
+  warning: 'ring-amber-500/30',
+  paused: 'ring-amber-500/30',
+  skipped: 'ring-zinc-500/20',
+}
+
+// Leading-edge hue for `Spinner` (which takes a full border-t-* class).
+const SPINNER_HUE: Record<StatusBucket, string> = {
+  queued: 'border-t-zinc-500',
+  running: 'border-t-blue-500',
+  special: 'border-t-purple-500',
+  awaiting: 'border-t-accent',
+  done: 'border-t-green-500',
+  failed: 'border-t-red-500',
+  warning: 'border-t-amber-500',
+  paused: 'border-t-amber-500',
+  skipped: 'border-t-zinc-500',
+}
+
+export function ringClass(bucket: StatusBucket): string {
+  return RING_CLASS[bucket]
+}
+
+export function spinnerHue(bucket: StatusBucket): string {
+  return SPINNER_HUE[bucket]
+}
+
 export function bgClass(bucket: StatusBucket): string {
   return BG_CLASS[bucket]
 }

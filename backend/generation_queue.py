@@ -2821,6 +2821,7 @@ class GenerationQueue:
         LightweightProvider for in-process tools, etc.).
         """
         from providers import ProviderRegistry, ExecutionResult
+        from providers.base import ExecutionProgress
 
         set_current_profile(profile_id)
 
@@ -2942,6 +2943,37 @@ class GenerationQueue:
             # Use job ID as request_id for cancellation support
             request_id = f"job-{job.id}"
 
+            # Live progress fan-out to the UI. Transient — never persisted.
+            # Numeric-only ticks are coalesced; ticks carrying a preview frame
+            # always go through (providers already throttle frames upstream).
+            _last_progress_broadcast = 0.0
+
+            async def _broadcast_progress(p: ExecutionProgress):
+                nonlocal _last_progress_broadcast
+                if not self._websocket_manager:
+                    return
+                now = time.monotonic()
+                # Decide about the preview BEFORE the throttle: a frame we're
+                # going to discard must not also buy the tick an exemption
+                # from coalescing (that would flood clients with payload-free
+                # progress against a provider that streams frames anyway).
+                from config import get_settings
+                has_preview = bool(p.preview_data) and get_settings().show_generation_previews
+                if not has_preview and now - _last_progress_broadcast < 0.2:
+                    return
+                _last_progress_broadcast = now
+                payload = {
+                    'job_id': job.id,
+                    'generator_instance_id': job.generator_instance_id,
+                    'progress': p.progress,
+                    'stage': p.stage,
+                }
+                if has_preview:
+                    import base64 as _b64
+                    payload['preview_b64'] = _b64.b64encode(p.preview_data).decode('ascii')
+                    payload['preview_mime'] = p.preview_mime or 'image/jpeg'
+                await self._websocket_manager.broadcast('generation_job_progress', payload)
+
             if is_builtin:
                 # Builtin providers write directly to output_path
                 async for progress_or_result in provider.execute(
@@ -2952,6 +2984,8 @@ class GenerationQueue:
                 ):
                     if isinstance(progress_or_result, ExecutionResult):
                         exec_result = progress_or_result
+                    elif isinstance(progress_or_result, ExecutionProgress):
+                        await _broadcast_progress(progress_or_result)
             else:
                 # External providers (JSON-RPC, etc.) return output_data, we write to output_path
                 async for progress_or_result in provider.execute(
@@ -2961,7 +2995,8 @@ class GenerationQueue:
                 ):
                     if isinstance(progress_or_result, ExecutionResult):
                         exec_result = progress_or_result
-                # TODO: Could broadcast progress updates here
+                    elif isinstance(progress_or_result, ExecutionProgress):
+                        await _broadcast_progress(progress_or_result)
 
             if not exec_result:
                 raise ValueError("Provider did not return a result")

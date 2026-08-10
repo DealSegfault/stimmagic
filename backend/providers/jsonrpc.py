@@ -8,6 +8,7 @@ See https://github.com/stimma-ai/stimma-tools-protocol for the full protocol spe
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -770,6 +771,10 @@ class JsonRpcProvider(ToolProvider):
         return tool_provider_display_name(self._config.id, self._config.name)
 
     @property
+    def capabilities(self) -> Dict[str, Any]:
+        return self._capabilities
+
+    @property
     def provider_type(self) -> str:
         return "jsonrpc"
 
@@ -949,9 +954,28 @@ class JsonRpcProvider(ToolProvider):
         elif method == "tools.progress":
             request_id = params.get("request_id")
             if request_id in self._pending_executions:
+                # Optional in-flight preview frame: {"mime": ..., "data": <b64>}.
+                preview_bytes = None
+                preview_mime = None
+                preview = params.get("preview")
+                if isinstance(preview, dict) and isinstance(preview.get("data"), str):
+                    try:
+                        decoded = base64.b64decode(preview["data"])
+                        # Defensive cap — previews are small frames, not assets.
+                        if 0 < len(decoded) <= 4 * 1024 * 1024:
+                            preview_bytes = decoded
+                            preview_mime = preview.get("mime") or "image/jpeg"
+                    except (ValueError, TypeError):
+                        log.debug(
+                            "ignoring malformed tools.progress preview",
+                            request_id=request_id,
+                            provider=self.provider_id,
+                        )
                 progress = ExecutionProgress(
                     progress=params.get("progress", 0.0),
                     stage="executing",
+                    preview_data=preview_bytes,
+                    preview_mime=preview_mime,
                 )
                 await self._pending_executions[request_id].put(("progress", progress))
             else:
@@ -1044,14 +1068,19 @@ class JsonRpcProvider(ToolProvider):
                         self._asset_base_url = f"{self._transport.origin}{asset_endpoint.rstrip('/')}"
                     log.info(f"Provider asset URL: {self._asset_base_url}")
 
-            # Send registration response
+            # Send registration response. preview_frames advertises that this
+            # host understands in-flight preview frames at all; whether it
+            # wants them for a given job rides on tools.execute.
             response = {
                 "jsonrpc": "2.0",
                 "result": {
                     "session_id": str(uuid.uuid4()),
                     "stp_version": "1.1",
                     "host_version": "1.0.0",
-                    "capabilities": {"parameter_options": True},
+                    "capabilities": {
+                        "parameter_options": True,
+                        "preview_frames": True,
+                    },
                 },
                 "id": message.get("id"),
             }
@@ -1493,11 +1522,19 @@ class JsonRpcProvider(ToolProvider):
                 )
             processed_params = await self._upload_input_assets(outbound_parameters, schema)
 
-            # Send execute request
+            # Send execute request. preview_frames is per-request so toggling
+            # the host setting takes effect on the next job without the
+            # disruption of a provider reconnect.
+            try:
+                from config import get_settings
+                _previews = bool(get_settings().show_generation_previews)
+            except Exception:
+                _previews = True
             execute_params = {
                 "request_id": request_id,
                 "tool_id": tool_id,
                 "parameters": processed_params,
+                "preview_frames": _previews,
             }
 
             result = await self._send_request("tools.execute", execute_params)

@@ -177,6 +177,15 @@ export function useSettingsApi() {
   }
 
   /**
+   * Update the live generation previews setting.
+   * @param {boolean} enabled - Whether in-flight generation previews are shown
+   */
+  async function updateGenerationPreviews(enabled) {
+    const response = await axios.patch(`${getAPIBase()}/settings/generation-previews`, { enabled })
+    return response.data
+  }
+
+  /**
    * Dev-only: force FFmpeg to appear missing (or restore real detection).
    * @param {boolean} enabled - Whether to force FFmpeg/ffprobe to appear missing
    */
@@ -239,6 +248,7 @@ export function useSettingsApi() {
     analyzeDatabaseMaintenance,
     cleanupDatabaseMaintenance,
     updateDeveloperMode,
+    updateGenerationPreviews,
     updateDebugForceFfmpegMissing,
     recheckFfmpeg,
     updateTheme,

@@ -709,8 +709,23 @@
         class="order-3 flex-1 min-w-0 flex flex-col min-h-0 relative bg-matte overflow-hidden"
         :class="layoutMode === 'stage' ? 'pt-[21px] px-[9px] pb-2' : 'p-0'"
       >
+        <!-- Live generation preview: the in-flight frames at full hero size.
+             Presentation-only (raw <img> over an ephemeral blob: URL — never a
+             slideshow item, no zoom/slideshow click). Chrome is just the
+             hairline progress on the bottom edge; name/percent/cancel live on
+             the strip's live tile. -->
+        <div v-if="stageLiveShowing" class="relative flex-1 min-h-0 rounded-media overflow-hidden">
+          <LivePreviewImage :url="stageLiveProgress?.previewUrl || ''" contain />
+          <div class="absolute inset-x-0 bottom-0 h-[2.5px] bg-white/10">
+            <div
+              v-if="stageLiveProgress?.progress != null"
+              class="h-full bg-blue-500 transition-all duration-300"
+              :style="{ width: `${Math.round((stageLiveProgress.progress || 0) * 100)}%` }"
+            ></div>
+          </div>
+        </div>
         <!-- Empty state -->
-        <div v-if="!stageCurrentJob && stageHasPending" class="flex-1 self-center flex flex-col items-center justify-center gap-3 text-content-muted">
+        <div v-else-if="!stageCurrentJob && stageHasPending" class="flex-1 self-center flex flex-col items-center justify-center gap-3 text-content-muted">
           <Spinner size="lg" />
           <span class="text-sm">Generating…</span>
         </div>
@@ -804,7 +819,7 @@
 
         <!-- Jump to newest (top-left, on the image) -->
         <button
-          v-if="stageCurrentJob && !stageOnNewest"
+          v-if="stageCurrentJob && !stageOnNewest && !stageLiveShowing"
           @click.stop="stageJumpToNewest()"
           class="absolute top-7 left-7 z-10 flex items-center gap-1.5 bg-black/55 backdrop-blur-sm text-white font-mono text-[11px] px-3 py-1.5 rounded hover:bg-black/70 transition-colors"
         >
@@ -813,7 +828,7 @@
         </button>
 
         <!-- Control bar beneath the image: markers · facts | volume · remix · trash -->
-        <div v-if="stageCurrentJob" class="flex-none flex items-center gap-1.5 pt-2">
+        <div v-if="stageCurrentJob && !stageLiveShowing" class="flex-none flex items-center gap-1.5 pt-2">
           <template v-if="stageMarkers.length">
             <button
               v-for="marker in stageMarkers"
@@ -906,15 +921,21 @@
           :media-data="jobsManager.mediaData.value"
           :batch-jobs="jobsManager.batchJobs.value"
           :active-chain-runs="jobsManager.activeChainRuns.value"
+          :job-progress="jobsManager.jobProgress.value"
           :is-video="outputsVideo"
           :is-audio="outputsAudio"
           :image-mode="uiState.imageMode"
-          :current-media-id="layoutMode === 'stage' ? stageCurrentMediaId : null"
+          :current-media-id="layoutMode === 'stage' && !stageLiveShowing ? stageCurrentMediaId : null"
+          :live-job-id="layoutMode === 'stage' && stageLiveShowing ? stageLiveJobId : null"
+          :live-selectable="layoutMode === 'stage'"
+          :preview-tiles="!!tool?.preview_frames && generationPreviews"
+          :fallback-aspect="currentAspectRatio"
           :tool-display-name="tool?.name"
           :compact-overlays="layoutMode === 'stage'"
           :thumbnail-size="queueThumbnailSize"
           :slot-count="uiState.generateForeverMode ? (uiState.generateForeverConcurrency ?? 1) : null"
           @job-click="handleQueueClick"
+          @live-click="handleLiveClick"
           @toggle-marker="handleToggleMarker"
           @dismiss-job="dismissJob"
           @retry-job="retryJob"
@@ -1136,6 +1157,8 @@ import HopToToolMenu from '../components/HopToToolMenu.vue'
 import ToolIcon from '../components/tools/ToolIcon.vue'
 import FreezeToolDialog from '../components/flow/FreezeToolDialog.vue'
 import { useFlowsApi } from '../composables/useFlowsApi'
+import LivePreviewImage from '../components/generation/LivePreviewImage.vue'
+import { generationPreviewsRef as generationPreviews } from '../appConfig'
 import PostProcessingPanel from '../components/generation/postprocessing/PostProcessingPanel.vue'
 import SchemaParamGroup from '../components/generation/SchemaParamGroup.vue'
 import { resolveParamConstraints } from '../utils/paramConstraints'
@@ -1186,6 +1209,16 @@ const queueThumbnailSize = computed(() => layoutMode.value === 'stage' ? 512 : 1
 // by clicking a thumbnail in the queue strip). null pin = follow newest.
 const stagePinnedMediaId = ref<number | null>(null)
 const stageMenuOpen = ref(false)
+
+// Live-preview hero: the processing job whose in-flight diffusion preview the
+// hero shows full-size. Set by follow-on-generate (job starts sampling while
+// the user is following newest) or by clicking the live tile in the strip.
+// The live view is presentation-only — never a slideshow/history item; when
+// the job settles the hero hands back to the normal pin/follow path.
+const stageLiveJobId = ref<number | null>(null)
+function clearStageLive() {
+  stageLiveJobId.value = null
+}
 
 // Stage hero video sound: always loops muted; sound is a one-shot "audition"
 // event, not a persistent mute state. A user-initiated staging (pin, arrow
@@ -1434,6 +1467,29 @@ const stageCurrentMediaId = computed<number | null>(() => stageCurrentJob.value?
 const stageCurrentHash = computed<string | null>(() =>
   stageCurrentMediaId.value != null ? (jobsManager?.mediaHashes.value?.[stageCurrentMediaId.value] ?? null) : null
 )
+// Shape for placeholder tiles with no resolution of their own: the tool's
+// currently selected output size.
+const currentAspectRatio = computed<string | null>(() => {
+  const w = Number(modelParams.value?.width)
+  const h = Number(modelParams.value?.height)
+  return Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0 ? `${w} / ${h}` : null
+})
+
+const stageLiveJob = computed<any | null>(() => {
+  if (stageLiveJobId.value == null) return null
+  return (jobsManager?.jobs.value || []).find(
+    (j: any) => j.id === stageLiveJobId.value && j.status === 'processing'
+  ) || null
+})
+const stageLiveProgress = computed<{ progress?: number, previewUrl?: string | null } | null>(() => {
+  const id = stageLiveJobId.value
+  return id != null ? (jobsManager?.jobProgress.value?.[id] ?? null) : null
+})
+// The hero switches to the live preview only once frames actually exist — the
+// current image stays up through model load / VAE encode.
+const stageLiveShowing = computed(() =>
+  layoutMode.value === 'stage' && !!stageLiveJob.value && !!stageLiveProgress.value?.previewUrl
+)
 
 function onHeroDragStart(event: DragEvent) {
   const mediaId = stageCurrentMediaId.value
@@ -1574,15 +1630,22 @@ function stageHasMarker(markerId: number): boolean {
 // Other statuses (e.g. failed) fall through to the normal click handler.
 function stagePinJob(job: any) {
   if (job?.status === 'completed' && job.result_media_id) {
-    if (job.result_media_id === stageCurrentMediaId.value) {
+    if (job.result_media_id === stageCurrentMediaId.value && !stageLiveShowing.value) {
       handleJobClick(job)
     } else {
+      clearStageLive()
       requestStageAudition(job.result_media_id)
       stagePinnedMediaId.value = job.result_media_id
     }
   } else {
     handleJobClick(job)
   }
+}
+
+// Clicking a live tile in the strip puts that job's preview on the hero.
+function handleLiveClick(job: any) {
+  if (layoutMode.value !== 'stage') return
+  stageLiveJobId.value = job.id
 }
 
 // The queue rail is a single control across both modes — route clicks based on
@@ -1595,20 +1658,57 @@ function handleQueueClick(job: any) {
   }
 }
 
-// ←/→ navigate the hero through completed jobs (newest at index 0). Right = older.
+// Hero-capable live entries, matching the strip's tile order: they sit above
+// the completed list, so arrow keys traverse live tiles → completed jobs as
+// one continuous list.
+const stageLiveNavJobs = computed<any[]>(() =>
+  (jobsManager?.jobs.value || []).filter(
+    (j: any) => j.status === 'processing' && jobsManager?.jobProgress.value?.[j.id]?.previewUrl
+  )
+)
+
+// ←/→ navigate the hero through live entries then completed jobs (newest at
+// index 0 of each group). Right = older.
 function stageNav(delta: number) {
+  const live = stageLiveNavJobs.value
   const list = stageCompletedJobs.value
-  if (!list.length) return
-  const curId = stageCurrentJob.value?.id
-  let idx = list.findIndex((j: any) => j.id === curId)
-  if (idx < 0) idx = 0
-  const next = Math.max(0, Math.min(list.length - 1, idx + delta))
-  requestStageAudition(list[next].result_media_id)
-  stagePinnedMediaId.value = list[next].result_media_id
+  const total = live.length + list.length
+  if (!total) return
+
+  let idx: number
+  const liveIdx = stageLiveJobId.value != null
+    ? live.findIndex((j: any) => j.id === stageLiveJobId.value)
+    : -1
+  // Only navigate from the live entry when it's actually on the hero. A job
+  // can be selected-but-not-showing (previews off, a cloud tool, or before
+  // its first frame); treating that as the live position would discard where
+  // the user actually is and jump them to the newest completed result.
+  if (liveIdx >= 0 && stageLiveShowing.value) {
+    idx = liveIdx
+  } else {
+    const curId = stageCurrentJob.value?.id
+    let cIdx = list.findIndex((j: any) => j.id === curId)
+    if (cIdx < 0) cIdx = 0
+    idx = live.length + cIdx
+  }
+
+  const next = Math.max(0, Math.min(total - 1, idx + delta))
+  if (next === idx) return
+  if (next < live.length) {
+    stageLiveJobId.value = live[next].id
+  } else {
+    clearStageLive()
+    const target = list[next - live.length]
+    requestStageAudition(target.result_media_id)
+    // Landing on the newest completed = follow (pin null), matching
+    // jump-to-newest semantics so later arrivals keep advancing the hero.
+    stagePinnedMediaId.value = next - live.length === 0 ? null : target.result_media_id
+  }
 }
 
 // "Jump to newest" is a deliberate staging too — it earns the audible pass.
 function stageJumpToNewest() {
+  clearStageLive()
   requestStageAudition(stageCompletedJobs.value[0]?.result_media_id)
   stagePinnedMediaId.value = null
 }
@@ -2277,6 +2377,12 @@ function getVideoImagesKey(fullToolId: string) {
   return makeToolDbKey(scopedToolId(fullToolId), 'video_images')
 }
 
+// A legacy restored frame may be missing dimensions. MediaPicker repairs those
+// asynchronously after mount; remember that identity so the repair is not
+// mistaken for a newly selected frame and allowed to overwrite saved canvas
+// dimensions during hydration.
+let restoredStartAwaitingDimensions: { mediaId?: number; path?: string } | null = null
+
 function loadVideoImages() {
   if (!tool.value) return
   const savedVideoImages = localStorage.getItem(getVideoImagesKey(tool.value.full_tool_id))
@@ -2287,6 +2393,9 @@ function loadVideoImages() {
       // under the old independent-slots picker — collapses up to the start slot.
       videoImages.startImage = parsed.startImage || parsed.endImage || null
       videoImages.endImage = parsed.startImage ? (parsed.endImage || null) : null
+      restoredStartAwaitingDimensions = videoImages.startImage && (!videoImages.startImage.width || !videoImages.startImage.height)
+        ? { mediaId: videoImages.startImage.mediaId, path: videoImages.startImage.path }
+        : null
     } catch (e) {
       console.error('Failed to parse saved video images:', e)
     }
@@ -2294,6 +2403,7 @@ function loadVideoImages() {
     // Clear when switching to a tool with no saved video images
     videoImages.startImage = null
     videoImages.endImage = null
+    restoredStartAwaitingDimensions = null
   }
 }
 
@@ -2820,12 +2930,19 @@ watch(() => globalPrefs.value.inputImages, (newImages, oldImages) => {
 watch(() => videoImages.startImage, (newStart, oldStart) => {
   if (!newStart?.width || !newStart?.height) return
   if (isInitialLoading.value) return
+  const dimensionsResolved = !!oldStart && !oldStart.width && !!newStart.width
+  if (dimensionsResolved && restoredStartAwaitingDimensions
+    && newStart.mediaId === restoredStartAwaitingDimensions.mediaId
+    && newStart.path === restoredStartAwaitingDimensions.path) {
+    restoredStartAwaitingDimensions = null
+    return
+  }
   const changed = !oldStart
     || newStart.path !== oldStart.path
     || newStart.mediaId !== oldStart.mediaId
     // Dimensions just resolved (e.g. legacy frame backfilled by the picker) —
     // treat as a change so the canvas can match a frame that previously read 1×1.
-    || (!oldStart.width && !!newStart.width)
+    || dimensionsResolved
   if (!changed) return
   if (hasAspectRatio.value && !resolutionLockSize.value) {
     modelParams.value.aspect_ratio = findNearestAspectRatio(newStart.width, newStart.height)
@@ -3546,6 +3663,45 @@ watch(stageCompletedJobs, (list: any[], prevList: any[] = []) => {
     const wasOnNewest = stagePinnedMediaId.value == null ||
       stagePinnedMediaId.value === prevList[0]?.result_media_id
     if (wasOnNewest) stagePinnedMediaId.value = null
+  }
+})
+
+// Live-preview follow + settle. A job entering 'processing' takes the live
+// hero when the user is following newest; when the live job settles the hero
+// hands back through the normal pin/follow path above.
+watch(allJobs, (jobs: any[], prev: any[] = []) => {
+  if (stageLiveJobId.value != null) {
+    const live = (jobs || []).find((j: any) => j.id === stageLiveJobId.value)
+    if (!live || live.status !== 'processing') {
+      // The job you were WATCHING is the one you get. Whether you were
+      // following or inspecting when you selected it, its finished media is
+      // what should land on the hero — a watched generation that completes
+      // and then shows some other result reads as the hero jumping at random.
+      // (Pinning the head is harmless: auto-advance treats pin-on-head as
+      // "was on newest", so later arrivals still advance.)
+      if (live?.status === 'completed' && live.result_media_id) {
+        stagePinnedMediaId.value = live.result_media_id
+      }
+      clearStageLive()
+    }
+  }
+  if (stageLiveJobId.value == null && layoutMode.value === 'stage') {
+    const prevProcessing = new Set(
+      (prev || []).filter((j: any) => j.status === 'processing').map((j: any) => j.id)
+    )
+    const fresh = (jobs || []).find(
+      (j: any) => j.status === 'processing' && !prevProcessing.has(j.id)
+    )
+    if (fresh && stagePinnedMediaId.value == null) {
+      stageLiveJobId.value = fresh.id
+    } else if (stageCompletedJobs.value.length === 0) {
+      // First generation on an empty stage: there is nothing else the hero
+      // could be showing, so adopt whatever is sampling even if this client
+      // missed the queued→processing transition (e.g. the view mounted
+      // mid-job). Without this the strip shows progress the hero doesn't.
+      const anyProcessing = (jobs || []).find((j: any) => j.status === 'processing')
+      if (anyProcessing) stageLiveJobId.value = anyProcessing.id
+    }
   }
 })
 const queuedJobsCount = computed(() => {
@@ -4724,7 +4880,15 @@ async function submitOneJob(options: ForeverSubmitOptions = {}): Promise<SubmitJ
     promptOptions?.translate?.enabled
   )
   const pendingId = needsEnhancing
-    ? jobsManager.addPendingJob(prompt, { model_name: tool.value!.model, generator_name: tool.value!.generator })
+    ? jobsManager.addPendingJob(prompt, {
+        model_name: tool.value!.model,
+        generator_name: tool.value!.generator,
+        // Carry the requested resolution so the placeholder tile is already
+        // the shape of the result — otherwise it starts square and reshapes
+        // when the real job arrives.
+        width: capturedState.parameters?.width,
+        height: capturedState.parameters?.height,
+      })
     : null
   const finishPendingStatus = pendingId ? beginInstanceWork(generatorInstanceId) : null
   const removePendingEnhancementJob = () => {
@@ -6683,6 +6847,14 @@ function handleFlushToolInstanceState(event: Event) {
   flushGenerationPreferenceSaves()
 }
 
+// A cold reload tears down the page before the 500 ms persistence debounce can
+// fire. pagehide is synchronous and also covers reloads on WebKit/Tauri, so
+// commit the current working state while localStorage is still available.
+function handlePageHide() {
+  flushPendingSaves()
+  flushGenerationPreferenceSaves()
+}
+
 async function handleProfileChanged() {
   stopWatching()  // stop watchers to prevent stale saves during reinit
   await loadTool(true)  // force reload from API + reinitialize state + restart watchers
@@ -6697,6 +6869,7 @@ onMounted(async () => {
   window.addEventListener('profile-will-change', handleProfileWillChange)
   window.addEventListener('profile-changed', handleProfileChanged)
   window.addEventListener('stimma:flush-tool-instance-state', handleFlushToolInstanceState)
+  window.addEventListener('pagehide', handlePageHide)
 
   // Register WebSocket event handlers. The handler registry is a module-level
   // singleton that survives HMR, so we must hold the unsubscribers and tear
@@ -6784,6 +6957,9 @@ onUnmounted(async () => {
   window.removeEventListener('profile-will-change', handleProfileWillChange)
   window.removeEventListener('profile-changed', handleProfileChanged)
   window.removeEventListener('stimma:flush-tool-instance-state', handleFlushToolInstanceState)
+  window.removeEventListener('pagehide', handlePageHide)
+  flushPendingSaves()
+  flushGenerationPreferenceSaves()
   stopWatching()
 
   jobsManager?.cleanup()

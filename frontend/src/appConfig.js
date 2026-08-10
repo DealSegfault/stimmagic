@@ -29,6 +29,12 @@ const hidePricesRef = ref(localStorage.getItem(HIDE_PRICES_KEY) === 'true')
 const HIDE_ACCOUNT_KEY = 'stimma_hide_account'
 const hideAccountRef = ref(localStorage.getItem(HIDE_ACCOUNT_KEY) === 'true')
 
+// Live in-flight generation previews (global setting). Reactive so toggling
+// it applies immediately: the per-tool `preview_frames` capability is fetched
+// once with the tool descriptor, and ANDing server-side would leave every tile
+// stuck in the "waiting for a first frame" treatment until a refetch.
+const generationPreviewsRef = ref(true)
+
 // Reactive ref for captioning (visual analysis) feature - allows hiding all caption/keyword UI when disabled
 const captioningEnabledRef = ref(false)
 
@@ -105,6 +111,10 @@ export function setCaptioningEnabled(enabled) {
   captioningEnabledRef.value = enabled === true
 }
 
+export function setGenerationPreviews(enabled) {
+  generationPreviewsRef.value = enabled !== false
+}
+
 export function setTelemetryEnabled(enabled) {
   telemetryEnabledRef.value = typeof enabled === 'boolean' ? enabled : null
 }
@@ -131,4 +141,4 @@ export function setHideAccount(enabled) {
  * Reactive ref for developer mode.
  * Use this in Vue components for reactive updates.
  */
-export { devModeRef, appBranchRef, captioningEnabledRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }
+export { devModeRef, appBranchRef, captioningEnabledRef, generationPreviewsRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }

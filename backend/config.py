@@ -816,6 +816,10 @@ class Settings(BaseSettings):
 
     # Global settings (shared across all profiles)
     developer_mode: bool = False  # Show debug tools and developer options in the UI
+    # Live in-flight diffusion previews from preview-capable providers (frames
+    # streamed over tools.progress and rendered on generating tiles/hero).
+    # Off also tells providers not to capture frames at all.
+    show_generation_previews: bool = True
     # Last AI-setup-wizard version this install has completed/dismissed.
     # The wizard auto-shows whenever this is behind SETUP_WIZARD_VERSION
     # (routes/settings.py) — bumping that constant re-runs the wizard for

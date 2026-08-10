@@ -62,6 +62,9 @@ class ProviderToolResponse(BaseModel):
     model_vendor: Optional[str] = None  # STP model_vendor (brand mark hint)
     model: Optional[str] = None  # STP model identifier
     availability: str = "available"  # "available", "disconnected", "unconfigured"
+    # Provider streams in-flight preview frames (tools.progress previews) —
+    # drives the live-tile treatment in the generation strip.
+    preview_frames: bool = False
 
 
 class PinnedToolResponse(BaseModel):
@@ -304,6 +307,7 @@ async def list_provider_tools(
                 model_vendor=tool.model_vendor,
                 model=tool.model,
                 availability="available",
+                preview_frames=bool(provider.capabilities.get("preview_frames")),
             ))
 
     # Second: Add cached tools from disconnected but enabled providers
@@ -503,6 +507,7 @@ async def get_provider_tool(
                     model_vendor=tool.model_vendor,
                     model=tool.model,
                     availability="available",
+                    preview_frames=bool(provider.capabilities.get("preview_frames")),
                 )
 
     # Second: Try to find in cached tools (disconnected or disabled)

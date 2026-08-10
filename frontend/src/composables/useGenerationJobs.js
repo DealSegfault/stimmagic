@@ -77,6 +77,15 @@ export function useGenerationJobs(options = {}) {
   const chainRuns = ref({})
   const dismissedChainRuns = ref(new Set())
 
+  // Live in-flight progress: job_id -> { progress, stage, previewUrl }.
+  // previewUrl is an ephemeral blob: URL holding the latest diffusion preview
+  // frame pushed over the websocket. These frames are transient (never
+  // persisted, never library media); URLs are revoked on replacement and on
+  // job settle so cached (KeepAlive) views can't accumulate leaked blobs.
+  const jobProgress = ref({})
+  // Monotonic frame counter per job; guards against out-of-order decodes.
+  const previewSeq = new Map()
+
   // WebSocket unsubscribe functions
   const unsubscribers = []
 
@@ -445,6 +454,84 @@ export function useGenerationJobs(options = {}) {
     pendingJobs.value = pendingJobs.value.slice(0, -1)
   }
 
+  function handleJobProgress(data) {
+    const { job_id, progress, stage, preview_b64, preview_mime } = data
+    if (job_id == null) return
+    // Only track jobs this instance shows — jobs.value is already filtered
+    // by the queued/started handlers, so foreign jobs never appear here.
+    if (!jobs.value.some(j => j.id === job_id)) return
+
+    const prev = jobProgress.value[job_id]
+    const previewUrl = prev?.previewUrl || null
+    // Progress/stage apply immediately; the frame swaps in only once decoded.
+    jobProgress.value = {
+      ...jobProgress.value,
+      [job_id]: {
+        progress,
+        stage,
+        previewUrl,
+      },
+    }
+
+    if (!preview_b64) return
+    let url
+    try {
+      const bin = atob(preview_b64)
+      const bytes = new Uint8Array(bin.length)
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+      url = URL.createObjectURL(new Blob([bytes], { type: preview_mime || 'image/jpeg' }))
+    } catch (e) {
+      return  // Malformed frame — keep the previous preview.
+    }
+    // Decode BEFORE swapping: replacing the <img> src with an undecoded blob
+    // blanks the element for a beat (and an animated WebP restarts from a
+    // blank canvas), which reads as the preview flickering out. Revoke the
+    // old URL only after the new frame is ready to paint.
+    //
+    // Decodes can finish out of order (an animated WebP is much slower than a
+    // still), so each frame carries a sequence number: a late arrival that
+    // has already been superseded discards ITSELF rather than revoking the
+    // newer frame that is currently painted.
+    const seq = (previewSeq.get(job_id) || 0) + 1
+    previewSeq.set(job_id, seq)
+    const img = new Image()
+    img.onload = () => {
+      const cur = jobProgress.value[job_id]
+      if (!cur || seq < (previewSeq.get(job_id) || 0)) {
+        URL.revokeObjectURL(url)  // job settled, or a newer frame won
+        return
+      }
+      if (cur.previewUrl) URL.revokeObjectURL(cur.previewUrl)
+      jobProgress.value = {
+        ...jobProgress.value,
+        [job_id]: {
+          ...cur,
+          previewUrl: url,
+        },
+      }
+    }
+    img.onerror = () => URL.revokeObjectURL(url)
+    img.src = url
+  }
+
+  function clearJobProgress(jobId) {
+    previewSeq.delete(jobId)
+    const entry = jobProgress.value[jobId]
+    if (!entry) return
+    if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl)
+    const next = { ...jobProgress.value }
+    delete next[jobId]
+    jobProgress.value = next
+  }
+
+  function clearAllJobProgress() {
+    previewSeq.clear()
+    for (const entry of Object.values(jobProgress.value)) {
+      if (entry.previewUrl) URL.revokeObjectURL(entry.previewUrl)
+    }
+    jobProgress.value = {}
+  }
+
   // WebSocket event handlers
   function handleJobQueued(data) {
     if (!matchesFilters(data, 'job_queued')) return
@@ -472,6 +559,7 @@ export function useGenerationJobs(options = {}) {
 
   async function handleJobCompleted(data) {
     if (!matchesFilters(data, 'job_completed')) return
+    clearJobProgress(data.job.id)
 
     // Apply the terminal status IMMEDIATELY so the in-progress bar clears in
     // lockstep with the backend slot. Gating this on the media fetch below let
@@ -505,6 +593,7 @@ export function useGenerationJobs(options = {}) {
 
   async function handleJobFailed(data) {
     if (!matchesFilters(data, 'job_failed')) return
+    clearJobProgress(data.job.id)
 
     // A job that fails fast enough (e.g. an entitlement/balance rejection
     // right at the start of processing) can have its 'failed' broadcast land
@@ -534,11 +623,13 @@ export function useGenerationJobs(options = {}) {
     const existingJob = jobs.value.find(j => j.id === job_id)
     if (existingJob) {
       jobs.value = jobs.value.filter(j => j.id !== job_id)
+      clearJobProgress(job_id)
     }
   }
 
   function handleJobCancelled(data) {
     if (!matchesFilters(data, 'job_cancelled')) return
+    if (data.job) clearJobProgress(data.job.id)
 
     // Keep cancelled jobs in local state so media-batch groups can account for
     // them as terminal failed cells. Standalone cancelled jobs are still omitted
@@ -1088,6 +1179,7 @@ export function useGenerationJobs(options = {}) {
     unsubscribers.push(onWebSocketEvent('generation_job_failed', handleJobFailed))
     unsubscribers.push(onWebSocketEvent('generation_job_deleted', handleJobDeleted))
     unsubscribers.push(onWebSocketEvent('generation_job_cancelled', handleJobCancelled))
+    unsubscribers.push(onWebSocketEvent('generation_job_progress', handleJobProgress))
     unsubscribers.push(onWebSocketEvent('media_updated', handleMediaUpdated))
     unsubscribers.push(onWebSocketEvent('auto_delete_removed', handleAutoDeleteRemoved))
     unsubscribers.push(onWebSocketEvent('asset_deleted', handleAssetsRemoved))
@@ -1121,6 +1213,7 @@ export function useGenerationJobs(options = {}) {
         console.log(`[useGenerationJobs:${taskType}] Backend disconnected - clearing ${pendingJobs.value.length} pending job(s)`)
         pendingJobs.value = []
       }
+      clearAllJobProgress()
     }))
 
     // Listen for markers config changes
@@ -1133,6 +1226,7 @@ export function useGenerationJobs(options = {}) {
   function cleanup() {
     unsubscribers.forEach(unsub => unsub())
     unsubscribers.length = 0
+    clearAllJobProgress()
     if (historyCountTimer) {
       clearTimeout(historyCountTimer)
       historyCountTimer = null
@@ -1186,6 +1280,9 @@ export function useGenerationJobs(options = {}) {
     addPendingJob,
     removePendingJob,
     cancelPendingJob,
+
+    // Live in-flight progress/preview per job
+    jobProgress,
 
     // For external event handling (e.g., forever mode queue maintenance)
     handleJobQueued,

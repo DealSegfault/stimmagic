@@ -3,7 +3,7 @@
     <!-- Empty only when there's truly nothing to show: a job whose chain is
          running is hidden from `jobs` (the chain bar represents it), so the
          bar must keep the grid alive or the whole strip blinks out. -->
-    <div v-if="jobs.length === 0 && activeChainRuns.length === 0 && waitingSlotCount === 0" class="flex-1 flex flex-col">
+    <div v-if="jobs.length === 0 && activeChainRuns.length === 0 && waitingSlotCount === 0 && failedJobs.length === 0" class="flex-1 flex flex-col">
       <slot name="empty">
         <!-- An empty emptyMessage means "no placeholder at all" — needed
              because a slot whose content v-if's away falls back here. -->
@@ -16,18 +16,13 @@
       <!-- In-flight progress: slim landscape bars docked at the top of the
            results area — one per job/batch/chain, stacked newest-first so
            finishing work flows into the completed list below. -->
-      <div v-if="activeDisplayItems.length > 0 || waitingSlotCount > 0" class="flex flex-col gap-0.5">
-        <template v-for="item in activeDisplayItems" :key="item.key">
-          <!-- Active individual job (queued/processing/enhancing) -->
-          <PipelineProgressBar
-            v-if="item.type === 'active-job'"
-            v-bind="jobModel(item.job)"
-            :compact="compactOverlays"
-            @cancel="$emit('cancel-job', item.job.id)"
-          />
+      <div v-if="activeDisplayItems.length > 0 || waitingSlotCount > 0 || failedJobs.length > 0" class="flex flex-col gap-0.5">
+        <!-- Slim group first: queued/enhancing jobs, batches, chains. A slim
+             row must never sit between or below the image-sized live tiles. -->
+        <template v-for="item in slimActiveItems" :key="item.key">
           <!-- Active batch (in progress) — determinate fraction -->
           <PipelineProgressBar
-            v-else-if="item.type === 'active-batch'"
+            v-if="item.type === 'active-batch'"
             v-bind="batchModel(item.batch)"
             :compact="compactOverlays"
             @cancel="$emit('cancel-and-dismiss-batch', item.batch.batch_id)"
@@ -79,21 +74,60 @@
             />
           </div>
         </template>
+
+        <!-- Live tiles below the slim group: one per in-flight job,
+             aspect-matched to the requested resolution from the moment it
+             starts (spinner until the first frame, then the live preview
+             sharpening in place).
+
+             Studio lays them out two-up: at full width four concurrent
+             generations swallow the whole results strip, so half-width keeps
+             four of them to roughly the footprint of one finished image. The
+             Stage rail is already narrow enough that its tiles never dominate,
+             so it stays single-column. -->
+        <div :class="compactOverlays ? 'flex flex-col gap-0.5' : 'grid grid-cols-2 gap-0.5'">
+        <LiveJobTile
+          v-for="item in tileActiveItems"
+          :key="item.key"
+          :name="toolDisplayName || item.job.model_name || 'Generation'"
+          :status="item.job.status"
+          :aspect="jobAspect(item.job)"
+          :preview-url="jobProgress[item.job.id]?.previewUrl || ''"
+          :progress="jobProgress[item.job.id]?.progress ?? null"
+          :awaiting-first-preview="previewTiles && !jobProgress[item.job.id]?.previewUrl"
+          :current="liveJobId != null && liveJobId === item.job.id"
+          :clickable="liveSelectable"
+          @cancel="$emit('cancel-job', item.job.id)"
+          @click="$emit('live-click', item.job)"
+        />
+
         <!-- Unfilled generation slots (forever mode): the strip reads as a
              stable set of `slotCount` lanes, so slots this instance hasn't
-             been granted yet (backend saturated, or the next submit is still
-             in flight) show as waiting lanes instead of vanishing. -->
-        <PipelineProgressBar
+             been granted yet show as waiting lanes instead of vanishing. -->
+        <LiveJobTile
           v-for="i in waitingSlotCount"
           :key="`waiting-slot-${i}`"
           :name="toolDisplayName || 'Generation'"
-          status="queued"
-          label="Waiting for slot…"
-          :segments="[{ status: 'pending' }]"
-          :show-cancel="false"
-          :compact="compactOverlays"
+          status="waiting"
+          :aspect="fallbackAspect"
           class="opacity-50"
         />
+
+        <!-- Failures share this panel: they aren't results, so they belong
+             with the other small states and flow into the same wrap rather
+             than opening a second grid (which left holes at the row ends). -->
+        <FailedJobTile
+          v-for="job in failedJobs"
+          :key="`failed-${job.id}`"
+          :name="toolDisplayName || job.model_name || 'Generation'"
+          :error="job.error"
+          :aspect="jobAspect(job)"
+          :compact="compactOverlays"
+          @click="handleJobClick(job)"
+          @retry="$emit('retry-job', job.id)"
+          @dismiss="$emit('dismiss-job', job.id)"
+        />
+        </div>
       </div>
 
       <!-- Completed/failed items. Rendered in capped chunks: this list is not
@@ -224,19 +258,7 @@
           </div>
         </template>
 
-        <!-- Failed job — terminal error row (no progress track). Click opens the
-             failure details; stacks vertically in the narrow stage strip. -->
-        <template v-else-if="item.type === 'failed-job'">
-          <FailedJobRow
-            :name="toolDisplayName || item.job.model_name || 'Generation'"
-            :error="item.job.error"
-            :compact="compactOverlays"
-            class="cursor-pointer"
-            @click="handleJobClick(item.job)"
-            @retry="$emit('retry-job', item.job.id)"
-            @dismiss="$emit('dismiss-job', item.job.id)"
-          />
-        </template>
+
 
       </template>
 
@@ -256,7 +278,8 @@
 import { computed, ref, watch } from 'vue'
 import { MediaImage, AppImage } from '../media'
 import PipelineProgressBar from './postprocessing/PipelineProgressBar.vue'
-import FailedJobRow from './FailedJobRow.vue'
+import LiveJobTile from './LiveJobTile.vue'
+import FailedJobTile from './FailedJobTile.vue'
 import JobTile from './JobTile.vue'
 import BatchGroup from './BatchGroup.vue'
 import MarkerBadges from '../MarkerBadges.vue'
@@ -364,6 +387,20 @@ interface Props {
   // mode. When set, the active strip renders as that many stable lanes:
   // unoccupied ones show as "Waiting for slot…" placeholders.
   slotCount?: number | null
+  // Live in-flight progress per job id: { progress: 0..1, stage, previewUrl }.
+  // previewUrl is an ephemeral blob: URL of the latest diffusion preview frame.
+  jobProgress?: Record<number, { progress?: number, stage?: string, previewUrl?: string | null }>
+  // Job whose live preview currently drives the stage hero (ringed like the
+  // current completed tile). Null outside stage mode.
+  liveJobId?: number | null
+  // Whether clicking a live tile selects it onto the hero (stage mode).
+  liveSelectable?: boolean
+  // Tool's provider streams preview frames: hold the progress bar
+  // indeterminate until the first frame rather than showing a floor value.
+  previewTiles?: boolean
+  // CSS aspect-ratio for tiles whose job carries no resolution of its own
+  // (forever-mode waiting lanes), so the strip doesn't reshape.
+  fallbackAspect?: string | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -384,6 +421,11 @@ const props = withDefaults(defineProps<Props>(), {
   compactOverlays: false,
   thumbnailSize: 256,
   slotCount: null,
+  jobProgress: () => ({}),
+  liveJobId: null,
+  liveSelectable: false,
+  previewTiles: false,
+  fallbackAspect: null,
 })
 
 const emit = defineEmits<{
@@ -401,6 +443,7 @@ const emit = defineEmits<{
   (e: 'dismiss-chain', chainRunId: number): void
   (e: 'trash-media', data: { mediaId: number, assetId?: number }): void
   (e: 'remix-media', mediaId: number): void
+  (e: 'live-click', job: Job): void
 }>()
 
 
@@ -462,6 +505,17 @@ const sortedActiveJobs = computed(() => [
 function jobParams(job: Job): any {
   if (!job.parameters) return null
   try { return JSON.parse(job.parameters) } catch { return null }
+}
+
+// CSS aspect-ratio for a live tile, from the job's requested resolution — the
+// tile holds its final shape from the spinner state on, so the strip never
+// reshapes when the first preview frame (or the finished media) lands.
+function jobAspect(job: Job): string | null {
+  const p = jobParams(job)
+  const w = Number(p?.width)
+  const h = Number(p?.height)
+  if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return `${w} / ${h}`
+  return props.fallbackAspect
 }
 
 function isPresentationBatch(batch: BatchInfo): boolean {
@@ -674,9 +728,34 @@ const activeDisplayItems = computed(() =>
   unifiedDisplayItems.value.filter(item => ACTIVE_ITEM_TYPES.has(item.type))
 )
 
+// Every individual job renders as a tile, whatever its state (queued,
+// enhancing, sampling). Slim rows for jobs are gone: they made the strip two
+// visual languages, and the transition between them was the flickery part.
+// Aggregates (batches, post-processing chains) keep the bar — they stand for
+// several items, not one.
+function isTileItem(item: any): boolean {
+  return item.type === 'active-job'
+}
+
+// Presentation order for the active strip: slim bars (queued/enhancing/
+// batches/chains, then waiting lanes) always ABOVE the image-sized live
+// tiles — a slim row between or below tiles reads as clutter. Chronological
+// order is kept within each group.
+const slimActiveItems = computed(() => activeDisplayItems.value.filter(i => !isTileItem(i)))
+const tileActiveItems = computed(() => activeDisplayItems.value.filter(isTileItem))
+
 const completedDisplayItems = computed(() =>
-  unifiedDisplayItems.value.filter(item => !ACTIVE_ITEM_TYPES.has(item.type))
+  // Failures render in the wrap panel, not here — leaving them in this list
+  // let them eat slots of the display cap (fewer real results per chunk) and
+  // inflated the "show N more" count.
+  unifiedDisplayItems.value.filter(
+    item => !ACTIVE_ITEM_TYPES.has(item.type) && item.type !== 'failed-job'
+  )
 )
+
+// Failures are bounded: a flaky provider can otherwise pile up hundreds of
+// tiles above the results, and only the recent ones are actionable.
+const MAX_FAILED_TILES = 12
 
 // Cap how many completed tiles are mounted at once. The list is newest-first,
 // so new results always appear; older history mounts on demand. Reset the cap
@@ -685,6 +764,15 @@ const COMPLETED_DISPLAY_CHUNK = 30
 const completedDisplayLimit = ref(COMPLETED_DISPLAY_CHUNK)
 const visibleCompletedItems = computed(() =>
   completedDisplayItems.value.slice(0, completedDisplayLimit.value)
+)
+
+// Failures aren't results: they render small, in the same wrap panel as the
+// in-flight tiles, instead of taking a result-sized slot in the finished list.
+const failedJobs = computed<any[]>(() =>
+  unifiedDisplayItems.value
+    .filter(i => i.type === 'failed-job')
+    .slice(0, MAX_FAILED_TILES)
+    .map(i => i.job)
 )
 const hiddenCompletedCount = computed(() =>
   Math.max(0, completedDisplayItems.value.length - completedDisplayLimit.value)
@@ -714,19 +802,8 @@ const waitingSlotCount = computed(() => {
 })
 
 // --- PipelineProgressBar models ---------------------------------------------
-// Each active item (job / batch / chain) is normalised into the same segmented
-// pipeline props so generation and post-processing read as one continuous flow.
-
-function jobModel(job: Job) {
-  const enhancing = job.status === 'enhancing'
-  const processing = job.status === 'processing'
-  return {
-    name: props.toolDisplayName || job.model_name || 'Generation',
-    status: enhancing ? 'enhancing' : processing ? 'processing' : 'queued',
-    label: enhancing ? 'Enhancing prompt…' : processing ? 'Generating…' : 'Queued…',
-    segments: [{ status: (processing || enhancing ? 'active' : 'pending') as const }],
-  }
-}
+// Only aggregates use the bar now (batches, post-processing chains); an
+// individual job renders as a tile.
 
 function batchModel(batch: BatchInfo) {
   const done = batch.completed + batch.failed
