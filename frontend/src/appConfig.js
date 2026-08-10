@@ -29,11 +29,15 @@ const hidePricesRef = ref(localStorage.getItem(HIDE_PRICES_KEY) === 'true')
 const HIDE_ACCOUNT_KEY = 'stimma_hide_account'
 const hideAccountRef = ref(localStorage.getItem(HIDE_ACCOUNT_KEY) === 'true')
 
-// Live in-flight generation previews (global setting). Reactive so toggling
-// it applies immediately: the per-tool `preview_frames` capability is fetched
-// once with the tool descriptor, and ANDing server-side would leave every tile
-// stuck in the "waiting for a first frame" treatment until a refetch.
-const generationPreviewsRef = ref(true)
+// Live in-flight generation previews (global settings), split by output kind:
+// a fast image run turns over quickly enough that a refining preview is mostly
+// distraction, while a video generation is long enough that watching it form
+// is the point. Reactive so toggling applies immediately — the per-tool
+// `preview_frames` capability is fetched once with the tool descriptor, and
+// ANDing server-side would leave tiles stuck in the "waiting for a first
+// frame" treatment until a refetch.
+const imagePreviewsRef = ref(false)
+const videoPreviewsRef = ref(true)
 
 // Reactive ref for captioning (visual analysis) feature - allows hiding all caption/keyword UI when disabled
 const captioningEnabledRef = ref(false)
@@ -111,8 +115,9 @@ export function setCaptioningEnabled(enabled) {
   captioningEnabledRef.value = enabled === true
 }
 
-export function setGenerationPreviews(enabled) {
-  generationPreviewsRef.value = enabled !== false
+export function setGenerationPreviews({ images, videos } = {}) {
+  if (images !== undefined) imagePreviewsRef.value = images !== false
+  if (videos !== undefined) videoPreviewsRef.value = videos !== false
 }
 
 export function setTelemetryEnabled(enabled) {
@@ -141,4 +146,4 @@ export function setHideAccount(enabled) {
  * Reactive ref for developer mode.
  * Use this in Vue components for reactive updates.
  */
-export { devModeRef, appBranchRef, captioningEnabledRef, generationPreviewsRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }
+export { devModeRef, appBranchRef, captioningEnabledRef, imagePreviewsRef, videoPreviewsRef, telemetryEnabledRef, hidePricesRef, hideAccountRef }

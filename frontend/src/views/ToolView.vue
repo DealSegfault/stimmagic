@@ -928,7 +928,7 @@
           :current-media-id="layoutMode === 'stage' && !stageLiveShowing ? stageCurrentMediaId : null"
           :live-job-id="layoutMode === 'stage' && stageLiveShowing ? stageLiveJobId : null"
           :live-selectable="layoutMode === 'stage'"
-          :preview-tiles="!!tool?.preview_frames && generationPreviews"
+          :preview-tiles="!!tool?.preview_frames && (outputsVideo ? videoPreviews : imagePreviews)"
           :fallback-aspect="currentAspectRatio"
           :tool-display-name="tool?.name"
           :compact-overlays="layoutMode === 'stage'"
@@ -1158,7 +1158,7 @@ import ToolIcon from '../components/tools/ToolIcon.vue'
 import FreezeToolDialog from '../components/flow/FreezeToolDialog.vue'
 import { useFlowsApi } from '../composables/useFlowsApi'
 import LivePreviewImage from '../components/generation/LivePreviewImage.vue'
-import { generationPreviewsRef as generationPreviews } from '../appConfig'
+import { imagePreviewsRef as imagePreviews, videoPreviewsRef as videoPreviews } from '../appConfig'
 import PostProcessingPanel from '../components/generation/postprocessing/PostProcessingPanel.vue'
 import SchemaParamGroup from '../components/generation/SchemaParamGroup.vue'
 import { resolveParamConstraints } from '../utils/paramConstraints'

@@ -324,7 +324,8 @@ class SettingsResponse(BaseModel):
     sandbox: str  # e.g., "default" or a named dev/test sandbox
     cloud_base_url: str  # Base URL for stimma.ai cloud services
     developer_mode: bool  # Show debug tools and developer options in the UI
-    show_generation_previews: bool = True  # Live in-flight diffusion previews
+    show_image_generation_previews: bool = False  # Live previews on image jobs
+    show_video_generation_previews: bool = True   # Live previews on video jobs
     debug_force_ffmpeg_missing: bool = False  # Dev-only: pretend ffmpeg/ffprobe aren't installed
     theme: str  # UI theme preference: light, dark, system
     # Usage telemetry consent: True/False, or None while
@@ -747,7 +748,8 @@ async def get_settings_all():
         sandbox=get_sandbox(),
         cloud_base_url=settings.cloud.base_url,
         developer_mode=settings.developer_mode,
-        show_generation_previews=settings.show_generation_previews,
+        show_image_generation_previews=settings.show_image_generation_previews,
+        show_video_generation_previews=settings.show_video_generation_previews,
         debug_force_ffmpeg_missing=settings.debug_force_ffmpeg_missing,
         theme=settings.theme,
         telemetry_enabled=settings.telemetry.enabled,
@@ -867,25 +869,42 @@ async def update_developer_mode(request: UpdateDeveloperModeRequest):
 
 
 class UpdateGenerationPreviewsRequest(BaseModel):
-    """Request to update the live generation previews setting."""
-    enabled: bool
+    """Request to update the live generation preview settings.
+
+    Each field is optional so a caller can flip one kind without restating
+    the other.
+    """
+    images: Optional[bool] = None
+    videos: Optional[bool] = None
 
 
 @router.patch("/generation-previews")
 async def update_generation_previews(request: UpdateGenerationPreviewsRequest):
-    """Update the live generation previews setting (global)."""
+    """Update the live generation preview settings (global)."""
     from config import reload_settings
 
-    patch_global_section("show_generation_previews", request.enabled)
+    if request.images is not None:
+        patch_global_section("show_image_generation_previews", request.images)
+    if request.videos is not None:
+        patch_global_section("show_video_generation_previews", request.videos)
     reload_settings()
-    log.info("show_generation_previews updated", enabled=request.enabled)
+    log.info(
+        "generation previews updated",
+        images=request.images,
+        videos=request.videos,
+    )
 
     # Deliberately NOT restarting providers. The setting is enforced host-side
     # per job (the executor stops forwarding frames immediately), and the
     # provider reads it per execution via tools.execute — so a reconnect
     # cycle, which drops the tool catalog and disrupts running work, buys
     # nothing.
-    return {"status": "success", "show_generation_previews": request.enabled}
+    settings = get_settings()
+    return {
+        "status": "success",
+        "show_image_generation_previews": settings.show_image_generation_previews,
+        "show_video_generation_previews": settings.show_video_generation_previews,
+    }
 
 
 @router.post("/setup-wizard-seen")

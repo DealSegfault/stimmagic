@@ -2958,7 +2958,13 @@ class GenerationQueue:
                 # from coalescing (that would flood clients with payload-free
                 # progress against a provider that streams frames anyway).
                 from config import get_settings
-                has_preview = bool(p.preview_data) and get_settings().show_generation_previews
+                _s = get_settings()
+                _want_preview = (
+                    _s.show_video_generation_previews
+                    if "video" in (task_type or "")
+                    else _s.show_image_generation_previews
+                )
+                has_preview = bool(p.preview_data) and _want_preview
                 if not has_preview and now - _last_progress_broadcast < 0.2:
                     return
                 _last_progress_broadcast = now

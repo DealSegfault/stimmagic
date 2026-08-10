@@ -729,7 +729,10 @@ async function loadAppSettings() {
   setDevMode(settings.developer_mode)
   setAppBranch(settings.app_branch)
   setCaptioningEnabled(settings.background_work?.captioning?.enabled)
-  setGenerationPreviews(settings.show_generation_previews)
+  setGenerationPreviews({
+    images: settings.show_image_generation_previews,
+    videos: settings.show_video_generation_previews,
+  })
   setTelemetryEnabled(settings.telemetry_enabled)
   const privacyLockdown = settings.privacy_lockdown_active === true
   setPrivacyLockdownActive(privacyLockdown)

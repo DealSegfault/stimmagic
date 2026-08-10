@@ -177,11 +177,11 @@ export function useSettingsApi() {
   }
 
   /**
-   * Update the live generation previews setting.
-   * @param {boolean} enabled - Whether in-flight generation previews are shown
+   * Update the live generation preview settings.
+   * @param {{images?: boolean, videos?: boolean}} kinds - Omit a kind to leave it unchanged
    */
-  async function updateGenerationPreviews(enabled) {
-    const response = await axios.patch(`${getAPIBase()}/settings/generation-previews`, { enabled })
+  async function updateGenerationPreviews(kinds) {
+    const response = await axios.patch(`${getAPIBase()}/settings/generation-previews`, kinds)
     return response.data
   }
 

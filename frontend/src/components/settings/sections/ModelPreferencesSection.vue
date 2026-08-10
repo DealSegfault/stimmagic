@@ -28,15 +28,31 @@
         </SettingRow>
 
         <SettingRow
-          label="Show generation previews"
-          description="Show in-progress frames on generating items, for tools that provide them. Turning this off also stops the tool from producing them."
+          label="Image generation previews"
+          description="Show the image forming while it generates, for tools that provide previews. Turning this off also stops the tool from producing them."
           :divider="true"
         >
           <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">
             <input
               type="checkbox"
-              :checked="showGenerationPreviews"
-              @change="updateGenerationPreviewsSetting($event.target.checked)"
+              :checked="imagePreviews"
+              @change="updatePreviewSetting({ images: $event.target.checked })"
+              class="sr-only peer"
+            />
+            <div class="w-9 h-5 bg-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
+          </label>
+        </SettingRow>
+
+        <SettingRow
+          label="Video generation previews"
+          description="Show the clip forming while it generates. Video takes longer, so the preview is worth more here."
+          :divider="true"
+        >
+          <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">
+            <input
+              type="checkbox"
+              :checked="videoPreviews"
+              @change="updatePreviewSetting({ videos: $event.target.checked })"
               class="sr-only peer"
             />
             <div class="w-9 h-5 bg-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent"></div>
@@ -48,36 +64,23 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
 import { useTheme } from '../../../composables/useTheme'
 import { useSettingsApi } from '../../../composables/useSettingsApi'
 import SettingRow from '../SettingRow.vue'
-import { setGenerationPreviews } from '../../../appConfig'
+import { setGenerationPreviews, imagePreviewsRef as imagePreviews, videoPreviewsRef as videoPreviews } from '../../../appConfig'
 
 // Theme
 const { themePreference, setTheme } = useTheme()
-const { updateTheme, fetchSettings, updateGenerationPreviews } = useSettingsApi()
+const { updateTheme, updateGenerationPreviews } = useSettingsApi()
 
-// Live generation previews (global). This section owns no other settings
-// payload, so it reads its own value on mount rather than threading the whole
-// settings object through the modal.
-const showGenerationPreviews = ref(true)
-onMounted(async () => {
-  try {
-    const settings = await fetchSettings()
-    showGenerationPreviews.value = settings?.show_generation_previews !== false
-  } catch (err) {
-    console.error('Failed to load generation previews setting:', err)
-  }
-})
-
-function updateGenerationPreviewsSetting(enabled) {
-  showGenerationPreviews.value = enabled
-  // Apply immediately app-wide; tool descriptors carry only the provider
-  // capability, so the setting is ANDed client-side.
-  setGenerationPreviews(enabled)
-  updateGenerationPreviews(enabled).catch(err => {
-    console.error('Failed to persist generation previews setting:', err)
+// Live generation previews (global, split by output kind). The app-wide refs
+// are the source of truth — they're set at boot and ANDed with each tool's
+// provider capability — so this section binds to them directly rather than
+// keeping its own copy.
+function updatePreviewSetting(kinds) {
+  setGenerationPreviews(kinds)
+  updateGenerationPreviews(kinds).catch(err => {
+    console.error('Failed to persist generation preview settings:', err)
   })
 }
 

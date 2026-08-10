@@ -1527,7 +1527,16 @@ class JsonRpcProvider(ToolProvider):
             # disruption of a provider reconnect.
             try:
                 from config import get_settings
-                _previews = bool(get_settings().show_generation_previews)
+                _settings = get_settings()
+                # Previews are opted into per output kind: image runs turn over
+                # fast enough that a refining frame is mostly distraction,
+                # video runs are long enough that watching one form is useful.
+                _task = (tool.task_type if tool else None) or ""
+                _previews = bool(
+                    _settings.show_video_generation_previews
+                    if "video" in _task
+                    else _settings.show_image_generation_previews
+                )
             except Exception:
                 _previews = True
             execute_params = {
