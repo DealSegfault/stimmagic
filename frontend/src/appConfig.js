@@ -29,15 +29,13 @@ const hidePricesRef = ref(localStorage.getItem(HIDE_PRICES_KEY) === 'true')
 const HIDE_ACCOUNT_KEY = 'stimma_hide_account'
 const hideAccountRef = ref(localStorage.getItem(HIDE_ACCOUNT_KEY) === 'true')
 
-// Live in-flight generation previews (global settings), split by output kind:
-// a fast image run turns over quickly enough that a refining preview is mostly
-// distraction, while a video generation is long enough that watching it form
-// is the point. Reactive so toggling applies immediately — the per-tool
-// `preview_frames` capability is fetched once with the tool descriptor, and
-// ANDing server-side would leave tiles stuck in the "waiting for a first
-// frame" treatment until a refetch.
+// Live in-flight generation previews (global settings), split by output kind.
+// Both are opt-in because moving previews can be disruptive. Reactive so
+// toggling applies immediately — the per-tool `preview_frames` capability is
+// fetched once with the tool descriptor, and ANDing server-side would leave
+// tiles stuck in the "waiting for a first frame" treatment until a refetch.
 const imagePreviewsRef = ref(false)
-const videoPreviewsRef = ref(true)
+const videoPreviewsRef = ref(false)
 
 // Reactive ref for captioning (visual analysis) feature - allows hiding all caption/keyword UI when disabled
 const captioningEnabledRef = ref(false)

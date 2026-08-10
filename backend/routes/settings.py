@@ -325,7 +325,7 @@ class SettingsResponse(BaseModel):
     cloud_base_url: str  # Base URL for stimma.ai cloud services
     developer_mode: bool  # Show debug tools and developer options in the UI
     show_image_generation_previews: bool = False  # Live previews on image jobs
-    show_video_generation_previews: bool = True   # Live previews on video jobs
+    show_video_generation_previews: bool = False  # Live previews on video jobs
     debug_force_ffmpeg_missing: bool = False  # Dev-only: pretend ffmpeg/ffprobe aren't installed
     theme: str  # UI theme preference: light, dark, system
     # Usage telemetry consent: True/False, or None while

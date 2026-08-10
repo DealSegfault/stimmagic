@@ -45,7 +45,7 @@
 
         <SettingRow
           label="Video generation previews"
-          description="Show the clip forming while it generates. Video takes longer, so the preview is worth more here."
+          description="Show the clip forming while it generates, for tools that provide previews."
           :divider="true"
         >
           <label class="relative inline-flex flex-shrink-0 cursor-pointer items-center">

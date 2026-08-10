@@ -818,12 +818,11 @@ class Settings(BaseSettings):
     developer_mode: bool = False  # Show debug tools and developer options in the UI
     # Live in-flight diffusion previews from preview-capable providers (frames
     # streamed over tools.progress and rendered on generating tiles/hero).
-    # Split by output kind: a fast image run turns over quickly enough that a
-    # refining preview is mostly distraction, while a video generation is long
-    # and opaque enough that watching it form is the point. Off also tells
-    # providers not to capture frames at all, per job.
+    # Split by output kind so each can be enabled independently. Both are
+    # opt-in because moving previews can be disruptive. Off also tells providers
+    # not to capture frames for that job.
     show_image_generation_previews: bool = False
-    show_video_generation_previews: bool = True
+    show_video_generation_previews: bool = False
     # Last AI-setup-wizard version this install has completed/dismissed.
     # The wizard auto-shows whenever this is behind SETUP_WIZARD_VERSION
     # (routes/settings.py) — bumping that constant re-runs the wizard for
