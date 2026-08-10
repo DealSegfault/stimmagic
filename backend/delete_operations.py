@@ -1585,8 +1585,26 @@ async def _process_profile(profile_id: str) -> bool:
                 db,
                 profile_id,
             )
+            checkpoint_pending = False
+            if not checkpointed:
+                async with db.async_session_maker() as checkpoint_session:
+                    checkpoint_pending = (
+                        await checkpoint_session.scalar(
+                            select(DeleteOperation.id)
+                            .where(
+                                DeleteOperation.profile_id == profile_id,
+                                DeleteOperation.kind == "asset",
+                                DeleteOperation.status == "checkpointing",
+                            )
+                            .limit(1)
+                        )
+                    ) is not None
             return (
                 checkpointed
+                # A privacy checkpoint may briefly lose SQLite's exclusive-lock
+                # race. Keep the worker hot so it retries after the short
+                # fairness yield instead of sleeping for the recovery interval.
+                or checkpoint_pending
                 or identity_staged
                 or references_prepared
                 or chat_result.finalized_chats > 0

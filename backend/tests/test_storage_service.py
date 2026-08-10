@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import func, select
@@ -414,6 +414,45 @@ async def test_concurrent_delete_workers_claim_each_media_once(db_session, tmp_p
         assert operation.processed_items == 1
         assert operation.deleted_items == 1
         assert operation.failed_items == 0
+
+
+@pytest.mark.asyncio
+async def test_deferred_asset_checkpoint_keeps_worker_active(db_session, tmp_path):
+    source = tmp_path / "deferred-checkpoint.png"
+    source.write_bytes(b"checkpoint")
+    async with db_session() as session:
+        media = await create_media_item(session, file_path=source)
+        asset = await create_asset_from_media(session, media_id=media.id)
+        await session.commit()
+        await trash_asset(session, asset_id=asset.id)
+        result = await permanently_delete_asset(
+            session,
+            asset_id=asset.id,
+            profile_id="default",
+        )
+        operation_id = result.operation.id
+
+    async with db_session() as session:
+        operation = await session.get(DeleteOperation, operation_id)
+        operation.status = "checkpointing"
+        operation.current_phase = "checkpointing"
+        operation.processed_items = 1
+        operation.deleted_items = 1
+        await session.commit()
+
+    with patch(
+        "delete_operations._truncate_privacy_wal", new=AsyncMock(return_value=False)
+    ):
+        assert await _process_profile("default")
+
+    async with db_session() as session:
+        operation = await session.get(DeleteOperation, operation_id)
+        assert operation.status == "checkpointing"
+
+    assert await _process_profile("default")
+    async with db_session() as session:
+        operation = await session.get(DeleteOperation, operation_id)
+        assert operation.status == "completed"
 
 
 @pytest.mark.asyncio
