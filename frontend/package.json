@@ -9,6 +9,7 @@
     "url": "git+https://github.com/stimma-ai/stimma.git"
   },
   "scripts": {
+    "build:seamless-patch-wasm": "bash scripts/build-seamless-patch-wasm.sh",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

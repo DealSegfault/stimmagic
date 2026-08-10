@@ -1034,26 +1034,24 @@ export function useRasterPaintLayer() {
   }
 
   /**
-   * Apply patch tool: copy pixels from source region (at offset) to destination using selection mask.
-   * The selection mask defines the patch footprint; its inner edge is blended.
+   * Apply Patch: transfer donor gradients into the selection and reconstruct
+   * them against the destination boundary with a Poisson solve.
    *
    * @param sourceCanvas - The source image canvas to sample from
    * @param offset - The drag offset (source position relative to destination)
    * @param bounds - Bounding box of the selection
-   * @param blendWidth - Width of the adaptive inner-edge blend
    */
-  function applyPatchTool(
+  async function applyPatchTool(
     sourceCanvas: HTMLCanvasElement,
     offset: { x: number; y: number },
-    bounds: { x: number; y: number; width: number; height: number },
-    blendWidth: number = 15
-  ): void {
+    bounds: { x: number; y: number; width: number; height: number }
+  ): Promise<void> {
     if (!layerCtx.value || !selectionMaskCtx) return;
 
     const sourceCtx = sourceCanvas.getContext('2d');
     if (!sourceCtx) return;
 
-    applyPatch(sourceCtx, layerCtx.value, selectionMaskCtx, offset, bounds, blendWidth);
+    await applyPatch(sourceCtx, layerCtx.value, selectionMaskCtx, offset, bounds);
   }
 
   /**

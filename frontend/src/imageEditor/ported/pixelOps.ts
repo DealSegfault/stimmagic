@@ -6,6 +6,7 @@
 
 import type { Point } from './geometry';
 import { brushTipAlpha } from '../brush/tipMask.ts';
+import { solveSeamlessPatch } from '../stack/seamlessPatchClient.ts';
 
 /**
  * Sample a pixel color from a canvas at the given position
@@ -362,113 +363,33 @@ export function sampleSurroundingPixels(
 }
 
 /**
- * Resolve patch coverage from the selection mask.
+ * Apply the donor-driven Patch tool with gradient-domain seamless cloning.
  *
- * A patch needs a blended seam, but blurring the whole mask spreads coverage
- * outside the selection and can leave a narrow patch translucent everywhere.
- * Instead, measure inward from the selection boundary and blend only that
- * inner edge. The width adapts to small selections so every non-empty region
- * still has a full-strength core.
- */
-export function patchSelectionAlpha(
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  edgeBlendPx: number = 15
-): Uint8ClampedArray {
-  const alpha = new Uint8ClampedArray(width * height);
-  for (let i = 3, pixel = 0; i < data.length; i += 4, pixel++) {
-    alpha[pixel] = data[i];
-  }
-  if (edgeBlendPx <= 0 || width <= 0 || height <= 0) return alpha;
-
-  // Approximate Euclidean distance to the nearest unselected pixel with a
-  // two-pass chamfer transform. Pixels beyond the image edge are not a seam.
-  const distance = new Float32Array(width * height);
-  let hasBoundary = false;
-  for (let pixel = 0; pixel < alpha.length; pixel++) {
-    if (alpha[pixel] === 0) {
-      distance[pixel] = 0;
-      hasBoundary = true;
-    } else {
-      distance[pixel] = Number.POSITIVE_INFINITY;
-    }
-  }
-  if (!hasBoundary) return alpha;
-
-  const diagonal = Math.SQRT2;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const pixel = y * width + x;
-      if (distance[pixel] === 0) continue;
-      let nearest = distance[pixel];
-      if (x > 0) nearest = Math.min(nearest, distance[pixel - 1] + 1);
-      if (y > 0) nearest = Math.min(nearest, distance[pixel - width] + 1);
-      if (x > 0 && y > 0) nearest = Math.min(nearest, distance[pixel - width - 1] + diagonal);
-      if (x + 1 < width && y > 0) nearest = Math.min(nearest, distance[pixel - width + 1] + diagonal);
-      distance[pixel] = nearest;
-    }
-  }
-  let maxDistance = 0;
-  for (let y = height - 1; y >= 0; y--) {
-    for (let x = width - 1; x >= 0; x--) {
-      const pixel = y * width + x;
-      if (distance[pixel] === 0) continue;
-      let nearest = distance[pixel];
-      if (x + 1 < width) nearest = Math.min(nearest, distance[pixel + 1] + 1);
-      if (y + 1 < height) nearest = Math.min(nearest, distance[pixel + width] + 1);
-      if (x + 1 < width && y + 1 < height) nearest = Math.min(nearest, distance[pixel + width + 1] + diagonal);
-      if (x > 0 && y + 1 < height) nearest = Math.min(nearest, distance[pixel + width - 1] + diagonal);
-      distance[pixel] = nearest;
-      if (Number.isFinite(nearest)) maxDistance = Math.max(maxDistance, nearest);
-    }
-  }
-  if (maxDistance === 0) return alpha;
-
-  // Keep at least half of a small selection as a solid core. Large selections
-  // use the requested photographic seam width unchanged.
-  const blendWidth = Math.min(edgeBlendPx, Math.max(1, maxDistance / 2));
-  for (let pixel = 0; pixel < alpha.length; pixel++) {
-    if (alpha[pixel] === 0) continue;
-    const t = Math.min(1, distance[pixel] / blendWidth);
-    const smooth = t * t * (3 - 2 * t);
-    alpha[pixel] = Math.round(alpha[pixel] * smooth);
-  }
-  return alpha;
-}
-
-/**
- * Apply patch tool: copy pixels from source region to destination using selection mask for blending.
- * This creates a seamless blend using the feathered selection mask as the blend factor.
- * Enhanced with edge blending and color matching for Photoshop-like results.
- *
- * Optimized to minimize getImageData calls (expensive GPU→CPU sync).
+ * Donor gradients carry texture and structure. Destination pixels around the
+ * selection provide boundary conditions, so color and illumination are
+ * reconstructed throughout the region instead of alpha-feathered at its edge.
  *
  * @param baseCtx - Context of the base processed image
  * @param destCtx - Context of the destination raster Paint layer
- * @param selectionCtx - Context of the selection mask (alpha = blend strength)
+ * @param selectionCtx - Context of the selection mask (the solve domain)
  * @param offset - Offset from destination to source (source = dest + offset)
  * @param bounds - Bounding box of the selection in image coordinates
- * @param blendWidth - Width of the adaptive inner-edge blend
  */
-export function applyPatch(
+export async function applyPatch(
   baseCtx: CanvasRenderingContext2D,
   destCtx: CanvasRenderingContext2D,
   selectionCtx: CanvasRenderingContext2D,
   offset: { x: number; y: number },
-  bounds: { x: number; y: number; width: number; height: number },
-  blendWidth: number = 15
-): void {
+  bounds: { x: number; y: number; width: number; height: number }
+): Promise<void> {
   const { x, y, width, height } = bounds;
 
   // Image dimensions
   const imageWidth = baseCtx.canvas.width;
   const imageHeight = baseCtx.canvas.height;
 
-  // Expand bounds by blend width to allow blur to feather beyond selection edges
-  // This prevents hard edges at the bounding box
-  // featherAlpha runs three box passes, so its support extends to 3 × radius.
-  const padding = Math.ceil(blendWidth * 3);
+  // One destination pixel around the selection supplies the Poisson boundary.
+  const padding = 1;
   const expandedX = Math.max(0, Math.floor(x) - padding);
   const expandedY = Math.max(0, Math.floor(y) - padding);
   const expandedRight = Math.min(imageWidth, Math.floor(x + width) + padding);
@@ -552,79 +473,28 @@ export function applyPatch(
     }
   }
 
-  // Blend inward from the selection boundary. This softens the seam without
-  // leaking donor pixels outside the selection or washing out its core.
-  const selectionAlpha = patchSelectionAlpha(
-    selectionData.data,
+  const selectionAlpha = new Uint8ClampedArray(actualWidth * actualHeight);
+  for (let i = 3, pixel = 0; i < selectionData.data.length; i += 4, pixel++) {
+    selectionAlpha[pixel] = selectionData.data[i];
+  }
+  const reconstructed = await solveSeamlessPatch(
+    sourcePixels,
+    baseDestPixels,
+    selectionAlpha,
     actualWidth,
     actualHeight,
-    blendWidth
   );
 
-  // Reuse layerDestData as destination output (already allocated)
+  // Reuse layerDestData as the sparse raster-layer output. Pixels outside the
+  // selection remain untouched rather than baking the surrounding rectangle.
   const destPixels = layerDestData.data;
-
-  // Calculate edge color difference for color matching
-  // Sample colors at the boundary of the selection to compute average offset
-  let edgeRDiff = 0, edgeGDiff = 0, edgeBDiff = 0;
-  let edgeCount = 0;
-
-  // First pass: compute color difference at selection edges
-  for (let i = 0, pixel = 0; i < sourcePixels.length; i += 4, pixel++) {
-    const selAlpha = selectionAlpha[pixel] / 255;
-    // Edge is where alpha is between 0.2 and 0.8 (the blend zone)
-    if (selAlpha > 0.2 && selAlpha < 0.8) {
-      edgeRDiff += baseDestPixels[i] - sourcePixels[i];
-      edgeGDiff += baseDestPixels[i + 1] - sourcePixels[i + 1];
-      edgeBDiff += baseDestPixels[i + 2] - sourcePixels[i + 2];
-      edgeCount++;
-    }
-  }
-
-  // Average edge color difference
-  if (edgeCount > 0) {
-    edgeRDiff /= edgeCount;
-    edgeGDiff /= edgeCount;
-    edgeBDiff /= edgeCount;
-  }
-
-  // Blend each pixel using selection alpha with color matching
-  for (let i = 0, pixel = 0; i < sourcePixels.length; i += 4, pixel++) {
-    // Selection mask alpha (blurred for softer edges)
-    const selAlpha = selectionAlpha[pixel] / 255;
-    if (selAlpha === 0) continue;
-
-    // Source pixel with color matching applied
-    // Apply more color correction at edges (lower alpha), less at center (higher alpha)
-    const colorMatchStrength = (1 - selAlpha) * 0.5; // More matching at edges
-    const srcR = Math.max(0, Math.min(255, sourcePixels[i] + edgeRDiff * colorMatchStrength));
-    const srcG = Math.max(0, Math.min(255, sourcePixels[i + 1] + edgeGDiff * colorMatchStrength));
-    const srcB = Math.max(0, Math.min(255, sourcePixels[i + 2] + edgeBDiff * colorMatchStrength));
-    const srcA = sourcePixels[i + 3] / 255;
-
-    // Destination pixel (use base image for blending, then composite onto Paint)
-    const dstR = baseDestPixels[i];
-    const dstG = baseDestPixels[i + 1];
-    const dstB = baseDestPixels[i + 2];
-    const dstA = baseDestPixels[i + 3] / 255;
-
-    // Use a smooth blend curve for more natural transitions
-    // Apply ease-in-out curve to the selection alpha for smoother blending
-    const smoothAlpha = selAlpha * selAlpha * (3 - 2 * selAlpha); // Hermite interpolation
-
-    // Blend factor from selection mask
-    const blendFactor = smoothAlpha * srcA;
-
-    // Standard alpha compositing: source over destination
-    const outA = blendFactor + dstA * (1 - blendFactor);
-
-    if (outA > 0) {
-      const invBlendFactor = 1 - blendFactor;
-      destPixels[i] = (srcR * blendFactor + dstR * dstA * invBlendFactor) / outA;
-      destPixels[i + 1] = (srcG * blendFactor + dstG * dstA * invBlendFactor) / outA;
-      destPixels[i + 2] = (srcB * blendFactor + dstB * dstA * invBlendFactor) / outA;
-      destPixels[i + 3] = outA * 255;
-    }
+  for (let i = 0; i < reconstructed.length; i += 4) {
+    // selectionAlpha may have been transferred and detached by the worker.
+    if (selectionData.data[i + 3] === 0) continue;
+    destPixels[i] = reconstructed[i];
+    destPixels[i + 1] = reconstructed[i + 1];
+    destPixels[i + 2] = reconstructed[i + 2];
+    destPixels[i + 3] = reconstructed[i + 3];
   }
 
   destCtx.putImageData(layerDestData, destRegionX, destRegionY);

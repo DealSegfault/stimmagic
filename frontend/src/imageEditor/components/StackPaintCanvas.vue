@@ -149,6 +149,8 @@ let patchDrag: {
   /** Scratch canvas for the masked donor preview, allocated once per drag. */
   preview: HTMLCanvasElement
 } | null = null
+/** Prevent overlapping edits while the gradient-domain solve runs off-thread. */
+const patchPending = ref(false)
 
 function pointInMask(point: Point): boolean {
   const mask = props.selectionMask
@@ -527,7 +529,7 @@ function commitActiveStroke() {
 }
 
 function onPointerDown(event: PointerEvent) {
-  if (!props.source) return
+  if (!props.source || patchPending.value) return
 
   // Only the pen tip (or left button) draws. A pen's barrel buttons arrive as
   // middle/right presses on the SAME pointer, so without this they read as the
@@ -633,7 +635,7 @@ function releasePointer(pointerId: number) {
   if (canvas?.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId)
 }
 
-function onPointerUp(event: PointerEvent) {
+async function onPointerUp(event: PointerEvent) {
   // Releasing a barrel button is not the end of the gesture: the pen tip is
   // still down. Landing a patch here would apply it mid-drag.
   if (event.button !== 0) return
@@ -652,21 +654,25 @@ function onPointerUp(event: PointerEvent) {
       // A couple of pixels is a click, not a drag — applying it would sample
       // the selection onto itself.
       if (strokeSource && Math.hypot(offset.x, offset.y) > 2) {
-        // Blend the seam inside the selection while retaining a solid core.
-        liveStroke.applyPatchTool(strokeSource, offset, bounds, PATCH_EDGE_BLEND_PX)
-        finishStroke(true, {
-          tool: 'patch',
-          source: {
-            x: bounds.x + bounds.width / 2 + offset.x,
-            y: bounds.y + bounds.height / 2 + offset.y,
-          },
-          target: {
-            x: bounds.x + bounds.width / 2,
-            y: bounds.y + bounds.height / 2,
-          },
-        })
-        // The patch consumed the selection; ants over fixed pixels would lie.
-        emit('patchApplied')
+        patchPending.value = true
+        try {
+          await liveStroke.applyPatchTool(strokeSource, offset, bounds)
+          finishStroke(true, {
+            tool: 'patch',
+            source: {
+              x: bounds.x + bounds.width / 2 + offset.x,
+              y: bounds.y + bounds.height / 2 + offset.y,
+            },
+            target: {
+              x: bounds.x + bounds.width / 2,
+              y: bounds.y + bounds.height / 2,
+            },
+          })
+          // The patch consumed the selection; ants over fixed pixels would lie.
+          emit('patchApplied')
+        } finally {
+          patchPending.value = false
+        }
       } else {
         liveStroke.endStroke()
         liveStroke.clearLayer()
@@ -674,7 +680,7 @@ function onPointerUp(event: PointerEvent) {
         strokeAdjustedSource = null
       }
     } finally {
-      // Never strand the donor preview if blending throws.
+      // Never strand the donor preview if reconstruction throws.
       drawOverlay()
     }
     return
@@ -717,7 +723,7 @@ function onWindowPointerMove(event: PointerEvent) {
 
 function onWindowPointerUp(event: PointerEvent) {
   if (event.target !== overlay.value && activePointerId === event.pointerId) {
-    onPointerUp(event)
+    void onPointerUp(event)
   }
 }
 
@@ -736,9 +742,6 @@ function onPointerCancel(event: PointerEvent) {
   strokeStart = null
   drawOverlay()
 }
-
-/** Photographic seam width; the solver adapts it down for small selections. */
-const PATCH_EDGE_BLEND_PX = 15
 
 /** Start a new layer: the next stroke creates the next Paint step. */
 function reset() {
@@ -827,7 +830,9 @@ onBeforeUnmount(() => {
     <canvas
       ref="overlay"
       class="w-full h-full touch-none"
-      :class="engineId === 'patch'
+      :class="patchPending
+        ? 'cursor-wait'
+        : engineId === 'patch'
         ? (selectionMask ? 'cursor-move' : 'cursor-default')
         : 'cursor-crosshair'"
       :style="{ width: displayWidth + 'px', height: displayHeight + 'px' }"
