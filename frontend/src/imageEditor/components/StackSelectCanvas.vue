@@ -42,11 +42,16 @@ import {
 import { applySelectionBrushSegment } from '../stack/selectionBrush'
 import { combineFromModifiers } from '../stack/selectionLifecycle'
 import type { GradientMask } from '../stack/types'
+import { fittedBrushScale, overlayBackingSize, zoomedBrushSize } from '../stack/viewportRaster'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
   displayWidth: number
   displayHeight: number
+  /** Fitted-view size used for the backing store; deliberately excludes zoom. */
+  renderWidth?: number
+  renderHeight?: number
+  viewZoom?: number
   /** The host-owned selection model; this component never creates its own. */
   model: ReturnType<typeof useSelection>
   /** The armed tool, or null when the overlay is display-only. */
@@ -61,7 +66,7 @@ const props = withDefaults(defineProps<{
   wandGrowPx?: number
   /** Smooth hard wand boundaries when feathering is zero. */
   wandAntialias?: boolean
-  /** Selection brush diameter in display pixels, like the paint brush. */
+  /** Selection brush diameter in fitted-view pixels, like the paint brush. */
   brushSize?: number
   /** Visual chrome only; the selection model remains intact while hidden. */
   visible?: boolean
@@ -82,6 +87,9 @@ const props = withDefaults(defineProps<{
   gradientFeather?: number
 }>(), {
   armed: null,
+  renderWidth: 0,
+  renderHeight: 0,
+  viewZoom: 1,
   combine: 'new',
   featherPx: 0,
   tolerance: 8,
@@ -187,6 +195,12 @@ const gradientChromeVisible = computed(() => {
 const scale = computed(() =>
   props.source ? props.source.width / Math.max(1, props.displayWidth) : 1
 )
+const brushScale = computed(() =>
+  props.source
+    ? fittedBrushScale(props.source.width, props.displayWidth, props.viewZoom)
+    : 1
+)
+const cursorBrushSize = computed(() => zoomedBrushSize(props.brushSize, props.viewZoom))
 
 function pointFrom(event: PointerEvent): Point {
   const rect = overlay.value!.getBoundingClientRect()
@@ -239,7 +253,7 @@ function captureGesture(
  */
 function captureBrushGesture(points: Point[]) {
   if (!props.source || !points.length) return
-  const radius = (props.brushSize * scale.value) / 2
+  const radius = (props.brushSize * brushScale.value) / 2
   captureGesture(ctx => {
     let from: Point | null = null
     for (const to of points) {
@@ -557,7 +571,7 @@ function pointFromClient(event: PointerEvent): Point {
 }
 
 function brushTo(point: Point) {
-  const radius = (props.brushSize * scale.value) / 2
+  const radius = (props.brushSize * brushScale.value) / 2
   selection.brushStroke(lastBrushPoint, point, radius, effectiveCombine())
   lastBrushPoint = point
   brushGesture.push(point)
@@ -619,7 +633,7 @@ function draw() {
       0, brushFeedback.height / Math.max(1, props.source.height), 0, 0,
     )
     feedbackCtx.strokeStyle = '#fff'
-    feedbackCtx.lineWidth = props.brushSize * scale.value
+    feedbackCtx.lineWidth = props.brushSize * brushScale.value
     feedbackCtx.lineCap = 'round'
     feedbackCtx.lineJoin = 'round'
     feedbackCtx.beginPath()
@@ -893,9 +907,11 @@ function resizeOverlay() {
   if (!canvas) return
   // Match the annotation overlay: crisp at normal/high DPI, but never let a
   // very dense monitor turn display chrome back into a source-sized hot path.
-  const density = Math.max(1, Math.min(window.devicePixelRatio || 1, 2))
-  const width = Math.max(1, Math.round(props.displayWidth * density))
-  const height = Math.max(1, Math.round(props.displayHeight * density))
+  const { width, height } = overlayBackingSize(
+    props.renderWidth || props.displayWidth,
+    props.renderHeight || props.displayHeight,
+    window.devicePixelRatio || 1,
+  )
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
 }
@@ -921,6 +937,10 @@ defineExpose({
 
 watch(() => props.source, resize)
 watch([() => props.displayWidth, () => props.displayHeight], () => {
+  resizeOverlay()
+  draw()
+})
+watch([() => props.renderWidth, () => props.renderHeight], () => {
   resizeOverlay()
   draw()
 })
@@ -1007,10 +1027,10 @@ onBeforeUnmount(stopAnts)
       v-if="visible && cursor && armed === 'brush'"
       class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
       :style="{
-        left: cursor.x - brushSize / 2 + 'px',
-        top: cursor.y - brushSize / 2 + 'px',
-        width: brushSize + 'px',
-        height: brushSize + 'px',
+        left: cursor.x - cursorBrushSize / 2 + 'px',
+        top: cursor.y - cursorBrushSize / 2 + 'px',
+        width: cursorBrushSize + 'px',
+        height: cursorBrushSize + 'px',
       }"
     />
   </div>

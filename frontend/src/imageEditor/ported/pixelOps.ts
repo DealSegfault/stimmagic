@@ -5,8 +5,7 @@
  */
 
 import type { Point } from './geometry';
-import { featherAlpha } from '../stack/featherAlpha';
-import { brushTipAlpha } from '../brush/tipMask';
+import { brushTipAlpha } from '../brush/tipMask.ts';
 
 /**
  * Sample a pixel color from a canvas at the given position
@@ -363,23 +362,79 @@ export function sampleSurroundingPixels(
 }
 
 /**
- * Apply Gaussian blur to an alpha mask (used for softening patch edges)
+ * Resolve patch coverage from the selection mask.
  *
- * V1 used CanvasRenderingContext2D.filter here. V2 deliberately uses the same
- * typed-array feather as the stack compositor because canvas filters can
- * silently no-op in WKWebView, leaving a crisp patch edge.
+ * A patch needs a blended seam, but blurring the whole mask spreads coverage
+ * outside the selection and can leave a narrow patch translucent everywhere.
+ * Instead, measure inward from the selection boundary and blend only that
+ * inner edge. The width adapts to small selections so every non-empty region
+ * still has a full-strength core.
  */
-function blurAlphaMask(
+export function patchSelectionAlpha(
   data: Uint8ClampedArray,
   width: number,
   height: number,
-  radius: number
+  edgeBlendPx: number = 15
 ): Uint8ClampedArray {
   const alpha = new Uint8ClampedArray(width * height);
   for (let i = 3, pixel = 0; i < data.length; i += 4, pixel++) {
     alpha[pixel] = data[i];
   }
-  return featherAlpha(alpha, width, height, radius);
+  if (edgeBlendPx <= 0 || width <= 0 || height <= 0) return alpha;
+
+  // Approximate Euclidean distance to the nearest unselected pixel with a
+  // two-pass chamfer transform. Pixels beyond the image edge are not a seam.
+  const distance = new Float32Array(width * height);
+  let hasBoundary = false;
+  for (let pixel = 0; pixel < alpha.length; pixel++) {
+    if (alpha[pixel] === 0) {
+      distance[pixel] = 0;
+      hasBoundary = true;
+    } else {
+      distance[pixel] = Number.POSITIVE_INFINITY;
+    }
+  }
+  if (!hasBoundary) return alpha;
+
+  const diagonal = Math.SQRT2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixel = y * width + x;
+      if (distance[pixel] === 0) continue;
+      let nearest = distance[pixel];
+      if (x > 0) nearest = Math.min(nearest, distance[pixel - 1] + 1);
+      if (y > 0) nearest = Math.min(nearest, distance[pixel - width] + 1);
+      if (x > 0 && y > 0) nearest = Math.min(nearest, distance[pixel - width - 1] + diagonal);
+      if (x + 1 < width && y > 0) nearest = Math.min(nearest, distance[pixel - width + 1] + diagonal);
+      distance[pixel] = nearest;
+    }
+  }
+  let maxDistance = 0;
+  for (let y = height - 1; y >= 0; y--) {
+    for (let x = width - 1; x >= 0; x--) {
+      const pixel = y * width + x;
+      if (distance[pixel] === 0) continue;
+      let nearest = distance[pixel];
+      if (x + 1 < width) nearest = Math.min(nearest, distance[pixel + 1] + 1);
+      if (y + 1 < height) nearest = Math.min(nearest, distance[pixel + width] + 1);
+      if (x + 1 < width && y + 1 < height) nearest = Math.min(nearest, distance[pixel + width + 1] + diagonal);
+      if (x > 0 && y + 1 < height) nearest = Math.min(nearest, distance[pixel + width - 1] + diagonal);
+      distance[pixel] = nearest;
+      if (Number.isFinite(nearest)) maxDistance = Math.max(maxDistance, nearest);
+    }
+  }
+  if (maxDistance === 0) return alpha;
+
+  // Keep at least half of a small selection as a solid core. Large selections
+  // use the requested photographic seam width unchanged.
+  const blendWidth = Math.min(edgeBlendPx, Math.max(1, maxDistance / 2));
+  for (let pixel = 0; pixel < alpha.length; pixel++) {
+    if (alpha[pixel] === 0) continue;
+    const t = Math.min(1, distance[pixel] / blendWidth);
+    const smooth = t * t * (3 - 2 * t);
+    alpha[pixel] = Math.round(alpha[pixel] * smooth);
+  }
+  return alpha;
 }
 
 /**
@@ -394,7 +449,7 @@ function blurAlphaMask(
  * @param selectionCtx - Context of the selection mask (alpha = blend strength)
  * @param offset - Offset from destination to source (source = dest + offset)
  * @param bounds - Bounding box of the selection in image coordinates
- * @param blendWidth - Additional edge blend radius for softer transitions (0-50)
+ * @param blendWidth - Width of the adaptive inner-edge blend
  */
 export function applyPatch(
   baseCtx: CanvasRenderingContext2D,
@@ -497,8 +552,9 @@ export function applyPatch(
     }
   }
 
-  // Apply additional blur to the selection mask for softer edges
-  const selectionAlpha = blurAlphaMask(
+  // Blend inward from the selection boundary. This softens the seam without
+  // leaking donor pixels outside the selection or washing out its core.
+  const selectionAlpha = patchSelectionAlpha(
     selectionData.data,
     actualWidth,
     actualHeight,

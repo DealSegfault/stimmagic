@@ -189,15 +189,18 @@ async def test_execute_sends_only_declared_parameters(monkeypatch):
 
     assert results[-1].error == "__stop__"
     assert captured["method"] == "tools.execute"
-    assert captured["params"] == {
-        "request_id": "job-232313",
-        "tool_id": "flux2-klein-9b",
-        "parameters": {
-            "prompt": "dog",
-            "width": 1024,
-            "height": 1024,
-            "steps": 4,
-        },
+    # The subject here is the `parameters` namespace: Stimma-internal keys
+    # (prompt_metadata, input_media_ids) must not reach the provider. Assert
+    # that exactly, plus the fields identifying the job — but don't pin the
+    # envelope to an exhaustive key set, or every optional top-level field
+    # (preview_frames, and whatever follows) breaks a test that isn't about it.
+    assert captured["params"]["request_id"] == "job-232313"
+    assert captured["params"]["tool_id"] == "flux2-klein-9b"
+    assert captured["params"]["parameters"] == {
+        "prompt": "dog",
+        "width": 1024,
+        "height": 1024,
+        "steps": 4,
     }
 
 

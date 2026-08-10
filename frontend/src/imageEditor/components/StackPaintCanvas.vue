@@ -30,6 +30,7 @@ import { retouchBrushAdjustmentParams } from '../stack/retouchBrushAdjustment'
 import { BrushStrokeRuntime } from '../brush/brushRuntime'
 import { brushPreset } from '../brush/brushPresets'
 import type { BrushInputSample, BrushPresetDefinition } from '../brush/types'
+import { fittedBrushScale, zoomedBrushSize } from '../stack/viewportRaster'
 
 interface RasterGestureMetadata {
   tool: string
@@ -56,6 +57,7 @@ const props = withDefaults(defineProps<{
   accumulate?: boolean
   displayWidth: number
   displayHeight: number
+  viewZoom?: number
   engineId?: string
   brush?: BrushSettings
   color?: { r: number; g: number; b: number; a?: number }
@@ -71,6 +73,7 @@ const props = withDefaults(defineProps<{
   saturate?: boolean
 }>(), {
   engineId: 'paint',
+  viewZoom: 1,
   accumulate: true,
   exposure: 10,
   range: 'midtones',
@@ -169,6 +172,14 @@ const cursorTip = computed(() => {
 const scale = computed(() =>
   props.source ? props.source.width / Math.max(1, props.displayWidth) : 1
 )
+const brushScale = computed(() =>
+  props.source
+    ? fittedBrushScale(props.source.width, props.displayWidth, props.viewZoom)
+    : 1
+)
+const cursorBrushSize = computed(() =>
+  zoomedBrushSize(brushSettings.value.size, props.viewZoom)
+)
 
 function pointFrom(event: PointerEvent): Point {
   const rect = overlay.value!.getBoundingClientRect()
@@ -188,7 +199,7 @@ function pointFrom(event: PointerEvent): Point {
 function scaledBrush(): BrushSettings {
   return {
     ...brushSettings.value,
-    size: Math.max(1, Math.round(brushSettings.value.size * scale.value)),
+    size: Math.max(1, Math.round(brushSettings.value.size * brushScale.value)),
   }
 }
 
@@ -641,7 +652,8 @@ function onPointerUp(event: PointerEvent) {
       // A couple of pixels is a click, not a drag — applying it would sample
       // the selection onto itself.
       if (strokeSource && Math.hypot(offset.x, offset.y) > 2) {
-        liveStroke.applyPatchTool(strokeSource, offset, bounds, PATCH_BLEND_WIDTH)
+        // Blend the seam inside the selection while retaining a solid core.
+        liveStroke.applyPatchTool(strokeSource, offset, bounds, PATCH_EDGE_BLEND_PX)
         finishStroke(true, {
           tool: 'patch',
           source: {
@@ -662,7 +674,7 @@ function onPointerUp(event: PointerEvent) {
         strokeAdjustedSource = null
       }
     } finally {
-      // Never strand the deliberately crisp drag preview if blending throws.
+      // Never strand the donor preview if blending throws.
       drawOverlay()
     }
     return
@@ -725,8 +737,8 @@ function onPointerCancel(event: PointerEvent) {
   drawOverlay()
 }
 
-/** The old editor's patch edge blend, kept as its default. */
-const PATCH_BLEND_WIDTH = 15
+/** Photographic seam width; the solver adapts it down for small selections. */
+const PATCH_EDGE_BLEND_PX = 15
 
 /** Start a new layer: the next stroke creates the next Paint step. */
 function reset() {
@@ -830,10 +842,10 @@ onBeforeUnmount(() => {
       v-if="cursor && brush && !['patch', 'fill', 'gradient'].includes(engineId)"
       class="pointer-events-none absolute rounded-full border border-white/70 mix-blend-difference"
       :style="{
-        left: cursor.x - brush.size / 2 + 'px',
-        top: cursor.y - brush.size * cursorTip.aspect / 2 + 'px',
-        width: brush.size + 'px',
-        height: brush.size * cursorTip.aspect + 'px',
+        left: cursor.x - cursorBrushSize / 2 + 'px',
+        top: cursor.y - cursorBrushSize * cursorTip.aspect / 2 + 'px',
+        width: cursorBrushSize + 'px',
+        height: cursorBrushSize * cursorTip.aspect + 'px',
         transform: `rotate(${cursorTip.rotation}deg)`,
       }"
     />

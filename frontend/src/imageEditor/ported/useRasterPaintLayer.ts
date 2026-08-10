@@ -1035,12 +1035,12 @@ export function useRasterPaintLayer() {
 
   /**
    * Apply patch tool: copy pixels from source region (at offset) to destination using selection mask.
-   * The selection mask's alpha channel provides feathered edge blending.
+   * The selection mask defines the patch footprint; its inner edge is blended.
    *
    * @param sourceCanvas - The source image canvas to sample from
    * @param offset - The drag offset (source position relative to destination)
    * @param bounds - Bounding box of the selection
-   * @param blendWidth - Additional edge blend radius for softer transitions (0-50)
+   * @param blendWidth - Width of the adaptive inner-edge blend
    */
   function applyPatchTool(
     sourceCanvas: HTMLCanvasElement,

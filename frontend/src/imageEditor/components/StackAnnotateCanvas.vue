@@ -25,6 +25,7 @@ import type { Shape, AnnotateTool, Paint } from '../ported/shapeTypes'
 import type { Color, ViewTransform } from '../ported/geometry'
 import { textStyleAnnotationState } from '../stack/textStyles'
 import type { TextStyleId } from '../stack/textStyles'
+import { overlayBackingSize } from '../stack/viewportRaster'
 
 const props = withDefaults(defineProps<{
   source: HTMLCanvasElement | null
@@ -32,6 +33,9 @@ const props = withDefaults(defineProps<{
   shapes: Shape[]
   displayWidth: number
   displayHeight: number
+  /** Fitted-view size used for the backing store; deliberately excludes zoom. */
+  renderWidth?: number
+  renderHeight?: number
   tool?: AnnotateTool
   /** Stroke and fill are paints: a flat color or a gradient. */
   strokeColor?: Paint
@@ -44,6 +48,8 @@ const props = withDefaults(defineProps<{
   opacity?: number
 }>(), {
   tool: 'arrow',
+  renderWidth: 0,
+  renderHeight: 0,
   strokeColor: () => ({ r: 255, g: 255, b: 255, a: 1 }),
   fillColor: null,
   // Pixels, not normalized: the renderer converts positions and sizes out of
@@ -353,9 +359,11 @@ function resize() {
 
   // Enough pixels for a crisp interactive overlay, capped so a high-DPI
   // monitor cannot turn a fitted preview back into a source-sized hot path.
-  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
-  const width = Math.max(1, Math.round(props.displayWidth * pixelRatio))
-  const height = Math.max(1, Math.round(props.displayHeight * pixelRatio))
+  const { width, height } = overlayBackingSize(
+    props.renderWidth || props.displayWidth,
+    props.renderHeight || props.displayHeight,
+    window.devicePixelRatio || 1,
+  )
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
   draw()
@@ -408,7 +416,16 @@ defineExpose({
   },
 })
 
-watch(() => [props.source, props.displayWidth, props.displayHeight] as const, resize)
+watch(
+  () => [
+    props.source,
+    props.displayWidth,
+    props.displayHeight,
+    props.renderWidth,
+    props.renderHeight,
+  ] as const,
+  resize,
+)
 
 let drawFrame: number | null = null
 function scheduleDraw() {

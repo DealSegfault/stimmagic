@@ -29,6 +29,8 @@ const props = defineProps<{
   hoveredIsPatch?: boolean
   displayWidth: number
   displayHeight: number
+  /** Fitted-view width used for raster detail; deliberately excludes zoom. */
+  renderWidth?: number
 }>()
 
 const canvas = ref<HTMLCanvasElement | null>(null)
@@ -71,7 +73,7 @@ function paintMask(
   const boundaryThreshold = 12
   // Keep the dotted donor boundary approximately stable in screen pixels,
   // even when a large authored image is fitted down into the viewport.
-  const displayScale = width / Math.max(1, props.displayWidth)
+  const displayScale = width / Math.max(1, props.renderWidth || props.displayWidth)
   const dotPeriod = Math.max(6, Math.round(8 * displayScale))
   const dotLength = Math.max(2, Math.round(3 * displayScale))
   const maskAlpha = (x: number, y: number) => {
@@ -199,8 +201,7 @@ watch(
     props.hoveredTargetPoint,
     props.selectedIsPatch,
     props.hoveredIsPatch,
-    props.displayWidth,
-    props.displayHeight,
+    props.renderWidth,
   ],
   draw,
 )

@@ -1092,8 +1092,8 @@ async function previewAdjustment(
   if (revision !== liveAdjustSetupRevision || liveAdjustOwner !== owner) return
   liveAdjustReady = liveAdjustPreview.begin(source, liveAdjustBase, {
     mask: liveAdjustMask,
-    width: zoomedDisplayBox.value.width || displayBox.value.width,
-    height: zoomedDisplayBox.value.height || displayBox.value.height,
+    width: displayBox.value.width,
+    height: displayBox.value.height,
     maskStrength: options.maskStrength,
   })
   queueLiveAdjustFrame()
@@ -8736,6 +8736,7 @@ watch(
             :selection-mask="selection"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
+            :view-zoom="viewZoom"
             :engine-id="sub || 'heal'"
             :brush="retouchBrush"
             :exposure="retouchExposure"
@@ -8754,6 +8755,7 @@ watch(
             :selection-mask="selection"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
+            :view-zoom="viewZoom"
             :engine-id="paintEngineId"
             :brush="paintBrush"
             :color="paintColorRgb"
@@ -8773,6 +8775,8 @@ watch(
             :shapes="annotateShapes"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
+            :render-width="displayBox.width"
+            :render-height="displayBox.height"
             :tool="annotateTool"
             :stroke-color="annotatePaint"
             :fill-color="annotateFillColor"
@@ -8805,6 +8809,7 @@ watch(
             :hovered-is-patch="hoveredRetouchIsPatch"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
+            :render-width="displayBox.width"
           />
           <!-- The selection overlay: always mounted, ants above whatever mode
                is open, pointer-transparent until a rail tool is armed. The
@@ -8818,6 +8823,9 @@ watch(
             :visible="editorActive"
             :display-width="zoomedDisplayBox.width"
             :display-height="zoomedDisplayBox.height"
+            :render-width="displayBox.width"
+            :render-height="displayBox.height"
+            :view-zoom="viewZoom"
             :combine="selectCombine"
             :feather-px="selectFeather"
             :tolerance="selectTolerance"
