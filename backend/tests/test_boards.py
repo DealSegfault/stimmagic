@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from asset_service import create_asset_from_media
-from database import BoardAssetItem, BoardSection
+from database import BoardAssetItem, BoardSection, MediaItem
 from tests.helpers.media import create_test_media
 from tests.helpers.ws import MockWebSocketManager
 
@@ -262,6 +262,28 @@ class TestBoardTrashInteractions:
         boards = (await client.get("/api/boards")).json()
         this_board = next(b for b in boards if b["id"] == board_id)
         assert this_board["asset_count"] == 1
+
+    async def test_unavailable_source_media_is_hidden_from_board(self, client, db_session, seeded_media):
+        board = (await client.post("/api/boards", json={"name": "Source Count"})).json()
+        await client.post(
+            f"/api/boards/{board['id']}/items",
+            json={"media_ids": [seeded_media[0].id, seeded_media[1].id]},
+        )
+
+        async with db_session() as session:
+            media = await session.get(MediaItem, seeded_media[0].id)
+            media.file_unavailable = True
+            await session.commit()
+
+        detail = (await client.get(f"/api/boards/{board['id']}")).json()
+        assert detail["asset_count"] == 1
+        assert [item["media_id"] for item in detail["sections"][0]["items"]] == [
+            seeded_media[1].id
+        ]
+
+        boards = (await client.get("/api/boards")).json()
+        summary = next(item for item in boards if item["id"] == board["id"])
+        assert summary["asset_count"] == 1
 
 
 class TestBoardDeleteCascade:

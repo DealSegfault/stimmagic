@@ -1,7 +1,7 @@
 """Shared board serialization helpers."""
 from typing import List
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import (
@@ -39,6 +39,10 @@ async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
                 Asset.state == "active",
                 Asset.deleted_at.is_(None),
                 MediaItem.deleted_at.is_(None),
+                or_(
+                    MediaItem.file_unavailable.is_(False),
+                    MediaItem.file_unavailable.is_(None),
+                ),
             )
             .order_by(BoardAssetItem.display_order.asc(), BoardAssetItem.added_at.asc())
         )

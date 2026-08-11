@@ -1213,6 +1213,38 @@ async def update_folders(request: UpdateFoldersRequest):
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
 
+    deactivation_result = None
+    if removed_paths and relocation is None:
+        from source_visibility_service import deactivate_removed_sources
+
+        registry = get_database_registry()
+        db = registry.get_database(current_profile_id)
+        async with db.async_session_maker() as session:
+            deactivation_result = await deactivate_removed_sources(
+                session,
+                removed_paths=removed_paths,
+                active_paths=new_folder_paths,
+            )
+            await session.commit()
+
+        # Config watching also signals this, but doing it here closes the race
+        # before the watcher notices the file change and prevents new work from
+        # being selected from the removed Source.
+        from core.app import get_reload_config_event
+
+        reload_event = get_reload_config_event()
+        if reload_event is not None:
+            reload_event.set()
+
+        if deactivation_result.asset_ids:
+            await ws_manager.broadcast(
+                "assets_updated",
+                {
+                    "asset_ids": deactivation_result.asset_ids,
+                    "fields": ["source_visibility"],
+                },
+            )
+
     log.info("folders updated", profile=current_profile_id, count=len(folders_data))
 
     # Track folder add/remove telemetry
@@ -1233,6 +1265,8 @@ async def update_folders(request: UpdateFoldersRequest):
     await _sync_folder_auto_markers(current_profile_id, folders_data)
 
     response = {"status": "success", "message": "Folders updated"}
+    if deactivation_result is not None:
+        response["deactivated_media_count"] = len(deactivation_result.media_ids)
     if relocation_result is not None:
         response["relocation"] = relocation_result.to_dict()
     return response

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from agent.v2.agent_config import resolve_agent_config
 from agent.v2.permissions import check_permission, check_stp_permission
 from agent.v2.workspace import get_project_workspace, get_workspace_dir
-from database import BoardSection, Chat, Project
+from database import BoardSection, Chat, MediaItem, Project
 from project_service import initialize_project_root
 from tests.helpers.media import create_test_media
 
@@ -109,6 +109,27 @@ class TestProjectsApi:
 
         project_detail = (await client.get(f"/api/projects/{project['id']}")).json()
         assert project_detail["asset_count"] == 1
+
+    async def test_unavailable_source_media_is_excluded_from_project_counts(
+        self, client, db_session, seeded_media
+    ):
+        project = (await client.post("/api/projects", json={"name": "Source Project"})).json()
+        attached = await client.post(
+            f"/api/projects/{project['id']}/assets",
+            json={"media_ids": [seeded_media[0].id, seeded_media[1].id]},
+        )
+        assert attached.status_code == 200
+
+        async with db_session() as session:
+            media = await session.get(MediaItem, seeded_media[0].id)
+            media.file_unavailable = True
+            await session.commit()
+
+        detail = (await client.get(f"/api/projects/{project['id']}")).json()
+        assert detail["asset_count"] == 1
+        projects = (await client.get("/api/projects")).json()
+        summary = next(item for item in projects if item["id"] == project["id"])
+        assert summary["asset_count"] == 1
 
     async def test_delete_project_cascades_to_chats_and_boards_but_not_assets(self, client, seeded_media, db_session):
         project = (await client.post("/api/projects", json={"name": "Cascade Project"})).json()

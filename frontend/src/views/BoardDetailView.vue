@@ -1853,7 +1853,11 @@ const unsubBoardChanged = on('board_items_changed', (data) => {
 const unsubMediaUpdated = on('assets_updated', (data) => {
   const { asset_ids, fields } = data
   if (!board.value || !asset_ids?.length) return
-  if (!fields.includes('markers') && !fields.includes('tags')) return
+  if (
+    !fields.includes('markers') &&
+    !fields.includes('tags') &&
+    !fields.includes('source_visibility')
+  ) return
   loadBoard()
 })
 

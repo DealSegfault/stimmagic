@@ -1,9 +1,16 @@
 """Configuration contraction for external Sources and managed staging."""
 
 import app_dirs
+import pytest
 import yaml
-from config import Settings, ensure_config_exists
+from sqlalchemy import func, select
+
+from config import Settings, ensure_config_exists, reload_settings
 from config_writer import remove_profile_section
+from background_work_filters import media_eligible_for_background_work
+from database import MediaItem
+from storage_service import register_external_asset
+from tests.helpers.media import create_media_item, generate_test_image
 
 
 def test_legacy_destination_roles_become_hidden_migration_roots(tmp_path, monkeypatch):
@@ -135,3 +142,86 @@ async def test_settings_exposes_only_external_source_fields(client, tmp_path):
     assert "allow_generate" not in folder
     assert "is_uploads_folder" not in folder
     assert "uploads_subfolder" not in folder
+
+
+@pytest.mark.asyncio
+async def test_removing_source_immediately_hides_and_deactivates_its_media(
+    client, db_session, tmp_path
+):
+    source = tmp_path / "watched"
+    retained_source = tmp_path / "still-watched"
+    source_file = source / "gone-from-library.png"
+    retained_file = retained_source / "still-visible.png"
+    source_hash = generate_test_image(source_file)
+    retained_hash = generate_test_image(retained_file)
+
+    response = await client.patch(
+        "/api/settings/folders",
+        json={
+            "folders": [
+                {"path": str(source), "markers": []},
+                {"path": str(retained_source), "markers": []},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    reload_settings()
+
+    async with db_session() as session:
+        removed_media = await create_media_item(
+            session,
+            file_path=source_file,
+            file_hash=source_hash,
+            file_size=source_file.stat().st_size,
+            metadata_status="completed",
+            clip_status="pending",
+        )
+        retained_media = await create_media_item(
+            session,
+            file_path=retained_file,
+            file_hash=retained_hash,
+            file_size=retained_file.stat().st_size,
+            metadata_status="completed",
+            clip_status="pending",
+        )
+        _, removed_asset = await register_external_asset(session, media=removed_media)
+        _, retained_asset = await register_external_asset(session, media=retained_media)
+        await session.commit()
+        removed_media_id = removed_media.id
+        retained_media_id = retained_media.id
+        removed_asset_id = removed_asset.id
+        retained_asset_id = retained_asset.id
+
+    before = await client.get("/api/assets/browse")
+    assert before.status_code == 200
+    assert {item["asset_id"] for item in before.json()["items"]} >= {
+        removed_asset_id,
+        retained_asset_id,
+    }
+
+    response = await client.patch(
+        "/api/settings/folders",
+        json={"folders": [{"path": str(retained_source), "markers": []}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["deactivated_media_count"] == 1
+
+    after = await client.get("/api/assets/browse")
+    assert after.status_code == 200
+    visible_ids = {item["asset_id"] for item in after.json()["items"]}
+    assert removed_asset_id not in visible_ids
+    assert retained_asset_id in visible_ids
+
+    async with db_session() as session:
+        removed = await session.get(MediaItem, removed_media_id)
+        retained = await session.get(MediaItem, retained_media_id)
+        assert removed is not None
+        assert removed.file_unavailable is True
+        assert retained.file_unavailable is False
+        eligible_count = await session.scalar(
+            select(func.count(MediaItem.id)).where(
+                MediaItem.id.in_([removed_media_id, retained_media_id]),
+                media_eligible_for_background_work(),
+            )
+        )
+        assert eligible_count == 1

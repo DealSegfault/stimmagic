@@ -4,11 +4,21 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_db_session
-from database import Board, BoardSection, Chat, MediaItem, Project, ProjectAsset, ProjectMedia
+from database import (
+    Asset,
+    AssetRevision,
+    Board,
+    BoardSection,
+    Chat,
+    MediaItem,
+    Project,
+    ProjectAsset,
+    ProjectMedia,
+)
 from models.api_models import (
     ProjectCreateRequest,
     ProjectResponse,
@@ -41,9 +51,21 @@ async def _serialize_project(project: Project, session: AsyncSession) -> Project
         )
     )
     asset_count = await session.scalar(
-        select(func.count()).select_from(ProjectAsset).where(
+        select(func.count(MediaItem.id))
+        .select_from(ProjectAsset)
+        .join(Asset, Asset.id == ProjectAsset.asset_id)
+        .join(AssetRevision, AssetRevision.id == Asset.current_revision_id)
+        .join(MediaItem, MediaItem.id == AssetRevision.primary_media_id)
+        .where(
             ProjectAsset.project_id == project.id,
             ProjectAsset.deleted_at.is_(None),
+            Asset.state == "active",
+            Asset.deleted_at.is_(None),
+            MediaItem.deleted_at.is_(None),
+            or_(
+                MediaItem.file_unavailable.is_(False),
+                MediaItem.file_unavailable.is_(None),
+            ),
         )
     )
     return ProjectResponse(
@@ -61,7 +83,7 @@ async def list_projects(session: AsyncSession = Depends(get_db_session)):
             Project,
             func.count(func.distinct(Chat.id)).label("chat_count"),
             func.count(func.distinct(Board.id)).label("board_count"),
-            func.count(func.distinct(ProjectAsset.asset_id)).label("asset_count"),
+            func.count(func.distinct(MediaItem.id)).label("asset_count"),
         )
         .outerjoin(Chat, and_(Chat.project_id == Project.id, Chat.deleted_at.is_(None)))
         .outerjoin(Board, and_(Board.project_id == Project.id, Board.deleted_at.is_(None)))
@@ -69,6 +91,26 @@ async def list_projects(session: AsyncSession = Depends(get_db_session)):
             ProjectAsset,
             (ProjectAsset.project_id == Project.id)
             & ProjectAsset.deleted_at.is_(None),
+        )
+        .outerjoin(
+            Asset,
+            and_(
+                Asset.id == ProjectAsset.asset_id,
+                Asset.state == "active",
+                Asset.deleted_at.is_(None),
+            ),
+        )
+        .outerjoin(AssetRevision, AssetRevision.id == Asset.current_revision_id)
+        .outerjoin(
+            MediaItem,
+            and_(
+                MediaItem.id == AssetRevision.primary_media_id,
+                MediaItem.deleted_at.is_(None),
+                or_(
+                    MediaItem.file_unavailable.is_(False),
+                    MediaItem.file_unavailable.is_(None),
+                ),
+            ),
         )
         .where(Project.deleted_at.is_(None))
         .group_by(Project.id)
