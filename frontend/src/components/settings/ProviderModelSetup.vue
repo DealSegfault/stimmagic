@@ -74,8 +74,40 @@
           </div>
           <div v-if="model.reasoning_control_source !== 'manual'" class="mt-2 text-[11px] text-content-tertiary">
             Detected: {{ model.reasoning?.control || 'none' }}<span v-if="model.detected_runtime"> · {{ model.detected_runtime }}</span>
+            <span v-if="reasoningLevels.length"> · {{ reasoningLevels.join(', ') }}</span>
           </div>
-          <SettingsDropdown v-else control class="mt-3" :model-value="model.reasoning?.control || 'none'" :options="controlOptions" @update:model-value="setReasoningControl" />
+          <div v-else class="mt-3 grid gap-3 sm:grid-cols-2">
+            <label class="block">
+              <span class="mb-1 block text-[11px] text-content-tertiary">Availability</span>
+              <SettingsDropdown control :model-value="model.reasoning?.mode || 'none'" :options="modeOptions" @update:model-value="setReasoningMode" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] text-content-tertiary">Request control</span>
+              <SettingsDropdown control :model-value="model.reasoning?.control || 'none'" :options="controlOptions" @update:model-value="setReasoningControl" />
+            </label>
+          </div>
+
+          <div v-if="model.reasoning?.mode !== 'none'" class="mt-3 grid gap-3 sm:grid-cols-2">
+            <label class="block sm:col-span-2">
+              <span class="mb-1 block text-[11px] text-content-tertiary">Supported levels</span>
+              <input
+                :value="reasoningLevels.join(', ')"
+                :disabled="model.reasoning_control_source !== 'manual'"
+                @change="setReasoningLevels($event.target.value)"
+                class="w-full rounded-md border border-edge bg-surface-raised px-2.5 py-2 text-xs text-content focus:border-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                placeholder="off, low, medium, high"
+              />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] text-content-tertiary">Chat default</span>
+              <SettingsDropdown control :disabled="model.reasoning_control_source !== 'manual'" :model-value="model.reasoning?.default" :options="levelOptions" @update:model-value="setReasoningDefault" />
+            </label>
+            <label class="block">
+              <span class="mb-1 block text-[11px] text-content-tertiary">Quick tasks</span>
+              <SettingsDropdown control :disabled="model.reasoning_control_source !== 'manual'" :model-value="model.reasoning?.quick_task" :options="levelOptions" @update:model-value="setReasoningQuickTask" />
+            </label>
+          </div>
+          <p v-if="model.reasoning_control_source !== 'manual' && model.reasoning?.mode !== 'none' && !reasoningLevels.length" class="mt-2 text-[11px] text-content-muted">The server did not advertise effort levels. Choose Manual to enter them.</p>
         </div>
 
         <div class="py-2">
@@ -137,6 +169,17 @@ const controlOptions = [
   { value: 'think', label: 'think (Ollama)' },
   { value: 'reasoning_budget', label: 'reasoning_budget (llama.cpp)' },
 ]
+const modeOptions = [
+  { value: 'optional', label: 'Optional (can be off)' },
+  { value: 'required', label: 'Required (always reasons)' },
+  { value: 'none', label: 'No reasoning' },
+]
+
+const reasoningLevels = computed(() => props.model.reasoning?.levels || [])
+const levelOptions = computed(() => reasoningLevels.value.map(level => ({
+  value: level,
+  label: level === 'off' ? 'Off' : level === 'xhigh' ? 'XHigh' : level.charAt(0).toUpperCase() + level.slice(1),
+})))
 
 const results = computed(() => props.model.last_test_results || {})
 const tested = computed(() => Boolean(props.model.last_tested_at || Object.keys(results.value).length))
@@ -180,13 +223,70 @@ const checks = computed(() => [
 
 function changed() { if (!props.isNew) emit('save') }
 function setPolicy(value) { props.model.content_policy_enabled = value; changed() }
+function ensureReasoning() {
+  if (!props.model.reasoning) {
+    props.model.reasoning = { mode: 'none', levels: ['off'], default: 'off', quick_task: 'off', control: 'none', wire_levels: { off: 'off' } }
+  }
+  return props.model.reasoning
+}
+function wireLevelsFor(reasoning) {
+  return Object.fromEntries(reasoning.levels.map((level, index) => {
+    if (['enable_thinking', 'think'].includes(reasoning.control)) return [level, level !== 'off']
+    if (reasoning.control === 'reasoning_budget') return [level, level === 'off' ? 0 : [1024, 4096, 16384, 32768][Math.min(index, 3)]]
+    if (['openai_effort', 'fireworks_effort', 'openrouter_effort'].includes(reasoning.control)) return [level, level === 'off' ? 'none' : level]
+    return [level, level]
+  }))
+}
+function normalizeReasoning(seedLevels = false) {
+  const reasoning = ensureReasoning()
+  if (reasoning.mode === 'none') {
+    reasoning.levels = ['off']
+    reasoning.default = 'off'
+    reasoning.quick_task = 'off'
+    reasoning.control = 'none'
+  } else if (seedLevels || !reasoning.levels?.length || (reasoning.levels.length === 1 && reasoning.levels[0] === 'off')) {
+    reasoning.levels = reasoning.mode === 'required' ? ['low', 'medium', 'high'] : ['off', 'low', 'medium', 'high']
+    reasoning.default = reasoning.levels.includes('medium') ? 'medium' : reasoning.levels[0]
+    reasoning.quick_task = reasoning.levels[0]
+    if (!reasoning.control || reasoning.control === 'none') reasoning.control = 'openai_effort'
+  }
+  if (!reasoning.levels.includes(reasoning.default)) reasoning.default = reasoning.levels[0]
+  if (!reasoning.levels.includes(reasoning.quick_task)) reasoning.quick_task = reasoning.levels[0]
+  reasoning.wire_levels = wireLevelsFor(reasoning)
+}
 function setReasoningSource(value) {
   props.model.reasoning_control_source = value
-  if (value === 'manual' && !props.model.reasoning?.control) props.model.reasoning.control = 'openai_effort'
+  if (value === 'manual') {
+    const reasoning = ensureReasoning()
+    const needsSeed = reasoning.mode === 'none'
+    if (needsSeed) reasoning.mode = 'optional'
+    normalizeReasoning(needsSeed)
+  }
+  changed()
+}
+function setReasoningMode(value) {
+  ensureReasoning().mode = value
+  normalizeReasoning(true)
   changed()
 }
 function setReasoningControl(value) {
-  props.model.reasoning.control = value
+  ensureReasoning().control = value
+  normalizeReasoning()
+  changed()
+}
+function setReasoningLevels(value) {
+  const reasoning = ensureReasoning()
+  reasoning.levels = [...new Set(value.split(',').map(level => level.trim().toLowerCase()).filter(Boolean))]
+  if (!reasoning.levels.length) reasoning.levels = reasoning.mode === 'required' ? ['low'] : ['off']
+  normalizeReasoning()
+  changed()
+}
+function setReasoningDefault(value) {
+  ensureReasoning().default = value
+  changed()
+}
+function setReasoningQuickTask(value) {
+  ensureReasoning().quick_task = value
   changed()
 }
 function commitExtraBody() {

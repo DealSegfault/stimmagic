@@ -565,10 +565,17 @@ def _apply_endpoint_reasoning(
         wire = wire_levels.get(level)
         params: Dict[str, Any] = {}
         if control in {"openai_effort", "fireworks_effort"}:
+            # A model can be switched manually from a boolean thinking control
+            # to reasoning_effort. Do not carry the old False/True wire value
+            # into a parameter whose protocol is a string effort level.
+            if not isinstance(wire, str):
+                wire = "none" if level == "off" else level
             params = {"reasoning_effort": wire}
         elif control == "stimma_normalized":
             params = {"reasoning": {"effort": level}}
         elif control == "openrouter_effort":
+            if not isinstance(wire, str):
+                wire = "none" if level == "off" else level
             params = {"reasoning": {"effort": wire}}
         elif control == "enable_thinking":
             params = {"chat_template_kwargs": {"enable_thinking": bool(wire)}}

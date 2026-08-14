@@ -746,6 +746,23 @@ def test_reasoning_contract_translates_exact_provider_wire_shape():
     }
 
 
+def test_reasoning_effort_repairs_stale_boolean_wire_value():
+    config = SimpleNamespace(
+        extra_body=None,
+        reasoning_control="openai_effort",
+        reasoning_level="off",
+        reasoning_default="medium",
+        reasoning_quick_task="off",
+        reasoning_wire_levels={
+            "off": False, "low": "low", "medium": "medium", "high": "high",
+        },
+    )
+
+    assert _apply_endpoint_reasoning(config, None, None) == {
+        "reasoning_effort": "none"
+    }
+
+
 @pytest.mark.asyncio
 async def test_adding_openai_key_checks_models_and_stores_branded_contracts(monkeypatch):
     settings = SimpleNamespace(llm_providers=[])
