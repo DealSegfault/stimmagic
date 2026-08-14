@@ -49,6 +49,14 @@ async def apply_account_update(account: dict, id_token: str | None) -> dict:
 
     auth_state['credits'] = new_credits
     auth_state['createdAt'] = account.get('createdAt')
+    # "Ever had credits" decides whether a zero-balance account still counts as
+    # having Stimma-hosted LLMs configured (broken until topped up) versus never
+    # opted in. Older cloud deployments omit the field — then only a positive
+    # balance can prove it, and an existing True is never downgraded.
+    if 'hasEverHadCredits' in account:
+        auth_state['ever_had_credits'] = bool(account['hasEverHadCredits'])
+    elif new_credits > 0:
+        auth_state['ever_had_credits'] = True
     save_auth_state(auth_state)
 
     await _ensure_cloud_provider_connected(id_token)

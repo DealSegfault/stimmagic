@@ -23,6 +23,10 @@ const roleDefaults = ref({})
 const reasoningLevels = ref({})
 const cloudStatus = ref('unknown')
 const cloudMessage = ref('')
+// Backend's "user has opted into SOME LLM source" flag (provider, endpoint, or
+// a Stimma account that ever held credits) — even if that source is currently
+// broken. null until the first successful fetch.
+const llmConfigured = ref(null)
 const error = ref(null)
 const loading = ref(false)
 const lastFetchTime = ref(0)
@@ -115,6 +119,9 @@ async function fetchModels(projectId = null, force = false) {
     reasoningLevels.value = response.data.reasoning_levels || {}
     cloudStatus.value = response.data.cloud_status || 'unknown'
     cloudMessage.value = response.data.cloud_message || ''
+    llmConfigured.value = typeof response.data.llm_configured === 'boolean'
+      ? response.data.llm_configured
+      : null
     error.value = null
     lastFetchTime.value = now
   } catch (err) {
@@ -178,6 +185,7 @@ export function useAvailableModels() {
     reasoningLevels: readonly(reasoningLevels),
     cloudStatus: readonly(cloudStatus),
     cloudMessage: readonly(cloudMessage),
+    llmConfigured: readonly(llmConfigured),
     error: readonly(error),
     loading: readonly(loading),
     hasFetched: readonly(hasFetched),

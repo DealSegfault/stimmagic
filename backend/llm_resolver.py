@@ -893,11 +893,29 @@ async def get_chat_llm_config(
     await _raise_cloud_llm_error(model_slug=model_slug)
 
 
+def account_ever_had_credits(auth_state: Optional[dict]) -> bool:
+    """Whether the signed-in Stimma account has ever held any credits.
+
+    Buying (or redeeming) credits is what opts an account into Stimma-hosted
+    LLMs: an account that has EVER had credits stays "configured forever"
+    (zero balance = broken, fix by topping up), while one that never had any
+    is treated as not configured at all. Accounts synced before the cloud
+    reported the flag fall back to configured so nothing disappears on them.
+    """
+    if not auth_state:
+        return False
+    ever = auth_state.get('ever_had_credits')
+    if ever is None:
+        return True
+    return bool(ever) or (auth_state.get('credits') or 0) > 0
+
+
 def _raise_no_llm_error() -> None:
     """Raise the appropriate error based on auth state."""
     from auth_storage import load_auth_state
     auth_state = load_auth_state()
-    if auth_state and (auth_state.get('credits') or 0) <= 0:
+    if auth_state and account_ever_had_credits(auth_state) \
+            and (auth_state.get('credits') or 0) <= 0:
         raise LLMInsufficientBalanceError(
             "Your Stimma account has no credits."
         )

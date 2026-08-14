@@ -485,6 +485,25 @@ def _validated_prompt_preload(
     return improved_prompt
 
 
+def _is_llm_unconfigured_error(exc: Exception) -> bool:
+    """True only for the strict "no LLM source configured at all" failure.
+
+    A user with zero LLM sources has opted out of LLM features, so a stale
+    enhance/translate flag (an old preset, a queued job, a chain step) must not
+    fail their generation — the step is skipped instead. Every other LLM
+    failure (no balance, provider down, cloud unreachable) means a configured
+    source is broken, and the job keeps failing loudly as before.
+    """
+    from fastapi import HTTPException
+
+    from llm_resolver import LLMNotConfiguredError
+
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        return isinstance(detail, dict) and detail.get("code") == "llm_not_configured"
+    return isinstance(exc, LLMNotConfiguredError) and exc.code == "llm_not_configured"
+
+
 async def run_prompt_pipeline(
     db,
     prompt: str,
@@ -517,6 +536,9 @@ async def run_prompt_pipeline(
     as an interactive submit.
     LLM failures propagate (the caller fails the step, like the interactive
     submit surfaces the error); verbatim-drop retries fall back non-fatally.
+    The one exception is the strict "no LLM configured at all" state — the
+    user has opted out of LLM features, so the LLM steps are skipped and the
+    prompt passes through (see _is_llm_unconfigured_error).
     """
     if not prompt:
         return prompt
@@ -557,32 +579,42 @@ async def run_prompt_pipeline(
 
     # 2) Enhance (text styles only; Ideogram JSON runs post-resolve).
     if enhance_on and not ideogram_json_mode and preloaded_improved is None:
-        processed = await _improve_with_verbatim_protection(
-            db,
-            processed,
-            instructions=instructions,
-            model=model,
-            is_video=is_video,
-            is_audio=is_audio,
-            input_image_count=input_image_count,
-            audio_conditioned=audio_conditioned,
-            media_id=media_id,
-            h3_task=h3_task,
-            h3_duration=h3_duration,
-            h3_media_ids=h3_media_ids,
-            h3_reference_manifest=h3_reference_manifest,
-            h3_generate_audio=h3_generate_audio,
-            project_id=project_id,
-        )
+        try:
+            processed = await _improve_with_verbatim_protection(
+                db,
+                processed,
+                instructions=instructions,
+                model=model,
+                is_video=is_video,
+                is_audio=is_audio,
+                input_image_count=input_image_count,
+                audio_conditioned=audio_conditioned,
+                media_id=media_id,
+                h3_task=h3_task,
+                h3_duration=h3_duration,
+                h3_media_ids=h3_media_ids,
+                h3_reference_manifest=h3_reference_manifest,
+                h3_generate_audio=h3_generate_audio,
+                project_id=project_id,
+            )
+        except Exception as e:
+            if not _is_llm_unconfigured_error(e):
+                raise
+            log.info("[prompt-pipeline] No LLM configured; skipping enhancement")
 
     # 3) Translate.
     # H3 Base's Context-IR field names and prose must remain English; the H3
     # enhancer itself preserves dialogue/lyrics and visible text in their source
     # language. A generic translation pass would corrupt that required schema.
     if translate.get("enabled") and translate.get("language") and h3_task is None:
-        processed = await _translate_with_verbatim_protection(
-            processed, translate["language"], project_id
-        )
+        try:
+            processed = await _translate_with_verbatim_protection(
+                processed, translate["language"], project_id
+            )
+        except Exception as e:
+            if not _is_llm_unconfigured_error(e):
+                raise
+            log.info("[prompt-pipeline] No LLM configured; skipping translation")
 
     # 4) Final cleanup: comments, verbatim, and any wildcard syntax introduced
     # by the LLM.
@@ -592,6 +624,11 @@ async def run_prompt_pipeline(
 
     # 5) Ideogram JSON — on the fully resolved prompt (last step).
     if ideogram_json_mode:
-        processed = await _to_ideogram_json(processed, width, height, project_id)
+        try:
+            processed = await _to_ideogram_json(processed, width, height, project_id)
+        except Exception as e:
+            if not _is_llm_unconfigured_error(e):
+                raise
+            log.info("[prompt-pipeline] No LLM configured; skipping Ideogram JSON conversion")
 
     return processed

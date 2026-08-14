@@ -14,16 +14,24 @@
              Enhance is family-aware (prose / keywords / cinematography / Ideogram
              JSON) — the style is chosen automatically from the tool's model. -->
         <div v-if="!hideAutoImprove" class="flex items-center gap-3">
-          <!-- Enhance Prompt toggle -->
+          <!-- Enhance Prompt toggle. With no LLM configured the chip stays
+               visible but inert — a quiet hint of what configuring one adds.
+               The stored setting is untouched, so it resumes when a model
+               appears. -->
           <button
+            :disabled="llmUnconfigured"
             @click="updatePromptOption('autoImprove', { ...promptOptions.autoImprove, enabled: !promptOptions.autoImprove.enabled })"
             :class="[
               'flex items-center gap-1.5 text-[11px] transition-colors',
-              promptOptions.autoImprove.enabled
-                ? 'text-accent-hi'
-                : 'text-content-muted hover:text-content-secondary'
+              llmUnconfigured
+                ? 'text-content-muted opacity-50 cursor-not-allowed'
+                : promptOptions.autoImprove.enabled
+                  ? 'text-accent-hi'
+                  : 'text-content-muted hover:text-content-secondary'
             ]"
-            title="Enhance the prompt with AI when generating"
+            :title="llmUnconfigured
+              ? 'Requires a chat model — add one in Settings > Chat Models'
+              : 'Enhance the prompt with AI when generating'"
           >
             <WandSparklesIcon class="w-3 h-3" />
             <span>Enhance</span>
@@ -35,16 +43,21 @@
           <div class="relative flex items-center" ref="translateMenuContainer">
             <button
               ref="translateButton"
+              :disabled="llmUnconfigured"
               @click="toggleTranslateMenu"
               :class="[
                 'flex items-center gap-1.5 text-[11px] transition-colors',
-                translateActive
-                  ? 'text-accent-hi'
-                  : 'text-content-muted hover:text-content-secondary'
+                llmUnconfigured
+                  ? 'text-content-muted opacity-50 cursor-not-allowed'
+                  : translateActive
+                    ? 'text-accent-hi'
+                    : 'text-content-muted hover:text-content-secondary'
               ]"
-              :title="translateActive
-                ? `Translating the prompt to ${activeLanguageLabel} before generating`
-                : 'Translate the prompt into another language before generating'"
+              :title="llmUnconfigured
+                ? 'Requires a chat model — add one in Settings > Chat Models'
+                : translateActive
+                  ? `Translating the prompt to ${activeLanguageLabel} before generating`
+                  : 'Translate the prompt into another language before generating'"
             >
               <LanguageIcon class="w-3 h-3" />
               <span>{{ translateActive ? activeLanguageLabel : 'Translate' }}</span>
@@ -210,7 +223,7 @@
                so a per-prompt sparkle would be redundant + visually awkward).
                The sparkle is the one colored (accent) glyph in this bar. -->
           <button
-            v-if="!externalChat"
+            v-if="!externalChat && !llmUnconfigured"
             @click="toggleExpanded"
             :class="[
               'p-1 rounded-md transition-colors',
@@ -249,6 +262,7 @@ import { SparklesIcon, LanguageIcon, ChevronDownIcon, CheckIcon } from '@heroico
 import WandSparklesIcon from '../icons/WandSparklesIcon.vue'
 import PromptAgentChat from './PromptAgentChat.vue'
 import { useCodeMirrorPrompt } from '../../composables/useCodeMirrorPrompt'
+import { useAgentModelAvailability } from '../../composables/useAgentModelAvailability'
 import { PROMPT_LANGUAGES, promptLanguageByCode, DEFAULT_TRANSLATE_LANGUAGE } from './promptLanguages'
 
 interface PromptOptionSetting {
@@ -313,7 +327,14 @@ const showTranslateMenu = ref(false)
 // Fixed coords for the teleported menu, anchored above the chip (opens upward).
 const translateMenuPos = ref({ left: 0, bottom: 0 })
 
+// No LLM configured at all (deliberate opt-out) → the generate-time pipeline
+// chips gray out and the inline chat affordance hides. A configured-but-broken
+// LLM leaves everything interactive; failures surface at generate time.
+const { llmUnconfigured, checkAgentModels } = useAgentModelAvailability()
+void checkAgentModels()
+
 function toggleTranslateMenu() {
+  if (llmUnconfigured.value) return
   if (!showTranslateMenu.value) {
     const rect = translateButton.value?.getBoundingClientRect()
     if (rect) {

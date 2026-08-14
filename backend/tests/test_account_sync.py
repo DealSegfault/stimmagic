@@ -162,3 +162,33 @@ async def test_connect_respects_config_disabled(test_app):
         await asyncio.sleep(0)
 
     connect.assert_not_called()
+
+
+async def test_ever_had_credits_persisted_from_cloud_flag(sync_env):
+    from account_sync import apply_account_update
+
+    account = _account(credits=0)
+    account["hasEverHadCredits"] = True
+
+    await apply_account_update(account, "tok")
+
+    assert sync_env["saved"][0]["ever_had_credits"] is True
+
+
+async def test_ever_had_credits_never_downgraded_by_old_cloud(sync_env):
+    """A cloud response without the flag must not clear an existing True."""
+    sync_env["state"]["auth"]["ever_had_credits"] = True
+    from account_sync import apply_account_update
+
+    await apply_account_update(_account(credits=0), "tok")
+
+    assert sync_env["saved"][0]["ever_had_credits"] is True
+
+
+async def test_positive_balance_implies_ever_had_credits(sync_env):
+    """Old cloud (no flag) + positive balance still proves opt-in."""
+    from account_sync import apply_account_update
+
+    await apply_account_update(_account(credits=750), "tok")
+
+    assert sync_env["saved"][0]["ever_had_credits"] is True

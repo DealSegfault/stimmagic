@@ -673,3 +673,64 @@ class TestRunPromptPipeline:
         )
         assert out == "warmed improved prompt"
         assert len(calls) == 1
+
+
+class TestUnconfiguredLlmSkipsSteps:
+    """A user with zero LLM sources has opted out: stale enhance/translate
+    flags must pass the prompt through instead of failing the job. Every
+    other LLM failure keeps propagating."""
+
+    async def test_not_configured_skips_enhance_and_translate(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        from fastapi import HTTPException
+        import routes.prompt_enhancement as pe
+
+        async def not_configured_improve(request, session):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "llm_not_configured", "message": "No chat model is configured."},
+            )
+
+        async def not_configured_translate(request):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "llm_not_configured", "message": "No chat model is configured."},
+            )
+
+        monkeypatch.setattr(pe, "improve_prompt", not_configured_improve)
+        monkeypatch.setattr(pe, "translate_prompt", not_configured_translate)
+
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "a red fox in the snow",
+            {
+                "autoImprove": {"enabled": True},
+                "translate": {"enabled": True, "language": "zh-Hans"},
+            },
+        )
+
+        assert out == "a red fox in the snow"
+
+    async def test_other_llm_failures_still_propagate(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import pytest
+        from fastapi import HTTPException
+        import routes.prompt_enhancement as pe
+
+        async def broken_improve(request, session):
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "llm_insufficient_balance", "message": "No credits."},
+            )
+
+        monkeypatch.setattr(pe, "improve_prompt", broken_improve)
+
+        with pytest.raises(HTTPException) as exc:
+            await pp.run_prompt_pipeline(
+                _db(generation_db_session),
+                "a red fox in the snow",
+                {"autoImprove": {"enabled": True}},
+            )
+        assert exc.value.detail["code"] == "llm_insufficient_balance"

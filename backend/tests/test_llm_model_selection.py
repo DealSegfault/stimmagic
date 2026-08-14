@@ -1064,3 +1064,136 @@ async def test_auto_warms_the_catalog_before_choosing(monkeypatch):
         assert await llm_resolver.resolve_auto_slug("chat") == "stimma:claude-opus-5"
     finally:
         llm_resolver.set_catalog_cache([])
+
+
+class TestEverHadCreditsGate:
+    """Buying credits (ever) is what opts an account into hosted LLMs: a
+    never-credited signed-in account is 'not configured', not 'no balance'."""
+
+    def test_never_credited_account_raises_not_configured(self, monkeypatch):
+        import llm_resolver
+        from llm_resolver import LLMInsufficientBalanceError, LLMNotConfiguredError
+
+        monkeypatch.setattr(
+            "auth_storage.load_auth_state",
+            lambda: {"credits": 0, "ever_had_credits": False},
+        )
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            llm_resolver._raise_no_llm_error()
+        assert not isinstance(exc.value, LLMInsufficientBalanceError)
+        assert exc.value.code == "llm_not_configured"
+
+    def test_previously_credited_account_raises_insufficient_balance(self, monkeypatch):
+        import llm_resolver
+        from llm_resolver import LLMInsufficientBalanceError
+
+        monkeypatch.setattr(
+            "auth_storage.load_auth_state",
+            lambda: {"credits": 0, "ever_had_credits": True},
+        )
+        with pytest.raises(LLMInsufficientBalanceError):
+            llm_resolver._raise_no_llm_error()
+
+    def test_missing_flag_keeps_legacy_insufficient_balance(self, monkeypatch):
+        """Accounts synced before the cloud reported the flag stay 'configured'."""
+        import llm_resolver
+        from llm_resolver import LLMInsufficientBalanceError
+
+        monkeypatch.setattr("auth_storage.load_auth_state", lambda: {"credits": 0})
+        with pytest.raises(LLMInsufficientBalanceError):
+            llm_resolver._raise_no_llm_error()
+
+    def test_signed_out_raises_not_configured(self, monkeypatch):
+        import llm_resolver
+        from llm_resolver import LLMNotConfiguredError
+
+        monkeypatch.setattr("auth_storage.load_auth_state", lambda: None)
+        with pytest.raises(LLMNotConfiguredError):
+            llm_resolver._raise_no_llm_error()
+
+    def test_account_ever_had_credits_helper(self):
+        from llm_resolver import account_ever_had_credits
+
+        assert account_ever_had_credits(None) is False
+        assert account_ever_had_credits({"ever_had_credits": False, "credits": 0}) is False
+        assert account_ever_had_credits({"ever_had_credits": True, "credits": 0}) is True
+        assert account_ever_had_credits({"credits": 0}) is True  # unknown -> configured
+        # A positive balance always proves it, whatever the stale flag says.
+        assert account_ever_had_credits({"ever_had_credits": False, "credits": 50}) is True
+
+
+@pytest.mark.asyncio
+async def test_models_available_reports_llm_configured(monkeypatch):
+    """llm_configured distinguishes opted-out (hide/gray optional LLM UI) from
+    configured-but-broken (keep UI, fail loudly). Signed out with no providers
+    and no endpoint = not configured; a never-credited signed-in account is
+    likewise not configured."""
+    from routes import models as models_route
+    import firebase_auth
+
+    settings = _stub_settings(
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llm_providers=[],
+        llms={
+            "agent": LLMRoleConfig(source="auto"),
+            "agent-fast": LLMRoleConfig(source="auto"),
+        },
+    )
+
+    async def no_token():
+        return None
+
+    monkeypatch.setattr(models_route, "get_settings", lambda: settings)
+    monkeypatch.setattr("llm_resolver.get_settings", lambda: settings)
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", no_token)
+    monkeypatch.setattr("privacy_lockdown.is_privacy_lockdown_enabled", lambda: False)
+    monkeypatch.setattr("auth_storage.load_auth_state", lambda: None)
+
+    payload = await models_route.get_available_models()
+    assert payload["llm_configured"] is False
+
+    # An enabled provider model makes it configured even when its last test
+    # failed — that's the broken-not-hidden treatment.
+    settings.llm_providers = [_local_provider(last_test_passed=False)]
+    payload = await models_route.get_available_models()
+    assert payload["llm_configured"] is True
+
+    # Signed in, zero balance, never had credits: still not configured.
+    settings.llm_providers = []
+
+    async def a_token():
+        return "token"
+
+    class _Response:
+        status_code = 403
+
+        @staticmethod
+        def json():
+            return {}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return _Response()
+
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", a_token)
+    monkeypatch.setattr(models_route.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        "auth_storage.load_auth_state",
+        lambda: {"credits": 0, "ever_had_credits": False},
+    )
+    payload = await models_route.get_available_models()
+    assert payload["llm_configured"] is False
+
+    # ...but having EVER held credits flips it: configured forever.
+    monkeypatch.setattr(
+        "auth_storage.load_auth_state",
+        lambda: {"credits": 0, "ever_had_credits": True},
+    )
+    payload = await models_route.get_available_models()
+    assert payload["llm_configured"] is True

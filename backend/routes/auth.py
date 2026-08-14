@@ -233,6 +233,9 @@ async def start_auth() -> StartAuthResponse:
                             save_auth_state({
                                 'user': user,
                                 'credits': credits,
+                                'ever_had_credits': bool(
+                                    account.get('hasEverHadCredits', credits > 0)
+                                ),
                                 'refresh_token': tokens['refresh_token'],
                                 'id_token': tokens['id_token'],
                                 'id_token_expiry': tokens['expiry'],

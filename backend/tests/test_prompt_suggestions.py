@@ -107,3 +107,77 @@ def test_instructions_bypass_central_human_core_forcing():
         "a portrait of a woman", list(model_cats), has_instructions=True
     )
     assert [c.category for c in kept] == ["mood", "lighting", "camera_lens"]
+
+
+import pytest
+from fastapi import HTTPException
+from unittest.mock import patch
+
+
+@pytest.mark.asyncio
+async def test_suggest_categories_maps_llm_unavailable_to_coded_http_error():
+    """No-LLM must surface as a coded 400 (with a CTA on the client), never a
+    bare 500 from the global handler."""
+    from llm_resolver import LLMNotConfiguredError
+    from routes.prompt_enhancement import SuggestCategoriesRequest, suggest_categories
+
+    async def unavailable(role, project_id=None):
+        raise LLMNotConfiguredError("No chat model is configured.")
+
+    with patch("llm_resolver.get_effective_llm_config", side_effect=unavailable):
+        with pytest.raises(HTTPException) as exc:
+            await suggest_categories(SuggestCategoriesRequest(prompt="a red fox"))
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "llm_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_suggest_options_maps_llm_unavailable_to_coded_http_error():
+    from llm_resolver import LLMInsufficientBalanceError
+    from routes.prompt_enhancement import (
+        CategoryItem as SuggestCategoryInput,
+        SuggestOptionsRequest,
+        _suggest_options_impl,
+    )
+
+    async def unavailable(role, project_id=None):
+        raise LLMInsufficientBalanceError("Your Stimma account has no credits.")
+
+    request = SuggestOptionsRequest(
+        prompt="a red fox",
+        category=SuggestCategoryInput(label="Lighting", category="lighting", allow_wildcard=True),
+    )
+    with patch("llm_resolver.get_effective_llm_config", side_effect=unavailable):
+        with pytest.raises(HTTPException) as exc:
+            await _suggest_options_impl(request)
+
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "llm_insufficient_balance"
+
+
+@pytest.mark.asyncio
+async def test_suggest_options_batch_propagates_uniform_llm_error():
+    """All categories failing on LLM availability collapses to one coded error."""
+    from llm_resolver import LLMNotConfiguredError
+    from routes.prompt_enhancement import (
+        CategoryItem as SuggestCategoryInput,
+        SuggestOptionsBatchRequest,
+        suggest_options_batch,
+    )
+
+    async def unavailable(role, project_id=None):
+        raise LLMNotConfiguredError("No chat model is configured.")
+
+    request = SuggestOptionsBatchRequest(
+        prompt="a red fox",
+        categories=[
+            SuggestCategoryInput(label="Lighting", category="lighting", allow_wildcard=True),
+            SuggestCategoryInput(label="Mood", category="mood", allow_wildcard=False),
+        ],
+    )
+    with patch("llm_resolver.get_effective_llm_config", side_effect=unavailable):
+        with pytest.raises(HTTPException) as exc:
+            await suggest_options_batch(request)
+
+    assert exc.value.detail["code"] == "llm_not_configured"

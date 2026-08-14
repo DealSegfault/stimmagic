@@ -1,5 +1,9 @@
 <template>
-  <div class="relative">
+  <!-- No LLM source configured at all = the user opted out of LLM features:
+       this whole surface renders nothing (ToolView also hides the dock).
+       A configured-but-broken LLM keeps the normal composer — sends fail
+       loudly with a remedy CTA instead of the UI changing shape. -->
+  <div v-if="!llmUnconfigured" class="relative">
     <!-- Conversation panel (agent) — shows the real exchange + tool calls -->
     <div v-if="showDebug && agent" class="mb-3 bg-surface-overlay border border-surface-raised rounded-lg overflow-hidden">
       <div class="max-h-80 overflow-y-auto p-3 space-y-2 select-text">
@@ -255,10 +259,8 @@
       </div>
     </div>
 
-    <AgentUnavailableInput v-if="agentModelUnavailable" />
-
     <!-- Feedback input box (mirrors ChatView's input: text on top, toolbar row) -->
-    <div v-else class="bg-surface border border-edge rounded-lg overflow-hidden">
+    <div class="bg-surface border border-edge rounded-lg overflow-hidden">
       <textarea v-no-autocorrect
         ref="feedbackInput"
         v-model="feedbackText"
@@ -324,7 +326,7 @@
       </div>
     </div>
 
-    <div v-if="error && !agentModelUnavailable" class="mt-2 flex items-center gap-2">
+    <div v-if="error" class="mt-2 flex items-center gap-2">
       <p class="text-xs text-red-500">{{ error }}</p>
       <button
         v-if="isInsufficientBalanceCode(errorCode)"
@@ -419,6 +421,17 @@
                 <CheckIcon v-if="ideasTraceCopied" class="w-3.5 h-3.5 text-green-500" />
                 <BugAntIcon v-else class="w-3.5 h-3.5" />
               </button>
+              <button
+                @click="refreshIdeasClick()"
+                :disabled="isLoadingIdeas"
+                class="px-3 py-1 text-xs bg-overlay-light hover:bg-overlay-medium rounded text-content-secondary hover:text-content transition-colors disabled:opacity-50"
+              >
+                <span v-if="isLoadingIdeas" class="flex items-center gap-1.5">
+                  <Spinner size="sm" />
+                  Retrying...
+                </span>
+                <span v-else>Retry</span>
+              </button>
             </div>
 
             <!-- Error state -->
@@ -427,6 +440,22 @@
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
               <p class="text-xs text-red-500 flex-1">{{ ideasError }}</p>
+              <!-- Remedy sits beside the error, mirroring the agent flash chip. -->
+              <button
+                v-if="isInsufficientBalanceCode(ideasErrorCode)"
+                @click.stop="connectStimmaCloud"
+                :disabled="cloudConnecting"
+                class="flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium stimma-cloud-text border border-current/20 hover:border-current/40 transition-colors"
+              >
+                {{ cloudConnecting ? 'Opening…' : isAuthenticated ? 'Add credits' : 'Configure Chat Models' }}
+              </button>
+              <button
+                v-else-if="isLlmSetupCode(ideasErrorCode)"
+                @click.stop="openChatModelSettings"
+                class="flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium text-red-500 border border-current/20 hover:border-current/40 transition-colors"
+              >
+                Configure Chat Models
+              </button>
               <!-- Dev mode: copy the failed request's full LLM trace for a bug report -->
               <button
                 v-if="devModeRef && ideasDebugTrace"
@@ -519,8 +548,8 @@ import { extractVerbatim, restoreVerbatim, verifyVerbatimPreserved } from '../..
 import SuggestionSubmenu from './SuggestionSubmenu.vue'
 import VoiceInputButton from '../voice/VoiceInputButton.vue'
 import SkillsMenuButton from '../chat/SkillsMenuButton.vue'
-import AgentUnavailableInput from '../chat/AgentUnavailableInput.vue'
 import { devModeRef } from '../../appConfig'
+import { isInsufficientBalanceCode, isLlmSetupCode } from '../../utils/llmErrorCodes'
 import PromptAgentThumbButtons from '@stimma/prompt-agent-thumb-buttons'
 import { useAuth } from '../../composables/useAuth'
 import { useCloudAccount } from '../../composables/useCloudAccount'
@@ -591,7 +620,7 @@ const instructionsText = computed({
 // Settings drawer (wrench toggle) holds Instructions.
 // Collapsed by default — an occasional field.
 const showSettings = ref(false)
-const { agentModelUnavailable, checkAgentModels } = useAgentModelAvailability()
+const { llmUnconfigured, checkAgentModels } = useAgentModelAvailability()
 const { isAuthenticated } = useAuth()
 const { cloudBaseUrl, ensureCloudBaseUrl } = useCloudAccount()
 void checkAgentModels()
@@ -656,20 +685,6 @@ interface AgentFlash { id: number; kind: 'reply' | 'error'; text: string; code?:
 const agentFlashes = ref<AgentFlash[]>([])
 let agentFlashSeq = 0
 const agentFlashTimers = new Set<ReturnType<typeof setTimeout>>()
-
-// Discriminator codes for "signed in but no spendable balance" — current
-// backend code plus legacy names still recognized as the same thing.
-function isInsufficientBalanceCode(code: string | null): boolean {
-  return code === 'insufficient_balance' || code === 'llm_insufficient_balance' || code === 'subscription_required' || code === 'subscription_error'
-}
-
-// Codes for "no usable chat model" — the remedy is configuring one in
-// Settings > Chat Models, mirroring the chat input's agent-unavailable card.
-function isLlmSetupCode(code: string | null | undefined): boolean {
-  return code === 'llm_not_configured' || code === 'llm_not_logged_in'
-    || code === 'llm_local_missing' || code === 'llm_model_missing'
-    || code === 'llm_cloud_unreachable' || code === 'llm_provider_unavailable'
-}
 
 function openChatModelSettings() {
   window.dispatchEvent(new CustomEvent('open-settings', { detail: 'ai-services' }))
@@ -845,6 +860,9 @@ const isLoadingCategories = ref(false)
 const loadingOptionsByCategory = ref<Record<string, boolean>>({})
 const previousOptionsByCategory = ref<Record<string, string[]>>({})  // for exclusion on refresh
 const ideasError = ref<string | null>(null)
+// Discriminator for the last ideas failure (e.g. 'llm_insufficient_balance')
+// — drives the remedy CTA beside the Retry button, mirroring the agent flash.
+const ideasErrorCode = ref<string | null>(null)
 const isRefreshingIdeas = ref(false)  // True when refetching while old suggestions exist
 const lastPromptForIdeas = ref<string>('')
 
@@ -867,6 +885,16 @@ const IDEAS_DEBOUNCE_MS = 500
 
 // Refusal message from LLM (e.g., content policy rejection)
 const refusalMessage = ref<string | null>(null)
+
+// One extraction for both ideas fetch paths: {detail: {code, message}} from
+// the coded LLM errors, plain-string detail from everything else.
+function setIdeasError(err: any, fallback: string) {
+  const detail = err?.response?.data?.detail
+  ideasErrorCode.value = typeof detail === 'object' ? detail?.code || null : null
+  ideasError.value = typeof detail === 'string'
+    ? detail
+    : detail?.message || fallback
+}
 
 // Keep the dock compact when ideas have nothing useful to say. Loading and
 // failure/refusal states still reserve the region because they need feedback.
@@ -1043,7 +1071,7 @@ function pushToUndoStack() {
 // box drives the tool-calling agent that operates the whole screen. Otherwise
 // (prompt-only), fall back to the single-shot /enhance queue.
 function enhance() {
-  if (agentModelUnavailable.value) return
+  if (llmUnconfigured.value) return
   const text = feedbackText.value.trim()
   if (!text) {
     error.value = 'Enter what you want to change'
@@ -1238,6 +1266,16 @@ async function fetchIdeas(force = false) {
     return
   }
 
+  // Never spend requests for a user who has opted out of LLM features. The
+  // model catalog is cached, so this await is free after the first check.
+  await checkAgentModels(props.projectId ?? null)
+  if (llmUnconfigured.value) {
+    suggestions.value = []
+    categories.value = []
+    isRefreshingIdeas.value = false
+    return
+  }
+
   if (ideasAbortController) {
     ideasAbortController.abort()
   }
@@ -1253,6 +1291,7 @@ async function fetchIdeas(force = false) {
   }
 
   ideasError.value = null
+  ideasErrorCode.value = null
   refusalMessage.value = null
   ideasDebugTrace.value = null
   lastPromptForIdeas.value = props.prompt
@@ -1338,7 +1377,7 @@ async function fetchIdeas(force = false) {
     }
     console.error('Failed to fetch suggestions:', err)
     if (suggestions.value.length === 0) {
-      ideasError.value = err.response?.data?.detail || 'Failed to load suggestions'
+      setIdeasError(err, 'Failed to load suggestions')
     }
   } finally {
     isLoadingIdeas.value = false
@@ -1383,7 +1422,7 @@ async function fetchOptionsForCategories(promptForIdeas: string, cats: CategoryI
       suggestions.value.some(s => s.category === cat.category)
     )
     if (suggestions.value.length === 0) {
-      ideasError.value = err.response?.data?.detail || 'Failed to load suggestion options'
+      setIdeasError(err, 'Failed to load suggestion options')
     }
   } finally {
     for (const cat of cats) {
@@ -1587,8 +1626,13 @@ watch(() => props.prompt, (newValue) => {
     if (!props.prompt.trim()) return
     if (props.prompt === lastPromptForIdeas.value) return
 
+    // After a refusal or failure with nothing shown, the user is editing the
+    // prompt precisely to fix it — any change should retry. The significance
+    // threshold only protects live pill state from churning on small edits.
+    const nothingShown = suggestions.value.length === 0
+      && (refusalMessage.value || ideasError.value)
     const diff = calculatePromptDifference(props.prompt, lastPromptForIdeas.value)
-    if (diff >= SIGNIFICANT_CHANGE_THRESHOLD) {
+    if (nothingShown || diff >= SIGNIFICANT_CHANGE_THRESHOLD) {
       previousOptionsByCategory.value = {}
       categories.value = []
       fetchIdeas(true)

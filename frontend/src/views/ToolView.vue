@@ -984,9 +984,12 @@
 
         <!-- Agent chat dock: full width at the bottom of the page in both modes,
              so the chat stays put while the columns above tween between Studio
-             and Stage. Single Teleport target — no remount on layout toggle. -->
+             and Stage. Single Teleport target — no remount on layout toggle.
+             v-show (not v-if) with no LLM configured: the Teleport target must
+             stay mounted, and the dock reappears live once a model is added. -->
         <div
           id="agent-dock"
+          v-show="!llmUnconfigured"
           class="flex-none overflow-y-auto mx-3 mb-3 rounded-lg border border-edge-subtle bg-surface px-4 pt-3 pb-4 max-h-[45%]"
         ></div>
       </div>
@@ -1095,6 +1098,8 @@ import { submitJobAsync, submitBatchJobAsync, submitMediaBatchJobAsync, BatchJob
 import { createDragPreview, handleDragEnd as handleHeroDragEnd } from '../composables/useDragPreview'
 import { useToolAutoDeleteDuration } from '../composables/useToolAutoDeleteDuration'
 import { usePromptWarmPool } from '../composables/usePromptWarmPool'
+import { useAgentModelAvailability } from '../composables/useAgentModelAvailability'
+import { isInsufficientBalanceCode, isLlmSetupCode } from '../utils/llmErrorCodes'
 import { useTabNavigation } from '../composables/useTabNavigation'
 import Spinner from '../components/ui/Spinner.vue'
 import Button from '../components/ui/Button.vue'
@@ -1757,19 +1762,12 @@ const submissionError = ref<string | null>(null)
 // the error text; never folded into the error string itself.
 const submissionErrorCode = ref<string | null>(null)
 
-// Codes for "signed in but no spendable balance" — current backend code
-// plus legacy names still recognized as the same thing.
-function isInsufficientBalanceCode(code: string | null): boolean {
-  return code === 'insufficient_balance' || code === 'llm_insufficient_balance' || code === 'subscription_required' || code === 'subscription_error'
-}
-
-// Codes for "no usable chat model" — the remedy is configuring one in
-// Settings > Chat Models, mirroring the chat input's agent-unavailable card.
-function isLlmSetupCode(code: string | null): boolean {
-  return code === 'llm_not_configured' || code === 'llm_not_logged_in'
-    || code === 'llm_local_missing' || code === 'llm_model_missing'
-    || code === 'llm_cloud_unreachable' || code === 'llm_provider_unavailable'
-}
+// No LLM configured at all = the user opted out of LLM features: the agent
+// dock hides and the enhance/translate flags are treated as off at submit so
+// generation never trips over them. A configured-but-broken LLM changes
+// nothing here — submits keep failing loudly with the CTA below.
+const { llmUnconfigured, checkAgentModels } = useAgentModelAvailability()
+void checkAgentModels()
 
 function openChatModelSettings() {
   window.dispatchEvent(new CustomEvent('open-settings', { detail: 'ai-services' }))
@@ -3481,6 +3479,7 @@ const { clear: clearPromptWarmPool } = usePromptWarmPool({
   // frame, so neither is eligible.
   autoImproveEnabled: computed(() =>
     (globalPrefs.value.promptOptions?.autoImprove?.enabled ?? false) &&
+    !llmUnconfigured.value &&
     enhanceMode.value === 'text' &&
     !enhanceUsesImage.value &&
     // H3 Context-IR depends on live duration/audio/keyframe parameters, not
@@ -4840,10 +4839,12 @@ async function submitOneJob(options: ForeverSubmitOptions = {}): Promise<SubmitJ
         // Tools with no prompt input have nothing to enhance or translate —
         // force both off here rather than trusting stale UI state left over
         // from a previously-selected prompt tool (autoImprove.enabled/translate
-        // panels are shared, generic components).
+        // panels are shared, generic components). With no LLM configured the
+        // flags are likewise treated as off (the chips are grayed out), while
+        // the stored setting survives for when a model appears.
         autoImprove: {
           ...rawPromptOptions.autoImprove,
-          enabled: toolHasPrompt && !!rawPromptOptions.autoImprove?.enabled,
+          enabled: toolHasPrompt && !llmUnconfigured.value && !!rawPromptOptions.autoImprove?.enabled,
           model: toolModelString.value || null,
           // Task-authoritative: video tools always get cinematography.
           isVideo: enhanceIsVideo.value,
@@ -4859,7 +4860,7 @@ async function submitOneJob(options: ForeverSubmitOptions = {}): Promise<SubmitJ
         },
         translate: {
           ...rawPromptOptions.translate,
-          enabled: toolHasPrompt && !!rawPromptOptions.translate?.enabled,
+          enabled: toolHasPrompt && !llmUnconfigured.value && !!rawPromptOptions.translate?.enabled,
         },
       }
     : rawPromptOptions

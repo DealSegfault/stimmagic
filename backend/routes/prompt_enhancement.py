@@ -1302,8 +1302,15 @@ async def suggest_categories(request: SuggestCategoriesRequest):
     Phase 1: Analyze prompt and return relevant category dimensions.
     Fast call with low temperature.
     """
-    from llm_resolver import get_effective_llm_config
-    llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
+    from llm_resolver import LLMUnavailableError, get_effective_llm_config
+
+    try:
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
+    except LLMUnavailableError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": str(e)},
+        )
 
     prompt_from_file = get_prompt("prompt_enhancement", "suggest_categories_system_prompt")
     if not prompt_from_file:
@@ -1443,6 +1450,20 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
         )
 
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _llm_error_detail(result) -> Optional[dict]:
+        if not isinstance(result, HTTPException):
+            return None
+        detail = result.detail
+        if isinstance(detail, dict) and str(detail.get("code", "")).startswith("llm_"):
+            return detail
+        return None
+
+    # Every category failing on LLM availability is one problem, not N —
+    # surface the coded error so the client shows the configure/top-up CTA.
+    if gathered and all(_llm_error_detail(r) for r in gathered):
+        raise gathered[0]
+
     results: List[SuggestOptionsResponse] = []
 
     for category, result in zip(request.categories, gathered):
@@ -1453,12 +1474,13 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
                 label_chars=len(category.label or ""),
                 error_type=type(result).__name__,
             )
+            detail = _llm_error_detail(result)
             results.append(SuggestOptionsResponse(
                 category=category.category,
                 label=category.label,
                 subitems=[],
                 allow_wildcard=category.allow_wildcard,
-                message=str(result),
+                message=detail.get("message") if detail else str(result),
             ))
         else:
             results.append(result)
@@ -1468,8 +1490,15 @@ async def suggest_options_batch(request: SuggestOptionsBatchRequest):
 
 async def _suggest_options_impl(request: SuggestOptionsRequest) -> SuggestOptionsResponse:
     """Shared suggest-options implementation for single and batch endpoints."""
-    from llm_resolver import get_effective_llm_config
-    llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
+    from llm_resolver import LLMUnavailableError, get_effective_llm_config
+
+    try:
+        llm_config = await get_effective_llm_config('tool_assistant', request.project_id)
+    except LLMUnavailableError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": str(e)},
+        )
 
     prompt_from_file = get_prompt("prompt_enhancement", "suggest_options_system_prompt")
     if not prompt_from_file:

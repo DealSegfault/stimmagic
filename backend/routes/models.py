@@ -1131,6 +1131,31 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
 
     models.insert(0, auto_model)
 
+    # Configured vs merely unavailable: "configured" means the user has opted
+    # into SOME LLM source — an enabled provider model, a legacy endpoint, or a
+    # Stimma account that has ever held credits — even if it is currently
+    # broken (failed test, zero balance, cloud unreachable). The client hides
+    # or grays optional LLM surfaces only when this is False; a configured-but-
+    # broken source keeps the UI intact and fails loudly on use.
+    from auth_storage import load_auth_state
+    from llm_resolver import account_ever_had_credits
+    has_provider_models = any(
+        provider.enabled and any(pm.enabled for pm in provider.models)
+        for provider in _active_providers()
+    )
+    cloud_opted_in = (
+        cloud_authenticated
+        and not lockdown
+        and account_ever_had_credits(load_auth_state())
+    )
+    llm_configured = bool(
+        os.environ.get("STIMMA_TEST_PROVIDER")
+        or has_provider_models
+        or agent_has_endpoint
+        or agent_fast_has_endpoint
+        or cloud_opted_in
+    )
+
     # 4. Resolve every role: project override -> profile setting -> auto.
     project_overrides: dict[str, Optional[str]] = {role: None for role in SETTINGS_ROLES}
     project_efforts: dict[str, Optional[str]] = {role: None for role in SETTINGS_ROLES}
@@ -1243,4 +1268,5 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
         "project_default": effective_project_default,
         "cloud_status": cloud_status,
         "cloud_message": cloud_message,
+        "llm_configured": llm_configured,
     }
