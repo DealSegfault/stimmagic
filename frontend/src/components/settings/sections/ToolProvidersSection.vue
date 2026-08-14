@@ -437,8 +437,23 @@
             <div class="min-w-0 flex-1">
               <div class="text-[13px] text-content">Connect</div>
               <label class="mt-4 block text-xs text-content-tertiary">ComfyUI address</label>
-              <input v-model="formData.url" type="text" class="mt-1.5 w-full border border-edge bg-surface-raised px-3 py-2.5 font-mono text-sm text-content focus:border-accent focus:outline-none" />
+              <input v-model="formData.url" type="text" class="mt-1.5 w-full border border-edge bg-surface-raised px-3 py-2.5 font-mono text-sm text-content focus:border-accent focus:outline-none" @input="comfyDirty = true" @blur="commitComfySetup()" @keydown.enter="$event.target.blur()" />
               <p class="mt-2 text-xs text-content-muted">The default works with ComfyUI running on this computer.</p>
+              <div v-if="comfySetupProvider" class="mt-3 flex items-center gap-1.5 text-xs font-medium" :class="providerConnectionStatusClass(comfySetupProvider)">
+                <Spinner v-if="isProviderConnecting(comfySetupProvider)" size="sm" />
+                <ExclamationCircleIcon v-else-if="isProviderConnectionError(comfySetupProvider)" class="h-4 w-4" />
+                <span v-else-if="providerStatusDotClass(comfySetupProvider)" class="h-2 w-2 shrink-0 rounded-full" :class="providerStatusDotClass(comfySetupProvider)"></span>
+                {{ comfySetupStatusLabel }}
+              </div>
+              <div v-if="comfySetupProvider && isProviderConnectionError(comfySetupProvider) && comfySetupProvider.error_message" class="mt-3 flex items-start gap-3 rounded-lg bg-red-500/10 px-4 py-3.5">
+                <svg class="mt-0.5 h-5 w-5 shrink-0 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.75">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-1.5a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 5.25h.008v.008H12V16.5Z" />
+                </svg>
+                <div class="min-w-0">
+                  <p class="text-sm font-medium text-red-300">{{ comfySetupError.title }}</p>
+                  <p class="mt-0.5 text-xs leading-5 text-content-secondary">{{ comfySetupError.message }}</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -470,7 +485,7 @@
         </div>
       </template>
 
-      <div v-if="testResult" class="mt-5 rounded-lg px-4 py-3" :class="testResult.success ? 'bg-green-500/10' : 'bg-red-500/10'">
+      <div v-if="addMode !== 'comfy' && testResult" class="mt-5 rounded-lg px-4 py-3" :class="testResult.success ? 'bg-green-500/10' : 'bg-red-500/10'">
             <div v-if="testResult.success" class="flex items-start gap-2">
               <svg class="w-5 h-5 text-green-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
@@ -499,15 +514,14 @@
         <button
           v-if="addMode === 'comfy'"
           type="button"
-          :disabled="!canTest || testing || saving"
-          class="bg-accent rounded-md px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50"
-          @click="connectComfyProvider"
-        >{{ testing ? 'Testing…' : saving ? 'Adding…' : 'Test and connect' }}</button>
+          class="bg-accent rounded-md px-4 py-2 text-sm font-medium text-white hover:bg-accent/90"
+          @click="finishComfySetup"
+        >Done</button>
         <template v-else>
           <button type="button" :disabled="!canTest || testing" class="bg-surface-raised px-4 py-2 text-sm font-medium text-content hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50" @click="testConnection">{{ testing ? 'Testing…' : 'Test connection' }}</button>
           <button type="button" :disabled="!canSave || saving" class="bg-accent rounded-md px-4 py-2 text-sm font-medium text-white hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-50" @click="saveProvider">{{ saving ? 'Adding…' : 'Add provider' }}</button>
+          <button type="button" class="px-3 py-2 text-sm text-content-tertiary hover:text-content" @click="closeModal">Cancel</button>
         </template>
-        <button type="button" class="px-3 py-2 text-sm text-content-tertiary hover:text-content" @click="closeModal">Cancel</button>
       </div>
     </div>
 
@@ -963,6 +977,11 @@ const detailView = ref('overview')
 const deleteConfirm = ref(null)
 const testing = ref(false)
 const testResult = ref(null)
+// ComfyUI setup screen: the provider created by this setup session. Once it
+// exists, further URL edits are updates; connection status renders live from
+// the provider itself (the backend connects and retries asynchronously).
+const comfyCreatedId = ref(null)
+const comfyDirty = ref(false)
 const addModalRef = ref(null)
 const logsContentRef = ref(null)
 const nameInputRef = ref(null)
@@ -1048,6 +1067,22 @@ function closeProviderDetails() {
   detailView.value = 'overview'
   selectedProviderId.value = null
 }
+
+const comfySetupProvider = computed(() => {
+  if (!comfyCreatedId.value) return null
+  return props.providers.find(provider => provider.id === comfyCreatedId.value) || null
+})
+
+const comfySetupStatusLabel = computed(() => {
+  const provider = comfySetupProvider.value
+  if (provider?.status === 'connected') return `Connected · ${providerStatusLabel(provider)}`
+  return providerConnectionStatus(provider)
+})
+
+const comfySetupError = computed(() => formatToolProviderConnectionError(
+  comfySetupProvider.value?.error_message,
+  comfySetupProvider.value?.url,
+))
 
 function providerConnectionStatus(provider) {
   if (provider?.id === 'stimma-cloud' && !isAuthenticated.value) return 'Not signed in'
@@ -1615,10 +1650,15 @@ function openComfySetup() {
     auth_token: '',
   }
   testResult.value = null
+  comfyCreatedId.value = null
+  comfyDirty.value = false
   showModal.value = true
 }
 
 function closeModal() {
+  // Leaving the ComfyUI setup screen must never lose typed work (Escape while
+  // the URL field is still focused skips the blur commit).
+  commitComfySetup()
   showModal.value = false
 }
 
@@ -1839,9 +1879,36 @@ async function saveProvider() {
   }
 }
 
-async function connectComfyProvider() {
-  const connected = await testConnection()
-  if (connected) await saveProvider()
+// Save the ComfyUI setup screen's state without any test gate. First save
+// creates the provider; later saves update its URL (which makes the backend
+// reconnect). Creation requires intent — an edited URL or an explicit Done —
+// so opening the screen and backing out untouched adds nothing.
+function commitComfySetup(force = false) {
+  if (addMode.value !== 'comfy' || !showModal.value) return
+  const url = formData.value.url.trim()
+  if (!url) return
+  const existing = comfySetupProvider.value
+  if (existing) {
+    if ((existing.url ?? '') !== url) {
+      emit('update', { providerId: existing.id, data: { url } })
+    }
+    return
+  }
+  if (!force && !comfyDirty.value) return
+  const name = formData.value.name.trim()
+  const config = {
+    id: nameToSlug(name),
+    name,
+    type: 'websocket',
+    url,
+  }
+  emit('create', config)
+  comfyCreatedId.value = config.id
+}
+
+function finishComfySetup() {
+  commitComfySetup(true)
+  showModal.value = false
 }
 
 function confirmDelete(provider) {
