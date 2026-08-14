@@ -28,7 +28,31 @@
           <div class="relative h-[20px] mb-10" aria-hidden="true"></div>
 
           <div class="relative w-full max-w-[720px]">
-            <div class="rounded-lg shadow-lg shadow-black/20">
+            <!-- No chat model configured (deliberate opt-out): tools take the
+                 hero slot instead of the composer, so home reads as the front
+                 door to what works. The cutoff is one quiet footnote line.
+                 A configured-but-broken model keeps the composer (and its
+                 louder card) below — that user opted in and wants the remedy. -->
+            <template v-if="llmUnconfigured">
+              <StarterToolGrid v-if="heroToolPicks.length > 0" :picks="heroToolPicks" @open="openToolById" />
+              <div class="flex justify-center" :class="heroToolPicks.length > 0 ? 'mt-4' : ''">
+                <router-link
+                  to="/tools"
+                  class="px-3.5 py-1.5 rounded-full border border-edge-subtle text-[13px] text-content-muted hover:text-content-secondary hover:bg-overlay-subtle hover:border-edge transition-colors"
+                >
+                  All tools →
+                </router-link>
+              </div>
+              <p class="mt-7 text-center text-xs text-content-muted">
+                Chat is available once you
+                <button
+                  @click="openChatModelSettings"
+                  class="font-medium text-accent-hi hover:text-accent transition-colors"
+                >set up a chat model</button>.
+              </p>
+            </template>
+
+            <div v-else class="rounded-lg shadow-lg shadow-black/20">
               <ChatInputBox
                 ref="chatInputBoxRef"
                 v-model="inputText"
@@ -52,7 +76,7 @@
             </div>
 
             <!-- Tool launchers docked to the prompt (recent tools, starter picks as cold-start fill) -->
-            <div v-if="!isFirstRun && launcherTools.length > 0" class="flex flex-wrap justify-center gap-2 mt-4">
+            <div v-if="!llmUnconfigured && !isFirstRun && launcherTools.length > 0" class="flex flex-wrap justify-center gap-2 mt-4">
               <button
                 v-for="tool in launcherTools"
                 :key="tool.full_tool_id"
@@ -73,41 +97,16 @@
             </div>
           </div>
 
-          <!-- First run: recommended starting points instead of empty sections -->
-          <div v-if="isFirstRun && starterTools.length > 0" class="relative w-full max-w-[720px] mt-12">
+          <!-- First run: recommended starting points instead of empty sections.
+               Skipped when no chat model is configured — the hero grid above
+               already fills this role. -->
+          <div v-if="!llmUnconfigured && isFirstRun && starterTools.length > 0" class="relative w-full max-w-[720px] mt-12">
             <div class="flex items-center gap-4 mb-4">
               <div class="h-px flex-1 bg-edge-subtle"></div>
               <span class="text-xs font-semibold text-content-secondary">Or start with a tool</span>
               <div class="h-px flex-1 bg-edge-subtle"></div>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                v-for="pick in starterTools"
-                :key="pick.tool.full_tool_id"
-                @click="openToolById(pick.tool.full_tool_id)"
-                class="flex items-start gap-3.5 rounded-lg p-3.5 text-left transition-all cursor-pointer"
-                :class="isStimmaCloudTool(pick.tool)
-                  ? 'bg-overlay-faint stimma-cloud-border hover:bg-overlay-subtle'
-                  : 'bg-overlay-faint border border-edge-subtle hover:bg-overlay-subtle hover:border-edge'"
-              >
-                <ToolIcon :tool="pick.tool" size="lg" :ring="false" />
-                <div class="flex-1 min-w-0">
-                  <div class="text-sm font-semibold text-content truncate">{{ pick.tool.name }}</div>
-                  <p v-if="starterDescription(pick.tool)" class="text-xs text-content-secondary line-clamp-2 mt-1 leading-relaxed">{{ starterDescription(pick.tool) }}</p>
-                  <div class="flex items-center gap-2 mt-2 overflow-hidden">
-                    <span v-if="isStimmaCloudTool(pick.tool)" class="inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-full bg-teal-600/10 border border-teal-600/25 flex-shrink-0">
-                      <span class="stimma-cloud-text">{{ STIMMA_TOOL_PROVIDER_DISPLAY_NAME }}</span>
-                    </span>
-                    <span v-else class="px-2 py-0.5 text-[10px] font-medium rounded-full border border-edge text-content-secondary flex-shrink-0 truncate">
-                      {{ providerLabel(pick.tool) }}
-                    </span>
-                    <span class="px-2 py-0.5 text-[10px] font-medium rounded-full border border-edge text-content-secondary flex-shrink-0">
-                      {{ formatTaskTypeLabel(pick.taskType) }}
-                    </span>
-                  </div>
-                </div>
-              </button>
-            </div>
+            <StarterToolGrid :picks="starterTools" @open="openToolById" />
             <div class="flex justify-center mt-4">
               <router-link
                 to="/tools"
@@ -293,12 +292,12 @@ import ChatModelPicker from '../components/chat/ChatModelPicker.vue'
 import SlideshowMode from '../components/SlideshowMode.vue'
 import FlowStatusPill from '../components/flow/FlowStatusPill.vue'
 import ToolIcon from '../components/tools/ToolIcon.vue'
+import StarterToolGrid from '../components/StarterToolGrid.vue'
 import { useSlideshow } from '../composables/useSlideshow'
 import { useProvidersApi } from '../composables/useProvidersApi'
 import { recentEntities } from '../composables/useRecentEntities'
-import { pickStarterTools } from '../utils/starterTools'
-import { isStimmaCloudTool, toolProviderDisplayName, STIMMA_TOOL_PROVIDER_DISPLAY_NAME } from '../utils/stimmaCloud'
-import { formatTaskTypeLabel } from '../utils/taskTypeIcons'
+import { pickStarterTools, toolTaskTypes } from '../utils/starterTools'
+import { isStimmaCloudTool, toolProviderDisplayName } from '../utils/stimmaCloud'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useAssetApi } from '../composables/useAssetApi'
 import { useFlowsApi } from '../composables/useFlowsApi'
@@ -322,7 +321,7 @@ const { listFlows, listEquations, updateFlow, deleteFlow, restoreFlow } = useFlo
 const { slideshowState, enterSlideshow, exitSlideshow, updateCurrentMediaId } = useSlideshow()
 const entityContextMenu = useEntityContextMenu()
 const { addToast } = useToasts()
-const { agentModelUnavailable, checkAgentModels } = useAgentModelAvailability()
+const { agentModelUnavailable, llmUnconfigured, checkAgentModels } = useAgentModelAvailability()
 const { globalDefault, getSelectableModel } = useAvailableModels()
 const { fetchProvidersAndTools, subscribeToProviderChanges } = useProvidersApi()
 
@@ -438,13 +437,40 @@ function providerLabel(tool) {
   return toolProviderDisplayName(tool, tool.provider_id || '')
 }
 
-function starterDescription(tool) {
-  return tool.metadata?.description || tool.subtitle || ''
-}
-
 function openToolById(fullToolId) {
   router.push({ name: 'tool', params: { fullToolId } })
 }
+
+function openChatModelSettings() {
+  window.dispatchEvent(new CustomEvent('open-settings', { detail: 'ai-services' }))
+}
+
+// Hero grid shown instead of the composer when no chat model is configured:
+// recently used tools first, starter picks as fill, shaped like starter picks
+// ({tool, taskType}) so the grid can badge the task. Recents may not map to a
+// starter task; an empty taskType just omits the badge.
+const heroToolPicks = computed(() => {
+  const picks = []
+  const seen = new Set()
+  const add = (tool, taskType) => {
+    const nameKey = `name:${(tool.name || '').toLowerCase().trim()}`
+    if (seen.has(tool.full_tool_id) || seen.has(nameKey)) return
+    seen.add(tool.full_tool_id)
+    seen.add(nameKey)
+    picks.push({ tool, taskType })
+  }
+  const byId = new Map(availableTools.value.map(t => [t.full_tool_id, t]))
+  for (const entity of recentToolEntities.value) {
+    if (picks.length >= 4) break
+    const tool = byId.get(entity.id)
+    if (tool) add(tool, toolTaskTypes(tool)[0] || '')
+  }
+  for (const pick of starterTools.value) {
+    if (picks.length >= 4) break
+    add(pick.tool, pick.taskType)
+  }
+  return picks
+})
 
 // ==================== Jump back in ====================
 
