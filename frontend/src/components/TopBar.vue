@@ -309,7 +309,7 @@
 
       <!-- Tool-provider managers (e.g. ComfyUI): one icon per provider that
            advertises a management UI over STP. -->
-      <ProviderManagerButton />
+      <ProviderManagerButton :show-separator="profiles.length > 1" />
 
       <!-- Profile picker: exists only when a second profile does -->
       <div v-if="profiles.length > 1" class="relative profile-menu">
