@@ -159,6 +159,7 @@ from routes import (
     mask_assistant,
     presets,
     user_tools,
+    provider_manage,
 )
 
 log.info(f"TIMING: routes imported at {time.time() - _startup_time:.2f}s")
@@ -175,6 +176,7 @@ async def root():
 
 # Include all routers
 app.include_router(auth.router)
+app.include_router(provider_manage.router)
 app.include_router(assets.router)
 app.include_router(boards.router)
 app.include_router(cloud.router)

@@ -1,0 +1,184 @@
+<template>
+  <!-- One entry point per tool provider that advertises a management UI
+       (STP presentation.management_url). Sits left of the profile picker.
+       Click → popover with the provider's own manager, proxied through the
+       local backend. Dot: none = ready · amber = warning · red = error ·
+       dimmed icon = provider disconnected. -->
+  <div v-for="p in managed" :key="p.provider_id" class="relative provider-manager" :data-provider="p.provider_id">
+    <button
+      class="relative w-7 h-7 flex items-center justify-center rounded-md transition-colors cursor-pointer"
+      :class="[
+        openId === p.provider_id ? 'bg-overlay-light text-content' : 'text-content-secondary hover:bg-overlay-subtle hover:text-content',
+        p.status !== 'connected' ? 'opacity-40' : '',
+      ]"
+      :title="titleFor(p)"
+      @click.stop="toggle(p.provider_id)"
+    >
+      <img v-if="p.icon && !isComfy(p)" :src="p.icon" class="w-[18px] h-[18px]" :class="iconMaskClass(p)" alt="" />
+      <ComfyUIIcon v-else-if="isComfy(p)" class="w-[18px] h-[18px]" />
+      <span v-else class="w-[18px] h-[18px] rounded-full bg-overlay-light"></span>
+      <span
+        v-if="p.status === 'connected' && dotClassFor(p)"
+        class="absolute top-[3px] right-[3px] w-[7px] h-[7px] rounded-full ring-2 ring-surface"
+        :class="dotClassFor(p)"
+      ></span>
+    </button>
+
+    <!-- First-connect hint (once) -->
+    <div
+      v-if="hintFor === p.provider_id && openId !== p.provider_id"
+      class="absolute top-[calc(100%+0.75rem)] right-0 w-[240px] bg-surface-raised border border-edge-subtle rounded-lg shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-3 text-xs text-content-secondary z-menu"
+    >
+      <span class="absolute -top-[6px] right-[10px] w-[10px] h-[10px] bg-surface-raised border-l border-t border-edge-subtle rotate-45"></span>
+      <div class="text-content font-medium mb-0.5">Your {{ shortName(p) }} is here</div>
+      <div>Status, queue, and setup for the workflows you want to use.</div>
+      <button class="mt-1.5 text-accent-hi hover:underline" @click.stop="dismissHint">Got it</button>
+    </div>
+
+    <!-- Popover -->
+    <div
+      v-if="openId === p.provider_id"
+      class="absolute top-[calc(100%+0.5rem)] right-0 w-[420px] bg-surface border border-edge-subtle rounded-lg shadow-[0_8px_16px_rgba(0,0,0,0.5)] z-menu overflow-hidden flex flex-col"
+      :style="{ height: popoverHeight }"
+      @click.stop
+    >
+      <div v-if="p.status !== 'connected'" class="flex-1 flex flex-col items-center justify-center gap-2 p-6 text-center">
+        <ComfyUIIcon v-if="isComfy(p)" class="w-6 h-6 text-content-muted" />
+        <div class="text-sm text-content">{{ p.provider_name }} isn't connected</div>
+        <div class="text-xs text-content-tertiary">{{ p.status === 'connecting' ? 'Connecting…' : 'Stimma will reconnect automatically when it comes back.' }}</div>
+      </div>
+      <iframe
+        v-else
+        :ref="setFrame"
+        :src="frameSrc(p)"
+        class="flex-1 w-full border-0 bg-surface"
+        :title="`${p.provider_name} manager`"
+        referrerpolicy="no-referrer"
+      ></iframe>
+    </div>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useProvidersApi, type Provider } from '../composables/useProvidersApi'
+import { useWebSocket } from '../composables/useWebSocket'
+import { useTheme } from '../composables/useTheme'
+import { useToasts } from '../composables/useToasts'
+import { getApiBase } from '../apiConfig'
+import { isComfyUIProvider } from '../utils/toolProviderBrands'
+import { makeGlobalKey } from '../utils/storageKeys'
+import ComfyUIIcon from './tools/ComfyUIIcon.vue'
+
+type ManagedProvider = Provider
+
+const { listProviders, cachedProviders, subscribeToProviderChanges } = useProvidersApi()
+const { on, off } = useWebSocket()
+const { resolvedTheme } = useTheme()
+const { addToast } = useToasts()
+
+const providers = ref<ManagedProvider[]>([])
+const openId = ref<string | null>(null)
+const anchor = ref<string>('')
+const frameEl = ref<HTMLIFrameElement | null>(null)
+function setFrame(el: unknown) { frameEl.value = (el as HTMLIFrameElement | null) }
+const HINT_KEY = makeGlobalKey('providerManager', 'hintDismissed')
+const hintDismissed = ref(localStorage.getItem(HINT_KEY) === '1')
+
+const managed = computed(() => providers.value.filter(p => !!p.management_url))
+const hintFor = computed(() => {
+  if (hintDismissed.value) return null
+  const first = managed.value.find(p => p.status === 'connected')
+  return first ? first.provider_id : null
+})
+const MAX_H = 640
+const MIN_H = 220
+const wantedHeight = ref<number | null>(null)
+const popoverHeight = computed(() => {
+  const h = wantedHeight.value ? Math.max(MIN_H, Math.min(MAX_H, wantedHeight.value)) : MAX_H
+  return `min(${h}px, calc(100vh - 5rem))`
+})
+function onFrameMessage(e: MessageEvent) {
+  const d = e.data
+  if (!d || d.type !== 'stimma-manage-size' || typeof d.height !== 'number') return
+  if (frameEl.value && e.source !== frameEl.value.contentWindow) return
+  wantedHeight.value = d.height + 2 // border
+}
+
+function isComfy(p: ManagedProvider) { return isComfyUIProvider({ id: p.provider_id, name: p.provider_name }) }
+function shortName(p: ManagedProvider) { return isComfy(p) ? 'ComfyUI' : p.provider_name }
+function iconMaskClass(_p: ManagedProvider) { return '' }
+function dotClassFor(p: ManagedProvider) {
+  if (p.state === 'warning') return 'bg-amber-500'
+  if (p.state === 'error') return 'bg-red-500'
+  return ''
+}
+function titleFor(p: ManagedProvider) {
+  if (p.status !== 'connected') return `${p.provider_name} · not connected`
+  if (p.state && p.state !== 'ready' && p.state_summary) return `${p.provider_name} · ${p.state_summary}`
+  return p.provider_name
+}
+function frameSrc(p: ManagedProvider) {
+  // getApiBase() already ends in /api ('/api' in dev, 'http://127.0.0.1:PORT/api' in Tauri)
+  const base = getApiBase().replace(/\/$/, '')
+  const theme = resolvedTheme.value === 'light' ? 'light' : 'dark'
+  return `${base}/provider-manage/${encodeURIComponent(p.provider_id)}/?theme=${theme}${anchor.value ? '#' + anchor.value : ''}`
+}
+
+async function refresh() {
+  try { providers.value = (await listProviders()) as ManagedProvider[] } catch { /* keep last */ }
+}
+function toggle(id: string, tab?: string) {
+  if (openId.value === id && !tab) { openId.value = null; return }
+  anchor.value = tab || ''
+  wantedHeight.value = null
+  openId.value = id
+  if (hintFor.value === id) dismissHint()
+}
+function close() { openId.value = null }
+function dismissHint() { hintDismissed.value = true; localStorage.setItem(HINT_KEY, '1') }
+
+function onDocClick(e: MouseEvent) {
+  const t = e.target as HTMLElement | null
+  if (t && t.closest && t.closest('.provider-manager')) return
+  close()
+}
+function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
+
+function handleStateChanged(data: { provider_id: string; state: string; summary?: string | null }) {
+  const p = providers.value.find(x => x.provider_id === data.provider_id)
+  if (p) { p.state = data.state as any; p.state_summary = data.summary ?? null }
+  else refresh()
+}
+function handleNotification(data: { provider_id: string; provider_name?: string; level: string; title: string; body?: string | null; action?: string | null; anchor?: string | null }) {
+  const type = data.level === 'error' ? 'error' : data.level === 'warning' ? 'warning' : 'info'
+  const message = data.body ? `${data.title} — ${data.body}` : data.title
+  const action = data.action === 'manage'
+    ? { label: 'Open', onClick: () => toggle(data.provider_id, data.anchor || '') }
+    : undefined
+  addToast(message, type, type === 'error' ? 8000 : 5000, action)
+}
+
+let unsubscribe: (() => void) | null = null
+onMounted(() => {
+  if (cachedProviders.value.length) providers.value = cachedProviders.value as ManagedProvider[]
+  refresh()
+  unsubscribe = subscribeToProviderChanges(() => refresh())
+  on('provider_state_changed', handleStateChanged)
+  on('provider_notification', handleNotification)
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onKey)
+  window.addEventListener('message', onFrameMessage)
+})
+onUnmounted(() => {
+  window.removeEventListener('message', onFrameMessage)
+  unsubscribe?.()
+  off('provider_state_changed', handleStateChanged)
+  off('provider_notification', handleNotification)
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onKey)
+})
+watch(resolvedTheme, (t) => {
+  try { frameEl.value?.contentWindow?.postMessage({ type: 'stimma-theme', theme: t === 'light' ? 'light' : 'dark' }, '*') } catch { /* */ }
+})
+</script>

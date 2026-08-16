@@ -42,6 +42,7 @@ PROFILE_EXEMPT_PREFIXES = [
     "/api/telemetry",  # Telemetry events (global, profile-agnostic)
     "/api/feature-flags",  # Feature flag bag (global)
     "/api/compliance", # Compliance region (global, pre-onboarding)
+    "/api/provider-manage/",  # Proxy to a tool provider's management UI (providers are global)
 ]
 
 # Routes that don't require PIN verification (even if profile has PIN)

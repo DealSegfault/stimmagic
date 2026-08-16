@@ -39,6 +39,28 @@ class ProviderStatusResponse(BaseModel):
     tool_count: int
     max_concurrent: int
     queue_status: Optional[Dict[str, int]] = None
+    # STP presentation / provider state (None for providers without them)
+    state: Optional[str] = None            # "ready" | "warning" | "error"
+    state_summary: Optional[str] = None
+    management_url: Optional[str] = None   # absolute; UI reaches it via /api/provider-manage/{id}/
+    icon: Optional[str] = None             # data URI
+    needs_setup_count: int = 0
+    needs_setup_tool_ids: List[str] = []
+
+
+def _provider_presentation_fields(provider) -> dict:
+    pres = getattr(provider, "presentation", None) or {}
+    icon = pres.get("icon") if isinstance(pres, dict) else None
+    if not (isinstance(icon, str) and icon.startswith("data:") and len(icon) <= 48 * 1024):
+        icon = None
+    return {
+        "state": getattr(provider, "provider_state", None),
+        "state_summary": getattr(provider, "provider_state_summary", None),
+        "management_url": getattr(provider, "management_url", None),
+        "icon": icon,
+        "needs_setup_count": int(getattr(provider, "needs_setup_count", 0) or 0),
+        "needs_setup_tool_ids": list(getattr(provider, "needs_setup_tool_ids", []) or []),
+    }
 
 
 class ProviderToolResponse(BaseModel):
@@ -193,6 +215,7 @@ async def list_providers():
             tool_count=len(tools),
             max_concurrent=provider.max_concurrent,
             queue_status=queue_status,
+            **_provider_presentation_fields(provider),
         ))
 
     return providers
@@ -395,6 +418,7 @@ async def get_provider(provider_id: str):
         tool_count=len(tools),
         max_concurrent=provider.max_concurrent,
         queue_status=queue_status,
+        **_provider_presentation_fields(provider),
     )
 
 
