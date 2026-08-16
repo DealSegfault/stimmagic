@@ -764,7 +764,7 @@ class JsonRpcProvider(ToolProvider):
         # Presentation hints (STP `presentation`): icon data URI + management URL
         self._presentation: dict = {}
         self._management_url: Optional[str] = None   # absolute, resolved against the WS origin
-        # Provider-level state (STP provider.state): ready | warning | error
+        # Provider-level state (STP provider.state): ready | in_progress | warning | error
         self._provider_state: str = "ready"
         self._provider_state_summary: Optional[str] = None
         # Callbacks (set by the registry) for state changes and notifications
@@ -1043,7 +1043,7 @@ class JsonRpcProvider(ToolProvider):
 
         elif method == "provider.state":
             state = params.get("state")
-            if state in ("ready", "warning", "error"):
+            if state in ("ready", "in_progress", "warning", "error"):
                 summary = params.get("summary")
                 changed = (state != self._provider_state) or (summary != self._provider_state_summary)
                 self._provider_state = state

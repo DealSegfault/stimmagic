@@ -39,7 +39,7 @@ export interface Provider {
   tool_count: number
   max_concurrent: number
   // STP presentation / provider state (absent for providers without them)
-  state?: 'ready' | 'warning' | 'error' | null
+  state?: 'ready' | 'in_progress' | 'warning' | 'error' | null
   state_summary?: string | null
   management_url?: string | null
   icon?: string | null

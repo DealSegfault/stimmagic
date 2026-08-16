@@ -2,8 +2,8 @@
   <!-- One entry point per tool provider that advertises a management UI
        (STP presentation.management_url). Sits left of the profile picker.
        Click → popover with the provider's own manager, proxied through the
-       local backend. Dot: none = ready · amber = warning · red = error ·
-       dimmed icon = provider disconnected. -->
+       local backend. Spinner = management work in progress · amber = warning ·
+       red = error · dimmed icon = provider disconnected. -->
   <div v-if="managed.length" class="flex items-center gap-0.5 h-[30px] px-[3px] rounded-[7px] bg-overlay-subtle">
   <div v-for="p in managed" :key="p.provider_id" class="relative provider-manager" :data-provider="p.provider_id">
     <button
@@ -18,7 +18,8 @@
       <!-- Provider-supplied icon (STP presentation.icon, a data URI) rendered
            as a CSS mask so it takes currentColor and follows the theme. The
            bundled ComfyUI mark is only a fallback for providers that send none. -->
-      <span v-if="p.icon" class="block w-[15px] h-[15px]" :style="iconMaskStyle(p.icon)" aria-hidden="true"></span>
+      <Spinner v-if="p.status === 'connected' && p.state === 'in_progress'" size="sm" />
+      <span v-else-if="p.icon" class="block w-[15px] h-[15px]" :style="iconMaskStyle(p.icon)" aria-hidden="true"></span>
       <ComfyUIIcon v-else-if="isComfy(p)" class="w-[15px] h-[15px]" />
       <span v-else class="w-[15px] h-[15px] rounded-full bg-overlay-light"></span>
       <span
@@ -76,6 +77,7 @@ import { getApiBase } from '../apiConfig'
 import { isComfyUIProvider } from '../utils/toolProviderBrands'
 import { makeGlobalKey } from '../utils/storageKeys'
 import ComfyUIIcon from './tools/ComfyUIIcon.vue'
+import Spinner from './ui/Spinner.vue'
 
 type ManagedProvider = Provider
 

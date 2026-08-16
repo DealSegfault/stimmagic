@@ -40,7 +40,7 @@ class ProviderStatusResponse(BaseModel):
     max_concurrent: int
     queue_status: Optional[Dict[str, int]] = None
     # STP presentation / provider state (None for providers without them)
-    state: Optional[str] = None            # "ready" | "warning" | "error"
+    state: Optional[str] = None            # "ready" | "in_progress" | "warning" | "error"
     state_summary: Optional[str] = None
     management_url: Optional[str] = None   # absolute; UI reaches it via /api/provider-manage/{id}/
     icon: Optional[str] = None             # data URI

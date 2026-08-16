@@ -8,6 +8,20 @@ from providers.base import ProviderStatus, ToolDescriptor
 from providers.jsonrpc import JsonRpcProvider, StdioProviderConfig, _strip_undeclared_parameters
 
 
+@pytest.mark.asyncio
+async def test_provider_accepts_in_progress_state():
+    provider = JsonRpcProvider(StdioProviderConfig(id="comfyui", command="noop"))
+
+    await provider._process_message({
+        "jsonrpc": "2.0",
+        "method": "provider.state",
+        "params": {"state": "in_progress", "summary": "Downloading models"},
+    })
+
+    assert provider.provider_state == "in_progress"
+    assert provider.provider_state_summary == "Downloading models"
+
+
 def test_strip_undeclared_parameters_keeps_cloud_schema_fields_only():
     schema = {
         "type": "object",
