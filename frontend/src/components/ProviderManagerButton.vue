@@ -18,10 +18,14 @@
       <!-- Provider-supplied icon (STP presentation.icon, a data URI) rendered
            as a CSS mask so it takes currentColor and follows the theme. The
            bundled ComfyUI mark is only a fallback for providers that send none. -->
-      <Spinner v-if="p.status === 'connected' && p.state === 'in_progress'" size="sm" />
-      <span v-else-if="p.icon" class="block w-[15px] h-[15px]" :style="iconMaskStyle(p.icon)" aria-hidden="true"></span>
+      <span v-if="p.icon" class="block w-[15px] h-[15px]" :style="iconMaskStyle(p.icon)" aria-hidden="true"></span>
       <ComfyUIIcon v-else-if="isComfy(p)" class="w-[15px] h-[15px]" />
       <span v-else class="w-[15px] h-[15px] rounded-full bg-overlay-light"></span>
+      <Spinner
+        v-if="p.status === 'connected' && p.state === 'in_progress'"
+        size="sm"
+        class="absolute top-px right-px !w-[8px] !h-[8px] !border-[1.5px] bg-surface ring-2 ring-surface"
+      />
       <span
         v-if="p.status === 'connected' && dotClassFor(p)"
         class="absolute top-px right-px w-[7px] h-[7px] rounded-full ring-2 ring-surface"
