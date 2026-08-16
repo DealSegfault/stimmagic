@@ -24,7 +24,8 @@
       <Spinner
         v-if="p.status === 'connected' && p.state === 'in_progress'"
         size="sm"
-        class="absolute top-px right-px !w-[8px] !h-[8px] !border-[1.5px] bg-surface ring-2 ring-surface"
+        hue="border-t-content-secondary"
+        class="absolute -top-0.5 -right-0.5 !w-[8px] !h-[8px] !border-[1.5px] [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))]"
       />
       <span
         v-if="p.status === 'connected' && dotClassFor(p)"
