@@ -120,6 +120,7 @@ const popoverHeight = computed(() => {
   return `min(${h}px, calc(100vh - 5rem))`
 })
 let revealTimer: ReturnType<typeof setTimeout> | null = null
+let managerRefreshTimer: ReturnType<typeof setTimeout> | null = null
 // Managers that don't report a size (third-party UIs) still get shown: reveal
 // shortly after load at full height.
 function onFrameLoad() {
@@ -198,6 +199,25 @@ function handleNotification(data: { provider_id: string; provider_name?: string;
   addToast(message, type, type === 'error' ? 8000 : 5000, action)
 }
 
+const MANAGER_JOB_EVENTS = [
+  'generation_job_queued',
+  'generation_job_started',
+  'generation_job_progress',
+  'generation_job_completed',
+  'generation_job_failed',
+  'generation_job_cancelled',
+]
+function handleManagerJobEvent() {
+  if (!frameEl.value?.contentWindow || !openId.value) return
+  const provider = providers.value.find(p => p.provider_id === openId.value)
+  if (!provider || !isComfy(provider)) return
+  if (managerRefreshTimer) return
+  managerRefreshTimer = setTimeout(() => {
+    managerRefreshTimer = null
+    try { frameEl.value?.contentWindow?.postMessage({ type: 'stimma-manage-refresh' }, '*') } catch { /* */ }
+  }, 100)
+}
+
 let unsubscribe: (() => void) | null = null
 onMounted(() => {
   if (cachedProviders.value.length) providers.value = cachedProviders.value as ManagedProvider[]
@@ -205,6 +225,7 @@ onMounted(() => {
   unsubscribe = subscribeToProviderChanges(() => refresh())
   on('provider_state_changed', handleStateChanged)
   on('provider_notification', handleNotification)
+  for (const event of MANAGER_JOB_EVENTS) on(event, handleManagerJobEvent)
   document.addEventListener('click', onDocClick)
   document.addEventListener('keydown', onKey)
   window.addEventListener('message', onFrameMessage)
@@ -214,6 +235,8 @@ onUnmounted(() => {
   unsubscribe?.()
   off('provider_state_changed', handleStateChanged)
   off('provider_notification', handleNotification)
+  for (const event of MANAGER_JOB_EVENTS) off(event, handleManagerJobEvent)
+  if (managerRefreshTimer) clearTimeout(managerRefreshTimer)
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('keydown', onKey)
 })
