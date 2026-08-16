@@ -50,9 +50,11 @@
         v-else
         :ref="setFrame"
         :src="frameSrc(p)"
-        class="flex-1 w-full border-0 bg-surface"
+        class="flex-1 w-full border-0 bg-surface transition-opacity duration-150"
+        :class="frameReady ? 'opacity-100' : 'opacity-0'"
         :title="`${p.provider_name} manager`"
         referrerpolicy="no-referrer"
+        @load="onFrameLoad"
       ></iframe>
     </div>
   </div>
@@ -92,16 +94,35 @@ const hintFor = computed(() => {
 })
 const MAX_H = 640
 const MIN_H = 220
+const DEFAULT_H = 300
+// Height reported by the embedded manager; remembered per provider so
+// reopening lands at the right size immediately (no resize hitch).
 const wantedHeight = ref<number | null>(null)
+const lastHeights = new Map<string, number>()
+const frameReady = ref(false)
 const popoverHeight = computed(() => {
-  const h = wantedHeight.value ? Math.max(MIN_H, Math.min(MAX_H, wantedHeight.value)) : MAX_H
+  const h = wantedHeight.value ? Math.max(MIN_H, Math.min(MAX_H, wantedHeight.value)) : DEFAULT_H
   return `min(${h}px, calc(100vh - 5rem))`
 })
+let revealTimer: ReturnType<typeof setTimeout> | null = null
+// Managers that don't report a size (third-party UIs) still get shown: reveal
+// shortly after load at full height.
+function onFrameLoad() {
+  if (revealTimer) clearTimeout(revealTimer)
+  revealTimer = setTimeout(() => {
+    if (!frameReady.value) {
+      if (!wantedHeight.value) wantedHeight.value = MAX_H
+      frameReady.value = true
+    }
+  }, 500)
+}
 function onFrameMessage(e: MessageEvent) {
   const d = e.data
   if (!d || d.type !== 'stimma-manage-size' || typeof d.height !== 'number') return
   if (frameEl.value && e.source !== frameEl.value.contentWindow) return
   wantedHeight.value = d.height + 2 // border
+  if (openId.value) lastHeights.set(openId.value, wantedHeight.value)
+  frameReady.value = true
 }
 
 function isComfy(p: ManagedProvider) { return isComfyUIProvider({ id: p.provider_id, name: p.provider_name }) }
@@ -130,7 +151,8 @@ async function refresh() {
 function toggle(id: string, tab?: string) {
   if (openId.value === id && !tab) { openId.value = null; return }
   anchor.value = tab || ''
-  wantedHeight.value = null
+  wantedHeight.value = lastHeights.get(id) ?? null
+  frameReady.value = false
   openId.value = id
   if (hintFor.value === id) dismissHint()
 }
