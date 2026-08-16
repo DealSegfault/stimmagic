@@ -14,7 +14,10 @@
       :title="titleFor(p)"
       @click.stop="toggle(p.provider_id)"
     >
-      <img v-if="p.icon && !isComfy(p)" :src="p.icon" class="w-[18px] h-[18px]" :class="iconMaskClass(p)" alt="" />
+      <!-- Provider-supplied icon (STP presentation.icon, a data URI) rendered
+           as a CSS mask so it takes currentColor and follows the theme. The
+           bundled ComfyUI mark is only a fallback for providers that send none. -->
+      <span v-if="p.icon" class="block w-[18px] h-[18px]" :style="iconMaskStyle(p.icon)" aria-hidden="true"></span>
       <ComfyUIIcon v-else-if="isComfy(p)" class="w-[18px] h-[18px]" />
       <span v-else class="w-[18px] h-[18px] rounded-full bg-overlay-light"></span>
       <span
@@ -127,7 +130,10 @@ function onFrameMessage(e: MessageEvent) {
 
 function isComfy(p: ManagedProvider) { return isComfyUIProvider({ id: p.provider_id, name: p.provider_name }) }
 function shortName(p: ManagedProvider) { return isComfy(p) ? 'ComfyUI' : p.provider_name }
-function iconMaskClass(_p: ManagedProvider) { return '' }
+function iconMaskStyle(icon: string) {
+  const url = `url("${icon}")`
+  return { backgroundColor: 'currentColor', maskImage: url, WebkitMaskImage: url, maskRepeat: 'no-repeat', WebkitMaskRepeat: 'no-repeat', maskSize: 'contain', WebkitMaskSize: 'contain', maskPosition: 'center', WebkitMaskPosition: 'center' }
+}
 function dotClassFor(p: ManagedProvider) {
   if (p.state === 'warning') return 'bg-amber-500'
   if (p.state === 'error') return 'bg-red-500'
