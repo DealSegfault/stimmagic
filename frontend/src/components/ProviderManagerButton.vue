@@ -40,9 +40,9 @@
       class="absolute top-[calc(100%+0.75rem)] right-0 w-[240px] bg-surface-raised border border-edge-subtle rounded-lg shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-3 text-xs text-content-secondary z-menu"
     >
       <span class="absolute -top-[6px] right-[10px] w-[10px] h-[10px] bg-surface-raised border-l border-t border-edge-subtle rotate-45"></span>
-      <div class="text-content font-medium mb-0.5">{{ shortName(p) }}</div>
-      <div>Status, queue, and setup.</div>
-      <button class="mt-1.5 text-accent-hi hover:underline" @click.stop="dismissHint">Got it</button>
+      <div class="text-content font-medium mb-0.5">Manage {{ shortName(p) }}</div>
+      <div>Set up workflows, install required models and custom nodes, and track downloads and running jobs.</div>
+      <button class="mt-1.5 text-accent-hi hover:underline" @click.stop="toggle(p.provider_id)">Open {{ shortName(p) }}</button>
     </div>
 
     <!-- Popover -->
