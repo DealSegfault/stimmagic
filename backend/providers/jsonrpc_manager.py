@@ -344,6 +344,7 @@ class JsonRpcProviderManager:
                     "provider_id": provider_id,
                     "state": p.provider_state,
                     "summary": p.provider_state_summary,
+                    "attention": p.provider_attention,
                 }, include_profile=False)
 
             provider._on_state_changed = on_state_changed

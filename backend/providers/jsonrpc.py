@@ -767,6 +767,7 @@ class JsonRpcProvider(ToolProvider):
         # Provider-level state (STP provider.state): ready | in_progress | warning | error
         self._provider_state: str = "ready"
         self._provider_state_summary: Optional[str] = None
+        self._provider_attention: Optional[str] = None
         # Callbacks (set by the registry) for state changes and notifications
         self._on_state_changed: Optional[Callable] = None
         self._on_notification: Optional[Callable] = None
@@ -802,6 +803,10 @@ class JsonRpcProvider(ToolProvider):
     @property
     def provider_state_summary(self) -> Optional[str]:
         return self._provider_state_summary
+
+    @property
+    def provider_attention(self) -> Optional[str]:
+        return self._provider_attention
 
     @property
     def needs_setup_count(self) -> int:
@@ -1045,10 +1050,24 @@ class JsonRpcProvider(ToolProvider):
             state = params.get("state")
             if state in ("ready", "in_progress", "warning", "error"):
                 summary = params.get("summary")
-                changed = (state != self._provider_state) or (summary != self._provider_state_summary)
+                attention = params.get("attention")
+                if attention != "update_available":
+                    attention = None
+                changed = (
+                    (state != self._provider_state)
+                    or (summary != self._provider_state_summary)
+                    or (attention != self._provider_attention)
+                )
                 self._provider_state = state
                 self._provider_state_summary = summary if isinstance(summary, str) else None
-                log.info("provider state", provider=self.provider_id, state=state, summary=self._provider_state_summary)
+                self._provider_attention = attention
+                log.info(
+                    "provider state",
+                    provider=self.provider_id,
+                    state=state,
+                    summary=self._provider_state_summary,
+                    attention=self._provider_attention,
+                )
                 if changed and self._on_state_changed:
                     try:
                         r = self._on_state_changed(self)
@@ -1139,6 +1158,7 @@ class JsonRpcProvider(ToolProvider):
             self._management_url = None
             self._provider_state = "ready"
             self._provider_state_summary = None
+            self._provider_attention = None
 
             # For WebSocket transport, parse asset_endpoint from provider
             # Provider hosts assets and tells us where to upload/download

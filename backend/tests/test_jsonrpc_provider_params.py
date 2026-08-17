@@ -22,6 +22,28 @@ async def test_provider_accepts_in_progress_state():
     assert provider.provider_state_summary == "Downloading models"
 
 
+@pytest.mark.asyncio
+async def test_provider_tracks_update_attention_independently_of_health():
+    provider = JsonRpcProvider(StdioProviderConfig(id="comfyui", command="noop"))
+
+    await provider._process_message({
+        "jsonrpc": "2.0",
+        "method": "provider.state",
+        "params": {"state": "ready", "attention": "update_available"},
+    })
+
+    assert provider.provider_state == "ready"
+    assert provider.provider_attention == "update_available"
+
+    await provider._process_message({
+        "jsonrpc": "2.0",
+        "method": "provider.state",
+        "params": {"state": "ready"},
+    })
+
+    assert provider.provider_attention is None
+
+
 def test_strip_undeclared_parameters_keeps_cloud_schema_fields_only():
     schema = {
         "type": "object",

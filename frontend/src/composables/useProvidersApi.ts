@@ -41,6 +41,7 @@ export interface Provider {
   // STP presentation / provider state (absent for providers without them)
   state?: 'ready' | 'in_progress' | 'warning' | 'error' | null
   state_summary?: string | null
+  attention?: 'update_available' | null
   management_url?: string | null
   icon?: string | null
   needs_setup_count?: number

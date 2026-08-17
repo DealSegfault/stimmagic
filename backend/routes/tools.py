@@ -42,6 +42,7 @@ class ProviderStatusResponse(BaseModel):
     # STP presentation / provider state (None for providers without them)
     state: Optional[str] = None            # "ready" | "in_progress" | "warning" | "error"
     state_summary: Optional[str] = None
+    attention: Optional[str] = None        # "update_available"
     management_url: Optional[str] = None   # absolute; UI reaches it via /api/provider-manage/{id}/
     icon: Optional[str] = None             # data URI
     needs_setup_count: int = 0
@@ -56,6 +57,7 @@ def _provider_presentation_fields(provider) -> dict:
     return {
         "state": getattr(provider, "provider_state", None),
         "state_summary": getattr(provider, "provider_state_summary", None),
+        "attention": getattr(provider, "provider_attention", None),
         "management_url": getattr(provider, "management_url", None),
         "icon": icon,
         "needs_setup_count": int(getattr(provider, "needs_setup_count", 0) or 0),

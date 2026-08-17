@@ -28,7 +28,7 @@
         class="absolute -top-0.5 -right-0.5 !w-[8px] !h-[8px] !border-[1.5px] [filter:drop-shadow(0_1px_1px_rgba(0,0,0,0.55))]"
       />
       <span
-        v-if="p.status === 'connected' && dotClassFor(p)"
+        v-if="p.status === 'connected' && p.state !== 'in_progress' && dotClassFor(p)"
         class="absolute top-px right-px w-[7px] h-[7px] rounded-full ring-2 ring-surface"
         :class="dotClassFor(p)"
       ></span>
@@ -150,11 +150,13 @@ function iconMaskStyle(icon: string) {
 function dotClassFor(p: ManagedProvider) {
   if (p.state === 'warning') return 'bg-amber-500'
   if (p.state === 'error') return 'bg-red-500'
+  if (p.attention === 'update_available') return 'bg-amber-500'
   return ''
 }
 function titleFor(p: ManagedProvider) {
   if (p.status !== 'connected') return `${p.provider_name} · not connected`
   if (p.state && p.state !== 'ready' && p.state_summary) return `${p.provider_name} · ${p.state_summary}`
+  if (p.attention === 'update_available') return `${p.provider_name} · update available`
   return p.provider_name
 }
 function frameSrc(p: ManagedProvider) {
@@ -185,9 +187,13 @@ function onDocClick(e: MouseEvent) {
 }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape') close() }
 
-function handleStateChanged(data: { provider_id: string; state: string; summary?: string | null }) {
+function handleStateChanged(data: { provider_id: string; state: string; summary?: string | null; attention?: 'update_available' | null }) {
   const p = providers.value.find(x => x.provider_id === data.provider_id)
-  if (p) { p.state = data.state as any; p.state_summary = data.summary ?? null }
+  if (p) {
+    p.state = data.state as any
+    p.state_summary = data.summary ?? null
+    p.attention = data.attention ?? null
+  }
   else refresh()
 }
 function handleNotification(data: { provider_id: string; provider_name?: string; level: string; title: string; body?: string | null; action?: string | null; anchor?: string | null }) {
