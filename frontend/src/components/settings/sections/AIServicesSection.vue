@@ -282,10 +282,11 @@
                       v-if="isFlexibleProvider(activeProvider)"
                       :model="model"
                       :is-new="Boolean(modelSetupDraft)"
+                      :show-commit="!wizard"
                       :testing="managerTestingModel"
                       :saving="managerSaving"
                       :error="managerError"
-                      @test="profileManagerModel(model)"
+                      @test="runModelProfile(model)"
                       @commit="commitProviderModel"
                       @save="saveModelSettings(model)"
                       @remove="removeProviderModel(model)"
@@ -795,7 +796,7 @@ function handleEscape() {
   }
   return false
 }
-defineExpose({ handleEscape })
+defineExpose({ handleEscape, commitWizardStep })
 function isFlexibleProvider(provider) { return provider && ['openrouter', 'together', 'fireworks', 'local'].includes(provider.kind) }
 function isRemoteProvider(provider) { return provider && provider.kind !== 'local' }
 function beginProviderKeyEdit() {
@@ -985,10 +986,20 @@ function chooseProviderModel(discovered, returnToCatalog = true) {
   customizingModelId.value = null
   managerError.value = ''
   resetManagerScroll()
-  void profileManagerModel(modelSetupDraft.value)
+  void runModelProfile(modelSetupDraft.value)
 }
 
 let modelProfileRequestId = 0
+let activeModelProfile = null
+function runModelProfile(model) {
+  const operation = profileManagerModel(model)
+  activeModelProfile = operation
+  void operation.finally(() => {
+    if (activeModelProfile === operation) activeModelProfile = null
+  })
+  return operation
+}
+
 async function profileManagerModel(model) {
   const requestId = ++modelProfileRequestId
   managerTestingModel.value = true
@@ -1014,7 +1025,7 @@ async function profileManagerModel(model) {
 }
 
 async function commitProviderModel() {
-  if (!modelSetupDraft.value?.last_test_passed) return
+  if (!modelSetupDraft.value?.last_test_passed) return false
   managerSaving.value = true
   managerError.value = ''
   try {
@@ -1024,11 +1035,22 @@ async function commitProviderModel() {
     activeProvider.value = clone(response.data)
     await refreshAll()
     closeModelSettings(true)
+    return true
   } catch (error) {
     managerError.value = error.response?.data?.detail || 'Could not add this model.'
+    return false
   } finally {
     managerSaving.value = false
   }
+}
+
+async function commitWizardStep() {
+  if (!props.wizard || !modelSetupDraft.value) return true
+  if (activeModelProfile) await activeModelProfile
+  if (modelSetupDraft.value?.last_test_passed) {
+    return await commitProviderModel()
+  }
+  return true
 }
 
 async function removeProviderModel(model) {

@@ -512,7 +512,7 @@
 
       <div class="mt-6 flex items-center gap-3">
         <button
-          v-if="addMode === 'comfy'"
+          v-if="addMode === 'comfy' && !wizard"
           type="button"
           class="bg-accent rounded-md px-4 py-2 text-sm font-medium text-white hover:bg-accent/90"
           @click="finishComfySetup"
@@ -1678,7 +1678,7 @@ function handleEscape() {
   return false
 }
 
-defineExpose({ handleEscape })
+defineExpose({ handleEscape, commitWizardStep })
 
 // Logs modal functions
 async function openLogsModal(provider) {
@@ -1909,6 +1909,12 @@ function commitComfySetup(force = false) {
 function finishComfySetup() {
   commitComfySetup(true)
   showModal.value = false
+}
+
+function commitWizardStep() {
+  if (props.wizard && showModal.value && addMode.value === 'comfy') {
+    finishComfySetup()
+  }
 }
 
 function confirmDelete(provider) {
