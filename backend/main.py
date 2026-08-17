@@ -140,6 +140,7 @@ from routes import (
     postprocessing,
     preferences,
     projects,
+    project_direction,
     processing,
     prompt_enhancement,
     profiles,
@@ -159,6 +160,7 @@ from routes import (
     mask_assistant,
     presets,
     user_tools,
+    tunnel,
 )
 
 log.info(f"TIMING: routes imported at {time.time() - _startup_time:.2f}s")
@@ -192,6 +194,7 @@ app.include_router(media_files.router)
 app.include_router(svg_media.router)
 app.include_router(preferences.router)
 app.include_router(projects.router)
+app.include_router(project_direction.router)
 app.include_router(flows.router)
 app.include_router(flow_tasks.router)
 app.include_router(user_tools.router)
@@ -211,6 +214,7 @@ app.include_router(stimpack_marketplace.router)
 app.include_router(telemetry.router)
 app.include_router(feedback.router)
 app.include_router(flags.router)
+app.include_router(tunnel.router)
 
 log.info(f"TIMING: routers included at {time.time() - _startup_time:.2f}s")
 

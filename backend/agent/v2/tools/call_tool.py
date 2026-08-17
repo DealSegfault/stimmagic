@@ -17,7 +17,7 @@ from ..tools_registry import tool, ToolParameter
 import app_dirs
 from core.logging import get_logger
 from core.profile_context import get_current_profile
-from database import MediaItem
+from database import Chat, MediaItem
 from providers.registry import ProviderRegistry
 from generation_queue import get_generation_queue
 from agent.jobs import wait_for_jobs
@@ -637,9 +637,10 @@ async def execute_call_tool(
     queue = get_generation_queue()
     chat_id = kwargs.get("chat_id")
     auto_delete_duration = kwargs.get("auto_delete_duration")
-    if auto_delete_duration is None and chat_id is not None:
+    video_quick_mode = False
+    if chat_id is not None:
         # V2 tool execution runs outside the legacy generation helpers, so read
-        # the chat's canonical generation preference explicitly.
+        # the chat's canonical generation preferences explicitly.
         from database import Chat
         from database_registry import get_database_registry
 
@@ -649,9 +650,33 @@ async def execute_call_tool(
             if chat and chat.generation_settings:
                 try:
                     chat_settings = json.loads(chat.generation_settings)
-                    auto_delete_duration = chat_settings.get("auto_delete_duration")
+                    if auto_delete_duration is None:
+                        auto_delete_duration = chat_settings.get("auto_delete_duration")
+                    video_quick_mode = chat_settings.get("video_quick_mode") is True
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+    if "video" in str(task_type).lower() and video_quick_mode:
+        # The fast switch is a hard routing constraint. Existing H3 fast
+        # adapters are explicitly named with ``turbo``; refuse a standard or
+        # unrelated video tool rather than silently dispatching the wrong path.
+        fast_tool_markers = ("minimax_h3", "turbo")
+        normalized_tool_id = str(tool_id).lower()
+        if not all(marker in normalized_tool_id for marker in fast_tool_markers):
+            raise RuntimeError(
+                "MiniMax H3 ⚡ fast is enabled for this chat, but no explicit fast H3 "
+                f"adapter is available for '{tool_id}'. No video generation was launched."
+            )
+
+    # Keep the chat-level video choice attached to the dispatch record. The
+    # worker filters this metadata out before calling a provider, so an
+    # adapter that does not understand it never receives a fake tool argument.
+    if "video" in str(task_type).lower():
+        job_params["prompt_metadata"] = {
+            "video_backend": "minimax_h3_fast" if video_quick_mode else "minimax_h3_standard",
+            "video_backend_label": "MiniMax H3 ⚡" if video_quick_mode else "MiniMax H3 standard",
+            "video_quick_mode": video_quick_mode,
+        }
     disposition_kwargs = {}
     if kwargs.get("output_disposition") is not None:
         disposition_kwargs = {
@@ -677,6 +702,33 @@ async def execute_call_tool(
         auto_delete_duration=auto_delete_duration,
         **disposition_kwargs,
     )
+
+    # Direction chats carry a stable scene envelope in their instructions.
+    # Preserve that provenance on every agent-generated job without exposing
+    # an extra provider parameter or requiring the model to remember it.
+    direction_scene_id = None
+    chat_id = kwargs.get("chat_id")
+    if chat_id and kwargs.get("project_id"):
+        chat = await session.get(Chat, chat_id)
+        marker = "DIRECTION_CONTEXT="
+        raw = chat.additional_instructions if chat else None
+        if raw and marker in raw:
+            try:
+                direction_scene_id = json.loads(raw.split(marker, 1)[1]).get("scene_id")
+            except (ValueError, TypeError):
+                direction_scene_id = None
+    if direction_scene_id:
+        # Job already exists; update its canonical JSON metadata atomically in
+        # the same session the agent uses for its action trail.
+        from database import GenerationJob
+        job = await session.get(GenerationJob, job_id)
+        if job:
+            saved = json.loads(job.parameters or "{}")
+            saved["_direction_scene_id"] = direction_scene_id
+            job.parameters = json.dumps(saved)
+            from project_direction_service import record_event
+            await record_event(session, kwargs["project_id"], "agent_generation_queued", actor="agent", scene_id=direction_scene_id, chat_id=chat_id, generation_job_id=job_id, payload={"tool_id": tool_id, "prompt": saved.get("prompt")})
+            await session.commit()
 
     # Resolve backend_name for logging and dispatch
     backend_name = queue._resolve_backend_info(tool_id, None, provider.provider_id)[0]

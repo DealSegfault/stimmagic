@@ -319,6 +319,15 @@ class BoardSectionResponse(BaseModel):
     updated_at: str
 
 
+class BoardSceneResponse(BaseModel):
+    id: int
+    sequence_number: int
+    scene_number: int
+    title: str
+    description: str = ""
+    prompt: str = ""
+
+
 class BoardResponse(BaseModel):
     id: int
     name: str
@@ -327,6 +336,7 @@ class BoardResponse(BaseModel):
     updated_at: str
     sections: List[BoardSectionResponse] = []
     asset_count: Optional[int] = None
+    scenes: List[BoardSceneResponse] = []
 
 
 class BoardCreateRequest(BaseModel):

@@ -325,7 +325,7 @@ class LLMProviderConfig(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     id: str
-    kind: str  # openai | anthropic | google | xai | together | fireworks | openrouter | local
+    kind: str  # openai | anthropic | google | xai | together | fireworks | openrouter | local | codex_cli | agy_cli
     name: str
     base_url: str
     api_key: Optional[str] = None

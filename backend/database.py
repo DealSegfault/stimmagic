@@ -616,6 +616,35 @@ class ProjectAsset(Base):
     )
 
 
+class ProjectElement(Base):
+    """Named project-scoped visual reference backed by a stable Asset."""
+    __tablename__ = "project_elements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    asset_id = Column(Integer, ForeignKey('assets.id', ondelete='SET NULL'), nullable=True, index=True)
+    element_type = Column(String, nullable=False, default='prop', index=True)
+    name = Column(String, nullable=False)
+    reference_id = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "element_type IN ('location', 'character', 'prop')",
+            name='ck_project_elements_type',
+        ),
+        Index(
+            'idx_project_elements_live_reference', 'project_id', 'reference_id',
+            unique=True, sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_elements_project_type', 'project_id', 'element_type'),
+        {'sqlite_autoincrement': True},
+    )
+
+
 class BoardAssetItem(Base):
     """Ordered Asset membership in a board section."""
     __tablename__ = "board_asset_items"
@@ -991,6 +1020,62 @@ class ProjectMedia(Base):
         Index('idx_project_media_media', media_id),
         Index('idx_project_media_project_added', project_id, added_at),
     )
+
+
+class ProjectDirection(Base):
+    """The durable creative brief and imported script for a Project."""
+    __tablename__ = "project_directions"
+
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), primary_key=True)
+    script_name = Column(String, nullable=True)
+    script_text = Column(Text, nullable=False, default='')
+    summary = Column(Text, nullable=True)
+    context = Column(Text, nullable=True)  # JSON: global creative constraints
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ProjectScene(Base):
+    """A sequenced, reviewable scene derived from a project script."""
+    __tablename__ = "project_scenes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey('boards.id', ondelete='SET NULL'), nullable=True, index=True)
+    sequence_number = Column(Integer, nullable=False, default=1)
+    scene_number = Column(Integer, nullable=False, default=1)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    prompt = Column(Text, nullable=True)
+    context = Column(Text, nullable=True)  # JSON: per-scene references/notes
+    dependencies = Column(Text, nullable=True)  # JSON: scene ids or plain requirements
+    blockers = Column(Text, nullable=True)  # JSON: unresolved issues
+    status = Column(String, nullable=False, default='planned', index=True)
+    validation_status = Column(String, nullable=False, default='pending', index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index('idx_project_scenes_order', project_id, sequence_number, scene_number),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectDirectionEvent(Base):
+    """Append-only audit trail for direction, agent and generation actions."""
+    __tablename__ = "project_direction_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    scene_id = Column(Integer, ForeignKey('project_scenes.id', ondelete='SET NULL'), nullable=True, index=True)
+    chat_id = Column(Integer, ForeignKey('chats.id', ondelete='SET NULL'), nullable=True, index=True)
+    generation_job_id = Column(Integer, ForeignKey('generation_jobs.id', ondelete='SET NULL'), nullable=True, index=True)
+    kind = Column(String, nullable=False, index=True)
+    actor = Column(String, nullable=False, default='user')
+    payload = Column(Text, nullable=True)  # JSON, intentionally immutable after insertion
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    __table_args__ = {'sqlite_autoincrement': True}
 
 
 class Flow(Base):

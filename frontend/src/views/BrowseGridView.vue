@@ -183,6 +183,7 @@
       @edit-image="handleEditImage"
       @slideshow="startSlideshowFromSelected"
       @download="handleDownload"
+      @share="handleShare"
       @print="handlePrint"
       @delete="handleMoveToTrash"
       @restore="handleBulkRestore"
@@ -365,7 +366,8 @@ const {
   getMediaItem: getPayloadMediaItem,
   getMarkers,
   downloadMedia,
-  getThumbnailUrl
+  getThumbnailUrl,
+  getMediaFileUrl
 } = useMediaApi()
 const {
   fetchAssets: fetchMedia,
@@ -1364,19 +1366,99 @@ function handlePrint() {
   printContactSheet(selectedItems.value, getThumbnailUrl)
 }
 
+// Resolve selected assets even when the virtual grid has evicted them from its
+// page cache (e.g. after Select All or while scrolled far down the Library).
+async function resolveItemsForAssets(assetIds) {
+  const cachedItems = selectedItems.value
+  const cachedById = new Map(cachedItems.map(item => [assetIdOf(item), item]))
+
+  return Promise.all(assetIds.map(async (assetId) => {
+    const cached = cachedById.get(assetId)
+    if (cached) return cached
+    return getMediaItem(assetId, { includeTrashed: props.isTrashMode })
+  }))
+}
+
 // Download selected items
-function handleDownload(ids = null) {
+async function handleDownload(ids = null) {
   const assetIds = ids || selectedItemIds.value
-  if (assetIds.length === 0) return
+  if (!assetIds || assetIds.length === 0) return
 
-  // If specific IDs passed, find matching items from selectedItems or use IDs only
-  const items = ids
-    ? selectedItems.value.filter(item => ids.includes(assetIdOf(item)))
-    : [...selectedItems.value]
+  try {
+    const items = await resolveItemsForAssets(assetIds)
+    const mediaIds = items.map(mediaIdOf).filter(Boolean)
+    if (mediaIds.length === 0) {
+      addToast('No downloadable media found for this selection', 'error')
+      return
+    }
 
-  exportMediaIds.value = items.map(mediaIdOf).filter(Boolean)
-  exportMediaItems.value = items
-  showExportModal.value = true
+    exportMediaIds.value = mediaIds
+    exportMediaItems.value = items
+    showExportModal.value = true
+  } catch (error) {
+    console.error('[BrowseGridView] Failed to resolve export selection:', error)
+    addToast('Could not prepare the selected media for export', 'error')
+  }
+}
+
+// Share one selected media file with the native macOS share sheet (including
+// AirDrop when the browser/runtime exposes the Web Share API). Browsers that
+// cannot share local files fall back to a normal download so the user can
+// AirDrop the file from Finder.
+async function handleShare() {
+  const assetId = selectedItemIds.value[0]
+  if (assetId == null) return
+
+  try {
+    const item = (await resolveItemsForAssets([assetId]))[0]
+    const mediaId = mediaIdOf(item)
+    if (!mediaId) throw new Error('Selected item has no media file')
+
+    const filename = item.file_path?.split('/').pop() || `stimma-media-${mediaId}`
+    const fileUrl = getMediaFileUrl(mediaId)
+
+    if (typeof navigator.share !== 'function') {
+      await downloadMedia([mediaId])
+      addToast('Native sharing is unavailable here. The file was downloaded; AirDrop it from Finder.', 'info')
+      return
+    }
+
+    const response = await fetch(fileUrl)
+    if (!response.ok) throw new Error(`Media download failed (${response.status})`)
+    const blob = await response.blob()
+    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' })
+    const shareData = { files: [file], title: item.asset_title || filename }
+
+    if (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] })) {
+      await downloadMedia([mediaId])
+      addToast('This runtime cannot share files directly. The file was downloaded; AirDrop it from Finder.', 'info')
+      return
+    }
+
+    try {
+      await navigator.share(shareData)
+      addToast('Share sheet opened — choose AirDrop to send the video.', 'success')
+    } catch (error) {
+      // Closing the share sheet is not an error and should not trigger a
+      // surprising download.
+      if (error?.name === 'AbortError') return
+      throw error
+    }
+  } catch (error) {
+    console.error('[BrowseGridView] Native share failed:', error)
+    try {
+      const item = (await resolveItemsForAssets([assetId]))[0]
+      const mediaId = mediaIdOf(item)
+      if (mediaId) {
+        await downloadMedia([mediaId])
+        addToast('Sharing failed, so the video was downloaded. AirDrop it from Finder.', 'info')
+        return
+      }
+    } catch (fallbackError) {
+      console.error('[BrowseGridView] Share download fallback failed:', fallbackError)
+    }
+    addToast('Could not share this media file', 'error')
+  }
 }
 
 async function handleToggleMarker({ markerId, add }) {

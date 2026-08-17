@@ -71,6 +71,8 @@ export default defineConfig(() => ({
   },
   server: {
     port: frontendPort,
+    // Quick Tunnels use a generated subdomain under trycloudflare.com.
+    allowedHosts: ['.trycloudflare.com'],
     watch: {
       usePolling: true,
       interval: 300

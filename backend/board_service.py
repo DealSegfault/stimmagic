@@ -1,4 +1,5 @@
 """Shared board serialization helpers."""
+import json
 from typing import List
 
 from sqlalchemy import or_, select
@@ -10,7 +11,9 @@ from database import (
     Board,
     BoardAssetItem,
     BoardSection,
+    GenerationJob,
     MediaItem,
+    ProjectScene,
 )
 from models.api_models import BoardResponse, BoardSectionResponse
 from implicit_markers import implicit_markers_by_media
@@ -18,6 +21,39 @@ from implicit_markers import implicit_markers_by_media
 
 async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
     """Serialize a board with sections, items, and computed asset_count."""
+    generation_counts: dict[int, int] = {}
+    generation_jobs = await session.scalars(
+        select(GenerationJob)
+        .where(GenerationJob.project_id == board.project_id)
+        .order_by(GenerationJob.id.asc())
+    )
+    for job in generation_jobs:
+        try:
+            scene_id = json.loads(job.parameters or "{}").get("_direction_scene_id")
+        except (TypeError, json.JSONDecodeError):
+            scene_id = None
+        if isinstance(scene_id, int):
+            generation_counts[scene_id] = generation_counts.get(scene_id, 0) + 1
+
+    scenes_result = await session.execute(
+        select(ProjectScene)
+        .where(ProjectScene.board_id == board.id)
+        .order_by(ProjectScene.sequence_number.asc(), ProjectScene.scene_number.asc())
+    )
+    scenes = [
+        {
+            "id": scene.id,
+            "sequence_number": scene.sequence_number,
+            "scene_number": scene.scene_number,
+            "title": scene.title,
+            "description": scene.description or "",
+            "prompt": scene.prompt or "",
+            "status": scene.status or "planned",
+            "validation_status": scene.validation_status or "pending",
+            "generation_count": generation_counts.get(scene.id, 0),
+        }
+        for scene in scenes_result.scalars().all()
+    ]
     sections_result = await session.execute(
         select(BoardSection)
         .where(BoardSection.board_id == board.id, BoardSection.deleted_at.is_(None))
@@ -75,4 +111,5 @@ async def serialize_board(board: Board, session: AsyncSession) -> BoardResponse:
         **board.to_dict(),
         sections=payload_sections,
         asset_count=total_asset_count,
+        scenes=scenes,
     )

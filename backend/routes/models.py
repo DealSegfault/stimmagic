@@ -114,6 +114,22 @@ def _provider_display_name(provider: LLMProviderConfig) -> str:
     return provider.name
 
 
+def _provider_model_input_modalities(
+    provider: LLMProviderConfig,
+    model: LLMProviderModelConfig,
+) -> list[str]:
+    """Return the capabilities exposed to chat surfaces for a provider model.
+
+    Codex CLI uses ChatGPT's authenticated multimodal transport rather than an
+    OpenAI-compatible HTTP endpoint. Older registrations predate that
+    transport's vision support and persisted ``["text"]``; keep those installs
+    usable without requiring users to recreate the provider.
+    """
+    if provider.kind in ("codex_cli", "agy_cli"):
+        return ["text", "image"]
+    return model.input_modalities
+
+
 def _provider_response(provider: LLMProviderConfig) -> dict:
     data = provider.model_dump(exclude={"api_key"})
     data["name"] = _provider_display_name(provider)
@@ -1002,7 +1018,7 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
                 "max_context_tokens": min(256_000, provider_model.max_context_tokens),
                 "reasoning": provider_model.reasoning.model_dump(),
                 "supports_tools": provider_model.supports_tools,
-                "input_modalities": provider_model.input_modalities,
+                "input_modalities": _provider_model_input_modalities(provider, provider_model),
             })
     for model in models:
         if model.get("source") != "stimma_cloud":

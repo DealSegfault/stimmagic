@@ -827,6 +827,15 @@ async def lifespan(app: FastAPI):
             )
             log.info("builtin provider registered", tool_count=len(await builtin_provider.list_tools()))
 
+            # Cloud Repaint is a normal generation provider: the queue owns
+            # persistence/lineage while this adapter only calls Modal.
+            from providers import ModalRepaintProvider
+            repaint_provider = ModalRepaintProvider()
+            await repaint_provider.connect()
+            await provider_registry.register(repaint_provider)
+            await backend_registry.register_backend(repaint_provider.provider_id, repaint_provider.max_concurrent)
+            log.info("modal repaint provider registered", gpu="L40S", gpu_memory_gb=48, routing="local-modal-bridge", configured=True)
+
             # Initialize user-tools provider (flows frozen into first-class tools)
             from providers import get_user_tools_provider
             user_tools_provider = get_user_tools_provider()
@@ -1503,6 +1512,14 @@ async def lifespan(app: FastAPI):
         log.warning("provider registry shutdown timed out")
     except Exception as e:
         log.exception("error shutting down provider registry")
+
+    # Stop Cloudflare tunnel if running
+    try:
+        from tunnel_service import tunnel_service
+        await asyncio.wait_for(tunnel_service.stop_tunnel(), timeout=3.0)
+        log.info("tunnel service stopped")
+    except Exception as e:
+        log.warning("error stopping tunnel service on shutdown", error=str(e))
 
     # Dispose all database engines (with timeout)
     try:

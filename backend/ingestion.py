@@ -2136,6 +2136,7 @@ class MediaIngestion:
                 ffmpeg
                 .input(str(video_path), ss=0)
                 .output('pipe:', vframes=1, format='image2', vcodec='mjpeg')
+                .global_args('-nostdin')
                 .run(capture_stdout=True, capture_stderr=True)
             )
             return Image.open(BytesIO(out))

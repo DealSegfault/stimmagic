@@ -26,6 +26,13 @@ from database import (
     Keyword, MediaKeyword, MediaToolLineage, Face,
 )
 from generation_metadata import build_parameters, dump_generation_metadata
+from project_element_service import (
+    ProjectElementError,
+    create_project_element,
+    delete_project_element,
+    list_project_elements,
+    serialize_project_element,
+)
 
 log = get_logger(__name__)
 
@@ -919,7 +926,9 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
     name="library",
     description=(
         "Search, retrieve, save, and browse the media library. "
-        "Manage tags, markers, and boards on Assets. For tag/marker/board actions you can "
+        "Manage project elements, tags, markers, and boards on Assets. Use action='element' "
+        "to create a named location/character/prop from an attached media_id or existing asset_id. "
+        "For tag/marker/board actions you can "
         "target an item by the media_id you already have (from show/create_layout/media_info/"
         "generation) — it resolves to the owning Asset automatically; you do NOT need to look up "
         "an asset_id first. Browse/search results return both asset_id and media_id. "
@@ -927,7 +936,7 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
         "Use generation_params to get a call_tool-ready flow for reproducing an existing image (tweak one field, then call_tool)."
     ),
     parameters=[
-        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | tag | marker | board"),
+        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | element | tag | marker | board"),
         ToolParameter("query", "string", "Text query. Search matches against generation prompts by default (best signal). Use search_fields to broaden.", required=False),
         ToolParameter("search_fields", "string", "prompt (default) | caption | keywords | all — which fields to search. Only broaden when prompt search returns nothing useful.", required=False),
         ToolParameter("media_id", "integer", "Exact Media payload ID. Used for get/lineage, and ALSO accepted as the target for tag/marker/board actions (resolved to its owning Asset — just pass the media_id you already have).", required=False),
@@ -949,7 +958,11 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
         ToolParameter("board_id", "integer", "Board ID (board action)", required=False),
         ToolParameter("section_name", "string", "Section name (board action)", required=False),
         ToolParameter("section_id", "integer", "Section ID (board action)", required=False),
-        ToolParameter("operation", "string", "Default: add. Supported ops differ by action — tag: add | remove | list ('add' creates missing tags); marker: add | remove | list ('add' applies an existing marker only — markers cannot be created here); board: add | remove | move | list | contents | create | delete | rename | create_section | rename_section | delete_section | set_collapsed. Board 'add' auto-creates the board if board_name doesn't exist yet — no separate create needed. Move relocates items to a target section.", required=False),
+        ToolParameter("element_id", "integer", "Element ID for element delete", required=False),
+        ToolParameter("element_type", "string", "Element type: location | character | prop (default prop)", required=False),
+        ToolParameter("element_name", "string", "Display name for element create, e.g. couteau", required=False),
+        ToolParameter("description", "string", "Optional element description", required=False),
+        ToolParameter("operation", "string", "Default: add. Supported ops differ by action — element: create | list | delete; tag: add | remove | list ('add' creates missing tags); marker: add | remove | list ('add' applies an existing marker only — markers cannot be created here); board: add | remove | move | list | contents | create | delete | rename | create_section | rename_section | delete_section | set_collapsed. Board 'add' auto-creates the board if board_name doesn't exist yet — no separate create needed. Move relocates items to a target section.", required=False),
     ],
 )
 async def library(
@@ -975,6 +988,10 @@ async def library(
     board_id: Optional[int] = None,
     section_name: Optional[str] = None,
     section_id: Optional[int] = None,
+    element_id: Optional[int] = None,
+    element_type: Optional[str] = None,
+    element_name: Optional[str] = None,
+    description: Optional[str] = None,
     operation: Optional[str] = None,
     **kwargs,
 ) -> str:
@@ -1005,6 +1022,19 @@ async def library(
         return await _save(session, path, workspace_dir, save_tags, project_id=project_id)
     elif action == "lineage":
         return await _lineage(session, media_id)
+    elif action == "element":
+        return await _element(
+            session,
+            project_id=project_id,
+            operation=(operation or "list"),
+            element_id=element_id,
+            element_type=element_type,
+            element_name=element_name,
+            description=description,
+            asset_id=asset_id,
+            media_id=media_id,
+            query=query,
+        )
     elif action == "tag":
         return await _tag(
             session, asset_id, asset_ids, media_id, media_ids, tags, op
@@ -1032,8 +1062,63 @@ async def library(
         return (
             "Error: Unknown action "
             f"'{action}'. Use: search, get, generation_params, browse, browse_schema, browse_options, "
-            "save, lineage, tag, marker, board"
+            "save, lineage, element, tag, marker, board"
         )
+
+
+async def _element(
+    session: AsyncSession,
+    *,
+    project_id: Optional[int],
+    operation: str,
+    element_id: Optional[int],
+    element_type: Optional[str],
+    element_name: Optional[str],
+    description: Optional[str],
+    asset_id: Optional[int],
+    media_id: Optional[int],
+    query: Optional[str],
+) -> str:
+    if project_id is None:
+        return "Error: element actions require a project chat"
+    op = operation.lower().strip()
+    try:
+        if op == "list":
+            items = await list_project_elements(
+                session,
+                project_id=project_id,
+                element_type=element_type,
+                query=query,
+            )
+            return json.dumps({"items": items, "total": len(items)}, default=str)
+        if op == "create":
+            if not element_name:
+                return "Error: element_name is required for element create"
+            element, created = await create_project_element(
+                session,
+                project_id=project_id,
+                name=element_name,
+                element_type=element_type or "prop",
+                asset_id=asset_id,
+                media_id=media_id,
+                description=description,
+            )
+            await session.commit()
+            payload = await serialize_project_element(session, element)
+            payload["created"] = created
+            return json.dumps(payload, default=str)
+        if op == "delete":
+            if element_id is None:
+                return "Error: element_id is required for element delete"
+            await delete_project_element(
+                session, project_id=project_id, element_id=element_id
+            )
+            await session.commit()
+            return json.dumps({"status": "deleted", "element_id": element_id})
+        return "Error: element operation must be create, list, or delete"
+    except ProjectElementError as exc:
+        await session.rollback()
+        return f"Error: {exc}"
 
 
 async def _search(

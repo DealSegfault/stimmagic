@@ -38,6 +38,7 @@ from .user_tools import (
     UserToolsProvider,
     get_user_tools_provider,
 )
+from .modal_repaint import ModalRepaintProvider
 
 __all__ = [
     "ProviderStatus",
@@ -58,4 +59,5 @@ __all__ = [
     "get_lightweight_provider",
     "UserToolsProvider",
     "get_user_tools_provider",
+    "ModalRepaintProvider",
 ]

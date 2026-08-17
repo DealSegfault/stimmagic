@@ -37,6 +37,7 @@ class ChatCreateRequest(PydanticBaseModel):
     project_id: Optional[int] = None
     flow_id: Optional[int] = None
     model_slug: Optional[str] = None
+    reasoning_effort: Optional[str] = None
 
 
 class ChatUpdateRequest(PydanticBaseModel):
@@ -618,6 +619,7 @@ async def create_chat(
         # creation would freeze every chat and make changing the setting affect
         # nothing but the next new chat.
         model_slug=normalize_model_slug(request.model_slug) if request.model_slug else None,
+        reasoning_effort=request.reasoning_effort or None,
     )
     session.add(chat)
     await session.commit()

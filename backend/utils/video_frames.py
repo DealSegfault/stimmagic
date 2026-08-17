@@ -157,6 +157,7 @@ def extract_frame_to_image(
             out, _ = (
                 ffmpeg.input(str(video_path), ss=seek)
                 .output("pipe:", vframes=1, format="image2", vcodec="mjpeg")
+                .global_args("-nostdin")
                 .run(capture_stdout=True, capture_stderr=True)
             )
             return out

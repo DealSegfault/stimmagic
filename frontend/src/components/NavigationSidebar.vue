@@ -39,7 +39,7 @@
 
           <!-- ==================== ZONE 1: Library Links ==================== -->
 
-          <!-- Stimma Home -->
+          <!-- Stimma Home & Tunnel Status Light -->
           <button
             @click="handleNavClick('home')"
             @dragover="handleDragOver"
@@ -55,6 +55,8 @@
           >
             <img src="/logo.svg" class="w-3.5 h-3.5 flex-shrink-0" :class="{ 'logo-disconnected': !wsConnected }" alt="" />
             <span class="font-brand lowercase tracking-[0.12em]">stimma</span>
+            <!-- Single status light next to logo -->
+            <TunnelIndicator class="ml-auto flex-shrink-0" @click.stop />
           </button>
 
           <!-- Saved Views -->
@@ -1051,9 +1053,9 @@ import ToolIcon from './tools/ToolIcon.vue'
 import EntityIcon from './EntityIcon.vue'
 import StatusDot from './ui/StatusDot.vue'
 import Spinner from './ui/Spinner.vue'
-import Tooltip from './ui/Tooltip.vue'
 import WorkspaceTabsContextMenu from './WorkspaceTabsContextMenu.vue'
 import EditorShelf from './EditorShelf.vue'
+import TunnelIndicator from './TunnelIndicator.vue'
 // @ts-expect-error - distribution-aliased Vue component (see vite.config.js)
 import FeedbackFooterButton from '@stimma/feedback-footer-button'
 

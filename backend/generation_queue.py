@@ -2910,7 +2910,7 @@ class GenerationQueue:
             # Build the single parameters dict sent to the provider from the
             # stored flat job params. Filter out Stimma-internal parameters that
             # should never be sent to providers.
-            internal_params = {'inspired_by_media_id'}
+            internal_params = {'inspired_by_media_id', 'prompt_metadata'}
             exec_params = {k: v for k, v in params.items() if k not in internal_params}
 
             # Add tool_id for metadata embedding

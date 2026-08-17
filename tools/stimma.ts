@@ -23,6 +23,14 @@ type DevProcess = {
   status: Promise<Deno.CommandStatus>;
 };
 
+type SupervisedDevComponent = {
+  label: string;
+  start: () => DevProcess;
+  process?: DevProcess;
+  restartCount: number;
+  startedAt: number;
+};
+
 type ProcessEntry = {
   pid: number;
   ppid: number;
@@ -34,6 +42,9 @@ type TerminationSignal = "SIGTERM" | "SIGKILL";
 const DEV_HOST = "127.0.0.1";
 const LOCALHOSTS = [DEV_HOST, "::1"];
 const VITE_DEV_ARGS = ["run", "dev", "--", "--host", DEV_HOST, "--strictPort"];
+const COMPONENT_RESTART_DELAY_MS = 1500;
+const MAX_COMPONENT_RESTARTS = 5;
+const COMPONENT_STABILITY_WINDOW_MS = 30_000;
 const DEFAULT_BACKEND_PORT = 9191;
 const DEFAULT_FRONTEND_PORT = 9192;
 // Hiro uses 9292/9293 for defaults and 9300-9399 for sandboxes.
@@ -1771,22 +1782,59 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
   const backendDir = join(repoRoot, "backend");
   const frontendDir = join(repoRoot, "frontend");
   const backendExec = `uv run python main.py --bundle-id=${bundleId} --sandbox=${sandbox} --port=${ports.server}`;
-  const backendArgs = Deno.build.os === "windows"
-    ? ["nodemon", "--signal", "SIGKILL", "--exec", backendExec]
-    : ["nodemon", "--signal", "SIGKILL", "--exec", backendExec];
+  const backendArgs = ["nodemon", "--signal", "SIGTERM", "--exec", backendExec];
   const portEnv = {
     STIMMA_BACKEND_PORT: String(ports.server),
     STIMMA_FRONTEND_PORT: String(ports.frontend),
   };
   const tauriConfig = tauriDevConfig(bundleId, sandbox, ports, await channelIconConfig(channel));
-  const processes: DevProcess[] = [];
+  const components = new Map<string, SupervisedDevComponent>();
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | null = null;
+  let resolveStopped: (() => void) | null = null;
+
+  const currentProcesses = () => [...components.values()]
+    .map((component) => component.process)
+    .filter((process): process is DevProcess => Boolean(process));
+
+  const startComponent = (component: SupervisedDevComponent) => {
+    if (shuttingDown) return;
+    const process = component.start();
+    component.process = process;
+    component.startedAt = Date.now();
+    console.log(`[dev all] component=${component.label} started pid=${process.child.pid}`);
+    void process.status.then(async (status) => {
+      if (component.process !== process || shuttingDown) return;
+      component.process = undefined;
+      const runtimeMs = Date.now() - component.startedAt;
+      if (runtimeMs >= COMPONENT_STABILITY_WINDOW_MS) component.restartCount = 0;
+      component.restartCount += 1;
+      const reason = status.success ? "clean-exit" : (status.signal ? `signal-${status.signal}` : `exit-${status.code}`);
+      console.warn(`[dev all] component=${component.label} stopped pid=${process.child.pid} reason=${reason} runtime_ms=${runtimeMs} restart=${component.restartCount}/${MAX_COMPONENT_RESTARTS}`);
+      if (component.restartCount > MAX_COMPONENT_RESTARTS) {
+        console.error(`[dev all] component=${component.label} restart budget exhausted; other components remain available. Fix the component, then restart only this dev stack.`);
+        return;
+      }
+      console.log(`[dev all] component=${component.label} restarting in ${COMPONENT_RESTART_DELAY_MS}ms; other components stay running.`);
+      await sleep(COMPONENT_RESTART_DELAY_MS);
+      if (!shuttingDown) startComponent(component);
+    }).catch((error) => {
+      console.error(`[dev all] component=${component.label} status monitor failed: ${error}`);
+    });
+  };
+
+  const addComponent = (label: string, start: () => DevProcess) => {
+    const component: SupervisedDevComponent = { label, start, restartCount: 0, startedAt: 0 };
+    components.set(label, component);
+    startComponent(component);
+    return component;
+  };
 
   const shutdown = (exitCode?: number) => {
     if (shutdownPromise) return shutdownPromise;
     shuttingDown = true;
     shutdownPromise = (async () => {
+      const processes = currentProcesses();
       const hadStartedProcesses = processes.length > 0;
       await terminateDevProcesses(processes);
       if (hadStartedProcesses) {
@@ -1795,6 +1843,7 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
           warnIfTcpPortStillOpen(ports.frontend, "frontend"),
         ]);
       }
+      resolveStopped?.();
       if (exitCode !== undefined) Deno.exit(exitCode);
     })();
     return shutdownPromise;
@@ -1823,29 +1872,36 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
       assertTcpPortAvailable(ports.frontend, "frontend"),
     ]);
 
-    processes.push(spawnDevProcess("backend", "npx", backendArgs, { cwd: backendDir, env: runtimeEnv }));
-    processes.push(spawnDevProcess("frontend", "npm", VITE_DEV_ARGS, { cwd: frontendDir, env: { ...runtimeEnv, ...portEnv } }));
+    addComponent("backend", () => spawnDevProcess("backend", "npx", backendArgs, { cwd: backendDir, env: runtimeEnv }));
+    addComponent("frontend", () => spawnDevProcess("frontend", "npm", VITE_DEV_ARGS, { cwd: frontendDir, env: { ...runtimeEnv, ...portEnv } }));
 
     console.log("[dev all] Waiting up to 10 minutes for backend startup; one-time profile migrations report progress below.");
-    await waitForReadyOrExit(processes, Promise.all([
+    await Promise.all([
       waitForTcpPort(ports.server, "backend", 10 * 60 * 1000, [DEV_HOST]),
       waitForTcpPort(ports.frontend, "frontend", 60000, [DEV_HOST]),
-    ]).then(() => undefined));
+    ]);
 
     console.log("[dev all] Backend and frontend are ready; launching Tauri app.");
-    processes.push(spawnDevProcess("app", "cargo", ["tauri", "dev", "--config", tauriConfig], {
-      cwd: repoRoot,
+    // Prefer the project-local Tauri CLI. `cargo tauri` only works when the
+    // Rust cargo-tauri subcommand is installed globally; this repo already
+    // pins @tauri-apps/cli in frontend/node_modules, so using it keeps the
+    // dev launcher reproducible on a fresh checkout.
+    const localTauriCli = join(
+      frontendDir,
+      "node_modules",
+      ".bin",
+      Deno.build.os === "windows" ? "tauri.cmd" : "tauri",
+    );
+    const appCommand = await pathExists(localTauriCli) ? localTauriCli : "cargo";
+    const appArgs = appCommand === "cargo"
+      ? ["tauri", "dev", "--config", tauriConfig]
+      : ["dev", "--config", tauriConfig];
+    addComponent("app", () => spawnDevProcess("app", appCommand, appArgs, {
+      cwd: appCommand === "cargo" ? repoRoot : join(repoRoot, "src-tauri"),
       env: tauriDevEnv(bundleId, ports, sandbox, runtimeEnv),
     }));
     console.log("[dev all] App process started. Press Ctrl-C to stop the full stack.");
-
-    const firstExit = await Promise.race(processes.map(async (proc) => ({ proc, status: await proc.status })));
-    if (!shuttingDown) {
-      console.log(`[dev all] ${firstExit.proc.label} exited with code ${firstExit.status.code}; stopping remaining processes.`);
-      await shutdown();
-      Deno.exit(firstExit.status.code);
-    }
-    await shutdownPromise;
+    await new Promise<void>((resolve) => { resolveStopped = resolve; });
   } catch (err) {
     console.error(`[dev all] ${err}`);
     await shutdown();
@@ -1953,10 +2009,10 @@ async function main(): Promise<void> {
         const ports = await getSandboxPorts(bundleId, sandbox);
         const execStr = `uv run python main.py --bundle-id=${bundleId} --sandbox=${sandbox} --port=${ports.server}`;
         if (Deno.build.os === "windows") {
-          const cmdArgs = ["nodemon", "--signal", "SIGKILL", "--exec", execStr];
+          const cmdArgs = ["nodemon", "--signal", "SIGTERM", "--exec", execStr];
           await run("npx", cmdArgs, { cwd: backendDir, env: runtimeEnv });
         } else {
-          await run("npx", ["nodemon", "--signal", "SIGKILL", "--exec", execStr], { cwd: backendDir, env: runtimeEnv });
+          await run("npx", ["nodemon", "--signal", "SIGTERM", "--exec", execStr], { cwd: backendDir, env: runtimeEnv });
         }
       } else if (sub === "backend2") {
         const ports = await getSandboxPorts(bundleId, sandbox);

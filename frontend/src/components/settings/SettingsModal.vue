@@ -153,9 +153,9 @@
                 />
               </template>
 
-              <!-- Model Preferences Section -->
-              <template v-else-if="activeSection === 'model-preferences'">
-                <ModelPreferencesSection />
+              <!-- Cloudflare Tunnel Section -->
+              <template v-else-if="activeSection === 'tunnel'">
+                <TunnelSection />
               </template>
 
               <!-- Developer Section -->
@@ -207,6 +207,7 @@ import AccountSection from './sections/AccountSection.vue'
 import PrivacySection from './sections/PrivacySection.vue'
 import AIServicesSection from './sections/AIServicesSection.vue'
 import ModelPreferencesSection from './sections/ModelPreferencesSection.vue'
+import TunnelSection from './sections/TunnelSection.vue'
 import DeveloperSection from './sections/DeveloperSection.vue'
 import AgentSection from './sections/AgentSection.vue'
 import WildcardsSection from './sections/WildcardsSection.vue'

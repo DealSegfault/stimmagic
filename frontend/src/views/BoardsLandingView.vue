@@ -211,10 +211,18 @@ const filteredBoards = computed(() => {
       })
 
   filtered.sort((a, b) => {
+    if (props.projectId && sortBy.value === 'updated_at') {
+      const aMatch = (a.name || '').match(/^S(\d+)/i)
+      const bMatch = (b.name || '').match(/^S(\d+)/i)
+      if (aMatch && bMatch) {
+        return parseInt(aMatch[1], 10) - parseInt(bMatch[1], 10)
+      }
+    }
+
     if (sortBy.value === 'name') {
       const aName = (a.name || '').trim() || 'Name this board...'
       const bName = (b.name || '').trim() || 'Name this board...'
-      return aName.localeCompare(bName, undefined, { sensitivity: 'base' })
+      return aName.localeCompare(bName, undefined, { sensitivity: 'base', numeric: true })
     }
 
     const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0
@@ -463,6 +471,11 @@ unsubscribers.push(on('board_restored', (data) => {
   if (!data.board) return
   if ((data.board.project_id ?? null) !== (props.projectId ?? null)) return
   applyBoardPayload(data.board)
+}))
+
+unsubscribers.push(on('project_direction_updated', (data) => {
+  if ((data?.project_id ?? null) !== (props.projectId ?? null)) return
+  loadBoards()
 }))
 
 onUnmounted(() => {

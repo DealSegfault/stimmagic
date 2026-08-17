@@ -10,7 +10,56 @@
       @update:current-media-id="updateCurrentMediaId"
     />
 
-    <div v-show="!slideshowState.active && board" class="flex items-center gap-3 border-b border-edge-subtle px-6 py-3">
+    <!-- Studio Scene Header if board belongs to a project scene -->
+    <SceneStudioHeader
+      v-if="!slideshowState.active && board && isSceneBoard"
+      :board-name="board.name"
+      :scenes="board.scenes || []"
+      :current-scene-id="activeScene?.id"
+      :active-tab="sceneStudioTab"
+      :asset-count="totalAssetCount"
+      :generation-count="sceneGenerations.length"
+      :brief-open="sceneBriefModalOpen"
+      :chat-opening="sceneChatOpening"
+      @select-scene="handleSelectScene"
+      @update:active-tab="sceneStudioTab = $event"
+      @toggle-brief="sceneBriefModalOpen = true"
+      @open-chat="openSceneChat"
+    >
+      <template #menu-action>
+        <div class="relative">
+          <button
+            ref="boardMenuButtonRef"
+            class="flex h-8 w-8 items-center justify-center rounded-lg border border-edge bg-surface-raised text-content-muted transition-colors hover:bg-overlay-light hover:text-content"
+            title="Board actions"
+            @click="toggleBoardMenu"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+              <path d="M10 3a1.75 1.75 0 110 3.5A1.75 1.75 0 0110 3zm0 5.25a1.75 1.75 0 110 3.5 1.75 1.75 0 010-3.5zm0 5.25a1.75 1.75 0 110 3.5 1.75 1.75 0 010-3.5z" />
+            </svg>
+          </button>
+
+          <div
+            v-if="boardMenuOpen"
+            ref="boardMenuRef"
+            class="absolute right-0 top-10 z-menu min-w-[180px] overflow-hidden rounded-lg border border-edge bg-surface shadow-lg"
+          >
+            <button
+              class="flex w-full items-center gap-3 px-4 py-2.5 text-left text-xs text-red-400 transition-colors hover:bg-red-500/10"
+              @click="handleBoardMenuDeleteBoard"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4">
+                <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5z" clip-rule="evenodd" />
+              </svg>
+              <span>Delete Board</span>
+            </button>
+          </div>
+        </div>
+      </template>
+    </SceneStudioHeader>
+
+    <!-- Standard Header for standalone boards -->
+    <div v-else-if="!slideshowState.active && board" class="flex items-center gap-3 border-b border-edge-subtle px-6 py-3">
       <div class="flex min-w-0 flex-1 items-baseline gap-3">
         <input
           v-if="isEditingBoardName || editedName"
@@ -60,7 +109,56 @@
       </div>
     </div>
 
-    <div v-show="!slideshowState.active" ref="scrollerRef" class="flex-1 overflow-y-auto px-6 py-5" :class="{ 'pb-24': multiSelectMode && selectedItemIds.length > 0 }">
+    <!-- Sequence Scenes Table (Master interactive list of scenes in the sequence) -->
+    <SceneSequenceTable
+      v-if="!slideshowState.active && isSceneBoard && (board.scenes || []).length > 0"
+      :scenes="board.scenes || []"
+      :selected-scene-id="activeScene?.id"
+      :sequence-number="activeScene?.sequence_number || 1"
+      @select-scene="handleSelectScene"
+      @update-scene-status="handleUpdateSceneStatus"
+      @open-chat="openSceneChatForScene"
+    />
+
+    <!-- Brief Editor Modal (Collapsible) -->
+    <SceneBriefModal
+      v-if="isSceneBoard && sceneBriefModalOpen && activeScene"
+      :scene="activeScene"
+      :save-state="sceneBriefSaveState"
+      @save="handleSaveSceneBrief"
+      @close="sceneBriefModalOpen = false"
+    />
+
+    <!-- Main View Switcher based on sceneStudioTab -->
+    <!-- View 1: Generations & Videos -->
+    <SceneGenerationsView
+      v-if="!slideshowState.active && isSceneBoard && sceneStudioTab === 'generations'"
+      :generations="sceneGenerations"
+      :loading="sceneGenerationsLoading"
+      :error="sceneGenerationsError"
+      :scene="activeScene"
+      @refresh="loadSceneGenerations(activeScene, true)"
+      @open-chat="openSceneChat"
+      @add-to-board="handleAddGenerationToBoard"
+    />
+
+    <!-- View 2: Continuity Raccord -->
+    <SceneContinuityCard
+      v-else-if="!slideshowState.active && isSceneBoard && sceneStudioTab === 'continuity'"
+      :continuity="sceneContinuity"
+      :current-scene="activeScene"
+      :loading="sceneContinuityLoading"
+      :error="sceneContinuityError"
+      @open-chat="openSceneChat"
+    />
+
+    <!-- View 3: Media Board Canvas (Default) -->
+    <div
+      v-else-if="!slideshowState.active"
+      ref="scrollerRef"
+      class="flex-1 overflow-y-auto px-6 py-5"
+      :class="{ 'pb-24': multiSelectMode && selectedItemIds.length > 0 }"
+    >
       <div v-if="loading" class="py-20 text-center text-content-muted">Loading board...</div>
       <div v-else-if="!board" class="py-20 text-center text-content-muted">Board not found.</div>
       <TransitionGroup v-else tag="div" class="space-y-5">
@@ -303,6 +401,7 @@
       @add-tags="openTagPicker"
       @add-to-board="showBoardPicker = true"
       @download="handleExport"
+      @share="handleShare"
       @delete="handleBulkMoveToTrash"
     />
 
@@ -347,11 +446,17 @@ import { useMediaContextMenu } from '../composables/useMediaContextMenu'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useAssetApi } from '../composables/useAssetApi'
 import { useToasts } from '../composables/useToasts'
-import { createDragPreview, createSectionDragPreview, cleanupSectionDragPreview, handleDragEnd as handleDragPreviewEnd } from '../composables/useDragPreview'
 import { useSlideshow } from '../composables/useSlideshow'
 import { useTheme } from '../composables/useTheme'
 import { useWebSocket } from '../composables/useWebSocket'
+import { createDragPreview, createSectionDragPreview, cleanupSectionDragPreview, handleDragEnd as handleDragPreviewEnd } from '../composables/useDragPreview'
 import { assetIdOf, mediaIdOf } from '../utils/assetIdentity'
+import SceneStudioHeader from '../components/scene/SceneStudioHeader.vue'
+import SceneSequenceTable from '../components/scene/SceneSequenceTable.vue'
+import SceneGenerationsView from '../components/scene/SceneGenerationsView.vue'
+import SceneContinuityCard from '../components/scene/SceneContinuityCard.vue'
+import SceneBriefModal from '../components/scene/SceneBriefModal.vue'
+import { useProjectDirectionApi } from '../composables/useProjectDirectionApi'
 
 const { on } = useWebSocket()
 const route = useRoute()
@@ -359,6 +464,7 @@ const router = useRouter()
 const { resolvedTheme } = useTheme()
 const mediaContextMenu = useMediaContextMenu()
 const {
+  addMediaToBoard,
   createBoardSection,
   deleteBoard,
   restoreBoard,
@@ -366,10 +472,13 @@ const {
   getBoard,
   getMarkers,
   getThumbnailUrl,
+  getMediaFileUrl,
+  downloadMedia,
   reorderBoardSections,
   updateBoard,
   updateBoardSection
 } = useMediaApi()
+const { getSceneGenerations, getSceneContinuity, updateScene, createSceneChat } = useProjectDirectionApi()
 const {
   getAssetBrowserItem,
   trashMany: bulkDeleteMedia,
@@ -381,6 +490,27 @@ const {
 } = useAssetApi()
 const { addToast } = useToasts()
 const { slideshowState, enterSlideshow, exitSlideshow, updateCurrentMediaId } = useSlideshow()
+
+const sceneStudioTab = ref('board')
+const sceneBriefModalOpen = ref(false)
+const sceneChatOpening = ref(false)
+const sceneGenerations = ref([])
+const sceneGenerationsLoading = ref(false)
+const sceneGenerationsError = ref('')
+const sceneContinuity = ref(null)
+const sceneContinuityLoading = ref(false)
+const sceneContinuityError = ref('')
+const sceneBriefSaveState = ref('idle')
+const activeSceneId = ref(null)
+
+const isSceneBoard = computed(() => Boolean(board.value?.project_id && board.value?.scenes && board.value.scenes.length > 0))
+const activeScene = computed(() => {
+  if (!isSceneBoard.value) return null
+  const match = board.value.scenes.find((s) => s.id === activeSceneId.value) ||
+                board.value.scenes.find((s) => s.board_id === board.value.id) ||
+                board.value.scenes[0]
+  return match || null
+})
 
 const markersData = ref([])
 const showBoardPicker = ref(false)
@@ -569,7 +699,16 @@ function getDisplayItemsForSection(section) {
 
 const visibleSections = computed(() => {
   if (!board.value) return []
-  return board.value.sections || []
+  const rawSections = board.value.sections || []
+  if (isSceneBoard.value) {
+    // Filter out empty "Brief" sections that were auto-created by legacy migrations
+    return rawSections.filter((section) => {
+      const isBrief = /^brief$/i.test((section.name || '').trim())
+      const isEmpty = (section.items || []).length === 0 && (section.item_count || 0) === 0
+      return !(isBrief && isEmpty)
+    })
+  }
+  return rawSections
 })
 
 const displaySections = computed(() => {
@@ -612,6 +751,115 @@ const slideshowItems = computed(() => (
   })))
 ))
 
+async function loadSceneGenerations(scene, force = false) {
+  if (!scene || !board.value?.project_id) return
+  sceneGenerationsLoading.value = true
+  sceneGenerationsError.value = ''
+  try {
+    const res = await getSceneGenerations(board.value.project_id, scene.id)
+    sceneGenerations.value = res.generations || []
+  } catch (err) {
+    sceneGenerationsError.value = err.response?.data?.detail || 'Impossible de charger les générations.'
+  } finally {
+    sceneGenerationsLoading.value = false
+  }
+}
+
+async function loadSceneContinuity(scene, force = false) {
+  if (!scene || !board.value?.project_id) return
+  sceneContinuityLoading.value = true
+  sceneContinuityError.value = ''
+  try {
+    sceneContinuity.value = await getSceneContinuity(board.value.project_id, scene.id)
+  } catch (err) {
+    sceneContinuityError.value = err.response?.data?.detail || 'Impossible de charger le raccord.'
+  } finally {
+    sceneContinuityLoading.value = false
+  }
+}
+
+async function openSceneChat() {
+  if (!activeScene.value || !board.value?.project_id) return
+  await openSceneChatForScene(activeScene.value)
+}
+
+async function openSceneChatForScene(scene) {
+  if (!scene || !board.value?.project_id) return
+  sceneChatOpening.value = true
+  try {
+    const res = await createSceneChat(board.value.project_id, scene.id)
+    if (res?.chat_id) {
+      router.push({ name: 'chat', params: { id: res.chat_id } })
+    }
+  } catch (err) {
+    addToast(err.response?.data?.detail || 'Impossible d’ouvrir le chat', 'error', 4000)
+  } finally {
+    sceneChatOpening.value = false
+  }
+}
+
+async function handleUpdateSceneStatus({ sceneId, status }) {
+  if (!board.value?.project_id) return
+  const scene = board.value?.scenes?.find((s) => s.id === sceneId)
+  if (scene) scene.status = status
+  try {
+    await updateScene(board.value.project_id, sceneId, { status })
+    addToast('Statut de la scène mis à jour', 'success', 2000)
+  } catch (err) {
+    addToast('Impossible de mettre à jour le statut', 'error', 3000)
+  }
+}
+
+async function handleSaveSceneBrief({ description, prompt }) {
+  if (!activeScene.value || !board.value?.project_id) return
+  sceneBriefSaveState.value = 'saving'
+  try {
+    const updated = await updateScene(board.value.project_id, activeScene.value.id, { description, prompt })
+    Object.assign(activeScene.value, updated)
+    sceneBriefSaveState.value = 'saved'
+    sceneBriefModalOpen.value = false
+    addToast('Brief de scène mis à jour', 'success', 2500)
+    setTimeout(() => { sceneBriefSaveState.value = 'idle' }, 2500)
+  } catch (err) {
+    sceneBriefSaveState.value = 'error'
+    addToast('Erreur lors de l’enregistrement du brief', 'error', 4000)
+  }
+}
+
+async function handleSelectScene(sceneId) {
+  const target = board.value?.scenes?.find((s) => s.id === sceneId)
+  if (target && target.board_id && target.board_id !== board.value.id) {
+    router.push({ name: 'board-detail', params: { id: target.board_id } })
+  } else if (target) {
+    activeSceneId.value = target.id
+    loadSceneGenerations(target)
+    loadSceneContinuity(target)
+  }
+}
+
+async function handleAddGenerationToBoard({ item, target }) {
+  if (!item?.result_media_id || !board.value) return
+  const sections = board.value.sections || []
+  let section = null
+  if (target === 'approved') {
+    section = sections.find(s => /approved|valid|final|hero/i.test(s.name || ''))
+  } else if (target === 'references') {
+    section = sections.find(s => /reference|référence|ref/i.test(s.name || ''))
+  }
+  if (!section) {
+    section = sections.find(s => !s.is_default) || sections[0]
+  }
+  if (!section) return
+
+  try {
+    await addMediaToBoard(board.value.id, [item.result_media_id], section.id)
+    addToast(`Média ajouté à « ${section.name || 'Board'} »`, 'success', 3000)
+    await loadBoard()
+  } catch (err) {
+    addToast('Impossible d’ajouter le média au board', 'error', 4000)
+  }
+}
+
 async function loadBoard() {
   // Only show loading spinner on initial load, not on refreshes
   const isInitialLoad = !board.value
@@ -623,9 +871,18 @@ async function loadBoard() {
     for (const section of board.value.sections || []) {
       sectionNames[section.id] = section.name || ''
     }
+    if (isSceneBoard.value && activeScene.value) {
+      loadSceneGenerations(activeScene.value)
+      loadSceneContinuity(activeScene.value)
+    }
   } finally {
     loading.value = false
   }
+}
+
+function handleSceneUpdated(updatedScene) {
+  const scene = board.value?.scenes?.find((entry) => entry.id === updatedScene?.id)
+  if (scene) Object.assign(scene, updatedScene)
 }
 
 function measureWidth() {
@@ -955,6 +1212,48 @@ async function handleBulkMoveToTrash() {
 
 function handleExport() {
   showExportModal.value = true
+}
+
+async function handleShare() {
+  const item = selectedItems.value[0]
+  const mediaId = item ? mediaIdOf(item) : null
+  if (!mediaId) return
+
+  const filename = item.file_path?.split('/').pop() || `stimma-media-${mediaId}`
+  try {
+    if (typeof navigator.share !== 'function') {
+      await downloadMedia([mediaId])
+      addToast('Native sharing is unavailable here. The file was downloaded; AirDrop it from Finder.', 'info')
+      return
+    }
+
+    const response = await fetch(getMediaFileUrl(mediaId))
+    if (!response.ok) throw new Error(`Media download failed (${response.status})`)
+    const blob = await response.blob()
+    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' })
+    if (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] })) {
+      await downloadMedia([mediaId])
+      addToast('This runtime cannot share files directly. The file was downloaded; AirDrop it from Finder.', 'info')
+      return
+    }
+
+    try {
+      await navigator.share({ files: [file], title: item.asset_title || filename })
+      addToast('Share sheet opened — choose AirDrop to send the video.', 'success')
+    } catch (error) {
+      if (error?.name === 'AbortError') return
+      throw error
+    }
+  } catch (error) {
+    console.error('[BoardDetailView] Native share failed:', error)
+    try {
+      await downloadMedia([mediaId])
+      addToast('Sharing failed, so the video was downloaded. AirDrop it from Finder.', 'info')
+    } catch (fallbackError) {
+      console.error('[BoardDetailView] Share download fallback failed:', fallbackError)
+      addToast('Could not share this media file', 'error')
+    }
+  }
 }
 
 function onItemDragStart(section, item, event) {
@@ -1846,6 +2145,23 @@ async function createSectionFromDrop(event) {
 
 watch(() => route.params.id, loadBoard)
 
+watch(
+  () => activeScene.value?.id,
+  (newId) => {
+    if (newId && activeScene.value) {
+      loadSceneGenerations(activeScene.value)
+      loadSceneContinuity(activeScene.value)
+    }
+  }
+)
+
+watch(sceneStudioTab, (newTab) => {
+  if (activeScene.value) {
+    if (newTab === 'generations') loadSceneGenerations(activeScene.value)
+    if (newTab === 'continuity') loadSceneContinuity(activeScene.value)
+  }
+})
+
 const unsubBoardChanged = on('board_items_changed', (data) => {
   if (data.board_id === board.value?.id) loadBoard()
 })
@@ -1859,6 +2175,15 @@ const unsubMediaUpdated = on('assets_updated', (data) => {
     !fields.includes('source_visibility')
   ) return
   loadBoard()
+})
+
+const unsubDirectionChanged = on('project_direction_updated', (data) => {
+  if (data?.project_id !== board.value?.project_id) return
+  if ((data.removed_board_ids || []).includes(board.value?.id)) {
+    router.push({ name: 'project-boards', params: { id: board.value.project_id } })
+    return
+  }
+  if ((data.board_ids || []).includes(board.value?.id)) loadBoard()
 })
 
 onMounted(async () => {
@@ -1875,6 +2200,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unsubBoardChanged()
   unsubMediaUpdated()
+  unsubDirectionChanged()
   stopAutoScroll()
   if (pendingSectionFallbackCommit) {
     clearTimeout(pendingSectionFallbackCommit)

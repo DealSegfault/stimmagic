@@ -312,6 +312,23 @@ def _parse_tool_args(raw_arguments: Optional[str]) -> dict:
         return {}
 
 
+def _is_generation_run_code(fn_name: str, raw_arguments: Optional[str]) -> bool:
+    """Return whether a run_code call imports a catalog generation tool.
+
+    A completed ``stimma.show(..., role="final")`` is already visible to the
+    user.  If the model immediately emits another generation run_code in the
+    same turn, executing it is almost always an accidental paid retry.  Video
+    assembly and inspection code remains allowed because it uses SDK helpers
+    such as ``stimma.ffmpeg`` rather than importing ``stimma.tools``.
+    """
+    if fn_name != "run_code":
+        return False
+    code = _parse_tool_args(raw_arguments).get("code")
+    return isinstance(code, str) and (
+        "from stimma.tools." in code or "import stimma.tools." in code
+    )
+
+
 def _dump_tool_args(arguments: dict) -> str:
     return json.dumps(arguments)
 
@@ -1393,6 +1410,31 @@ async def _run_agentic_loop_inner(
             if artifact_reminder:
                 system_reminders.append(artifact_reminder)
 
+        # The quick-video and image-backend switches are chat-level preferences. Keep them in the
+        # model-visible dispatch context so every tool choice can honor them,
+        # including the Codex/AGY CLI planner paths.
+        video_quick_mode = False
+        image_backend = None
+        if chat.generation_settings:
+            try:
+                gen_settings = json.loads(chat.generation_settings)
+                video_quick_mode = gen_settings.get("video_quick_mode") is True
+                image_backend = gen_settings.get("image_backend")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        system_reminders.append(
+            "VIDEO DISPATCH MODE (authoritative for this chat): "
+            + ("MiniMax H3 ⚡ fast; select an explicit fast H3 adapter and never substitute the standard adapter."
+               if video_quick_mode else
+               "MiniMax H3 standard; select an explicit standard H3 adapter and never substitute the fast adapter.")
+            + " If the requested adapter is absent from the surfaced tool catalog, report it as unavailable instead of inventing or silently substituting a dispatch."
+        )
+        if image_backend:
+            backend_label = "ChatGPT / Codex ImageGen" if image_backend == "codex_imagegen" else "Antigravity"
+            system_reminders.append(
+                f"IMAGE DISPATCH MODE (authoritative for this chat): Route image generation through {backend_label} (`{image_backend}`)."
+            )
+
         # Resolve LLM config first so build_messages knows the window size and
         # we don't leave a dangling "thinking.." if no model is configured.
         llm_config = await get_chat_llm_config(
@@ -1423,6 +1465,7 @@ async def _run_agentic_loop_inner(
                 cacheable=True,
                 max_tokens=max_response_tokens,
                 session_id=f"chat-{chat_id}",
+                working_directory=str(workspace_dir),
                 **agent_llm_options(enable_thinking=True),
             )
         except Exception as e:
@@ -1562,6 +1605,20 @@ async def _run_agentic_loop_inner(
                 # calls the model batched *before* finish have already run
                 # above; anything after it is intentionally dropped.
                 if fn_name == "finish":
+                    finish_requested = True
+                    break
+
+                # A final media result has already been surfaced in this
+                # agent run.  Do not let a subsequent empty LLM turn silently
+                # submit another paid generation.  Explicit multi-shot work
+                # belongs in the original run_code batch; non-generation
+                # follow-up code (for example ffmpeg assembly) is still safe.
+                if shown_media_ids and _is_generation_run_code(fn_name, fn_arguments):
+                    log.warning(
+                        "Chat %s: blocked duplicate generation run_code after final media %s",
+                        chat_id,
+                        sorted(shown_media_ids),
+                    )
                     finish_requested = True
                     break
 

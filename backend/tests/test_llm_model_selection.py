@@ -270,6 +270,102 @@ async def test_available_models_auto_describes_local_only_fallback(monkeypatch):
     assert not {"gpt54", "kimi-k2", "opus", "sonnet"} & slugs
 
 
+@pytest.mark.asyncio
+async def test_available_models_advertises_codex_cli_vision_for_legacy_registration(monkeypatch):
+    """Codex CLI accepts image context even when an older config says text-only."""
+    from config import LLMProviderConfig, LLMProviderModelConfig, LLMReasoningConfig
+    from routes import models as models_route
+    import firebase_auth
+
+    provider = LLMProviderConfig(
+        id="codex-cli",
+        kind="codex_cli",
+        name="Codex CLI · ChatGPT",
+        base_url="codex-cli://local",
+        last_test_passed=True,
+        models=[LLMProviderModelConfig(
+            id="codex-cli:gpt-5.6-luna",
+            model_id="gpt-5.6-luna",
+            name="GPT-5.6 Luna · ChatGPT",
+            input_modalities=["text"],
+            supports_tools=True,
+            reasoning=LLMReasoningConfig(
+                mode="optional",
+                levels=["low", "medium", "high"],
+                default="low",
+                quick_task="low",
+            ),
+        )],
+    )
+    settings = _stub_settings(
+        llm_providers=[provider],
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llms={
+            "agent": LLMRoleConfig(source="auto"),
+            "agent-fast": LLMRoleConfig(source="auto"),
+        },
+    )
+
+    async def no_cloud_token():
+        return None
+
+    monkeypatch.setattr(models_route, "get_settings", lambda: settings)
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", no_cloud_token)
+
+    payload = await models_route.get_available_models()
+    luna = next(model for model in payload["models"] if model["slug"] == provider.models[0].id)
+
+    assert luna["input_modalities"] == ["text", "image"]
+
+
+@pytest.mark.asyncio
+async def test_available_models_advertises_agy_cli_vision_for_legacy_registration(monkeypatch):
+    """Antigravity CLI accepts image context even when config says text-only."""
+    from config import LLMProviderConfig, LLMProviderModelConfig, LLMReasoningConfig
+    from routes import models as models_route
+    import firebase_auth
+
+    provider = LLMProviderConfig(
+        id="agy-cli",
+        kind="agy_cli",
+        name="Antigravity · AGY CLI",
+        base_url="agy-cli://local",
+        last_test_passed=True,
+        models=[LLMProviderModelConfig(
+            id="agy-cli:gemini-3.1-pro",
+            model_id="Gemini 3.1 Pro (High)",
+            name="Gemini 3.1 Pro · Antigravity",
+            input_modalities=["text"],
+            supports_tools=True,
+            reasoning=LLMReasoningConfig(
+                mode="optional",
+                levels=["low", "medium", "high"],
+                default="high",
+                quick_task="low",
+            ),
+        )],
+    )
+    settings = _stub_settings(
+        llm_providers=[provider],
+        cloud=SimpleNamespace(base_url="https://cloud.example"),
+        llms={
+            "agent": LLMRoleConfig(source="auto"),
+            "agent-fast": LLMRoleConfig(source="auto"),
+        },
+    )
+
+    async def no_cloud_token():
+        return None
+
+    monkeypatch.setattr(models_route, "get_settings", lambda: settings)
+    monkeypatch.setattr(firebase_auth, "get_valid_id_token", no_cloud_token)
+
+    payload = await models_route.get_available_models()
+    pro = next(model for model in payload["models"] if model["slug"] == provider.models[0].id)
+
+    assert pro["input_modalities"] == ["text", "image"]
+
+
 def test_legacy_endpoint_profile_persists_capabilities_for_both_roles(monkeypatch):
     from routes import settings as settings_route
 

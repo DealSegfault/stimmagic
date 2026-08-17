@@ -1068,6 +1068,18 @@
         <PauseIcon v-else class="w-5 h-5" />
       </button>
 
+      <!-- Scene cutting belongs to the video transport, next to the playhead. -->
+      <SceneCutTool
+        v-if="currentPayloadId"
+        :media-id="currentPayloadId"
+        :source-name="currentItem?.original_filename"
+        :current-time="videoCurrentTime"
+        :video-duration="videoDuration"
+        :filmstrip-url="transportStripUrl"
+        @cuts-updated="sceneCutPoints = $event"
+        @clips-created="handleSceneClipsCreated"
+      />
+
       <!-- Filmstrip track -->
       <div
         class="relative flex-1 h-[34px] rounded-md overflow-hidden border border-white/10 bg-black/30 cursor-pointer select-none touch-none"
@@ -1103,6 +1115,16 @@
           style="box-shadow: 0 0 6px rgba(96,165,250,.8)"
           :style="{ left: transportPercent + '%' }"
         ></div>
+        <!-- Scene cut markers stay on the same timeline as the playhead. -->
+        <div
+          v-for="point in sceneCutPoints"
+          :key="`scene-cut-${point}`"
+          class="absolute inset-y-0 z-10 w-0.5 bg-amber-300 pointer-events-none"
+          style="box-shadow: 0 0 6px rgba(252,211,77,.9)"
+          :style="{ left: `${videoDuration > 0 ? (point / videoDuration) * 100 : 0}%` }"
+        >
+          <span class="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 rounded-[1px] bg-amber-300"></span>
+        </div>
       </div>
 
       <!-- Readout. Click toggles time ↔ frames (persisted, like the prep frame picker).
@@ -1233,6 +1255,7 @@ import SlideshowInfoPanel from './SlideshowInfoPanel.vue'
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import SlideshowApprovalBar from './flow/SlideshowApprovalBar.vue'
 import { MediaContextMenu, MediaImage } from './media'
+import SceneCutTool from './viewers/SceneCutTool.vue'
 import { formatRemainingTime, getRemainingTimeColor } from '../utils/timeFormat'
 import { getMediaType, isVideo as isVideoType, isAudio as isAudioType, isStructured as isStructuredType, isLayout as isLayoutType, isVector as isVectorType } from '../utils/mediaTypes'
 import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, SvgViewer } from './viewers'
@@ -1610,6 +1633,7 @@ const videoFps = ref(0)
 const transportStripReady = ref(false)
 const transportStripFailed = ref(false)
 const transportScrubbing = ref(false)
+const sceneCutPoints = ref([])
 // Readout mode (time vs frames), persisted in the same namespace as the prep
 // frame picker so the click-to-toggle behavior matches everywhere.
 const TRANSPORT_FRAME_MODE_KEY = 'slideshow'
@@ -1870,6 +1894,10 @@ const currentPayloadItem = computed(() => (
       }
     : null
 ))
+
+watch([currentPayloadId, () => currentItem.value?.file_hash], () => {
+  sceneCutPoints.value = []
+})
 
 // Leaving the editor starts autosave asynchronously. During that short window
 // the durable Asset head is still the previous Revision, but the KeepAlive'd
@@ -3684,6 +3712,19 @@ function toggleVideoPlayback() {
   } else {
     v.pause()
     trackControl('video_pause')
+  }
+}
+
+async function handleSceneClipsCreated(payload) {
+  sceneCutPoints.value = []
+  trackControl('video_scene_split')
+  const count = payload?.clips?.length || 0
+  if (count > 0) addToast(`${count} asset${count > 1 ? 's' : ''} créé${count > 1 ? 's' : ''} dans les assets`, 'success')
+  if (props.mediaList?.silentReload) {
+    await props.mediaList.silentReload()
+  } else if (count > 0) {
+    invalidatePageProviderLoads()
+    localTotalCount.value += count
   }
 }
 

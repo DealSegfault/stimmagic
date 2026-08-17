@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any, List, Optional, Dict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import MediaItem, MediaLineage, GenerationJob, Tool, CachedProviderTool, WorkingDocument
+from database import AssetRevision, MediaItem, MediaLineage, GenerationJob, Tool, CachedProviderTool, WorkingDocument
 from database_registry import get_database_registry
 from core.dependencies import get_db_session
 from core.profile_context import get_current_profile
@@ -27,6 +27,14 @@ from llm import EntitlementError
 
 router = APIRouter(prefix="/api/generate", tags=["generation"])
 log = get_logger(__name__)
+
+
+class SplitVideoRequest(BaseModel):
+    """A source video plus the timeline positions at which it should be cut."""
+
+    media_id: int
+    cut_points: List[float] = Field(default_factory=list)
+    project_id: Optional[int] = None
 
 
 def _entitlement_http_exception(e) -> HTTPException:
@@ -994,6 +1002,171 @@ async def extract_video_frame(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+@router.post("/split-video")
+async def split_video_into_assets(
+    request: SplitVideoRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Cut a library video into durable clip assets.
+
+    The UI sends cut positions, not files or filesystem paths. The source is
+    resolved from the current profile database, each interval is rendered to a
+    seekable MP4, ingested through the normal UploadService, and linked back to
+    the source through MediaLineage. The normal media/asset websocket events
+    make the library update without a page refresh.
+    """
+    import subprocess
+    import tempfile
+
+    from upload_service import UploadError, get_upload_service
+    from utils.lineage import propagate_tool_lineage, record_lineage
+
+    video_formats = {"mp4", "webm", "mov", "avi", "mkv", "ogg"}
+    source_result = await session.execute(
+        select(MediaItem).where(
+            MediaItem.id == request.media_id,
+            MediaItem.deleted_at.is_(None),
+            MediaItem.ephemeral_run_id.is_(None),
+        )
+    )
+    source = source_result.scalar_one_or_none()
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source video not found")
+    if (source.file_format or "").lower().lstrip(".") not in video_formats:
+        raise HTTPException(status_code=400, detail="The selected media is not a video")
+
+    source_path = Path(source.file_path)
+    if not source_path.is_file():
+        raise HTTPException(status_code=404, detail="Source video file not found")
+
+    try:
+        source_duration = float(source.duration or 0)
+    except (TypeError, ValueError):
+        source_duration = 0
+    if source_duration <= 0:
+        from utils.video_frames import probe_video_stream_info
+
+        try:
+            info = await asyncio.to_thread(probe_video_stream_info, source_path)
+            source_duration = float(info.get("duration") or 0)
+        except Exception as exc:
+            log.warning("Could not probe source duration for split: %s", exc)
+
+    if source_duration <= 0:
+        raise HTTPException(status_code=422, detail="Could not determine source video duration")
+
+    # Remove invalid, duplicate, and near-edge cuts. The small margin avoids
+    # producing unusable zero-length assets from an accidental click.
+    normalized_points = sorted({
+        round(float(point), 3)
+        for point in request.cut_points
+        if 0.2 < float(point) < source_duration - 0.2
+    })
+    if not normalized_points:
+        raise HTTPException(status_code=400, detail="Add at least one cut inside the video")
+    if len(normalized_points) > 48:
+        raise HTTPException(status_code=400, detail="Too many cuts (maximum 48)")
+
+    boundaries = [0.0, *normalized_points, source_duration]
+    intervals = [
+        (start, end)
+        for start, end in zip(boundaries, boundaries[1:])
+        if end - start >= 0.2
+    ]
+    source_media_id = source.id
+
+    # End the read transaction opened while resolving the source before the
+    # UploadService starts its own database transactions. This keeps SQLite
+    # snapshots/locks from hiding or blocking the newly ingested clip rows.
+    await session.commit()
+
+    def render_clip(start: float, end: float, output_path: Path) -> None:
+        duration = end - start
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{start:.3f}", "-i", str(source_path),
+            "-t", f"{duration:.3f}",
+            "-map", "0:v:0?", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart",
+            str(output_path),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=180)
+        if completed.returncode != 0:
+            detail = (completed.stderr or "ffmpeg failed").strip()[-1200:]
+            raise RuntimeError(detail)
+
+    created = []
+    source_stem = source_path.stem or "scene"
+    with tempfile.TemporaryDirectory(prefix="stimma-scene-split-") as temp_dir:
+        temp_root = Path(temp_dir)
+        rendered = []
+        try:
+            for index, (start, end) in enumerate(intervals, start=1):
+                output_path = temp_root / f"{source_stem}_clip_{index:02d}.mp4"
+                await asyncio.to_thread(render_clip, start, end, output_path)
+                rendered.append((index, start, end, output_path.read_bytes()))
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            log.error("Failed to split video %s: %s", request.media_id, exc)
+            raise HTTPException(status_code=422, detail="Could not render the requested clips")
+
+        upload_service = get_upload_service()
+        try:
+            for index, start, end, content in rendered:
+                filename = f"{source_stem}_clip_{index:02d}.mp4"
+                media_item, file_path = await upload_service.upload_file(
+                    content,
+                    filename,
+                    project_id=request.project_id,
+                    materialize_asset=True,
+                )
+                await record_lineage(session, media_item.id, [source_media_id], "scene-split")
+                await propagate_tool_lineage(session, media_item.id, [source_media_id])
+                await session.commit()
+
+                asset_revision = await session.scalar(
+                    select(AssetRevision)
+                    .where(AssetRevision.primary_media_id == media_item.id)
+                    .order_by(AssetRevision.id.desc())
+                )
+                created.append({
+                    "media_id": media_item.id,
+                    "asset_id": asset_revision.asset_id if asset_revision else None,
+                    "filename": filename,
+                    "path": file_path,
+                    "start": start,
+                    "end": end,
+                    "duration": end - start,
+                })
+        except UploadError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            await session.rollback()
+            log.error("Failed to ingest split clips for %s: %s", request.media_id, exc, exc_info=True)
+            raise HTTPException(status_code=500, detail="Could not create the split clip assets")
+
+    await session.commit()
+
+    for clip in created:
+        await ws_manager.broadcast("media_added", {
+            "media_id": clip["media_id"],
+            "file_path": clip["path"],
+        })
+        await ws_manager.broadcast("asset_created", {
+            "asset_id": clip["asset_id"],
+            "media_id": clip["media_id"],
+        })
+
+    log.info(
+        "Split media %s into %s durable assets at %s",
+        request.media_id,
+        len(created),
+        normalized_points,
+    )
+    return {"source_media_id": request.media_id, "cut_points": normalized_points, "clips": created}
 
 
 @router.get("/frame-preview")
@@ -2353,12 +2526,22 @@ async def retry_generation_job(job_id: int, session: AsyncSession = Depends(get_
     job.parameters = json.dumps(params)
     job.error = None
     job.created_at = datetime.utcnow()
+    # A failed job may retain the previous worker assignment. Clear it so the
+    # scheduler can claim the retried job as a fresh queue entry.
+    job.assigned_at = None
     job.started_at = None
+    job.worker_id = None
     job.completed_at = None
     job.result_media_id = None
 
     await session.commit()
     await session.refresh(job)
+
+    # Retry is an in-process queue mutation, so explicitly wake workers. New
+    # submissions do this in GenerationQueue._create_job; retries must do the
+    # same or they can remain queued until the long recovery scan.
+    from generation_queue import get_generation_queue
+    get_generation_queue()._job_submitted_event.set()
 
     # Broadcast job queued event
     await ws_manager.broadcast('generation_job_queued', {

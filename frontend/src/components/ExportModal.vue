@@ -13,6 +13,14 @@
 
           <div class="px-6 py-5 space-y-5">
 
+            <div
+              v-if="exportError"
+              role="alert"
+              class="rounded-md border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+            >
+              {{ exportError }}
+            </div>
+
             <!-- Formats are a grid so every choice stays legible at modal width. -->
             <div class="space-y-2">
               <p class="text-xs font-semibold text-content-secondary">Format</p>
@@ -421,6 +429,7 @@ const scalePercent = ref(50)
 const stripMetadata = ref(false)
 const videoResolution = ref('original')
 const exporting = ref(false)
+const exportError = ref('')
 const copied = ref(false)
 
 // Layout-specific state
@@ -696,6 +705,7 @@ async function copyCodePreview() {
 // Reset state when modal opens
 watch(() => props.show, (newVal) => {
   if (newVal) {
+    exportError.value = ''
     layoutFetchedWidth.value = 0
     layoutFetchedHeight.value = 0
     copied.value = false
@@ -745,7 +755,12 @@ onBeforeUnmount(() => {
 
 async function handleExport() {
   if (exporting.value) return
+  if (!props.mediaIds.length) {
+    exportError.value = 'No media is selected for export.'
+    return
+  }
   exporting.value = true
+  exportError.value = ''
 
   try {
     if (mediaCategory.value === 'vector') {
@@ -810,6 +825,7 @@ async function handleExport() {
     if (!isClipboardExport.value) emit('close')
   } catch (error) {
     console.error('[ExportModal] Export failed:', error)
+    exportError.value = error?.response?.data?.detail || error?.message || 'Export failed. Please try again.'
   } finally {
     exporting.value = false
   }

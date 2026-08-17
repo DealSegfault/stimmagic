@@ -46,8 +46,6 @@
           :placeholder="placeholder"
           :rows="rows"
           class="chat-input-textarea w-full bg-transparent text-content pl-1 pr-1 pb-2 focus:outline-none resize-none block"
-          @keydown.enter.exact.prevent="$emit('submit')"
-          @keydown.enter.shift.exact.prevent="insertNewline"
           @keydown="onTextareaKeydown"
           @keyup="onTextareaKeyup"
         />
@@ -174,6 +172,16 @@ function insertNewline() {
 function onTextareaKeydown(event) {
   voiceBtn.value?.handleInputKeydown(event)
   emit('keydown', event)
+  if (event.defaultPrevented || event.key !== 'Enter') return
+  if (event.shiftKey) {
+    event.preventDefault()
+    insertNewline()
+    return
+  }
+  if (!event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault()
+    emit('submit')
+  }
 }
 
 function onTextareaKeyup(event) {

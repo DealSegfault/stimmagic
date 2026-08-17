@@ -252,6 +252,7 @@ async def test_app(temp_appdata_dir: Path):
         from routes import tasks as flow_tasks
         from routes.presets import router as presets_router
         from routes.preferences import router as preferences_router
+        from routes import tunnel as tunnel_routes
         app.include_router(media.router)
         app.include_router(assets.router)
         app.include_router(media_files.router)
@@ -274,6 +275,7 @@ async def test_app(temp_appdata_dir: Path):
         app.include_router(presets_router)
         app.include_router(preferences_router)
         app.include_router(settings_routes.router)
+        app.include_router(tunnel_routes.router)
 
         # Sync markers from config (normally done in lifespan)
         from database import Marker

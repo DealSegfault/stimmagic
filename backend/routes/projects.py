@@ -17,6 +17,7 @@ from database import (
     MediaItem,
     Project,
     ProjectAsset,
+    ProjectElement,
     ProjectMedia,
 )
 from models.api_models import (
@@ -27,6 +28,13 @@ from models.api_models import (
 )
 from llm_resolver import PROJECT_EFFORT_COLUMNS, PROJECT_ROLE_COLUMNS, normalize_model_slug
 from project_service import get_project_or_404, initialize_project_root
+from project_element_service import (
+    ProjectElementError,
+    create_project_element,
+    delete_project_element,
+    list_project_elements,
+    serialize_project_element,
+)
 from utils.websocket import ws_manager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -240,6 +248,14 @@ async def delete_project(project_id: int, session: AsyncSession = Depends(get_db
         )
         .values(deleted_at=deleted_at)
     )
+    await session.execute(
+        update(ProjectElement)
+        .where(
+            ProjectElement.project_id == project_id,
+            ProjectElement.deleted_at.is_(None),
+        )
+        .values(deleted_at=deleted_at, updated_at=deleted_at)
+    )
     # Historical staging edges have no soft-delete column.
     await session.execute(
         delete(ProjectMedia).where(ProjectMedia.project_id == project_id)
@@ -266,6 +282,75 @@ async def delete_project(project_id: int, session: AsyncSession = Depends(get_db
 
 class _ProjectMediaRequest(BaseModel):
     media_ids: list[int]
+
+
+class _ProjectElementCreateRequest(BaseModel):
+    name: str
+    element_type: str = "prop"
+    asset_id: int | None = None
+    media_id: int | None = None
+    description: str | None = None
+
+
+@router.get("/{project_id}/elements")
+async def list_elements(
+    project_id: int,
+    element_type: str | None = None,
+    query: str | None = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await list_project_elements(
+            session,
+            project_id=project_id,
+            element_type=element_type,
+            query=query,
+        )
+    except ProjectElementError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/{project_id}/elements")
+async def create_element(
+    project_id: int,
+    request: _ProjectElementCreateRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        element, created = await create_project_element(
+            session,
+            project_id=project_id,
+            name=request.name,
+            element_type=request.element_type,
+            asset_id=request.asset_id,
+            media_id=request.media_id,
+            description=request.description,
+        )
+        await session.commit()
+        payload = await serialize_project_element(session, element)
+        payload["created"] = created
+        return payload
+    except ProjectElementError as exc:
+        await session.rollback()
+        status_code = 409 if "already exists" in str(exc) else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.delete("/{project_id}/elements/{element_id}")
+async def delete_element(
+    project_id: int,
+    element_id: int,
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        await delete_project_element(
+            session, project_id=project_id, element_id=element_id
+        )
+        await session.commit()
+        return {"status": "success"}
+    except ProjectElementError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{project_id}/assets")

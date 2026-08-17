@@ -23,6 +23,7 @@ import ProjectBoardsView from '../views/ProjectBoardsView.vue'
 import ProjectFlowsView from '../views/ProjectFlowsView.vue'
 import ProjectSettingsView from '../views/ProjectSettingsView.vue'
 import ProjectToolsView from '../views/ProjectToolsView.vue'
+import ProjectDirectionView from '../views/ProjectDirectionView.vue'
 import OnboardingView from '../views/OnboardingView.vue'
 import SearchResultsView from '../views/SearchResultsView.vue'
 import ForeachMockView from '../views/ForeachMockView.vue'
@@ -81,6 +82,11 @@ const routes = [
         path: 'overview',
         name: 'project-overview',
         component: ProjectOverviewView
+      },
+      {
+        path: 'direction',
+        name: 'project-direction',
+        component: ProjectDirectionView
       },
       {
         path: 'assets',

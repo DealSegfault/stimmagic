@@ -44,8 +44,10 @@
                 <template #model-picker>
                   <ChatModelPicker
                     :model-slug="selectedNewChatModel"
+                    :reasoning-effort="selectedNewChatReasoningEffort"
                     :project-id="props.project.id"
                     @update:model-slug="selectedNewChatModel = $event"
+                    @update:reasoning-effort="selectedNewChatReasoningEffort = $event"
                   />
                 </template>
               </ChatInputBox>
@@ -291,6 +293,7 @@ const contentRef = ref(null)
 const inputText = ref('')
 const inputAttachments = ref([])
 const selectedNewChatModel = ref(null)
+const selectedNewChatReasoningEffort = ref(null)
 const selectedNewChatModelInfo = computed(() => {
   const slug = selectedNewChatModel.value || globalDefault.value
   return getSelectableModel(slug)
@@ -586,6 +589,7 @@ async function submitMessage() {
       body: JSON.stringify({
         project_id: props.project.id,
         model_slug: selectedNewChatModel.value,
+        reasoning_effort: selectedNewChatReasoningEffort.value,
       })
     })
     if (!response.ok) throw new Error('Failed to create chat')

@@ -519,6 +519,18 @@
                     />
                   </div>
                 </div>
+                <!-- Project elements carry their Asset preview and stable @reference. -->
+                <div
+                  v-if="getMessageElementRefs(item).length > 0"
+                  class="mb-2 flex flex-wrap gap-1.5"
+                >
+                  <ElementReferenceChip
+                    v-for="element in getMessageElementRefs(item)"
+                    :key="element.reference_id"
+                    :element="element"
+                    compact
+                  />
+                </div>
                 <!-- Flow reference chips (parsed from the message header so
                      the raw markdown transport never shows up in the bubble) -->
                 <div
@@ -1175,9 +1187,20 @@
                 variant="composer"
               />
             </div>
+            <div
+              v-if="parseQueuedElementRefs(queuedMsg.text).length > 0"
+              class="mb-1 flex flex-wrap gap-1.5"
+            >
+              <ElementReferenceChip
+                v-for="element in parseQueuedElementRefs(queuedMsg.text)"
+                :key="element.reference_id"
+                :element="element"
+                compact
+              />
+            </div>
             <span v-if="stripQueuedRefs(queuedMsg.text)">{{ stripQueuedRefs(queuedMsg.text) }}</span>
             <span v-else-if="!queuedMsg.text && queuedMsg.attachments.length > 0" class="italic text-content-muted">Image only</span>
-            <span v-else-if="!stripQueuedRefs(queuedMsg.text) && parseQueuedRefs(queuedMsg.text).length > 0" class="italic text-content-muted">(references only)</span>
+            <span v-else-if="!stripQueuedRefs(queuedMsg.text) && (parseQueuedRefs(queuedMsg.text).length > 0 || parseQueuedElementRefs(queuedMsg.text).length > 0)" class="italic text-content-muted">(references only)</span>
           </div>
           <button
             @click="removeQueuedMessage(index)"
@@ -1247,8 +1270,38 @@
       >
         <template #context-header>
           <slot name="context-header" />
+          <ElementReferencesTray
+            :elements="pendingElementRefs.items.value"
+            @remove="removeElementReference"
+          />
+          <ElementMentionMenu
+            v-if="mentionOpen"
+            :elements="mentionResults"
+            :active-index="mentionActiveIndex"
+            @select="selectElementReference"
+          />
         </template>
         <template #toolbar-extra>
+          <ProjectElementsButton
+            v-if="chat?.project_id"
+            :project-id="chat.project_id"
+            :project-name="elementProjectName"
+            :elements="projectElements"
+            :loading="projectElementsLoading"
+            :disabled="sending"
+            @select="selectElementReference"
+            @created="onElementCreated"
+          />
+          <ImageBackendSelector
+            :model-value="selectedImageBackend"
+            :disabled="savingImageBackend || !chatId"
+            @update:model-value="updateImageBackend"
+          />
+          <VideoQuickModeToggle
+            :model-value="videoQuickMode"
+            :disabled="savingVideoQuickMode || !chatId"
+            @update:model-value="updateVideoQuickMode"
+          />
           <SkillsMenuButton
             :skills="eligibleSkills"
             :active-keys="invokedSkillKeySet"
@@ -1283,7 +1336,7 @@
           <button
             v-else
             @click="sendMessage()"
-            :disabled="(!messageInput.trim() && inputAttachments.length === 0) || sending || isChatModelUnavailable || Boolean(imageUnsupportedMessage)"
+            :disabled="(!messageInput.trim() && inputAttachments.length === 0 && pendingElementRefs.count.value === 0) || sending || isChatModelUnavailable || Boolean(imageUnsupportedMessage)"
             class="w-8 h-8 flex items-center justify-center rounded-full bg-content text-surface transition-colors disabled:opacity-30"
             :title="modelUnavailableMessage || 'Send'"
           >
@@ -1392,9 +1445,17 @@ import { MediaImage, AppImage, MediaContextMenu } from '../components/media'
 import ChatImageStrip from '../components/chat/ChatImageStrip.vue'
 import ChatInputAttachments from '../components/chat/ChatInputAttachments.vue'
 import ChatInputBox from '../components/chat/ChatInputBox.vue'
+import ImageBackendSelector from '../components/chat/ImageBackendSelector.vue'
+import VideoQuickModeToggle from '../components/chat/VideoQuickModeToggle.vue'
 import SkillsMenuButton from '../components/chat/SkillsMenuButton.vue'
+import ProjectElementsButton from '../components/chat/ProjectElementsButton.vue'
+import ElementMentionMenu from '../components/chat/ElementMentionMenu.vue'
+import ElementReferencesTray from '../components/chat/ElementReferencesTray.vue'
+import ElementReferenceChip from '../components/chat/ElementReferenceChip.vue'
 import FlowRefChip from '../components/flow/FlowRefChip.vue'
 import { useFlowReferences, formatReferencesForMessage, parseMessageReferences, type FlowReference } from '../composables/useFlowReferences'
+import { useProjectElementsApi, type ProjectElement } from '../composables/useProjectElementsApi'
+import { useElementReferences, formatElementReferencesForMessage, parseElementReferences } from '../composables/useElementReferences'
 import { pendingMedia, consumePendingMedia } from '../composables/usePendingMedia'
 import { useMediaDetailsModal } from '../composables/useMediaDetailsModal'
 import ChatModelPicker from '../components/chat/ChatModelPicker.vue'
@@ -1456,7 +1517,7 @@ import ChatErrorDisclosure from '../components/chat/ChatErrorDisclosure.vue'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useStimpacksApi } from '../composables/useStimpacksApi'
 import { useSlideshow } from '../composables/useSlideshow'
-import { getCurrentProfileId } from '../composables/useProfile'
+import { apiFetch, getCurrentProfileId } from '../composables/useProfile'
 import { makeProfileKey } from '../utils/storageKeys'
 import { useWebSocket } from '../composables/useWebSocket'
 import { marked } from 'marked'
@@ -1494,6 +1555,12 @@ const { compareState, enterCompare, exitCompare, swapImages: swapCompareImages }
 const chatId = ref(null)
 const chat = ref(null)
 const items = ref([])
+const { listElements: listProjectElements } = useProjectElementsApi()
+const projectElements = ref<ProjectElement[]>([])
+const projectElementsLoading = ref(false)
+const elementProjectName = ref('')
+const pendingElementRefs = useElementReferences(chatId as any)
+const mentionActiveIndex = ref(0)
 // Artifact stage: standalone chats only (see props.embedded guard in template
 // and sendMessage). Instantiated unconditionally — cheap when there's no
 // artifact in the chat — so embedded usage never has to special-case it.
@@ -1504,6 +1571,10 @@ const brokenMediaIds = ref(new Set<number>()) // Track media that failed to load
 const hasMore = ref(false)
 const messageInput = ref('')
 const sending = ref(false)
+const selectedImageBackend = ref(null)
+const savingImageBackend = ref(false)
+const videoQuickMode = ref(false)
+const savingVideoQuickMode = ref(false)
 const messageHistory = ref([])  // History of sent messages
 const historyIndex = ref(-1)    // -1 = current input, 0+ = history position
 const savedCurrentInput = ref('') // Saves current input when browsing history
@@ -2154,7 +2225,10 @@ async function activateSkill(name) {
     // the status dot through invokedSkillKeySet.
     await fetch(`/api/chats/${chatId.value}/invoke-skill`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Profile-ID': getCurrentProfileId(),
+      },
       body: JSON.stringify({ name }),
     })
   } catch (err) {
@@ -2681,6 +2755,7 @@ const allChatMediaIds = computed(() => {
   }
   return mediaIds
 })
+
 // Non-deleted media IDs only (for strip display and marker loading - avoids 404s and broken images)
 const liveChatMediaIds = computed(() => {
   const liveIds = []
@@ -2778,6 +2853,7 @@ async function loadChat() {
       throw new Error('Failed to load chat')
     }
     chat.value = await response.json()
+    hydrateChatGenerationModes()
     await fetchAvailableModels(chat.value?.project_id, true)
 
     // Sync auto-delete duration: ensure chat's generation_settings has the current profile value
@@ -3066,6 +3142,94 @@ function handleEnterKey(event) {
   sendMessage()
 }
 
+const mentionMatch = computed(() => {
+  if (!chat.value?.project_id) return null
+  return /(^|\s)@([a-zA-Z0-9_]*)$/.exec(messageInput.value)
+})
+const mentionOpen = computed(() => Boolean(mentionMatch.value) && mentionResults.value.length > 0)
+const mentionResults = computed(() => {
+  const query = (mentionMatch.value?.[2] || '').toLowerCase()
+  return projectElements.value
+    .filter((element) => !query
+      || element.name.toLowerCase().includes(query)
+      || element.reference_id.toLowerCase().includes(query))
+    .slice(0, 8)
+})
+
+async function loadProjectElements(projectId = chat.value?.project_id) {
+  if (!projectId) {
+    projectElements.value = []
+    elementProjectName.value = ''
+    return
+  }
+  projectElementsLoading.value = true
+  try {
+    const [elementsResponse, projectResponse] = await Promise.all([
+      listProjectElements(projectId),
+      fetch(`/api/projects/${projectId}`).then((response) => response.ok ? response.json() : null),
+    ])
+    projectElements.value = elementsResponse
+    elementProjectName.value = projectResponse?.name || ''
+  } catch (error) {
+    console.error('Failed to load project elements:', error)
+    projectElements.value = []
+  } finally {
+    projectElementsLoading.value = false
+  }
+}
+
+function onElementCreated(element: ProjectElement) {
+  const index = projectElements.value.findIndex((item) => item.id === element.id)
+  if (index >= 0) projectElements.value.splice(index, 1, element)
+  else projectElements.value.unshift(element)
+}
+
+function selectElementReference(element: ProjectElement) {
+  const match = mentionMatch.value
+  if (match) {
+    const start = messageInput.value.length - match[0].length
+    const whitespace = match[1] || ''
+    messageInput.value = `${messageInput.value.slice(0, start)}${whitespace}@${element.reference_id} `
+  } else {
+    const separator = messageInput.value && !messageInput.value.endsWith(' ') ? ' ' : ''
+    messageInput.value = `${messageInput.value}${separator}@${element.reference_id} `
+  }
+  pendingElementRefs.add(element)
+  mentionActiveIndex.value = 0
+  nextTick(() => {
+    chatInputBoxRef.value?.focus()
+    chatInputBoxRef.value?.autoResize()
+  })
+}
+
+function removeElementReference(referenceId: string) {
+  pendingElementRefs.remove(referenceId)
+  const escaped = referenceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  messageInput.value = messageInput.value
+    .replace(new RegExp(`(^|\\s)@${escaped}(?=\\s|$)`, 'g'), '$1')
+    .replace(/ {2,}/g, ' ')
+    .trimStart()
+}
+
+watch(mentionResults, () => {
+  mentionActiveIndex.value = 0
+})
+
+watch(messageInput, (text) => {
+  for (const element of [...pendingElementRefs.items.value]) {
+    if (!text.includes(`@${element.reference_id}`)) {
+      pendingElementRefs.remove(element.reference_id)
+    }
+  }
+})
+
+watch(() => chat.value?.project_id, (projectId, previousProjectId) => {
+  if (projectId !== previousProjectId) {
+    pendingElementRefs.clear()
+    loadProjectElements(projectId)
+  }
+}, { immediate: true })
+
 // Send "continue" to resume after an app-restart interruption. The banner
 // hides automatically once the new user_message lands (chatInterrupted re-
 // evaluates and the user_message short-circuits the scan).
@@ -3076,6 +3240,26 @@ function continueAfterInterrupt() {
 
 // Handle up/down arrow keys for message history
 function handleKeyDown(event) {
+  if (mentionOpen.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      mentionActiveIndex.value = (
+        mentionActiveIndex.value + direction + mentionResults.value.length
+      ) % mentionResults.value.length
+      return
+    }
+    if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault()
+      selectElementReference(mentionResults.value[mentionActiveIndex.value])
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      messageInput.value = messageInput.value.replace(/@([a-zA-Z0-9_]*)$/, '')
+      return
+    }
+  }
   // ESC while the agent is running stops it — mirrors clicking the Stop button.
   if (event.key === 'Escape' && showStopButton.value) {
     event.preventDefault()
@@ -3169,16 +3353,24 @@ function queueMessage() {
   // into the next message the user composes while the queue drains.
   const refsApi = useFlowReferences(chatId.value)
   const refs = [...refsApi.items.value]
-  const header = refs.length > 0 ? formatReferencesForMessage(refs) : ''
+  const elementRefsApi = useElementReferences(chatId.value)
+  const elementRefs = [...elementRefsApi.items.value]
+  const headers = [
+    refs.length > 0 ? formatReferencesForMessage(refs) : '',
+    elementRefs.length > 0 ? formatElementReferencesForMessage(elementRefs) : '',
+  ].filter(Boolean)
+  const header = headers.join('\n\n')
   const message = header
     ? (userMessage ? `${header}\n\n${userMessage}` : header)
     : userMessage
   if (refs.length > 0) refsApi.clear()
+  if (elementRefs.length > 0) elementRefsApi.clear()
 
   // Add to queue
   messageQueue.value.push({
     text: message,
-    attachments: attachments
+    attachments: attachments,
+    element_media_ids: elementRefs.map((element) => element.media_id).filter(Boolean),
   })
 
   // Clear input
@@ -3292,6 +3484,85 @@ const imageUnsupportedMessage = computed(() => {
   return `${model.name} can't use images. Remove the image or choose another model.`
 })
 
+const IMAGE_BACKEND_LABELS = {
+  codex_imagegen: 'ChatGPT / Codex ImageGen',
+  antigravity: 'Antigravity',
+}
+
+function parseGenerationSettings(value) {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return {}
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+function normalizeImageBackend(value) {
+  return Object.prototype.hasOwnProperty.call(IMAGE_BACKEND_LABELS, value) ? value : null
+}
+
+function hydrateChatGenerationModes() {
+  const settings = parseGenerationSettings(chat.value?.generation_settings)
+  selectedImageBackend.value = normalizeImageBackend(settings.image_backend)
+  videoQuickMode.value = settings.video_quick_mode === true
+}
+
+async function updateImageBackend(value) {
+  const nextBackend = normalizeImageBackend(value)
+  const previousBackend = selectedImageBackend.value
+  const currentSettings = parseGenerationSettings(chat.value?.generation_settings)
+  const updatedSettings = { ...currentSettings, image_backend: nextBackend }
+
+  selectedImageBackend.value = nextBackend
+  savingImageBackend.value = true
+  try {
+    const response = await apiFetch(`/api/chats/${chatId.value}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Profile-ID': getCurrentProfileId(),
+      },
+      body: JSON.stringify({ generation_settings: JSON.stringify(updatedSettings) }),
+    })
+    if (!response.ok) throw new Error('Failed to save image backend')
+    chat.value = await response.json()
+  } catch (error) {
+    selectedImageBackend.value = previousBackend
+    console.error('Error saving image backend:', error)
+    addToast('Impossible d’enregistrer le backend image.', 'error')
+  } finally {
+    savingImageBackend.value = false
+  }
+}
+
+async function updateVideoQuickMode(value) {
+  const nextMode = value === true
+  const previousMode = videoQuickMode.value
+  const currentSettings = parseGenerationSettings(chat.value?.generation_settings)
+  const updatedSettings = { ...currentSettings, video_quick_mode: nextMode }
+
+  videoQuickMode.value = nextMode
+  savingVideoQuickMode.value = true
+  try {
+    const response = await apiFetch(`/api/chats/${chatId.value}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ generation_settings: JSON.stringify(updatedSettings) }),
+    })
+    if (!response.ok) throw new Error('Failed to save video quick mode')
+    chat.value = await response.json()
+  } catch (error) {
+    videoQuickMode.value = previousMode
+    console.error('Error saving video quick mode:', error)
+    addToast('Impossible d’enregistrer le mode vidéo rapide.', 'error')
+  } finally {
+    savingVideoQuickMode.value = false
+  }
+}
+
 // Send a message (from input or from queue)
 async function sendMessage(queuedMessage = null) {
   if (noUsableChatModels.value) {
@@ -3309,14 +3580,17 @@ async function sendMessage(queuedMessage = null) {
   }
 
   const pendingAttachments = queuedMessage?.attachments || inputAttachments.value
+  const pendingElementMediaIds = queuedMessage?.element_media_ids
+    || pendingElementRefs.items.value.map((element) => element.media_id).filter(Boolean)
   const model = selectedChatModel.value
-  if (pendingAttachments.length > 0 && modelRejectsImageInput(model)) {
+  if ((pendingAttachments.length > 0 || pendingElementMediaIds.length > 0) && modelRejectsImageInput(model)) {
     addToast(`${model.name} can't use images. Choose another model.`, 'error')
     if (queuedMessage) messageQueue.value.unshift(queuedMessage)
     return
   }
 
   const refsApi = useFlowReferences(chatId.value)
+  const elementRefsApi = useElementReferences(chatId.value)
   let message, attachments
 
   if (queuedMessage) {
@@ -3328,8 +3602,9 @@ async function sendMessage(queuedMessage = null) {
     // Sending from input
     const hasMessage = messageInput.value.trim()
     const hasAttachments = inputAttachments.value.length > 0
+    const hasElementRefs = elementRefsApi.items.value.length > 0
 
-    if (!hasMessage && !hasAttachments) return
+    if (!hasMessage && !hasAttachments && !hasElementRefs) return
 
     // If agent is busy or we're already sending, queue instead
     if (((agentRunning.value || agentPlanning.value) && !hasActiveHITLRequest.value) || sending.value) {
@@ -3356,8 +3631,13 @@ async function sendMessage(queuedMessage = null) {
     // Bake any pending flow references into the outgoing message body.
     // The agent sees them as a blockquote header above the user's message.
     const refs = [...refsApi.items.value]
-    if (refs.length > 0) {
-      const header = formatReferencesForMessage(refs)
+    const elementRefs = [...elementRefsApi.items.value]
+    const headers = [
+      refs.length > 0 ? formatReferencesForMessage(refs) : '',
+      elementRefs.length > 0 ? formatElementReferencesForMessage(elementRefs) : '',
+    ].filter(Boolean)
+    if (headers.length > 0) {
+      const header = headers.join('\n\n')
       message = message ? `${header}\n\n${message}` : header
     }
 
@@ -3385,12 +3665,15 @@ async function sendMessage(queuedMessage = null) {
   // Clear input immediately (only if not from queue)
   let clearedAttachments = []
   let clearedRefs = []
+  let clearedElementRefs: ProjectElement[] = []
   if (!queuedMessage) {
+    clearedElementRefs = [...elementRefsApi.items.value]
     messageInput.value = ''
     clearedAttachments = [...inputAttachments.value]
     inputAttachments.value = []
     clearedRefs = [...refsApi.items.value]
     if (clearedRefs.length > 0) refsApi.clear()
+    if (clearedElementRefs.length > 0) elementRefsApi.clear()
     // Reset textarea height after clearing
     nextTick(() => {
       if (messageInputRef.value) {
@@ -3421,7 +3704,8 @@ async function sendMessage(queuedMessage = null) {
     // Combine selected_media_ids and attachment media IDs
     const allSelectedIds = [
       ...(selectedMediaIds.value.length > 0 ? selectedMediaIds.value : []),
-      ...attachmentMediaIds
+      ...attachmentMediaIds,
+      ...pendingElementMediaIds,
     ]
 
     const response = await fetch(`/api/chats/${chatId.value}/items`, {
@@ -3481,6 +3765,7 @@ async function sendMessage(queuedMessage = null) {
     if (!queuedMessage && !sent) {
       inputAttachments.value = clearedAttachments
       for (const r of clearedRefs) refsApi.add(r)
+      for (const element of clearedElementRefs) elementRefsApi.add(element)
     }
   } finally {
     sending.value = false
@@ -3764,19 +4049,28 @@ function getMessageAttachments(item) {
 // Cached parse of a user_message's flow-reference header, so the chip row
 // and the remaining-text block don't redo the regex scan three times per
 // render. Keyed by item id + message_text so edits invalidate.
-const parsedMessageCache = new Map<string, { refs: FlowReference[]; text: string }>()
-function parsedUserMessage(item: any): { refs: FlowReference[]; text: string } {
+const parsedMessageCache = new Map<string, { refs: FlowReference[]; elementRefs: ProjectElement[]; text: string }>()
+function parsedUserMessage(item: any): { refs: FlowReference[]; elementRefs: ProjectElement[]; text: string } {
   const key = `${item?.id ?? ''}:${(item?.message_text ?? '').length}`
   let cached = parsedMessageCache.get(key)
   if (!cached || parsedMessageCache.size > 1000) {
     if (parsedMessageCache.size > 1000) parsedMessageCache.clear()
-    cached = parseMessageReferences(item?.message_text)
+    const flowParsed = parseMessageReferences(item?.message_text)
+    const elementParsed = parseElementReferences(flowParsed.text)
+    cached = {
+      refs: flowParsed.refs,
+      elementRefs: elementParsed.refs,
+      text: elementParsed.text,
+    }
     parsedMessageCache.set(key, cached)
   }
   return cached
 }
 function getMessageRefs(item: any): FlowReference[] {
   return parsedUserMessage(item).refs
+}
+function getMessageElementRefs(item: any): ProjectElement[] {
+  return parsedUserMessage(item).elementRefs
 }
 function getMessageBodyText(item: any): string {
   return parsedUserMessage(item).text
@@ -3788,8 +4082,13 @@ function getMessageBodyText(item: any): string {
 function parseQueuedRefs(text: string | null | undefined): FlowReference[] {
   return parseMessageReferences(text).refs
 }
+function parseQueuedElementRefs(text: string | null | undefined): ProjectElement[] {
+  const flowParsed = parseMessageReferences(text)
+  return parseElementReferences(flowParsed.text).refs
+}
 function stripQueuedRefs(text: string | null | undefined): string {
-  return parseMessageReferences(text).text
+  const flowParsed = parseMessageReferences(text)
+  return parseElementReferences(flowParsed.text).text
 }
 
 // Check if a media ID is broken/deleted
@@ -4178,8 +4477,11 @@ function handleMediaPermanentDelete(mediaId: number) {
 async function replayFromHere(item) {
   if (item.item_type !== 'user_message' || !item.message_text) return
 
-  const parsed = parseMessageReferences(item.message_text)
-  const message = parsed.refs.length > 0 ? parsed.text : item.message_text
+  const flowParsed = parseMessageReferences(item.message_text)
+  const elementParsed = parseElementReferences(flowParsed.text)
+  const message = flowParsed.refs.length > 0 || elementParsed.refs.length > 0
+    ? elementParsed.text
+    : item.message_text
   // Copy — getMessageAttachments returns the stored item's metadata array by
   // reference, and we must not alias it into the composer (composer edits would
   // mutate the historical message in place).
@@ -4197,6 +4499,10 @@ async function replayFromHere(item) {
   // Set the message input and attachments, then send
   messageInput.value = message
   inputAttachments.value = attachments
+  const flowRefsApi = useFlowReferences(chatId.value)
+  for (const ref of flowParsed.refs) flowRefsApi.add(ref)
+  const elementRefsApi = useElementReferences(chatId.value)
+  for (const element of elementParsed.refs) elementRefsApi.add(element)
   await nextTick()
   await sendMessage()
 }
@@ -4218,7 +4524,8 @@ function startEditing(item) {
   // Strip the flow-reference header before showing the editor — the user
   // edits their own text only. The references were transport metadata, not
   // content; re-attaching would be done via the composer, not the editor.
-  editingText.value = parseMessageReferences(item.message_text).text || item.message_text
+  const flowParsed = parseMessageReferences(item.message_text)
+  editingText.value = parseElementReferences(flowParsed.text).text || item.message_text
   nextTick(() => {
     // Find the textarea by data attribute (more reliable than ref in v-for)
     const textarea = document.querySelector('[data-edit-input]')

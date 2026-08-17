@@ -686,6 +686,7 @@ async def llm_completion(
     cacheable: bool = False,
     session_id: Optional[str] = None,
     apply_endpoint_extras: bool = True,
+    working_directory: Optional[str] = None,
 ) -> LLMResponse:
     """Make an LLM call and return a normalized response.
 
@@ -705,6 +706,78 @@ async def llm_completion(
 
     if os.environ.get("STIMMA_TEST_PROVIDER") and api_base == _ACCEPTANCE_LLM_URL:
         return _acceptance_response(config, messages)
+
+    # Codex CLI and Antigravity CLI are local authenticated transports,
+    # not OpenAI-compatible HTTP endpoints. They own their OAuth flows;
+    # Stimma only sends a structured planner prompt and keeps executing its own
+    # tools and permission checks.
+    if getattr(config, "provider_kind", None) == "codex_cli":
+        from codex_cli import complete_with_codex_cli
+
+        start = time.time()
+        result = await complete_with_codex_cli(
+            model=model,
+            messages=messages,
+            tools=tools,
+            reasoning_level=getattr(config, "reasoning_level", None),
+            working_directory=working_directory,
+        )
+        elapsed = time.time() - start
+        tool_calls = [
+            ToolCall(id=call.id, name=call.name, arguments=call.arguments)
+            for call in result.tool_calls
+        ]
+        completion_tokens = result.completion_tokens
+        return LLMResponse(
+            content=result.content,
+            tool_calls=tool_calls,
+            finish_reason=(
+                FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP
+            ),
+            usage=Usage(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=result.prompt_tokens + completion_tokens,
+                reasoning_tokens=result.reasoning_tokens,
+            ),
+            model=model,
+            elapsed_seconds=elapsed,
+            tokens_per_second=(completion_tokens / elapsed if completion_tokens and elapsed > 0 else 0),
+        )
+
+    if getattr(config, "provider_kind", None) == "agy_cli":
+        from agy_cli import complete_with_agy_cli
+
+        start = time.time()
+        result = await complete_with_agy_cli(
+            model=model,
+            messages=messages,
+            tools=tools,
+            reasoning_level=getattr(config, "reasoning_level", None),
+            working_directory=working_directory,
+        )
+        elapsed = time.time() - start
+        tool_calls = [
+            ToolCall(id=call.id, name=call.name, arguments=call.arguments)
+            for call in result.tool_calls
+        ]
+        completion_tokens = result.completion_tokens
+        return LLMResponse(
+            content=result.content,
+            tool_calls=tool_calls,
+            finish_reason=(
+                FinishReason.TOOL_CALLS if tool_calls else FinishReason.STOP
+            ),
+            usage=Usage(
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=result.prompt_tokens + completion_tokens,
+                reasoning_tokens=result.reasoning_tokens,
+            ),
+            model=model,
+            elapsed_seconds=elapsed,
+            tokens_per_second=(completion_tokens / elapsed if completion_tokens and elapsed > 0 else 0),
+        )
 
     # Self-hosted endpoints: apply content policy, extra system prompt, fixed
     # extra_body, and reasoning-method translation. Cloud handles its own.

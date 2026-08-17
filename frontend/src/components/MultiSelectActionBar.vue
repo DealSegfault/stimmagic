@@ -155,8 +155,10 @@
             </Tooltip>
 
             <!-- Share (single item only) -->
-            <Tooltip v-if="selectedCount === 1" text="Share">
+            <Tooltip v-if="selectedCount === 1" text="Share / AirDrop">
               <button
+                type="button"
+                aria-label="Share selected media via AirDrop or download"
                 class="icon-button flex items-center justify-center p-2 rounded-md bg-overlay-subtle text-purple-400 hover:bg-purple-500/15 transition-colors"
                 @click="$emit('share')"
               >

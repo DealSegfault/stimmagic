@@ -1528,6 +1528,7 @@ def _generate_thumbnail_sync(
                 ffmpeg
                 .input(str(file_path), ss=0)
                 .output('pipe:', vframes=1, format='image2', vcodec='mjpeg')
+                .global_args('-nostdin')
                 .run(capture_stdout=True, capture_stderr=True, quiet=True)
             )
             img = Image.open(io.BytesIO(out))
