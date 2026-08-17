@@ -1,0 +1,5 @@
+#!/bin/sh
+# Tauri requires the production sidecar resource to exist at build time even
+# though `stimma dev all` uses the separately running Python backend.
+echo "This placeholder is only for Stimma development builds." >&2
+exit 1

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+# Cargo external subcommands may include their own name as argv[1]. The npm
+# Tauri CLI does not need it.
+if [ "${1-}" = "tauri" ]; then
+  shift
+fi
+
+exec /Users/mac/adp/comfy/stimma/frontend/node_modules/.bin/tauri "$@"
