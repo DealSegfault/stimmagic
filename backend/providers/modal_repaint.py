@@ -73,8 +73,11 @@ class ModalRepaintProvider(ToolProvider):
 
     @staticmethod
     def _request(url: str, method: str, payload: dict, token: str) -> dict:
-        body = json.dumps(payload).encode()
-        request = Request(url, data=body, method=method, headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        body = json.dumps(payload).encode() if (payload or method.upper() != "GET") else None
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = Request(url, data=body, method=method, headers=headers)
         with urlopen(request, timeout=45) as response:
             return json.loads(response.read())
 

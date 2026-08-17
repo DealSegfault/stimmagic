@@ -5,6 +5,7 @@ mounted by the L40S inference workers. Runtime inference has no Hugging Face
 credential or network dependency.
 """
 
+import asyncio
 import base64
 import io
 import os
@@ -25,6 +26,7 @@ runtime_image = (
     .pip_install(
         "torch==2.5.1", "diffusers==0.32.2", "transformers==4.48.3",
         "accelerate==1.3.0", "safetensors", "huggingface_hub", "pillow", "fastapi",
+        "sentencepiece", "protobuf",
     )
 )
 download_image = modal.Image.debian_slim(python_version="3.11").pip_install(
@@ -68,7 +70,7 @@ class FluxFill:
         self.torch = torch
         self.pipe = FluxFillPipeline.from_pretrained(
             MODEL_DIR, torch_dtype=torch.bfloat16, local_files_only=True)
-        self.pipe.enable_model_cpu_offload()
+        self.pipe.to("cuda")
 
     @modal.method()
     def generate(self, source_image: str, mask_image: str, prompt: str,
@@ -133,9 +135,9 @@ def api():
     @service.get("/jobs/{job_id}")
     async def poll(job_id: str, request: Request):
         try:
-            result = modal.FunctionCall.from_id(job_id).get(timeout=0.1)
+            result = await modal.FunctionCall.from_id(job_id).get.aio(timeout=0.1)
             return {"id": job_id, **result}
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             return {"id": job_id, "status": "running", "pollAfterMs": 2500}
         except Exception as exc:
             return {"id": job_id, "status": "failed", "error": {"code": "generation_failed", "message": str(exc)}}

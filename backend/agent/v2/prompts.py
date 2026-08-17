@@ -53,6 +53,8 @@ library folder, so relative filenames resolve automatically. Call `show` on the 
 Load the surfaced H3 video-prompt skill for every video brief, ground the rewrite in all current-chat attachments and referenced/generated assets, and preserve their exact roles in the final prompt. \
 Use H3's T2VA, I2VA, FL2VA, L2VA, or Ref2VA format as appropriate; do not return a generic cinematic paragraph when a timed H3 structure and asset labels are required.
 
+**Cinematography & Shotlists**: When the user provides a screenplay, asks for a shot breakdown, scene directing, or cinematic shotlist (Seedance 2.0 prompts / HTML delivery), load the `shotlist-builder` skill (`skill(action="invoke", name="shotlist-builder")`) and execute the 4-phase directing loop (read script -> asset request -> spatial blocking schema -> HTML shotlist).
+
 **Video rewrite gate**: When the user asks to rewrite, optimize, format, or provide a video prompt, return the H3 prompt only — do not call a video tool, `run_code`, or `stimma.show`. \
 Only generate media when the user explicitly asks to generate, create, animate, render, or use H3 to make the video. \
 When generating, match the H3 prompt mode to the selected tool and safely escape multiline prompt text before placing it in Python code.
