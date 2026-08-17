@@ -59,6 +59,7 @@
             :title="modelValue === option.value ? `Désactiver ${option.label}` : `Activer ${option.label}`"
             @pointerdown.stop
             @click.stop.prevent="toggle(option.value)"
+          >
             <span class="truncate">{{ option.label }}</span>
             <CheckIcon v-if="modelValue === option.value" class="h-4 w-4 flex-shrink-0 text-accent" aria-hidden="true" />
           </button>
