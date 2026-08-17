@@ -621,9 +621,14 @@
                     />
                   </template>
                 </div>
-                <!-- Dev mode: per-item token usage -->
-                <div v-if="devModeRef && item.item_metadata?.llm_usage" class="text-[10px] text-content-muted font-mono px-1 select-none">
-                  {{ item.item_metadata.llm_usage.model }} · {{ formatTokenCount(item.item_metadata.llm_usage.prompt_tokens) }} in / {{ formatTokenCount(item.item_metadata.llm_usage.completion_tokens) }} out<template v-if="item.item_metadata.llm_usage.reasoning_tokens"> / {{ formatTokenCount(item.item_metadata.llm_usage.reasoning_tokens) }} reasoning</template><template v-if="item.item_metadata.llm_usage.cache_read_input_tokens"> · <span class="text-teal-500">cache {{ formatTokenCount(item.item_metadata.llm_usage.cache_read_input_tokens) }} hit<template v-if="item.item_metadata.llm_usage.cache_creation_input_tokens"> / {{ formatTokenCount(item.item_metadata.llm_usage.cache_creation_input_tokens) }} write</template></span></template><template v-if="item.item_metadata.llm_usage.tokens_per_second"> · {{ item.item_metadata.llm_usage.tokens_per_second.toFixed(1) }} t/s</template>
+                <!-- Per-item token usage -->
+                <div v-if="getItemMetadata(item)?.llm_usage" class="text-[10px] text-content-muted font-mono px-1 select-none flex items-center gap-1.5 flex-wrap">
+                  <span class="text-content-secondary">{{ getItemMetadata(item).llm_usage.model }}</span>
+                  <span>·</span>
+                  <span>{{ formatTokenCount(getItemMetadata(item).llm_usage.prompt_tokens) }} in / {{ formatTokenCount(getItemMetadata(item).llm_usage.completion_tokens) }} out</span>
+                  <template v-if="getItemMetadata(item).llm_usage.reasoning_tokens"> / {{ formatTokenCount(getItemMetadata(item).llm_usage.reasoning_tokens) }} reasoning</template>
+                  <template v-if="getItemMetadata(item).llm_usage.cache_read_input_tokens"> · <span class="text-teal-500">cache {{ formatTokenCount(getItemMetadata(item).llm_usage.cache_read_input_tokens) }} hit</span></template>
+                  <template v-if="getItemMetadata(item).llm_usage.tokens_per_second"> · {{ getItemMetadata(item).llm_usage.tokens_per_second.toFixed(1) }} t/s</template>
                 </div>
               </div>
             </ChatItemWrapper>
@@ -1215,18 +1220,21 @@
       </div>
     </div>
 
-    <!-- Dev mode: session token usage bar -->
-    <div v-if="devModeRef && sessionTokenTotals.turns > 0" class="px-4 py-1 flex-shrink-0 flex items-center gap-3 text-[10px] font-mono text-content-muted border-t border-edge bg-surface/50">
-      <span v-if="sessionTokenTotals.model" class="text-content-secondary">{{ sessionTokenTotals.model }}</span>
+    <!-- Session token usage & Context memory bar -->
+    <div v-if="sessionTokenTotals.total_tokens > 0 || currentContextTokens > 0" class="px-4 py-1.5 flex-shrink-0 flex items-center gap-3 text-[11px] font-mono text-content-muted border-t border-edge bg-surface/50">
+      <span v-if="sessionTokenTotals.model" class="text-content-secondary font-medium">{{ sessionTokenTotals.model }}</span>
       <span>{{ formatTokenCount(sessionTokenTotals.prompt_tokens) }} in / {{ formatTokenCount(sessionTokenTotals.completion_tokens) }} out<template v-if="sessionTokenTotals.reasoning_tokens"> / {{ formatTokenCount(sessionTokenTotals.reasoning_tokens) }} reasoning</template></span>
-      <span v-if="sessionTokenTotals.cache_read_input_tokens" class="text-teal-500">cache {{ formatTokenCount(sessionTokenTotals.cache_read_input_tokens) }} hit<template v-if="sessionTokenTotals.cache_creation_input_tokens"> / {{ formatTokenCount(sessionTokenTotals.cache_creation_input_tokens) }} write</template></span>
+      <span v-if="sessionTokenTotals.cache_read_input_tokens" class="text-teal-500">cache {{ formatTokenCount(sessionTokenTotals.cache_read_input_tokens) }} hit</span>
       <span v-if="sessionTokenTotals.avg_tps" class="text-content-secondary">{{ sessionTokenTotals.avg_tps.toFixed(1) }} t/s avg</span>
       <span class="text-content-muted/60">{{ sessionTokenTotals.turns }} {{ sessionTokenTotals.turns === 1 ? 'turn' : 'turns' }}</span>
-      <!-- Context window meter — centered between left stats and right quota -->
-      <div v-if="llmUsage?.context_tokens" class="ml-auto flex items-center gap-1.5">
-        <span :class="tokenUsagePercent > 90 ? 'text-red-400' : tokenUsagePercent > 70 ? 'text-amber-400' : 'text-content-muted'">ctx {{ formatTokenCount(llmUsage.context_tokens) }}/{{ formatTokenCount(contextLimit) }}</span>
-        <div class="w-12 h-1 bg-black/10 dark:bg-white/15 rounded-full overflow-hidden">
-          <div class="h-full rounded-full transition-all duration-300" :class="tokenUsagePercent > 90 ? 'bg-red-500' : tokenUsagePercent > 70 ? 'bg-amber-500' : 'bg-blue-500'" :style="{ width: tokenUsagePercent + '%' }"></div>
+      <!-- Context Memory Meter -->
+      <div v-if="currentContextTokens > 0" class="ml-auto flex items-center gap-2">
+        <span class="text-[10px] text-content-muted">Memory:</span>
+        <span :class="tokenUsagePercent > 90 ? 'text-red-400 font-semibold' : tokenUsagePercent > 70 ? 'text-amber-400 font-semibold' : 'text-content-secondary font-medium'">
+          {{ formatTokenCount(currentContextTokens) }} / {{ formatTokenCount(contextLimit) }} ({{ tokenUsagePercent.toFixed(1) }}%)
+        </span>
+        <div class="w-16 h-1.5 bg-black/10 dark:bg-white/15 rounded-full overflow-hidden">
+          <div class="h-full rounded-full transition-all duration-300" :class="tokenUsagePercent > 90 ? 'bg-red-500' : tokenUsagePercent > 70 ? 'bg-amber-500' : 'bg-blue-500'" :style="{ width: Math.min(tokenUsagePercent, 100) + '%' }"></div>
         </div>
       </div>
     </div>
@@ -3987,10 +3995,14 @@ async function handleToggleMarker({ mediaId, marker }) {
   }
 }
 
-// Thinking helpers - thinking is stored in assistant message metadata
 function getItemMetadata(item) {
   if (!item || !item.item_metadata) return null
-  return typeof item.item_metadata === 'string' ? JSON.parse(item.item_metadata) : item.item_metadata
+  if (typeof item.item_metadata === 'object') return item.item_metadata
+  try {
+    return JSON.parse(item.item_metadata)
+  } catch {
+    return null
+  }
 }
 
 function hasThinking(item) {
@@ -5106,9 +5118,13 @@ const contextLimit = computed(() => {
   return getResolvedModel(slug)?.max_context_tokens || 131072
 })
 
+const currentContextTokens = computed(() => {
+  return llmUsage.value?.context_tokens || sessionTokenTotals.value.prompt_tokens || 0
+})
+
 const tokenUsagePercent = computed(() => {
-  const ctx = llmUsage.value?.context_tokens
-  if (!ctx) return 0
+  const ctx = currentContextTokens.value
+  if (!ctx || !contextLimit.value) return 0
   return Math.min(100, (ctx / contextLimit.value) * 100)
 })
 
@@ -5118,12 +5134,13 @@ function formatTokenCount(n) {
   return String(n)
 }
 
-// Dev mode: compute session token totals from loaded chat items
+// Compute session token totals from loaded chat items
 const sessionTokenTotals = computed(() => {
   const totals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, reasoning_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, model: '', turns: 0, total_llm_seconds: 0, avg_tps: 0 }
   if (!items.value) return totals
   for (const item of items.value) {
-    const usage = item.item_metadata?.llm_usage
+    const meta = getItemMetadata(item)
+    const usage = meta?.llm_usage
     if (usage) {
       totals.prompt_tokens += usage.prompt_tokens || 0
       totals.completion_tokens += usage.completion_tokens || 0

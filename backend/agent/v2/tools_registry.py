@@ -31,6 +31,17 @@ RETIRED_TOOLS = frozenset({
     "get_schema",
     "search_options",
     "sdk_help",
+    "create_parameter_sweep",
+    "create_layout",
+    "create_svg",
+    "preprocess_controlnet",
+    "assemble_set",
+    "notepad",
+    "get_project_direction",
+    "update_project_scene",
+    "update_project_script",
+    "get_world_state",
+    "update_world_state",
 })
 
 

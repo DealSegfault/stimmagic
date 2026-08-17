@@ -924,45 +924,35 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
 
 @tool(
     name="library",
-    description=(
-        "Search, retrieve, save, and browse the media library. "
-        "Manage project elements, tags, markers, and boards on Assets. Use action='element' "
-        "to create a named location/character/prop from an attached media_id or existing asset_id. "
-        "For tag/marker/board actions you can "
-        "target an item by the media_id you already have (from show/create_layout/media_info/"
-        "generation) — it resolves to the owning Asset automatically; you do NOT need to look up "
-        "an asset_id first. Browse/search results return both asset_id and media_id. "
-        "Use browse_schema and browse_options for progressive disclosure of browse facets. Inspect lineage. "
-        "Use generation_params to get a call_tool-ready flow for reproducing an existing image (tweak one field, then call_tool)."
-    ),
+    description="Search, retrieve, save, browse media library and manage assets, elements, tags, markers, boards. media_id resolves to owning Asset automatically.",
     parameters=[
         ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | element | tag | marker | board"),
-        ToolParameter("query", "string", "Text query. Search matches against generation prompts by default (best signal). Use search_fields to broaden.", required=False),
-        ToolParameter("search_fields", "string", "prompt (default) | caption | keywords | all — which fields to search. Only broaden when prompt search returns nothing useful.", required=False),
-        ToolParameter("media_id", "integer", "Exact Media payload ID. Used for get/lineage, and ALSO accepted as the target for tag/marker/board actions (resolved to its owning Asset — just pass the media_id you already have).", required=False),
-        ToolParameter("media_ids", "array", "Exact Media payload IDs for payload operations, or as bulk targets for tag/marker/board actions.", required=False, items={"type": "integer"}),
-        ToolParameter("asset_id", "integer", "Asset ID for tag/marker/board actions. Optional — if you only have a media_id, pass that instead (do not mix asset and media IDs in one call).", required=False),
-        ToolParameter("asset_ids", "array", "Asset IDs for bulk tag/marker/board actions. Optional — media_ids works too.", required=False, items={"type": "integer"}),
-        ToolParameter("tags", "array", "Filter by tag names (browse) or tag names to add/remove (tag action)", required=False, items={"type": "string"}),
-        ToolParameter("limit", "integer", "Max results, default 20", required=False),
-        ToolParameter("offset", "integer", "Browse result offset, default 0", required=False),
-        ToolParameter("filters", "object", "Structured browse filters object", required=False),
-        ToolParameter("sort_by", "string", "Browse sort: created_desc | created_asc | indexed_desc | indexed_asc | random", required=False),
-        ToolParameter("random_seed", "integer", "Seed for random browse ordering", required=False),
-        ToolParameter("facet", "string", "Facet name for browse_options", required=False),
-        ToolParameter("cursor", "string", "Opaque cursor for browse_options pagination", required=False),
-        ToolParameter("path", "string", "Workspace filename to save (save action)", required=False),
-        ToolParameter("save_tags", "array", "Tags to apply on save — only when the user explicitly requests tagging", required=False, items={"type": "string"}),
-        ToolParameter("marker_name", "string", "Marker name (marker action). Markers are a FIXED, curated set (typically 'favorite' and 'library' — the saved-for-later flag) — you cannot create new ones. Use operation='list' if unsure which names exist; 'add' only applies an existing marker.", required=False),
-        ToolParameter("board_name", "string", "Board name (board action)", required=False),
-        ToolParameter("board_id", "integer", "Board ID (board action)", required=False),
-        ToolParameter("section_name", "string", "Section name (board action)", required=False),
-        ToolParameter("section_id", "integer", "Section ID (board action)", required=False),
-        ToolParameter("element_id", "integer", "Element ID for element delete", required=False),
-        ToolParameter("element_type", "string", "Element type: location | character | prop (default prop)", required=False),
-        ToolParameter("element_name", "string", "Display name for element create, e.g. couteau", required=False),
-        ToolParameter("description", "string", "Optional element description", required=False),
-        ToolParameter("operation", "string", "Default: add. Supported ops differ by action — element: create | list | delete; tag: add | remove | list ('add' creates missing tags); marker: add | remove | list ('add' applies an existing marker only — markers cannot be created here); board: add | remove | move | list | contents | create | delete | rename | create_section | rename_section | delete_section | set_collapsed. Board 'add' auto-creates the board if board_name doesn't exist yet — no separate create needed. Move relocates items to a target section.", required=False),
+        ToolParameter("query", "string", "Text search query.", required=False),
+        ToolParameter("search_fields", "string", "prompt (default) | caption | keywords | all", required=False),
+        ToolParameter("media_id", "integer", "Media ID target.", required=False),
+        ToolParameter("media_ids", "array", "Bulk Media IDs.", required=False, items={"type": "integer"}),
+        ToolParameter("asset_id", "integer", "Asset ID target.", required=False),
+        ToolParameter("asset_ids", "array", "Bulk Asset IDs.", required=False, items={"type": "integer"}),
+        ToolParameter("tags", "array", "Tag names for filter or tag action.", required=False, items={"type": "string"}),
+        ToolParameter("limit", "integer", "Max results (default 20).", required=False),
+        ToolParameter("offset", "integer", "Result offset (default 0).", required=False),
+        ToolParameter("filters", "object", "Browse filter object.", required=False),
+        ToolParameter("sort_by", "string", "created_desc | created_asc | indexed_desc | indexed_asc | random", required=False),
+        ToolParameter("random_seed", "integer", "Seed for random sort.", required=False),
+        ToolParameter("facet", "string", "Facet name for browse_options.", required=False),
+        ToolParameter("cursor", "string", "Cursor for pagination.", required=False),
+        ToolParameter("path", "string", "Workspace filename to save.", required=False),
+        ToolParameter("save_tags", "array", "Tags applied on save.", required=False, items={"type": "string"}),
+        ToolParameter("marker_name", "string", "Marker name ('favorite' | 'library').", required=False),
+        ToolParameter("board_name", "string", "Board name.", required=False),
+        ToolParameter("board_id", "integer", "Board ID.", required=False),
+        ToolParameter("section_name", "string", "Board section name.", required=False),
+        ToolParameter("section_id", "integer", "Board section ID.", required=False),
+        ToolParameter("element_id", "integer", "Element ID.", required=False),
+        ToolParameter("element_type", "string", "location | character | prop", required=False),
+        ToolParameter("element_name", "string", "Element display name.", required=False),
+        ToolParameter("description", "string", "Element description.", required=False),
+        ToolParameter("operation", "string", "element: create|list|delete; tag: add|remove|list; marker: add|remove|list; board: add|remove|move|list|contents|create|delete|rename", required=False),
     ],
 )
 async def library(

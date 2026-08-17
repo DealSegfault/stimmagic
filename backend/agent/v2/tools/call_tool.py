@@ -661,7 +661,7 @@ async def execute_call_tool(
         # adapters are explicitly named with ``turbo``; refuse a standard or
         # unrelated video tool rather than silently dispatching the wrong path.
         fast_tool_markers = ("minimax_h3", "turbo")
-        normalized_tool_id = str(tool_id).lower()
+        normalized_tool_id = str(tool_id).lower().replace("-", "_")
         if not all(marker in normalized_tool_id for marker in fast_tool_markers):
             raise RuntimeError(
                 "MiniMax H3 ⚡ fast is enabled for this chat, but no explicit fast H3 "

@@ -618,6 +618,47 @@ async def _compress_stale_items(
                     item.tool_error = placeholder
                     dirty = True
 
+        # DeepSeek-Harness style Observation Rollup:
+        # Compress stale bash image generation commands & outputs
+        if i < cutoff_idx and item.item_type == "tool_call" and item.tool_name == "bash":
+            args_str = item.tool_args or "{}"
+            if "agy" in args_str or "codex" in args_str or "--dangerously" in args_str:
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                    purpose = args.get("purpose", "generate image") if isinstance(args, dict) else "generate image"
+                except Exception:
+                    purpose = "generate image"
+                item.tool_args = json.dumps({"command": "[CLI image generation]", "purpose": purpose})
+                dirty = True
+
+        if i < cutoff_idx and item.item_type == "tool_result":
+            tool_name = call_id_to_name.get(item.tool_call_id or "", "tool")
+            if tool_name == "bash" and (item.tool_result or item.tool_error):
+                res = str(item.tool_result or item.tool_error or "")
+                if len(res) > 30 or "exit code" in res or "agy" in res or "codex" in res:
+                    item.tool_result = "[CLI generation step completed]"
+                    item.tool_error = None
+                    dirty = True
+
+        # Compress stale read_file on .agy-last.log or .codex-last.log
+        if i < cutoff_idx and item.item_type == "tool_call" and item.tool_name == "read_file":
+            args_str = item.tool_args or "{}"
+            if ".agy-last.log" in args_str or ".codex-last.log" in args_str:
+                item.tool_args = json.dumps({"file_path": ".log"})
+                dirty = True
+
+        if i < cutoff_idx and item.item_type == "tool_result":
+            tool_name = call_id_to_name.get(item.tool_call_id or "", "tool")
+            if tool_name == "read_file" and item.tool_result and (".agy-last.log" in item.tool_result or ".codex-last.log" in item.tool_result or "Path: " in item.tool_result):
+                item.tool_result = "[Log: image saved]"
+                dirty = True
+
+        # Prune stale tool errors older than cutoff
+        if i < cutoff_idx and item.item_type == "tool_result" and item.tool_error:
+            if not item.tool_error.startswith("[Resolved error:"):
+                item.tool_error = f"[Resolved error: {item.tool_error[:80]}...]"
+                dirty = True
+
         # Compress superseded run_code arguments
         if i < cutoff_idx and item.item_type == "tool_call" and item.tool_name == "run_code":
             if item.tool_call_id != last_run_code_call_id:

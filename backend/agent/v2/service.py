@@ -312,21 +312,24 @@ def _parse_tool_args(raw_arguments: Optional[str]) -> dict:
         return {}
 
 
-def _is_generation_run_code(fn_name: str, raw_arguments: Optional[str]) -> bool:
-    """Return whether a run_code call imports a catalog generation tool.
+def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool:
+    """Return whether a tool call is a generation run_code or CLI generation command.
 
     A completed ``stimma.show(..., role="final")`` is already visible to the
-    user.  If the model immediately emits another generation run_code in the
-    same turn, executing it is almost always an accidental paid retry.  Video
-    assembly and inspection code remains allowed because it uses SDK helpers
-    such as ``stimma.ffmpeg`` rather than importing ``stimma.tools``.
+    user. If the model immediately emits another generation call in the
+    same turn, executing it is an accidental duplicate retry.
     """
-    if fn_name != "run_code":
-        return False
-    code = _parse_tool_args(raw_arguments).get("code")
-    return isinstance(code, str) and (
-        "from stimma.tools." in code or "import stimma.tools." in code
-    )
+    if fn_name == "run_code":
+        code = _parse_tool_args(raw_arguments).get("code")
+        return isinstance(code, str) and (
+            "from stimma.tools." in code or "import stimma.tools." in code
+        )
+    if fn_name == "bash":
+        cmd = _parse_tool_args(raw_arguments).get("command", "")
+        return isinstance(cmd, str) and (
+            "/Users/mac/.local/bin/agy" in cmd or "/Users/mac/.local/bin/codex" in cmd or "agy " in cmd or "codex exec" in cmd
+        )
+    return False
 
 
 def _dump_tool_args(arguments: dict) -> str:
@@ -1424,15 +1427,30 @@ async def _run_agentic_loop_inner(
                 pass
         system_reminders.append(
             "VIDEO DISPATCH MODE (authoritative for this chat): "
-            + ("MiniMax H3 ⚡ fast; select an explicit fast H3 adapter and never substitute the standard adapter."
+            + ("MiniMax H3 ⚡ fast (Turbo 4-Step); always use `minimax_h3_i2v_turbo` for 1 image / first+last frame, `minimax_h3_r2v_turbo` for references, or `minimax_h3_t2v_turbo` for text."
                if video_quick_mode else
-               "MiniMax H3 standard; select an explicit standard H3 adapter and never substitute the fast adapter.")
-            + " If the requested adapter is absent from the surfaced tool catalog, report it as unavailable instead of inventing or silently substituting a dispatch."
+               "MiniMax H3 standard (Full sampling); always use `minimax_h3_i2v` for 1 image / first+last frame, `minimax_h3_r2v` for references, or `minimax_h3_t2v` for text.")
+            + " Execute video generation immediately via `run_code` by importing the matching function from `stimma.tools.image_to_video` (or `text_to_video`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", artifact=True, title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
         )
-        if image_backend:
-            backend_label = "ChatGPT / Codex ImageGen" if image_backend == "codex_imagegen" else "Antigravity"
+        effective_image_backend = image_backend or "antigravity"
+
+        if effective_image_backend == "antigravity":
             system_reminders.append(
-                f"IMAGE DISPATCH MODE (authoritative for this chat): Route image generation through {backend_label} (`{image_backend}`)."
+                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via Antigravity (`agy`). "
+                "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
+                "To generate the first image, run via `bash` (timeout=600): "
+                "/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1. "
+                "For follow-up edits or scene continuations in the same chat, add `--continue` (e.g. `/Users/mac/.local/bin/agy --continue ...`) to reuse the local session memory with only the prompt delta. "
+                "Then immediately call `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and stop."
+            )
+        else:
+            system_reminders.append(
+                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via ChatGPT / Codex ImageGen (`codex`). "
+                "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
+                "To generate the first image, run via `bash` (timeout=600): "
+                "/Users/mac/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1. "
+                "For follow-up edits or scene continuations in the same chat, use `codex exec resume --last` to reuse local session memory with only the prompt delta. "
+                "Then immediately call `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")` and stop."
             )
 
         # Resolve LLM config first so build_messages knows the window size and
@@ -1609,13 +1627,11 @@ async def _run_agentic_loop_inner(
                     break
 
                 # A final media result has already been surfaced in this
-                # agent run.  Do not let a subsequent empty LLM turn silently
-                # submit another paid generation.  Explicit multi-shot work
-                # belongs in the original run_code batch; non-generation
-                # follow-up code (for example ffmpeg assembly) is still safe.
-                if shown_media_ids and _is_generation_run_code(fn_name, fn_arguments):
+                # agent run. Do not let a subsequent empty LLM turn silently
+                # submit another generation.
+                if shown_media_ids and _is_generation_tool_call(fn_name, fn_arguments):
                     log.warning(
-                        "Chat %s: blocked duplicate generation run_code after final media %s",
+                        "Chat %s: blocked duplicate generation tool call after final media %s",
                         chat_id,
                         sorted(shown_media_ids),
                     )

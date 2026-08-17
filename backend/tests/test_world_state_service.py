@@ -89,16 +89,38 @@ async def test_world_state_build_and_detect_missing(db_session):
         assert missing[0]["reference_id"] == "loc_maya_cafe_parisien"
         assert missing[0]["element_type"] == "location"
 
-        # Test distilling H3 shot context
+        # Test distilling H3 shot context with character and prop
+        from project_element_service import create_project_element as create_elem
+        media_window = await create_media_item(
+            session,
+            file_path=Path("/elements/window.png"),
+            file_format="png",
+        )
+        await session.flush()
+        elem_window, _ = await create_elem(
+            session,
+            project_id=project_id,
+            name="fenetre",
+            element_type="prop",
+            media_id=media_window.id,
+            description="Maya's rain-covered window",
+        )
+        await session.commit()
+
+    async with db_session() as session:
+        world_state = await build_project_world_state(session, project_id=project_id, scene_id=scene_id)
         prompt, manifest = distill_h3_shot_context(
             world_state,
-            "Maya walks slowly towards the counter",
+            "@prop_maya_fenetre Maya looks through the window",
         )
         assert "integrated_multimodal_description:" in prompt
         assert "<Picture 1>" in prompt
-        assert len(manifest) == 1
-        assert manifest[0]["label"] == "Picture 1"
-        assert manifest[0]["element_type"] == "character"
+        assert "<Picture 2>" in prompt
+        assert len(manifest) == 2
+        labels = [m["label"] for m in manifest]
+        assert "Picture 1" in labels
+        assert "Picture 2" in labels
+        assert any(m["element_type"] == "prop" for m in manifest)
 
 
 @pytest.mark.asyncio

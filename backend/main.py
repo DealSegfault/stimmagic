@@ -161,6 +161,7 @@ from routes import (
     presets,
     user_tools,
     tunnel,
+    gateway,
 )
 
 log.info(f"TIMING: routes imported at {time.time() - _startup_time:.2f}s")
@@ -215,6 +216,7 @@ app.include_router(telemetry.router)
 app.include_router(feedback.router)
 app.include_router(flags.router)
 app.include_router(tunnel.router)
+app.include_router(gateway.router)
 
 log.info(f"TIMING: routers included at {time.time() - _startup_time:.2f}s")
 

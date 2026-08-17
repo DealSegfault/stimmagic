@@ -226,7 +226,7 @@ def distill_h3_shot_context(
     # Identify active location references
     for ref_id, elem in entities.get("locations", {}).items():
         name = (elem.get("name") or "").lower()
-        if name in text_lower or ref_id.lower() in text_lower:
+        if name in text_lower or ref_id.lower() in text_lower or f"@{ref_id.lower()}" in text_lower:
             desc = elem.get("description") or ""
             location_context_lines.append(f"{elem.get('name')}: {desc}" if desc else elem.get('name'))
             if elem.get("media_id"):
@@ -237,6 +237,22 @@ def distill_h3_shot_context(
                     "asset_id": elem.get("asset_id"),
                     "name": elem.get("name"),
                     "element_type": "location",
+                    "reference_id": ref_id,
+                })
+
+    # Identify active prop references
+    for ref_id, elem in entities.get("props", {}).items():
+        name = (elem.get("name") or "").lower()
+        if name in text_lower or ref_id.lower() in text_lower or f"@{ref_id.lower()}" in text_lower:
+            desc = elem.get("description") or ""
+            if elem.get("media_id"):
+                label = f"Picture {len(active_references) + 1}"
+                active_references.append({
+                    "label": label,
+                    "media_id": elem.get("media_id"),
+                    "asset_id": elem.get("asset_id"),
+                    "name": elem.get("name"),
+                    "element_type": "prop",
                     "reference_id": ref_id,
                 })
 

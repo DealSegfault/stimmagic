@@ -39,25 +39,26 @@
 
           <!-- ==================== ZONE 1: Library Links ==================== -->
 
-          <!-- Stimma Home & Tunnel Status Light -->
-          <button
-            @click="handleNavClick('home')"
-            @dragover="handleDragOver"
-            @dragenter="handleStimmaHomeDragEnter"
-            @dragleave="handleStimmaHomeDragLeave"
-            @drop="handleStimmaHomeDrop"
-            class="flex items-center gap-2.5 px-3 py-1.5 rounded text-content-secondary no-underline text-sm font-medium transition-all cursor-pointer whitespace-nowrap relative hover:bg-overlay-subtle hover:text-content border-none bg-transparent w-full text-left"
-            :class="[
-              activeTab === 'home' ? '!bg-overlay-hover !text-content' : '',
-              dragHoverStimmaHome ? '!bg-accent/10 !text-content ring-1 ring-accent' : ''
-            ]"
-            title="Stimma (drag media here to attach)"
-          >
-            <img src="/logo.svg" class="w-3.5 h-3.5 flex-shrink-0" :class="{ 'logo-disconnected': !wsConnected }" alt="" />
-            <span class="font-brand lowercase tracking-[0.12em]">stimma</span>
-            <!-- Single status light next to logo -->
-            <TunnelIndicator class="ml-auto flex-shrink-0" @click.stop />
-          </button>
+          <!-- Stimma Home & Modules Status Light -->
+          <div class="flex items-center justify-between gap-1 w-full">
+            <button
+              @click="handleNavClick('home')"
+              @dragover="handleDragOver"
+              @dragenter="handleStimmaHomeDragEnter"
+              @dragleave="handleStimmaHomeDragLeave"
+              @drop="handleStimmaHomeDrop"
+              class="flex items-center gap-2.5 px-3 py-1.5 rounded text-content-secondary no-underline text-sm font-medium transition-all cursor-pointer whitespace-nowrap relative hover:bg-overlay-subtle hover:text-content border-none bg-transparent flex-1 text-left"
+              :class="[
+                activeTab === 'home' ? '!bg-overlay-hover !text-content' : '',
+                dragHoverStimmaHome ? '!bg-accent/10 !text-content ring-1 ring-accent' : ''
+              ]"
+              title="Stimma (drag media here to attach)"
+            >
+              <img src="/logo.svg" class="w-3.5 h-3.5 flex-shrink-0" :class="{ 'logo-disconnected': !wsConnected }" alt="" />
+              <span class="font-brand lowercase tracking-[0.12em]">stimma</span>
+            </button>
+            <TunnelIndicator class="flex-shrink-0 mr-1" />
+          </div>
 
           <!-- Saved Views -->
           <button
