@@ -143,6 +143,7 @@ async function uploadExternal(event: Event) {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
     selectedAsset.value = {
+      asset_id: response.data.asset_id,
       media_id: response.data.media_id,
       file_hash: response.data.file_hash,
       file_format: response.data.file_format || file.name.split('.').pop() || 'png',

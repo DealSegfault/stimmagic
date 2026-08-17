@@ -347,14 +347,16 @@ def _provider_state_metadata(provider_state: dict | None) -> str | None:
     )
 
 
-def _serialize_tool_result(fn_name: str, result_str: str) -> str:
+def _serialize_tool_result(fn_name: str, result_str: Any) -> str:
+    if isinstance(result_str, (dict, list)):
+        return json.dumps(result_str, default=str)
     if isinstance(result_str, str) and result_str.startswith("Error"):
         return json.dumps({
             "tool_name": fn_name,
             "error": result_str,
             "error_summary": result_str,
         })
-    return result_str
+    return str(result_str) if result_str is not None else ""
 
 
 def _annotate_ask_sequence(
@@ -484,7 +486,9 @@ async def _execute_tool_call(
     # tool even if one somehow made it into the model's tool_calls (stale
     # schema from a prior turn, hallucination, etc.). Returns None → falls
     # through to the "unknown tool" error path below.
-    scope = "flow" if (chat is not None and chat.flow_id is not None) else "agent"
+    chat_flow_id = getattr(chat, "flow_id", None) if chat else None
+    chat_project_id = getattr(chat, "project_id", None) if chat else None
+    scope = "flow" if chat_flow_id is not None else "agent"
     tool = get_tool(fn_name, scope=scope)
     if tool:
         try:
@@ -518,7 +522,7 @@ async def _execute_tool_call(
                         chat_id=chat_id,
                         workspace_dir=workspace_dir,
                         project_workspace_dir=project_workspace_dir,
-                        project_id=chat.project_id if chat else None,
+                        project_id=chat_project_id,
                         interrupt_checker=lambda: _is_interrupted(chat_id),
                         **kwargs,
                     )
@@ -528,7 +532,7 @@ async def _execute_tool_call(
                     chat_id=chat_id,
                     workspace_dir=workspace_dir,
                     project_workspace_dir=project_workspace_dir,
-                    project_id=chat.project_id if chat else None,
+                    project_id=chat_project_id,
                     interrupt_checker=lambda: _is_interrupted(chat_id),
                     **kwargs,
                 )
@@ -823,6 +827,9 @@ async def _copy_media_to_workspace(
     result = await session.execute(
         select(MediaItem).where(MediaItem.id.in_(media_ids))
     )
+    from asset_association_service import asset_ids_for_media_ids
+
+    asset_ids = await asset_ids_for_media_ids(session, media_ids)
     for item in result.scalars().all():
         file_path = item.file_path
         if file_path and os.path.exists(file_path):
@@ -837,6 +844,8 @@ async def _copy_media_to_workspace(
                 else:
                     shutil.copy2(file_path, dest)
                 entry: Dict[str, Any] = {"media_id": item.id, "filename": filename}
+                if item.id in asset_ids:
+                    entry["asset_id"] = asset_ids[item.id]
                 gen = {}
                 if item.generation_metadata:
                     try:
@@ -1203,10 +1212,16 @@ async def _run_agentic_loop_inner(
     from ..hitl import HumanActionRequired
 
     chat_id = chat.id
+    chat_flow_id = chat.flow_id
+    chat_project_id = chat.project_id
+    chat_generation_settings = chat.generation_settings
+    chat_model_slug = chat.model_slug
+    chat_reasoning_effort = chat.reasoning_effort
+
     if turn_stats is None:
         turn_stats = {}
-    workspace_dir = get_workspace_dir(chat_id, chat.project_id)
-    project_workspace_dir = get_project_workspace(chat.project_id)
+    workspace_dir = get_workspace_dir(chat_id, chat_project_id)
+    project_workspace_dir = get_project_workspace(chat_project_id)
     if session_media_ids is None:
         session_media_ids = []
     shown_media_ids: set[int] = set()
@@ -1215,20 +1230,20 @@ async def _run_agentic_loop_inner(
     # Resolve the effective model + effort for this chat (chat -> project -> profile)
     project_default_slug = None
     project_effort = None
-    if chat.project_id:
+    if chat_project_id:
         from database import Project
         from sqlalchemy import select as sa_select
         proj_result = await session.execute(
             sa_select(Project.chat_model_slug, Project.chat_effort)
-            .where(Project.id == chat.project_id)
+            .where(Project.id == chat_project_id)
         )
         proj_row = proj_result.first()
         if proj_row:
             project_default_slug, project_effort = proj_row
     effective_model_slug = resolve_chat_model_slug(
-        chat.model_slug, project_default_slug
+        chat_model_slug, project_default_slug
     )
-    effective_effort = resolve_chat_effort(chat.reasoning_effort, project_effort)
+    effective_effort = resolve_chat_effort(chat_reasoning_effort, project_effort)
 
     # Build system prompt once — stimpacks and other volatile context are delivered
     # via system reminders (injected into the last user message per turn)
@@ -1244,16 +1259,16 @@ async def _run_agentic_loop_inner(
     # Flow chats get a specialized system prompt + the flow directory as
     # the workspace for program.py edits. Everything else (tools, LLM,
     # broadcast) is shared with the main agent loop.
-    if chat.flow_id is not None:
+    if chat_flow_id is not None:
         from .flow_prompt import build_available_models_section, get_flow_system_prompt
         from flow_runtime import get_flow_dir
         system_prompt = get_flow_system_prompt(
             additional_instructions=resolved_config.additional_instructions,
             global_memory=resolved_config.global_memory,
             project_memory=resolved_config.project_memory,
-            available_models=await build_available_models_section(chat.project_id),
+            available_models=await build_available_models_section(chat_project_id),
         )
-        flow_dir = get_flow_dir(chat.flow_id)
+        flow_dir = get_flow_dir(chat_flow_id)
         if flow_dir.exists():
             workspace_dir = str(flow_dir)
     else:
@@ -1270,9 +1285,11 @@ async def _run_agentic_loop_inner(
     # with the run_code import namespace; idempotent + fingerprinted, so this is
     # a cheap no-op when the provider catalog hasn't changed.
     try:
-        from .tool_fs import materialize_tool_fs
+        from .tool_fs import ensure_task_tools, materialize_tool_fs
         from providers.registry import ProviderRegistry
-        materialize_tool_fs(ProviderRegistry.get_instance(), workspace_dir)
+        registry = ProviderRegistry.get_instance()
+        await ensure_task_tools(registry, "reference-to-video")
+        materialize_tool_fs(registry, workspace_dir)
     except Exception as e:
         log.warning(f"Failed to materialize .stimma/ tool catalog: {e}")
 
@@ -1432,7 +1449,7 @@ async def _run_agentic_loop_inner(
         # authored for chat polluted trivial flow builds — so flow eligibility
         # is strict opt-in per skill, and eligibility still isn't activation:
         # the invoke judgment stays with the agent.
-        skills_environment = "flow" if chat.flow_id is not None else "chat"
+        skills_environment = "flow" if chat_flow_id is not None else "chat"
         skills_reminder = build_skills_reminder(
             all_skills, _invoked_skills, environment=skills_environment
         )
@@ -1444,8 +1461,8 @@ async def _run_agentic_loop_inner(
         if pending_stall_nudge:
             system_reminders.append(pending_stall_nudge)
             pending_stall_nudge = None
-        if chat.flow_id is not None:
-            program_edit_reminder = build_user_program_edit_reminder(chat.flow_id)
+        if chat_flow_id is not None:
+            program_edit_reminder = build_user_program_edit_reminder(chat_flow_id)
             if program_edit_reminder:
                 system_reminders.append(program_edit_reminder)
         if artifact_context:
@@ -1458,19 +1475,19 @@ async def _run_agentic_loop_inner(
         # including the Codex/AGY CLI planner paths.
         video_quick_mode = False
         image_backend = None
-        if chat.generation_settings:
+        if chat_generation_settings:
             try:
-                gen_settings = json.loads(chat.generation_settings)
+                gen_settings = json.loads(chat_generation_settings)
                 video_quick_mode = gen_settings.get("video_quick_mode") is True
                 image_backend = gen_settings.get("image_backend")
             except (json.JSONDecodeError, TypeError):
                 pass
         system_reminders.append(
             "VIDEO DISPATCH MODE (authoritative for this chat): "
-            + ("MiniMax H3 ⚡ fast (Turbo 4-Step); always use `minimax_h3_i2v_turbo` for 1 image / first+last frame, `minimax_h3_r2v_turbo` for references, or `minimax_h3_t2v_turbo` for text."
+            + ("MiniMax H3 ⚡ fast (Turbo 4-Step); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
                if video_quick_mode else
-               "MiniMax H3 standard (Full sampling); always use `minimax_h3_i2v` for 1 image / first+last frame, `minimax_h3_r2v` for references, or `minimax_h3_t2v` for text.")
-            + " Execute video generation immediately via `run_code` by importing the matching function from `stimma.tools.image_to_video` (or `text_to_video`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", artifact=True, title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
+               "MiniMax H3 standard (Full sampling); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
+            + " Execute video generation immediately via `run_code` by importing the matching function (`from stimma.tools.reference_to_video import minimax_h3_r2v_turbo`, `from stimma.tools.image_to_video import minimax_h3_i2v_turbo`, or `from stimma.tools.text_to_video import minimax_h3_t2v_turbo`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
         )
         effective_image_backend = image_backend or "antigravity"
 

@@ -27,7 +27,13 @@
       @open-chat="openSceneChat"
     >
       <template #menu-action>
-        <div class="relative">
+        <div class="relative flex items-center gap-2">
+          <BoardChatPanel
+            v-if="board"
+            :board-id="board.id"
+            :board-name="board.name"
+            :project-id="board.project_id"
+          />
           <button
             ref="boardMenuButtonRef"
             class="flex h-8 w-8 items-center justify-center rounded-lg border border-edge bg-surface-raised text-content-muted transition-colors hover:bg-overlay-light hover:text-content"
@@ -79,7 +85,13 @@
           Name this board...
         </button>
       </div>
-      <div class="relative">
+      <div class="relative flex items-center gap-2">
+        <BoardChatPanel
+          v-if="board"
+          :board-id="board.id"
+          :board-name="board.name"
+          :project-id="board.project_id"
+        />
         <button
           ref="boardMenuButtonRef"
           class="flex h-8 w-8 items-center justify-center rounded-md border border-edge-subtle text-content-muted transition-colors hover:bg-overlay-subtle hover:text-content"
@@ -456,6 +468,7 @@ import SceneSequenceTable from '../components/scene/SceneSequenceTable.vue'
 import SceneGenerationsView from '../components/scene/SceneGenerationsView.vue'
 import SceneContinuityCard from '../components/scene/SceneContinuityCard.vue'
 import SceneBriefModal from '../components/scene/SceneBriefModal.vue'
+import BoardChatPanel from '../components/BoardChatPanel.vue'
 import { useProjectDirectionApi } from '../composables/useProjectDirectionApi'
 
 const { on } = useWebSocket()

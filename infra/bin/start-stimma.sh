@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-export PATH="/Users/mac/adp/comfy/bin:$PATH"
-cd /Users/mac/adp/comfy/stimma
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+export PATH="$ROOT/bin:$PATH"
+cd "$ROOT/stimma"
 
 stimma_target=$(rustc -vV | awk '/^host:/ {print $2}')
 stimma_watchdog="src-tauri/binaries/stimma-watchdog-$stimma_target"
@@ -15,7 +16,7 @@ fi
 # The production PyInstaller sidecar is not used in dev mode, but Tauri still
 # validates that the configured resource exists before compiling the shell.
 if [ ! -x "$stimma_backend" ]; then
-  cp /Users/mac/adp/comfy/bin/stimma-backend-dev-placeholder "$stimma_backend"
+  cp "$ROOT/bin/stimma-backend-dev-placeholder" "$stimma_backend"
   chmod 755 "$stimma_backend"
 fi
 

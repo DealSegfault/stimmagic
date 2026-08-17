@@ -37,10 +37,10 @@ RETIRED_TOOLS = frozenset({
     "preprocess_controlnet",
     "assemble_set",
     "notepad",
-    "get_project_direction",
+    # Read-only project context tools stay on the agent surface so any chat
+    # attached to the project can resolve scenes and references on demand.
     "update_project_scene",
     "update_project_script",
-    "get_world_state",
     "update_world_state",
 })
 

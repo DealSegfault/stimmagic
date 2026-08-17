@@ -133,12 +133,12 @@ def _planner_prompt(
         "- All video generation routes to MiniMax H3 on Modal via the local ComfyUI gateway.\n"
         "- Never report video generation as unavailable. Always generate and execute the Python generation code via `run_code`.\n"
         "- Follow the authoritative `VIDEO DISPATCH MODE` reminder in the conversation:\n"
-        "  * Fast mode (⚡ fast): from `stimma.tools.image_to_video` import `minimax_h3_i2v_turbo` (for 1 image or start/end frames) or `minimax_h3_r2v_turbo` (for multi-reference assets); from `stimma.tools.text_to_video` import `minimax_h3_t2v_turbo` (text-only).\n"
-        "  * Standard mode: from `stimma.tools.image_to_video` import `minimax_h3_i2v` or `minimax_h3_r2v`; from `stimma.tools.text_to_video` import `minimax_h3_t2v`.\n"
+        "  * Fast mode (⚡ fast): from `stimma.tools.image_to_video` import `minimax_h3_i2v_turbo` (for 1 image or start/end frames); from `stimma.tools.reference_to_video` import `minimax_h3_r2v_turbo` (for multi-reference or semantic anchor assets); from `stimma.tools.text_to_video` import `minimax_h3_t2v_turbo` (text-only).\n"
+        "  * Standard mode: from `stimma.tools.image_to_video` import `minimax_h3_i2v`; from `stimma.tools.reference_to_video` import `minimax_h3_r2v`; from `stimma.tools.text_to_video` import `minimax_h3_t2v`.\n"
         "- If the conversation contains `[Attached files ... media_id=...]`, reuse those exact media IDs in `input_images` (e.g. `input_images=[99]`).\n"
         "- For references, use matching `<Picture 1>`, `<Picture 2>`, ... tags in the prompt.\n"
         "- Use 16:9 as width=1344, height=768 and preserve an explicitly requested duration such as 4 seconds.\n"
-        "- Call `stimma.show(r, role=\"final\", artifact=True, title=\"<Title> · MiniMax H3\")` on the result.\n\n"
+        "- Call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")` on the result.\n\n"
         "H3 PRODUCTION QUALITY RULES:\n"
         "- For photorealistic, production-quality, or detailed environment requests, pass "
         "`steps=8`, `scheduler=\"simple\"`, `spectrum=False`, "
@@ -182,7 +182,7 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> CodexCLICompletion:
         if not isinstance(arguments, str):
             raise CodexCLIError("Codex CLI tool arguments must be a JSON string.")
         try:
-            decoded_arguments = json.loads(arguments)
+            decoded_arguments = json.loads(arguments, strict=False)
         except json.JSONDecodeError as exc:
             # Luna occasionally appends a short non-JSON suffix after the
             # structured arguments object. Recover the first complete JSON
@@ -190,7 +190,7 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> CodexCLICompletion:
             # object itself, and the suffix is not executable tool input.
             if exc.msg == "Extra data":
                 try:
-                    decoder = json.JSONDecoder()
+                    decoder = json.JSONDecoder(strict=False)
                     stripped = arguments.lstrip()
                     decoded_arguments, end = decoder.raw_decode(stripped)
                     if stripped[end:].strip():
@@ -276,6 +276,8 @@ async def complete_with_codex_cli(
     ).expanduser()
     prompt = _planner_prompt(messages, tools, workdir)
 
+    import base64
+
     with tempfile.TemporaryDirectory(prefix="stimma-codex-") as temp_dir:
         schema_path = Path(temp_dir) / "output-schema.json"
         output_path = Path(temp_dir) / "last-message.json"
@@ -283,6 +285,28 @@ async def complete_with_codex_cli(
             json.dumps(_output_schema(tool_names), ensure_ascii=False),
             encoding="utf-8",
         )
+
+        image_args = []
+        image_count = 0
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        url = (block.get("image_url") or {}).get("url", "")
+                        if url.startswith("data:") and "base64," in url:
+                            try:
+                                b64_data = url.split("base64,", 1)[1]
+                                img_bytes = base64.b64decode(b64_data)
+                                image_count += 1
+                                img_file = Path(temp_dir) / f"input_image_{image_count}.jpg"
+                                img_file.write_bytes(img_bytes)
+                                image_args.extend(["-i", str(img_file)])
+                            except Exception as e:
+                                log.warning(f"Failed to decode image for codex exec: {e}")
+                        elif url.startswith("file://"):
+                            image_args.extend(["-i", url[7:]])
+
         command = [
             executable,
             "exec",
@@ -304,6 +328,7 @@ async def complete_with_codex_cli(
             "--output-last-message",
             str(output_path),
         ]
+        command.extend(image_args)
         if reasoning_level and reasoning_level not in {"off", "none"}:
             command.extend(["--config", f'model_reasoning_effort="{reasoning_level}"'])
         command.append("-")

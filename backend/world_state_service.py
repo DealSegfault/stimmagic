@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import (
@@ -19,6 +19,7 @@ from database import (
     AssetRevision,
     Board,
     BoardAssetItem,
+    BoardSection,
     MediaItem,
     Project,
     ProjectDirection,
@@ -29,10 +30,94 @@ from project_direction_service import direction_payload, json_value, scene_dict
 from project_element_service import list_project_elements
 
 
+async def resolve_project_scene(
+    session: AsyncSession,
+    *,
+    project_id: int,
+    scene_id: Optional[int] = None,
+    sequence_number: Optional[int] = None,
+    scene_number: Optional[int] = None,
+    board_id: Optional[int] = None,
+) -> Optional[ProjectScene]:
+    """Resolve a scene using stable project coordinates, never chat-local state.
+
+    Scene chats carry a scene id in their instructions, but ordinary project or
+    board chats do not.  This lookup is intentionally scoped to the chat's
+    project so a board/scene id from another project cannot leak context.
+    """
+    stmt = select(ProjectScene).where(ProjectScene.project_id == project_id)
+    if scene_id is not None:
+        stmt = stmt.where(ProjectScene.id == scene_id)
+    elif board_id is not None:
+        stmt = stmt.where(ProjectScene.board_id == board_id)
+    else:
+        if sequence_number is not None:
+            stmt = stmt.where(ProjectScene.sequence_number == sequence_number)
+        if scene_number is not None:
+            stmt = stmt.where(ProjectScene.scene_number == scene_number)
+
+    return await session.scalar(
+        stmt.order_by(ProjectScene.sequence_number, ProjectScene.scene_number, ProjectScene.id)
+    )
+
+
+async def _board_reference_assets(session: AsyncSession, board_id: Optional[int]) -> list[dict[str, Any]]:
+    """Return the live visual assets in a scene board's References section."""
+    if board_id is None:
+        return []
+
+    rows = (
+        await session.execute(
+            select(BoardSection.name, Asset, AssetRevision, MediaItem)
+            .join(BoardAssetItem, BoardAssetItem.board_section_id == BoardSection.id)
+            .join(Asset, Asset.id == BoardAssetItem.asset_id)
+            .outerjoin(
+                AssetRevision,
+                (AssetRevision.id == Asset.current_revision_id)
+                & AssetRevision.deleted_at.is_(None),
+            )
+            .outerjoin(
+                MediaItem,
+                (MediaItem.id == AssetRevision.primary_media_id)
+                & MediaItem.deleted_at.is_(None)
+                & (
+                    MediaItem.file_unavailable.is_(False)
+                    | MediaItem.file_unavailable.is_(None)
+                ),
+            )
+            .where(
+                BoardSection.board_id == board_id,
+                BoardSection.deleted_at.is_(None),
+                func.lower(func.trim(BoardSection.name)) == "references",
+                BoardAssetItem.deleted_at.is_(None),
+                Asset.state == "active",
+                Asset.deleted_at.is_(None),
+            )
+            .order_by(BoardAssetItem.display_order, BoardAssetItem.id)
+        )
+    ).all()
+
+    return [
+        {
+            "asset_id": asset.id,
+            "title": asset.title,
+            "section": section_name,
+            "revision_id": revision.id if revision else None,
+            "media_id": media.id if media else None,
+            "file_hash": media.file_hash if media else None,
+            "file_format": media.file_format if media else None,
+        }
+        for section_name, asset, revision, media in rows
+    ]
+
+
 async def build_project_world_state(
     session: AsyncSession,
     project_id: int,
     scene_id: Optional[int] = None,
+    sequence_number: Optional[int] = None,
+    scene_number: Optional[int] = None,
+    board_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Aggregate project direction, elements, and continuity buffer into a unified World State."""
     project = await session.get(Project, project_id)
@@ -70,15 +155,30 @@ async def build_project_world_state(
     previous_scene_data: Optional[Dict[str, Any]] = None
     next_scene_data: Optional[Dict[str, Any]] = None
 
-    if scene_id is not None:
+    resolved_scene = await resolve_project_scene(
+        session,
+        project_id=project_id,
+        scene_id=scene_id,
+        sequence_number=sequence_number,
+        scene_number=scene_number,
+        board_id=board_id,
+    )
+    resolved_scene_id = resolved_scene.id if resolved_scene else None
+
+    if resolved_scene_id is not None:
         for idx, s in enumerate(scenes):
-            if s.id == scene_id:
+            if s.id == resolved_scene_id:
                 current_scene_data = scene_dict(s)
                 if idx > 0:
                     previous_scene_data = scene_dict(scenes[idx - 1])
                 if idx < len(scenes) - 1:
                     next_scene_data = scene_dict(scenes[idx + 1])
                 break
+
+    reference_assets = await _board_reference_assets(
+        session,
+        current_scene_data.get("board_id") if current_scene_data else board_id,
+    )
 
     # Extract continuity buffer from previous scene context if available
     continuity_buffer: Dict[str, Any] = {}
@@ -104,6 +204,7 @@ async def build_project_world_state(
         "previous_scene": previous_scene_data,
         "next_scene": next_scene_data,
         "continuity_buffer": continuity_buffer,
+        "reference_assets": reference_assets,
     }
 
 

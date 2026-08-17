@@ -24,6 +24,7 @@ from utils.websocket import ws_manager
 from utils.background_tasks import generation_input_media_ids
 from project_service import get_project_or_404
 from llm import EntitlementError
+from asset_association_service import asset_for_media
 
 router = APIRouter(prefix="/api/generate", tags=["generation"])
 log = get_logger(__name__)
@@ -494,6 +495,7 @@ async def get_generation_folder(
 async def upload_reference_image(
     file: UploadFile = File(...),
     materialize_asset: bool = Form(True),
+    session: AsyncSession = Depends(get_db_session),
 ):
     """
     Upload a reference image for image-to-image tasks.
@@ -514,10 +516,16 @@ async def upload_reference_image(
             materialize_asset=materialize_asset,
         )
 
+        # Uploads normally create the stable Asset in the upload transaction.
+        # Return both identities so chat/agent consumers never have to guess
+        # whether the number they received is a Media ID or an Asset ID.
+        asset = await asset_for_media(session, media_item.id) if materialize_asset else None
+
         return {
             "path": file_path,
             "filename": Path(file_path).name,
             "media_id": media_item.id,
+            "asset_id": asset.id if asset is not None else None,
             "file_hash": media_item.file_hash,
             "width": media_item.width,
             "height": media_item.height,

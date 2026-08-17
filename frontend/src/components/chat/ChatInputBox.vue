@@ -48,6 +48,7 @@
           class="chat-input-textarea w-full bg-transparent text-content pl-1 pr-1 pb-2 focus:outline-none resize-none block"
           @keydown="onTextareaKeydown"
           @keyup="onTextareaKeyup"
+          @paste="onPaste"
         />
       </div>
 
@@ -258,15 +259,25 @@ async function handleUploadSelect(event) {
 async function uploadFileToAttachments(file) {
   if (!file.type.startsWith('image/')) return
   try {
+    // Clipboard images may not have a filename. The upload endpoint validates
+    // extensions, so provide one derived from the MIME type when necessary.
+    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png'
+    const filename = file.name && /\.[a-z0-9]+$/i.test(file.name)
+      ? file.name
+      : `clipboard-${Date.now()}.${extension}`
+    const uploadFile = file.name === filename
+      ? file
+      : new File([file], filename, { type: file.type, lastModified: file.lastModified })
     const formData = new FormData()
-    formData.append('file', file)
+    formData.append('file', uploadFile)
     const response = await axios.post('/api/generate/upload-reference', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     updateAttachments([...props.attachments, {
       media_id: response.data.media_id,
+      asset_id: response.data.asset_id,
       path: response.data.path,
-      filename: response.data.filename
+      filename: response.data.filename || filename
     }])
   } catch (error) {
     console.error('Failed to upload file:', error)
@@ -309,6 +320,42 @@ async function onDrop(event) {
   if (files && files.length > 0) {
     const imageFile = Array.from(files).find(f => f.type.startsWith('image/'))
     if (imageFile) {
+      await uploadFileToAttachments(imageFile)
+      nextTick(() => textareaRef.value?.focus())
+    }
+  }
+}
+
+// ==================== Clipboard Paste ====================
+
+async function onPaste(event) {
+  if (props.agentUnavailable) return
+  const clipboardData = event.clipboardData
+  if (!clipboardData) return
+
+  // Check for image items
+  const items = clipboardData.items
+  if (items && items.length > 0) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.type && item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) {
+          event.preventDefault()
+          await uploadFileToAttachments(file)
+          nextTick(() => textareaRef.value?.focus())
+          return
+        }
+      }
+    }
+  }
+
+  // Fallback for files
+  const files = clipboardData.files
+  if (files && files.length > 0) {
+    const imageFile = Array.from(files).find(f => f.type.startsWith('image/'))
+    if (imageFile) {
+      event.preventDefault()
       await uploadFileToAttachments(imageFile)
       nextTick(() => textareaRef.value?.focus())
     }

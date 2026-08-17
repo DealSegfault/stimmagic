@@ -14,6 +14,34 @@ import aiohttp
 logger = logging.getLogger(__name__)
 
 
+def _uploaded_reference_name(
+    response: Dict[str, Any],
+    fallback: str,
+    default_type: str = "input",
+) -> str:
+    """Return the ComfyUI filename format accepted by annotated_filepath.
+
+    ComfyUI's upload endpoint returns ``name`` separately from ``subfolder``
+    and ``type``.  Passing only ``name`` works for files uploaded directly to
+    the input root, but loses the location for uploads routed into a subfolder
+    (and loses the type annotation for output/temp files).  The field nodes
+    validate the complete annotated path, so preserve all of the response
+    fields when handing the reference to the workflow executor.
+    """
+    if not isinstance(response, dict):
+        return fallback
+
+    name = str(response.get("name") or fallback).strip()
+    subfolder = str(response.get("subfolder") or "").strip("/")
+    if subfolder:
+        name = f"{subfolder}/{name}"
+
+    file_type = str(response.get("type") or default_type).strip()
+    if file_type and file_type != default_type:
+        name = f"{name} [{file_type}]"
+    return name
+
+
 def parse_addresses(addresses) -> List[str]:
     """Parse various address input formats into a list of individual addresses.
 
@@ -155,10 +183,19 @@ class SingleComfy:
 
         filename = Path(image_path).name
 
+        ext = Path(image_path).suffix.lower()
+        content_type_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+        }
+        content_type = content_type_map.get(ext, "image/png")
         session = await self._get_session()
         with open(image_path, "rb") as f:
             form_data = aiohttp.FormData()
-            form_data.add_field("image", f, filename=filename, content_type="image/png")
+            form_data.add_field("image", f, filename=filename, content_type=content_type)
             form_data.add_field("type", image_type)
             form_data.add_field("overwrite", str(overwrite).lower())
 
@@ -170,7 +207,7 @@ class SingleComfy:
                     raise RuntimeError(f"Image upload failed ({resp.status}): {error_text}")
                 raw = await resp.read()
                 response = json.loads(raw.decode("utf-8"))
-                return response.get("name", filename)
+                return _uploaded_reference_name(response, filename)
 
     async def upload_video(self, video_path: str, overwrite: bool = True) -> str:
         """Upload a video to ComfyUI's input directory."""
@@ -202,7 +239,7 @@ class SingleComfy:
                     raise RuntimeError(f"Video upload failed ({resp.status}): {error_text}")
                 raw = await resp.read()
                 response = json.loads(raw.decode("utf-8"))
-                return response.get("name", filename)
+                return _uploaded_reference_name(response, filename)
 
     async def upload_audio(self, audio_path: str, overwrite: bool = True) -> str:
         """Upload an audio file to ComfyUI's input directory."""
@@ -235,7 +272,7 @@ class SingleComfy:
                     raise RuntimeError(f"Audio upload failed ({resp.status}): {error_text}")
                 raw = await resp.read()
                 response = json.loads(raw.decode("utf-8"))
-                return response.get("name", filename)
+                return _uploaded_reference_name(response, filename)
 
     async def interrupt(self) -> bool:
         """Interrupt current execution."""

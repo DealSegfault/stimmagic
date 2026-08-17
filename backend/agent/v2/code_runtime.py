@@ -1377,7 +1377,18 @@ class StimmaSDK:
         self._llm_usage["calls"] += 1
         return resp.content
 
-    def show(self, item: ToolResult | str | Path | int | Iterable[ToolResult | str | Path | int] | None = None, *, role: str, title: str | None = None, media_id: int | None = None, media_ids: list[int] | None = None, path: str | None = None, paths: list[str] | None = None):
+    def show(
+        self,
+        item: ToolResult | str | Path | int | Iterable[ToolResult | str | Path | int] | None = None,
+        *,
+        role: str,
+        title: str | None = None,
+        media_id: int | None = None,
+        media_ids: list[int] | None = None,
+        path: str | None = None,
+        paths: list[str] | None = None,
+        artifact: bool = False,
+    ):
         if role not in {"intermediate", "final"}:
             raise ValueError("show role must be 'intermediate' or 'final'")
         # Accept keyword-arg style (from tool-call API confusion)
@@ -2258,8 +2269,10 @@ async def run_code_in_sandbox(
     _tools_namespace: dict[str, Any] = {}
     try:
         from providers.registry import ProviderRegistry
-        from .tool_fs import build_manifest, build_tools_namespace
-        _tool_manifest = build_manifest(ProviderRegistry.get_instance())
+        from .tool_fs import build_manifest, build_tools_namespace, ensure_task_tools
+        registry = ProviderRegistry.get_instance()
+        await ensure_task_tools(registry, "reference-to-video")
+        _tool_manifest = build_manifest(registry)
         _tools_namespace = build_tools_namespace(sdk_instance, _tool_manifest)
     except Exception as e:
         log.warning(f"run_code: failed to build stimma.tools namespace: {e}")

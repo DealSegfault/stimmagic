@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import MediaImage from '../media/MediaImage.vue'
 import type { ProjectElement } from '../../composables/useProjectElementsApi'
+import { useMediaDetailsModal } from '../../composables/useMediaDetailsModal'
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   element: ProjectElement
   removable?: boolean
   compact?: boolean
@@ -12,6 +13,15 @@ withDefaults(defineProps<{
 })
 
 defineEmits<{ remove: [] }>()
+
+const mediaDetailsModal = useMediaDetailsModal()
+
+function openImage(event: MouseEvent) {
+  event.stopPropagation()
+  if (props.element.media_id) {
+    mediaDetailsModal.open(props.element.media_id)
+  }
+}
 </script>
 
 <template>
@@ -19,18 +29,27 @@ defineEmits<{ remove: [] }>()
     class="group inline-flex max-w-full items-center gap-2 rounded-md border border-edge bg-surface-raised p-1.5 text-left"
     :class="compact ? 'pr-2' : 'pr-3'"
   >
-    <MediaImage
+    <button
       v-if="element.media_id || element.file_hash"
-      :media-id="element.media_id || undefined"
-      :asset-id="element.asset_id || undefined"
-      :file-hash="element.file_hash || undefined"
-      :file-format="element.file_format || undefined"
-      :alt="element.name"
-      :enable-context-menu="false"
-      :draggable="false"
-      container-class="h-9 w-9 shrink-0 overflow-hidden rounded bg-surface"
-      img-class="h-full w-full object-cover"
-    />
+      type="button"
+      class="relative h-9 w-9 shrink-0 overflow-hidden rounded bg-surface p-0 border-0 text-left focus:outline-none"
+      :class="element.media_id ? 'cursor-pointer hover:ring-1 hover:ring-accent transition-all' : 'cursor-default'"
+      :title="element.media_id ? `Voir ${element.name}` : undefined"
+      :disabled="!element.media_id"
+      @click="openImage"
+    >
+      <MediaImage
+        :media-id="element.media_id || undefined"
+        :asset-id="element.asset_id || undefined"
+        :file-hash="element.file_hash || undefined"
+        :file-format="element.file_format || undefined"
+        :alt="element.name"
+        :enable-context-menu="false"
+        :draggable="false"
+        container-class="h-full w-full"
+        img-class="h-full w-full object-cover"
+      />
+    </button>
     <div class="min-w-0">
       <div v-if="!compact" class="text-[10px] uppercase tracking-wide text-content-muted">
         {{ element.element_type }}

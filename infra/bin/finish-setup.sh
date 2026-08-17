@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-ROOT=/Users/mac/adp/comfy
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "Déploiement du service Modal..."
 "$ROOT/bin/deploy.sh"

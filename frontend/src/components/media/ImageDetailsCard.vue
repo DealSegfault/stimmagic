@@ -35,10 +35,94 @@
         </div>
       </div>
 
-      <!-- Tool name -->
-      <h4 v-if="genStep?.tool_id" class="m-0 text-sm font-semibold text-content">
-        {{ toolHeading }}
-      </h4>
+      <!-- Tool name & Model Header -->
+      <div class="flex flex-col gap-1.5 border-b border-edge-subtle pb-3">
+        <div class="flex items-center justify-between gap-2">
+          <h4 v-if="genStep?.tool_id" class="m-0 text-sm font-bold text-content truncate">
+            {{ toolHeading }}
+          </h4>
+          <span v-else class="m-0 text-sm font-semibold text-content">Image details</span>
+        </div>
+
+        <div v-if="modelName" class="flex flex-wrap items-center gap-1.5">
+          <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-500/15 border border-purple-500/25 text-purple-300 text-xs font-medium font-mono">
+            <SparklesIcon class="w-3.5 h-3.5 text-purple-400 flex-shrink-0" />
+            <span>Modèle : <strong class="text-purple-200">{{ modelName }}</strong></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Bar: Recreate, Remix, Send to Chat -->
+      <div class="grid grid-cols-2 gap-2 pt-1 pb-1">
+        <button
+          type="button"
+          class="inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-accent-contrast shadow-sm hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50"
+          :disabled="recreating"
+          title="Recréer avec le modèle, le prompt et la lignée source"
+          @click="handleRecreate"
+        >
+          <ArrowPathIcon class="w-3.5 h-3.5" :class="{ 'animate-spin': recreating }" />
+          <span>{{ recreating ? 'Chargement…' : 'Recréer' }}</span>
+        </button>
+
+        <InspireMenu
+          v-if="mediaId"
+          :media-id="mediaId"
+          @sent="mediaDetails.close()"
+        />
+
+        <div v-if="mediaId" class="col-span-2">
+          <SendToChatMenu
+            :media-id="mediaId"
+            @sent="mediaDetails.close()"
+          />
+        </div>
+      </div>
+
+      <!-- Prompt: read-only prose with dedicated copy button -->
+      <div v-if="promptText" class="rounded-xl border border-edge bg-surface-raised/40 p-3 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-semibold text-content-secondary flex items-center gap-1.5">
+            <CommandLineIcon class="w-3.5 h-3.5 text-accent" />
+            Prompt
+          </span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer border"
+            :class="copiedPrompt ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400' : 'bg-surface border-edge-subtle text-content-secondary hover:text-content hover:bg-overlay-light'"
+            :title="copiedPrompt ? 'Copié !' : 'Copier le prompt'"
+            @click="handleCopyPrompt(promptText)"
+          >
+            <CheckIcon v-if="copiedPrompt" class="w-3.5 h-3.5 text-emerald-400" />
+            <ClipboardDocumentIcon v-else class="w-3.5 h-3.5" />
+            <span>{{ copiedPrompt ? 'Copié !' : 'Copier' }}</span>
+          </button>
+        </div>
+        <p class="text-content text-xs leading-relaxed m-0 select-text whitespace-pre-wrap font-sans">
+          {{ promptText }}
+        </p>
+      </div>
+
+      <!-- Negative prompt (if present) -->
+      <div v-if="negativePromptText" class="rounded-xl border border-edge-subtle bg-surface-raised/20 p-3 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-xs font-semibold text-content-muted">Negative Prompt</span>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer border"
+            :class="copiedNegativePrompt ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400' : 'bg-surface border-edge-subtle text-content-muted hover:text-content hover:bg-overlay-light'"
+            :title="copiedNegativePrompt ? 'Copié !' : 'Copier le prompt négatif'"
+            @click="handleCopyNegativePrompt(negativePromptText)"
+          >
+            <CheckIcon v-if="copiedNegativePrompt" class="w-3.5 h-3.5 text-emerald-400" />
+            <ClipboardDocumentIcon v-else class="w-3.5 h-3.5" />
+            <span>{{ copiedNegativePrompt ? 'Copié !' : 'Copier' }}</span>
+          </button>
+        </div>
+        <p class="text-content-secondary text-xs leading-relaxed m-0 select-text whitespace-pre-wrap font-sans">
+          {{ negativePromptText }}
+        </p>
+      </div>
 
       <!-- Input Assets (source images used to create this) -->
       <div v-if="resolvedSourceInputs.length > 0">
@@ -96,23 +180,6 @@
 
       <!-- What the editor did, when this came out of the editor -->
       <EditStackSummary :stack="editStack" />
-
-      <!-- Prompt: read-only prose is typeset, never boxed like a form field -->
-      <div v-if="genStep?.prompt">
-        <div class="text-content-tertiary text-xs mb-1">Prompt</div>
-        <p class="text-content-secondary text-xs leading-relaxed m-0 select-text">{{ genStep.prompt }}</p>
-      </div>
-      <!-- Fallback: extracted_prompt when no gen metadata -->
-      <div v-else-if="media.extracted_prompt">
-        <div class="text-content-tertiary text-xs mb-1">Prompt</div>
-        <p class="text-content-secondary text-xs leading-relaxed m-0 select-text">{{ media.extracted_prompt }}</p>
-      </div>
-
-      <!-- Negative prompt -->
-      <div v-if="genStep?.negative_prompt">
-        <div class="text-content-tertiary text-xs mb-1">Negative Prompt</div>
-        <p class="text-content-secondary text-xs leading-relaxed m-0 select-text">{{ genStep.negative_prompt }}</p>
-      </div>
 
       <!-- Caption -->
       <div v-if="media.vlm_caption">
@@ -187,12 +254,28 @@
 </template>
 
 <script setup>
-import { computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import axios from 'axios'
+import {
+  ClipboardDocumentIcon,
+  CheckIcon,
+  ArrowPathIcon,
+  SparklesIcon,
+  CommandLineIcon
+} from '@heroicons/vue/24/outline'
 import { MediaImage } from './index'
 import KeyValueList from '../ui/KeyValueList.vue'
 import EditStackSummary from './EditStackSummary.vue'
+import InspireMenu from '../InspireMenu.vue'
+import SendToChatMenu from '../SendToChatMenu.vue'
 import { useMarkers } from '../../composables/useMarkers'
 import { useProvidersApi } from '../../composables/useProvidersApi'
+import { useMediaDetailsModal } from '../../composables/useMediaDetailsModal'
+import { useWorkspaceTabs, toolInstanceRoute } from '../../composables/useWorkspaceTabs'
+import { getApiBase } from '../../apiConfig'
+import { copyToClipboard } from '../../utils/clipboard'
+import { addToast } from '../../composables/useToasts'
 import { getFilterDisplayLabel } from '../../utils/filterDefs'
 import { toolDisplayName } from '../../utils/toolDisplay'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
@@ -222,10 +305,17 @@ const props = defineProps({
 
 defineEmits(['navigate', 'open-flow'])
 
+const router = useRouter()
+const mediaDetails = useMediaDetailsModal()
 const { availableMarkers, hasMarker, toggleMarker: toggleMarkerFn, init: initMarkers, loadMarkersForMedia } = useMarkers()
 const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
 
 const mediaId = computed(() => props.media.id)
+const recreating = ref(false)
+const copiedPrompt = ref(false)
+const copiedNegativePrompt = ref(false)
+let copyTimer = null
+let negativeCopyTimer = null
 
 function parseMeta(media) {
   const raw = media?.generation_metadata
@@ -250,8 +340,8 @@ const genStep = computed(() => {
   return {
     media_id: mediaId.value,
     task_type: meta.task_type,
-    model: meta.model,
-    prompt: meta.prompt,
+    model: meta.model || params.model || meta.checkpoint || params.checkpoint,
+    prompt: meta.prompt || params.prompt,
     negative_prompt: meta.negative_prompt || params.negative_prompt,
     parameters: params,
     generated_at: meta.generated_at,
@@ -259,6 +349,108 @@ const genStep = computed(() => {
     tool_id: meta.tool_id || null
   }
 })
+
+const modelName = computed(() => {
+  const meta = parseMeta(props.media)
+  return genStep.value?.model
+    || meta?.model
+    || meta?.parameters?.model
+    || meta?.parameters?.checkpoint
+    || meta?.checkpoint
+    || props.media?.model
+    || null
+})
+
+const promptText = computed(() => {
+  const meta = parseMeta(props.media)
+  return genStep.value?.prompt
+    || meta?.prompt
+    || meta?.parameters?.prompt
+    || props.media?.extracted_prompt
+    || props.media?.prompt
+    || null
+})
+
+const negativePromptText = computed(() => {
+  const meta = parseMeta(props.media)
+  return genStep.value?.negative_prompt
+    || meta?.negative_prompt
+    || meta?.parameters?.negative_prompt
+    || null
+})
+
+async function handleCopyPrompt(text) {
+  if (!text) return
+  const success = await copyToClipboard(text)
+  if (success) {
+    copiedPrompt.value = true
+    addToast('Prompt copié dans le presse-papiers', 'success', 2000)
+    clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copiedPrompt.value = false
+    }, 2000)
+  } else {
+    addToast('Impossible de copier le prompt', 'error')
+  }
+}
+
+async function handleCopyNegativePrompt(text) {
+  if (!text) return
+  const success = await copyToClipboard(text)
+  if (success) {
+    copiedNegativePrompt.value = true
+    addToast('Negative prompt copié', 'success', 2000)
+    clearTimeout(negativeCopyTimer)
+    negativeCopyTimer = setTimeout(() => {
+      copiedNegativePrompt.value = false
+    }, 2000)
+  }
+}
+
+async function handleRecreate() {
+  if (!mediaId.value || recreating.value) return
+  recreating.value = true
+  try {
+    const response = await axios.get(`${getApiBase()}/tools/remix-tools/${mediaId.value}`)
+    const remixTools = response.data || []
+
+    let targetTool = null
+    if (genStep.value?.tool_id) {
+      targetTool = remixTools.find((t) => t.full_tool_id === genStep.value.tool_id || t.tool_id === genStep.value.tool_id)
+    }
+    if (!targetTool && remixTools.length > 0) {
+      targetTool = remixTools[0]
+    }
+
+    if (targetTool) {
+      const route = router.currentRoute.value
+      const projectId = route.params.id && String(route.name || '').startsWith('project-')
+        ? Number(route.params.id)
+        : null
+      const { resolveToolInstance } = useWorkspaceTabs()
+      const { instanceId } = resolveToolInstance(targetTool.full_tool_id, projectId)
+
+      mediaDetails.close()
+      router.push(toolInstanceRoute(targetTool.full_tool_id, projectId, instanceId, {
+        remixFrom: mediaId.value.toString(),
+        _ts: Date.now().toString()
+      }))
+      addToast(`Paramètres chargés dans ${targetTool.name}`, 'success')
+    } else {
+      if (promptText.value) {
+        await handleCopyPrompt(promptText.value)
+      }
+      mediaDetails.close()
+      router.push('/tools')
+      addToast('Redirection vers les outils...', 'info')
+    }
+  } catch (err) {
+    console.error('Failed to recreate from media:', err)
+    addToast('Impossible de charger la configuration de régénération', 'error')
+  } finally {
+    recreating.value = false
+  }
+}
 
 /**
  * The tool's durable display name. Provenance outlives registration, so a

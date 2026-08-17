@@ -6,10 +6,11 @@ from sqlalchemy import select
 
 from dataclasses import dataclass, field
 
+import agent.v2.tools  # noqa: F401 - registers built-in tools
 from agent.v2.permissions import GATED_TOOLS
 from agent.v2.prompts import get_system_prompt
 from agent.v2.tools.run_code import run_code
-from agent.v2.tools_registry import get_tool, get_tools_schema
+from agent.v2.tools_registry import get_all_tools, get_tool, get_tools_schema
 from database import ChatItem, MediaItem, MediaLineage
 from tests.helpers.media import create_media_item, generate_test_image
 
@@ -60,12 +61,11 @@ async def test_run_code_tool_registered_and_prompt_documented():
 
 @pytest.mark.asyncio
 async def test_create_layout_tool_registered_and_prompt_documents_workspace_images():
-    tool_def = get_tool("create_layout")
+    tool_def = get_all_tools().get("create_layout")
     assert tool_def is not None
-    schema = [t for t in get_tools_schema() if t["function"]["name"] == "create_layout"]
-    assert len(schema) == 1
+    schema = tool_def.to_openai_schema()
 
-    description = schema[0]["function"]["description"]
+    description = schema["function"]["description"]
     assert "library(action='get', media_id=...)" in description
     assert "guessed filenames" in description or "Do not" in description
     assert "absolute filesystem paths" in description

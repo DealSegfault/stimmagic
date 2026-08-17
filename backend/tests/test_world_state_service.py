@@ -4,7 +4,17 @@ import pytest
 from sqlalchemy import select
 
 from agent.v2.tools.world_state import get_world_state, update_world_state
-from database import Project, ProjectDirection, ProjectElement, ProjectScene
+from database import (
+    Asset,
+    AssetRevision,
+    Board,
+    BoardAssetItem,
+    BoardSection,
+    Project,
+    ProjectDirection,
+    ProjectElement,
+    ProjectScene,
+)
 from tests.helpers.media import create_media_item
 from world_state_service import (
     build_project_world_state,
@@ -167,3 +177,82 @@ async def test_world_state_agent_tools(db_session):
         )
         assert update_result["updated"] is True
         assert update_result["description"] == "Wearing leather jacket"
+
+
+@pytest.mark.asyncio
+async def test_world_state_resolves_scene_coordinates_and_board_references(db_session):
+    async with db_session() as session:
+        project = Project(name="Sequence Project")
+        session.add(project)
+        await session.flush()
+
+        board = Board(name="S01 · Scene 3", project_id=project.id)
+        session.add(board)
+        await session.flush()
+        references = BoardSection(
+            board_id=board.id,
+            name="References",
+            is_default=True,
+            display_order=0,
+        )
+        session.add(references)
+
+        media = await create_media_item(
+            session,
+            file_path=Path("/references/maya.png"),
+            file_format="png",
+        )
+        await session.flush()
+        asset = Asset(asset_type="image", title="Maya reference")
+        session.add(asset)
+        await session.flush()
+        revision = AssetRevision(
+            asset_id=asset.id,
+            primary_media_id=media.id,
+            revision_number=1,
+        )
+        session.add(revision)
+        await session.flush()
+        asset.current_revision_id = revision.id
+        session.add(
+            ProjectScene(
+                project_id=project.id,
+                board_id=board.id,
+                sequence_number=1,
+                scene_number=3,
+                title="La cuisine",
+                description="Maya entre dans la cuisine.",
+                context=json.dumps({"time": "night"}),
+            )
+        )
+        session.add(
+            BoardAssetItem(
+                board_section_id=references.id,
+                asset_id=asset.id,
+                display_order=0,
+            )
+        )
+        await session.commit()
+        project_id = project.id
+
+    async with db_session() as session:
+        state = await get_world_state(
+            sequence_number=1,
+            scene_number=3,
+            session=session,
+            project_id=project_id,
+        )
+
+        assert state["current_scene"]["title"] == "La cuisine"
+        assert state["current_scene"]["context"] == {"time": "night"}
+        assert state["current_scene"]["board_id"] == board.id
+        assert state["reference_assets"][0]["title"] == "Maya reference"
+        assert state["reference_assets"][0]["media_id"] == media.id
+
+
+def test_project_context_read_tools_are_available_to_agent_chats():
+    from agent.v2.tools_registry import get_tools_schema
+
+    names = {item["function"]["name"] for item in get_tools_schema("agent")}
+    assert "get_world_state" in names
+    assert "get_project_direction" in names

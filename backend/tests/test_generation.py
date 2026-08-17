@@ -51,6 +51,30 @@ class TestReferenceUploadDisposition:
         )
         assert result["media_id"] == 17
 
+    async def test_materialized_upload_returns_stable_asset_id(self):
+        media = SimpleNamespace(
+            id=17,
+            file_hash="hash",
+            width=320,
+            height=200,
+        )
+        asset = SimpleNamespace(id=88)
+        upload = AsyncMock(return_value=(media, "/managed/reference.png"))
+        service = SimpleNamespace(upload_file=upload)
+        file = UploadFile(filename="reference.png", file=io.BytesIO(b"png"))
+        session = object()
+
+        with patch("upload_service.get_upload_service", return_value=service), \
+                patch("routes.generation.asset_for_media", new=AsyncMock(return_value=asset)) as resolve_asset:
+            result = await generation_routes.upload_reference_image(
+                file=file,
+                materialize_asset=True,
+                session=session,
+            )
+
+        assert result["asset_id"] == 88
+        resolve_asset.assert_awaited_once_with(session, 17)
+
 
 # =============================================================================
 # Job Submission Tests

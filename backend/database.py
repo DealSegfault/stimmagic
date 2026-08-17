@@ -1422,6 +1422,7 @@ class Chat(Base):
     # Forking support
     original_chatitem_id = Column(Integer, nullable=True)  # FK to chat_items.id
     project_id = Column(Integer, ForeignKey('projects.id', ondelete='SET NULL'), nullable=True, index=True)
+    board_id = Column(Integer, ForeignKey('boards.id', ondelete='SET NULL'), nullable=True, index=True)
     flow_id = Column(Integer, ForeignKey('flows.id', ondelete='SET NULL'), nullable=True, index=True)
 
     # Per-chat settings
@@ -1468,6 +1469,7 @@ class Chat(Base):
             "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
             "original_chatitem_id": self.original_chatitem_id,
             "project_id": self.project_id,
+            "board_id": self.board_id,
             "flow_id": self.flow_id,
             "throttle": self.throttle,
             "generation_settings": json.loads(self.generation_settings) if self.generation_settings else None,

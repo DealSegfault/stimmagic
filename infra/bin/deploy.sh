@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
 
-cd /Users/mac/adp/comfy
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 modal deploy --strategy recreate modal_h3.py

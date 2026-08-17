@@ -8,7 +8,7 @@ from sqlalchemy import select, func, or_, and_, desc, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 import json
 
-from database import Chat, ChatItem, GenerationJob, LLMTrace, UserPreference, MediaItem
+from database import Board, Chat, ChatItem, GenerationJob, LLMTrace, UserPreference, MediaItem
 from core.dependencies import get_db_session
 from models.api_models import BaseModel
 from pydantic import BaseModel as PydanticBaseModel
@@ -35,6 +35,7 @@ class ChatCreateRequest(PydanticBaseModel):
     name: Optional[str] = None
     original_chatitem_id: Optional[int] = None
     project_id: Optional[int] = None
+    board_id: Optional[int] = None
     flow_id: Optional[int] = None
     model_slug: Optional[str] = None
     reasoning_effort: Optional[str] = None
@@ -45,6 +46,7 @@ class ChatUpdateRequest(PydanticBaseModel):
     throttle: Optional[str] = None
     generation_settings: Optional[str] = None  # JSON string
     project_id: Optional[int] = None
+    board_id: Optional[int] = None
     flow_id: Optional[int] = None
     model_slug: Optional[str] = None
     # Reasoning effort for THIS chat. "" clears it back to inheriting the
@@ -54,6 +56,7 @@ class ChatUpdateRequest(PydanticBaseModel):
 
 class AttachmentInfo(PydanticBaseModel):
     media_id: Optional[int] = None  # For images from library
+    asset_id: Optional[int] = None  # Stable Asset identity when available
     path: Optional[str] = None  # For uploaded files
     filename: Optional[str] = None
 
@@ -84,6 +87,7 @@ class ChatResponse(PydanticBaseModel):
     deleted_at: Optional[str]
     original_chatitem_id: Optional[int]
     project_id: Optional[int]
+    board_id: Optional[int] = None
     flow_id: Optional[int] = None
     throttle: Optional[str]
     generation_settings: Optional[dict]
@@ -111,6 +115,7 @@ class ChatPreview(PydanticBaseModel):
     created_at: str
     updated_at: str
     project_id: Optional[int]
+    board_id: Optional[int] = None
     message_count: int
     generated_count: int
     recent_media: List[MediaPreview]
@@ -585,6 +590,17 @@ async def create_chat(
     project = None
     if request.project_id is not None:
         project = await get_project_or_404(session, request.project_id)
+    board = None
+    if request.board_id is not None:
+        board = await session.scalar(
+            select(Board).where(Board.id == request.board_id, Board.deleted_at.is_(None))
+        )
+        if board is None:
+            raise HTTPException(status_code=404, detail="Board not found")
+        if request.project_id is not None and board.project_id != request.project_id:
+            raise HTTPException(status_code=400, detail="Board and chat project must match")
+        if request.project_id is None:
+            project = await get_project_or_404(session, board.project_id) if board.project_id else None
     if request.flow_id is not None:
         from flow_service import get_flow_or_404
         await get_flow_or_404(session, request.flow_id)
@@ -609,7 +625,8 @@ async def create_chat(
     chat = Chat(
         name=name,
         original_chatitem_id=request.original_chatitem_id,
-        project_id=request.project_id,
+        project_id=project.id if project is not None else None,
+        board_id=request.board_id,
         flow_id=request.flow_id,
         throttle='off',
         generation_settings=json.dumps(default_settings),
@@ -635,6 +652,8 @@ async def create_chat(
     _chat_created_props = {"chatHash": salted_hash(f"chat:{chat.id}")}
     if chat.project_id:
         _chat_created_props["projectHash"] = salted_hash(f"project:{chat.project_id}")
+    if chat.board_id:
+        _chat_created_props["boardHash"] = salted_hash(f"board:{chat.board_id}")
     get_telemetry_client().track("chat_created", _chat_created_props, category="chat")
 
     return ChatResponse(**chat.to_dict())
@@ -646,6 +665,7 @@ async def list_chats(
     page_size: int = Query(50, ge=1, le=100),
     include_deleted: bool = Query(False),
     project_id: Optional[int] = Query(None),
+    board_id: Optional[int] = Query(None),
     flow_id: Optional[int] = Query(None),
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -658,6 +678,8 @@ async def list_chats(
         query = query.where(Chat.flow_id.is_(None))
     if project_id is not None:
         query = query.where(Chat.project_id == project_id)
+    if board_id is not None:
+        query = query.where(Chat.board_id == board_id)
     if flow_id is not None:
         query = query.where(Chat.flow_id == flow_id)
 
@@ -671,6 +693,8 @@ async def list_chats(
         count_query = count_query.where(Chat.flow_id.is_(None))
     if project_id is not None:
         count_query = count_query.where(Chat.project_id == project_id)
+    if board_id is not None:
+        count_query = count_query.where(Chat.board_id == board_id)
     if flow_id is not None:
         count_query = count_query.where(Chat.flow_id == flow_id)
     total_result = await session.execute(count_query)
@@ -694,6 +718,7 @@ async def list_chat_previews(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
     project_id: Optional[int] = Query(None),
+    board_id: Optional[int] = Query(None),
     flow_id: Optional[int] = Query(None),
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -707,6 +732,9 @@ async def list_chat_previews(
     if project_id is not None:
         query = query.where(Chat.project_id == project_id)
         count_query = count_query.where(Chat.project_id == project_id)
+    if board_id is not None:
+        query = query.where(Chat.board_id == board_id)
+        count_query = count_query.where(Chat.board_id == board_id)
     if flow_id is not None:
         query = query.where(Chat.flow_id == flow_id)
         count_query = count_query.where(Chat.flow_id == flow_id)
@@ -784,6 +812,7 @@ async def list_chat_previews(
             created_at=chat.created_at.isoformat() if chat.created_at else '',
             updated_at=chat.updated_at.isoformat() if chat.updated_at else '',
             project_id=chat.project_id,
+            board_id=chat.board_id,
             message_count=msg_counts.get(chat.id, 0),
             generated_count=gen_counts.get(chat.id, 0),
             recent_media=recent_by_chat.get(chat.id, []),
@@ -891,6 +920,7 @@ async def get_chat_preview(
 
     return {
         'project_id': chat.project_id,
+        'board_id': chat.board_id,
         'thumbnail_media_id': thumbnail_media_id,
         'last_message': last_message[:200] if last_message else '',
     }
@@ -913,6 +943,26 @@ async def update_chat(
 
     # Update fields that were provided
     update_data = request.dict(exclude_unset=True)
+    if "board_id" in update_data:
+        board = None
+        if update_data["board_id"] is not None:
+            board = await session.scalar(
+                select(Board).where(
+                    Board.id == update_data["board_id"],
+                    Board.deleted_at.is_(None),
+                )
+            )
+            if board is None:
+                raise HTTPException(status_code=404, detail="Board not found")
+            effective_project_id = update_data.get("project_id", chat.project_id)
+            if effective_project_id is not None and board.project_id != effective_project_id:
+                raise HTTPException(status_code=400, detail="Board and chat project must match")
+            if "project_id" not in update_data and board.project_id != chat.project_id:
+                update_data["project_id"] = board.project_id
+    if "project_id" in update_data and chat.board_id:
+        board = await session.scalar(select(Board).where(Board.id == chat.board_id))
+        if board is not None and update_data["project_id"] != board.project_id:
+            raise HTTPException(status_code=400, detail="Board and chat project must match")
     if "model_slug" in update_data:
         update_data["model_slug"] = normalize_model_slug(update_data["model_slug"])
     if "reasoning_effort" in update_data:
@@ -1133,6 +1183,8 @@ async def fork_chat(
     forked_chat = Chat(
         name=name,
         original_chatitem_id=from_chatitem_id,
+        project_id=source_chat.project_id,
+        board_id=source_chat.board_id,
         throttle=source_chat.throttle,
         generation_settings=source_chat.generation_settings
     )
@@ -1197,6 +1249,9 @@ async def clone_chat(
     # Create cloned chat with same settings
     cloned_chat = Chat(
         name=name,
+        project_id=source_chat.project_id,
+        board_id=source_chat.board_id,
+        flow_id=source_chat.flow_id,
         generation_settings=source_chat.generation_settings,
         throttle=source_chat.throttle
     )
@@ -1275,6 +1330,7 @@ async def branch_chat(
     branched_chat = Chat(
         name=name,
         project_id=source_chat.project_id,
+        board_id=source_chat.board_id,
         flow_id=source_chat.flow_id,
         throttle=source_chat.throttle,
         generation_settings=source_chat.generation_settings,

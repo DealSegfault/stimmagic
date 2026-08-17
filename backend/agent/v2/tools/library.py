@@ -1023,6 +1023,8 @@ async def library(
             description=description,
             asset_id=asset_id,
             media_id=media_id,
+            path=path,
+            workspace_dir=workspace_dir,
             query=query,
         )
     elif action == "tag":
@@ -1067,7 +1069,9 @@ async def _element(
     description: Optional[str],
     asset_id: Optional[int],
     media_id: Optional[int],
-    query: Optional[str],
+    path: Optional[str] = None,
+    workspace_dir: Optional[Path] = None,
+    query: Optional[str] = None,
 ) -> str:
     if project_id is None:
         return "Error: element actions require a project chat"
@@ -1091,6 +1095,8 @@ async def _element(
                 element_type=element_type or "prop",
                 asset_id=asset_id,
                 media_id=media_id,
+                path=path,
+                workspace_dir=workspace_dir,
                 description=description,
             )
             await session.commit()

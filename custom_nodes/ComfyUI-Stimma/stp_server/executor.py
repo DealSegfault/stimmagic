@@ -121,7 +121,10 @@ def _summarize_queue_node_errors(
             if errs and isinstance(errs, list):
                 first = errs[0]
                 if isinstance(first, dict):
-                    msg = first.get("message") or first.get("details") or str(first)
+                    msg = first.get("message") or str(first)
+                    details = first.get("details")
+                    if details and details != msg:
+                        msg = f"{msg}: {details}"
                 else:
                     msg = str(first)
             else:
@@ -893,7 +896,18 @@ async def _download_and_upload_image(
             else:
                 continue
 
-        ext = Path(asset_ref).suffix or ".png"
+        ext = Path(asset_ref).suffix
+        if not ext:
+            if image_data.startswith(b"\x89PNG"):
+                ext = ".png"
+            elif image_data.startswith(b"\xff\xd8"):
+                ext = ".jpg"
+            elif image_data.startswith(b"RIFF") and len(image_data) >= 12 and image_data[8:12] == b"WEBP":
+                ext = ".webp"
+            elif image_data.startswith(b"GIF8"):
+                ext = ".gif"
+            else:
+                ext = ".png"
         temp_path = os.path.join(
             tempfile.gettempdir(),
             f"stimma_upload_{context.request_id}_{os.urandom(4).hex()}{ext}",
@@ -945,7 +959,18 @@ async def _download_and_upload_video(
             else:
                 continue
 
-        ext = Path(asset_ref).suffix or ".mp4"
+        ext = Path(asset_ref).suffix
+        if not ext:
+            if video_data.startswith(b"\x89PNG"):
+                ext = ".png"
+            elif video_data.startswith(b"\xff\xd8"):
+                ext = ".jpg"
+            elif video_data.startswith(b"RIFF") and len(video_data) >= 12 and video_data[8:12] == b"WEBP":
+                ext = ".webp"
+            elif video_data.startswith(b"GIF8"):
+                ext = ".gif"
+            else:
+                ext = ".mp4"
         temp_path = os.path.join(
             tempfile.gettempdir(),
             f"stimma_upload_{context.request_id}_{os.urandom(4).hex()}{ext}",

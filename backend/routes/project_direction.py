@@ -374,7 +374,7 @@ async def create_scene_chat(project_id: int, scene_id: int, session: AsyncSessio
         "validation_status": scene.validation_status,
         "continuity": continuity,
     }
-    chat = Chat(name=f"Direction · {scene.title}", project_id=project_id, additional_instructions="You are working on this exact project scene. Keep decisions, generations and validations tied to it.\n\nDIRECTION_CONTEXT=" + json.dumps(context))
+    chat = Chat(name=f"Direction · {scene.title}", project_id=project_id, board_id=scene.board_id, additional_instructions="You are working on this exact project scene. Keep decisions, generations and validations tied to it.\n\nDIRECTION_CONTEXT=" + json.dumps(context))
     session.add(chat); await session.flush()
     await record_event(session, project_id, "scene_chat_created", scene_id=scene.id, chat_id=chat.id, payload=context)
     await session.commit()

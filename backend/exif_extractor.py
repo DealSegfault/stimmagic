@@ -5,13 +5,56 @@ from PIL.ExifTags import TAGS
 from core.logging import get_logger
 import json
 import piexif
+import subprocess
 
 log = get_logger(__name__)
+
+_VIDEO_METADATA_SUFFIXES = {'.mp4', '.mov', '.webm', '.mkv', '.avi'}
+
+
+def _extract_video_container_tags(file_path: Path) -> dict:
+    """Read standard container tags without decoding the video stream."""
+    try:
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'error',
+                '-show_entries', 'format_tags',
+                '-of', 'json', str(file_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return {}
+        payload = json.loads(result.stdout or '{}')
+        tags = (payload.get('format') or {}).get('tags') or {}
+        return tags if isinstance(tags, dict) else {}
+    except (OSError, TypeError, ValueError, subprocess.TimeoutExpired):
+        return {}
+
+
+def _extract_video_tag_text(file_path: Path) -> Optional[str]:
+    """Return Stimma's JSON tag, preferring comment over description."""
+    for key, value in _extract_video_container_tags(file_path).items():
+        if str(key).lower() not in {'comment', 'description'}:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(parsed, dict) and parsed.get('source') in ('stimma', 'stimmer'):
+            return text
+    return None
 
 
 def extract_prompt_from_exif(file_path: Path) -> tuple[Optional[str], Optional[str]]:
     """
-    Extract AI generation prompt from image EXIF data.
+    Extract AI generation prompt from image EXIF data or video container tags.
 
     Looks for common metadata fields used by AI image generators:
     - 'prompt' (ComfyUI, Automatic1111)
@@ -27,6 +70,10 @@ def extract_prompt_from_exif(file_path: Path) -> tuple[Optional[str], Optional[s
     parsed_prompt = None
 
     try:
+        if file_path.suffix.lower() in _VIDEO_METADATA_SUFFIXES:
+            raw_metadata = _extract_video_tag_text(file_path)
+            return raw_metadata, parse_prompt_from_metadata(raw_metadata) if raw_metadata else None
+
         # For PNG files, check PNG chunks first. Keep the image open so the
         # no-prompt path does not reopen it, and only ask Pillow for EXIF when
         # an eXIf chunk is actually present. Calling getexif() on an ordinary
@@ -281,6 +328,12 @@ def parse_prompt_from_metadata(metadata_str: str) -> Optional[str]:
             if _is_fooocus_format(data):
                 return _extract_prompt_fooocus(data)
 
+            # Stimma's video container tag is the canonical generation record.
+            if data.get('source') in ('stimma', 'stimmer'):
+                prompt = data.get('prompt')
+                if isinstance(prompt, str) and prompt.strip():
+                    return prompt.strip()
+
         except json.JSONDecodeError:
             pass
 
@@ -327,7 +380,7 @@ def _extract_from_png_info(info: dict) -> Optional[str]:
 
 def extract_stimma_metadata(file_path: Path) -> Optional[str]:
     """
-    Extract 'stimma' generation metadata from image.
+    Extract 'stimma' generation metadata from image metadata or video tags.
 
     First tries to extract from EXIF UserComment (survives browser drag-drop, works for PNG and JPEG),
     then falls back to PNG text chunks (backwards compatibility, PNG only).
@@ -337,6 +390,9 @@ def extract_stimma_metadata(file_path: Path) -> Optional[str]:
     """
     try:
         suffix = file_path.suffix.lower()
+        if suffix in _VIDEO_METADATA_SUFFIXES:
+            return _extract_video_tag_text(file_path)
+
         # Only process PNG and JPEG files
         if suffix not in ['.png', '.jpg', '.jpeg']:
             return None

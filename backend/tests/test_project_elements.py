@@ -109,3 +109,61 @@ async def test_library_tool_creates_element_from_attached_media(db_session):
         ))
         assert listed["total"] == 1
         assert listed["items"][0]["reference_id"] == "loc_maya_kitchen"
+
+
+@pytest.mark.asyncio
+async def test_library_tool_prefers_valid_media_when_asset_id_is_stale(db_session):
+    async with db_session() as session:
+        project = Project(name="Maya")
+        session.add(project)
+        await session.flush()
+        media = await create_media_item(
+            session,
+            file_path=Path("/elements/maya-close-view.png"),
+            file_format="png",
+        )
+        await session.commit()
+
+        result = json.loads(await library(
+            action="element",
+            operation="create",
+            element_type="location",
+            element_name="Kitchen close view",
+            asset_id=999999,
+            media_id=media.id,
+            project_id=project.id,
+            session=session,
+        ))
+
+        assert result["created"] is True
+        assert result["media_id"] == media.id
+
+
+@pytest.mark.asyncio
+async def test_library_tool_creates_element_from_path(tmp_path, db_session):
+    test_img = tmp_path / "workspace_element.png"
+    # Create minimal 1x1 png file
+    import io
+    from PIL import Image
+    im = Image.new("RGBA", (10, 10), (255, 0, 0, 255))
+    im.save(test_img)
+
+    async with db_session() as session:
+        project = Project(name="Maya")
+        session.add(project)
+        await session.flush()
+
+        result = json.loads(await library(
+            action="element",
+            operation="create",
+            element_type="location",
+            element_name="Kitchen close view",
+            path=str(test_img),
+            project_id=project.id,
+            session=session,
+        ))
+
+        assert result["created"] is True
+        assert result["reference_id"] == "loc_maya_kitchen_close_view"
+        assert result["media_id"] is not None
+

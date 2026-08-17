@@ -17,6 +17,7 @@ from database_registry import get_database_registry
 from utils.background_tasks import clear_auto_delete_for_media, generation_input_media_ids
 from utils.lineage import record_lineage_from_inputs, propagate_tool_lineage
 from generation_metadata import build_generation_metadata, build_parameters
+from video_metadata import VIDEO_SUFFIXES, embed_video_generation_metadata
 from core.profile_context import get_current_profile, set_current_profile, set_thread_profile, ProfileScope
 from core.logging import get_logger
 from providers import ProviderRegistry
@@ -204,7 +205,8 @@ def parse_duration(duration_str: str) -> Optional[timedelta]:
 
 def _compute_generated_file_metadata(output_path: str, is_video: bool, is_audio: bool, generation_metadata: Optional[str]) -> dict:
     """Blocking metadata extraction for a just-generated file: hash, dimensions/duration
-    (ffprobe for video, PIL for images), and embedded EXIF/PNG generation metadata.
+    (ffprobe for video, PIL for images), and embedded generation metadata
+    (EXIF/PNG for images, container tags for videos).
 
     Must be called via asyncio.to_thread/run_in_executor - never awaited directly on the
     event loop, since ffprobe subprocess calls and whole-file hashing can take seconds.
@@ -315,8 +317,9 @@ def _compute_generated_file_metadata(output_path: str, is_video: bool, is_audio:
 
     megapixels = (width * height) / 1_000_000
 
-    # For images, extract generation metadata from embedded EXIF/PNG chunks
-    # (Videos pass generation_metadata directly since it can't be embedded)
+    # For images, extract generation metadata from embedded EXIF/PNG chunks.
+    # Videos pass the canonical metadata directly because their container tags
+    # were written immediately before this computation.
     if not is_video and generation_metadata is None:
         _t_exif0 = _time.time()
         try:
@@ -2253,7 +2256,7 @@ class GenerationQueue:
             output_path: Path to the generated file
             session: Database session to use (caller commits)
             chat_item_id: Optional chat item ID to link to
-            generation_metadata: Optional JSON string with generation metadata (for videos which can't embed metadata)
+            generation_metadata: Optional JSON string with generation metadata
         """
         import os
         from pathlib import Path
@@ -3073,7 +3076,7 @@ class GenerationQueue:
             # "finalizing" (GPU-free) before we ask for more work, otherwise the
             # per-client capacity check would still see it as a running job and
             # refuse to dispatch the next one.
-            self._spawn_finalize(job, profile_id, result, output_path, params,
+            self._spawn_finalize(job, profile_id, result, actual_output_path, params,
                                  task_type, lineage_data, exec_result, provider,
                                  completed_at)
 
@@ -3331,6 +3334,17 @@ class GenerationQueue:
             lineage_trace=lineage_data.get('lineage_trace', []),
             inspired_by=inspired_by,
         ))
+
+        # Images already carry their provenance in PNG/EXIF fields.  Videos
+        # need the equivalent container tags; enrich the canonical record with
+        # the actual encoded resolution/quality and remux the file losslessly
+        # before hashing and moving it into managed storage.
+        if Path(output_path).suffix.lower() in VIDEO_SUFFIXES:
+            generation_metadata_json = await asyncio.to_thread(
+                embed_video_generation_metadata,
+                output_path,
+                generation_metadata_json,
+            )
         log.debug(f"Job {job.id}: Built generation_metadata for {provider.provider_id}")
 
         # One-shot flow-as-tool: this generation's media is ephemeral — keep it out of

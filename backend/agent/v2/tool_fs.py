@@ -26,6 +26,7 @@ always refer to the same tool.
 from __future__ import annotations
 
 import hashlib
+import asyncio
 import json
 import keyword
 import re
@@ -193,6 +194,47 @@ def build_manifest(registry) -> Manifest:
                 descriptor=descriptor,
             )
     return Manifest(by_module=by_module)
+
+
+async def ensure_task_tools(
+    registry,
+    task_type: str,
+    *,
+    attempts: int = 3,
+    retry_delay: float = 0.5,
+) -> bool:
+    """Refresh a task's live catalog when a provider is reconnecting.
+
+    Provider reconnects intentionally remove stale tools before registering the
+    fresh provider. A chat turn that snapshots the catalog in that window can
+    incorrectly tell the model that a valid adapter does not exist. Refresh a
+    small number of times so the normal reconnect can complete before the
+    catalog is materialized or imported by ``run_code``.
+    """
+    if hasattr(registry, "list_tools_by_task_type"):
+        if registry.list_tools_by_task_type(task_type):
+            return True
+    elif hasattr(registry, "list_all_tools"):
+        return True
+
+    get_configured = getattr(registry, "get_configured_provider_ids", None)
+    get_connected = getattr(registry, "get_provider_ids", None)
+    configured_ids = get_configured() if get_configured else []
+    connected_ids = get_connected() if get_connected else []
+    if not configured_ids and not connected_ids:
+        return False
+
+    for attempt in range(max(1, attempts)):
+        try:
+            if hasattr(registry, "refresh_tools"):
+                await registry.refresh_tools(force_refresh=False)
+        except Exception as exc:  # pragma: no cover - provider-specific
+            log.warning("tool_fs: live catalog refresh failed: %s", exc)
+        if hasattr(registry, "list_tools_by_task_type") and registry.list_tools_by_task_type(task_type):
+            return True
+        if attempt + 1 < attempts:
+            await asyncio.sleep(retry_delay)
+    return bool(hasattr(registry, "list_tools_by_task_type") and registry.list_tools_by_task_type(task_type))
 
 
 # ── JSON Schema -> Python type rendering ────────────────────────────────────
@@ -650,6 +692,11 @@ def build_tools_namespace(sdk, manifest: Manifest) -> dict[str, ModuleType]:
     extra: dict[str, ModuleType] = {}
     tools_pkg = ModuleType("stimma.tools")
 
+    all_bindings: dict[str, ToolBinding] = {}
+    for module, funcs in manifest.by_module.items():
+        for fn, binding in funcs.items():
+            all_bindings[fn] = binding
+
     for module, funcs in manifest.by_module.items():
         mod = ModuleType(f"stimma.tools.{module}")
         for fn, binding in funcs.items():
@@ -659,7 +706,9 @@ def build_tools_namespace(sdk, manifest: Manifest) -> dict[str, ModuleType]:
         # tool function names in this category, so the model retries correctly
         # instead of guessing the same fake name again.
         task = next((b.task_type for b in funcs.values()), module)
-        mod.__getattr__ = _make_missing_tool_attr(module, task, sorted(funcs))
+        mod.__getattr__ = _make_missing_tool_attr(
+            module, task, sorted(funcs), all_bindings=all_bindings, sdk=sdk
+        )
         extra[f"stimma.tools.{module}"] = mod
         setattr(tools_pkg, module, mod)
 
@@ -668,10 +717,23 @@ def build_tools_namespace(sdk, manifest: Manifest) -> dict[str, ModuleType]:
     return extra
 
 
-def _make_missing_tool_attr(module: str, task_type: str, available: list[str]):
+def _make_missing_tool_attr(
+    module: str,
+    task_type: str,
+    available: list[str],
+    all_bindings: dict[str, ToolBinding] | None = None,
+    sdk: Any = None,
+):
     def __getattr__(name: str):
         if name.startswith("_"):  # let import machinery probe dunders normally
             raise AttributeError(name)
+        if all_bindings and name in all_bindings and sdk is not None:
+            binding = all_bindings[name]
+            log.info(
+                f"Resolved cross-category tool '{name}' in 'stimma.tools.{module}' "
+                f"(canonical task_type: '{binding.task_type}')"
+            )
+            return _make_bound_tool(sdk, binding)
         shown = ", ".join(available[:40])
         more = "" if len(available) <= 40 else f" (+{len(available) - 40} more)"
         raise ImportError(

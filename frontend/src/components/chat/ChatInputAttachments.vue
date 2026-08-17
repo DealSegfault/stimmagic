@@ -6,13 +6,20 @@
       class="relative w-16 h-16 bg-matte rounded-media overflow-hidden group flex-shrink-0"
     >
       <!-- Library media (has media_id) - draggable with context menu -->
-      <MediaImage
+      <button
         v-if="attachment.media_id"
-        :media-id="attachment.media_id"
-        :thumbnail="true"
-        :thumbnail-size="128"
-        container-class="w-full h-full"
-      />
+        type="button"
+        class="w-full h-full p-0 border-0 bg-transparent text-left cursor-pointer focus:outline-none hover:ring-1 hover:ring-accent transition-all"
+        title="Voir l'image"
+        @click="mediaDetailsModal.open(attachment.media_id)"
+      >
+        <MediaImage
+          :media-id="attachment.media_id"
+          :thumbnail="true"
+          :thumbnail-size="128"
+          container-class="w-full h-full"
+        />
+      </button>
       <!-- Reference file or blob URL - not draggable -->
       <AppImage
         v-else
@@ -22,7 +29,7 @@
       />
       <!-- Remove button -->
       <button
-        @click="removeAttachment(index)"
+        @click.stop="removeAttachment(index)"
         class="absolute top-0.5 right-0.5 w-5 h-5 bg-black/55 backdrop-blur-sm hover:bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-colors z-10 focus-visible:outline-none focus-visible:ring-2 ring-accent/60"
       >
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3 h-3 text-content">
@@ -38,6 +45,7 @@ import { MediaImage, AppImage } from '../media'
 import { getApiBase } from '../../apiConfig'
 import { getCurrentProfileId } from '../../composables/useProfile'
 import { getCachedPin } from '../../composables/usePinLock'
+import { useMediaDetailsModal } from '../../composables/useMediaDetailsModal'
 
 const props = defineProps({
   attachments: {
@@ -47,6 +55,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['remove'])
+const mediaDetailsModal = useMediaDetailsModal()
 
 function getAttachmentUrl(attachment) {
   // If it's an uploaded file with a path

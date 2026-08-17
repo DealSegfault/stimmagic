@@ -395,3 +395,55 @@ def test_importing_unknown_tool_lists_real_names():
     # dunders still raise AttributeError so import machinery isn't broken
     with pytest.raises(AttributeError):
         getattr(mod, "__path__")
+
+
+def test_import_cross_category_tool_resolves():
+    """Importing a tool from an adjacent category (e.g. R2V from image_to_video)
+    resolves gracefully to the real tool instead of failing."""
+    registry = FakeRegistry(
+        tools=[
+            (
+                "comfyui:minimax-h3-i2v-turbo",
+                None,
+                FakeDescriptor(
+                    name="MiniMax H3 I2V Turbo",
+                    description="Image to video",
+                    task_types=["image-to-video"],
+                    parameter_schema={"type": "object", "properties": {"prompt": {"type": "string"}}},
+                ),
+            ),
+            (
+                "comfyui:minimax-h3-r2v-turbo",
+                None,
+                FakeDescriptor(
+                    name="MiniMax H3 R2V Turbo",
+                    description="Reference to video",
+                    task_types=["reference-to-video"],
+                    parameter_schema={"type": "object", "properties": {"prompt": {"type": "string"}}},
+                ),
+            ),
+        ]
+    )
+    m = tool_fs.build_manifest(registry)
+
+    calls = []
+    class FakeSDK:
+        async def _dispatch_tool(self, tool_id, _task_type=None, **kwargs):
+            calls.append((tool_id, _task_type, kwargs))
+            return {"tool_id": tool_id}
+
+    extra = tool_fs.build_tools_namespace(FakeSDK(), m)
+
+    # 1. Canonical import
+    r2v_mod = extra["stimma.tools.reference_to_video"]
+    fn1 = getattr(r2v_mod, "minimax_h3_r2v_turbo")
+    asyncio.get_event_loop().run_until_complete(fn1(prompt="test canonical"))
+    assert calls[-1][0] == "comfyui:minimax-h3-r2v-turbo"
+    assert calls[-1][1] == "reference-to-video"
+
+    # 2. Cross-category import from image_to_video
+    i2v_mod = extra["stimma.tools.image_to_video"]
+    fn2 = getattr(i2v_mod, "minimax_h3_r2v_turbo")
+    asyncio.get_event_loop().run_until_complete(fn2(prompt="test cross"))
+    assert calls[-1][0] == "comfyui:minimax-h3-r2v-turbo"
+    assert calls[-1][1] == "reference-to-video"

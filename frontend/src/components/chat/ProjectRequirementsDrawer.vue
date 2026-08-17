@@ -17,6 +17,7 @@ import MediaImage from '../media/MediaImage.vue'
 import { useProjectElementsApi, type ProjectElement, type ProjectElementType } from '../../composables/useProjectElementsApi'
 import { useProjectDirectionApi } from '../../composables/useProjectDirectionApi'
 import { useAssetApi, type AssetBrowserItem } from '../../composables/useAssetApi'
+import { useMediaDetailsModal } from '../../composables/useMediaDetailsModal'
 
 const props = defineProps<{
   open: boolean
@@ -41,6 +42,11 @@ const uploadingElement = ref<ProjectElement | null>(null)
 const { listElements, createElement } = useProjectElementsApi()
 const { getDirection } = useProjectDirectionApi()
 const { fetchAssets } = useAssetApi()
+const mediaDetailsModal = useMediaDetailsModal()
+
+function openMediaDetails(mediaId: number) {
+  if (mediaId) mediaDetailsModal.open(mediaId)
+}
 
 const projectEffectiveId = computed(() => props.projectId || 1)
 
@@ -263,7 +269,13 @@ function handleInsertShotPrompt(shot: any) {
             </div>
 
             <!-- Thumbnail if available -->
-            <div v-if="el.media_id" class="w-full h-28 rounded-lg overflow-hidden border border-edge-subtle bg-base">
+            <button
+              v-if="el.media_id"
+              type="button"
+              class="w-full h-28 rounded-lg overflow-hidden border border-edge-subtle bg-base p-0 text-left cursor-pointer hover:border-accent hover:ring-1 hover:ring-accent transition-all focus:outline-none"
+              title="Voir l'image"
+              @click="openMediaDetails(el.media_id)"
+            >
               <MediaImage
                 :media-id="el.media_id"
                 :thumbnail="true"
@@ -271,7 +283,7 @@ function handleInsertShotPrompt(shot: any) {
                 container-class="w-full h-full"
                 img-class="w-full h-full object-cover"
               />
-            </div>
+            </button>
 
             <!-- Action Buttons -->
             <div class="flex items-center gap-2 pt-1">

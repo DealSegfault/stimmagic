@@ -145,9 +145,9 @@
       />
 
       <ProjectScopeBar
-        v-if="projectChrome.project && !slideshowActive"
-        :project="projectChrome.project"
-        :active-name="projectChrome.activeRouteName"
+        v-if="projectChromeProject && !slideshowActive"
+        :project="projectChromeProject"
+        :active-name="projectChromeActiveName"
       />
 
       <!-- Page content -->
@@ -320,6 +320,32 @@ const projectChrome = ref({
   project: null,
   activeRouteName: '',
   surfaceLabel: ''
+})
+
+// Keep the project navigation visible while the project payload is loading.
+// The route already contains the project id, so waiting for getProject() here
+// only delays the tabs and makes a direct project open look incomplete.
+const projectChromeProject = computed(() => {
+  const routeName = String(route.name || '')
+  if (routeName.startsWith('project-')) {
+    const projectId = Number.parseInt(String(route.params.id), 10)
+    if (Number.isFinite(projectId)) {
+      // Prefer the loaded project for the current route, otherwise use a
+      // lightweight placeholder that is enough for ProjectScopeBar to render.
+      if (projectChrome.value.project?.id === projectId) {
+        return projectChrome.value.project
+      }
+      return { id: projectId, name: '' }
+    }
+  }
+  return projectChrome.value.project
+})
+
+const projectChromeActiveName = computed(() => {
+  const routeName = String(route.name || '')
+  return routeName.startsWith('project-')
+    ? routeName
+    : projectChrome.value.activeRouteName
 })
 
 // Current project context for the global search omnibox scope chip. Follows

@@ -3404,6 +3404,7 @@ function queueMessage() {
   // Build attachments for storage
   const attachments = inputAttachments.value.map(a => ({
     media_id: a.media_id || null,
+    asset_id: a.asset_id || null,
     path: a.path || null,
     filename: a.filename || null
   }))
@@ -3706,6 +3707,7 @@ async function sendMessage(queuedMessage = null) {
     // Build attachments array for the backend
     attachments = inputAttachments.value.map(a => ({
       media_id: a.media_id || null,
+      asset_id: a.asset_id || null,
       path: a.path || null,
       filename: a.filename || null
     }))

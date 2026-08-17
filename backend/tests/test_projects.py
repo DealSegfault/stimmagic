@@ -61,6 +61,40 @@ class TestProjectsApi:
         global_boards = (await client.get("/api/boards")).json()
         assert all(item["id"] != board["id"] for item in global_boards)
 
+    async def test_multiple_chats_can_be_scoped_to_one_board(self, client):
+        project = (await client.post("/api/projects", json={"name": "Board Chats"})).json()
+        board = (await client.post(
+            "/api/boards",
+            json={"name": "Explorations", "project_id": project["id"]},
+        )).json()
+
+        first = (await client.post(
+            "/api/chats",
+            json={"board_id": board["id"]},
+        )).json()
+        second = (await client.post(
+            "/api/chats",
+            json={"board_id": board["id"], "project_id": project["id"]},
+        )).json()
+
+        assert first["board_id"] == board["id"]
+        assert second["board_id"] == board["id"]
+        assert first["project_id"] == project["id"]
+        assert second["project_id"] == project["id"]
+
+        previews = (await client.get(
+            f"/api/chats/previews?page=1&page_size=20&board_id={board['id']}"
+        )).json()
+        assert {item["id"] for item in previews["items"]} >= {first["id"], second["id"]}
+        assert all(item["board_id"] == board["id"] for item in previews["items"])
+
+        other_project = (await client.post("/api/projects", json={"name": "Other Project"})).json()
+        mismatched = await client.post(
+            "/api/chats",
+            json={"board_id": board["id"], "project_id": other_project["id"]},
+        )
+        assert mismatched.status_code == 400
+
     async def test_rejects_invalid_project_ids(self, client):
         chat_response = await client.post("/api/chats", json={"project_id": 999999})
         assert chat_response.status_code == 404

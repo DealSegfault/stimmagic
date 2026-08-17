@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,10 +71,63 @@ async def _resolve_asset(
     *,
     asset_id: int | None,
     media_id: int | None,
+    path: str | Path | None = None,
+    workspace_dir: str | Path | None = None,
+    project_id: int | None = None,
     title: str,
 ) -> Asset:
     asset: Asset | None = None
-    if asset_id is not None:
+
+    if path is not None:
+        p = Path(path)
+        if not p.is_absolute() and workspace_dir:
+            p = Path(workspace_dir) / p
+        if p.exists() and p.is_file():
+            media = await session.scalar(
+                select(MediaItem).where(
+                    MediaItem.file_path == str(p),
+                    MediaItem.deleted_at.is_(None),
+                    MediaItem.deletion_pending_at.is_(None),
+                )
+            )
+            if media is not None:
+                media_id = media.id
+            else:
+                import json
+                from agent.v2.tools.library import save_workspace_file
+                ws_path = Path(workspace_dir) if workspace_dir else (p.parent if p.is_absolute() else None)
+                save_resp = await save_workspace_file(
+                    session,
+                    path=str(p),
+                    workspace_dir=ws_path,
+                    save_tags=None,
+                    project_id=project_id,
+                    materialize_asset=True,
+                )
+                if save_resp and not save_resp.startswith("Error:"):
+                    try:
+                        save_data = json.loads(save_resp)
+                        media_id = save_data.get("media_id")
+                        asset_id = save_data.get("asset_id")
+                    except Exception:
+                        pass
+
+    # A Media ID is the unambiguous identity carried by chat attachments and
+    # workspace references. If both values are present, use it as the source
+    # of truth and only reject a *live* Asset ID that points somewhere else.
+    # This keeps stale/model-guessed asset IDs from masking a valid upload.
+    if asset_id is not None and media_id is not None:
+        candidate = await session.scalar(
+            select(Asset).where(
+                Asset.id == asset_id,
+                Asset.state == "active",
+                Asset.deleted_at.is_(None),
+            )
+        )
+        if candidate is not None:
+            asset = candidate
+
+    if asset_id is not None and media_id is None:
         asset = await session.scalar(
             select(Asset).where(
                 Asset.id == asset_id,
@@ -82,7 +136,18 @@ async def _resolve_asset(
             )
         )
         if asset is None:
-            raise ProjectElementError(f"Asset {asset_id} not found")
+            media = await session.scalar(
+                select(MediaItem).where(
+                    MediaItem.id == asset_id,
+                    MediaItem.deleted_at.is_(None),
+                    MediaItem.deletion_pending_at.is_(None),
+                )
+            )
+            if media is not None:
+                media_id = asset_id
+                asset_id = None
+            else:
+                raise ProjectElementError(f"Asset {asset_id} not found")
 
     if media_id is not None:
         media = await session.scalar(
@@ -109,7 +174,7 @@ async def _resolve_asset(
         asset = media_asset
 
     if asset is None:
-        raise ProjectElementError("asset_id or media_id is required")
+        raise ProjectElementError("asset_id, media_id, or path is required")
     return asset
 
 
@@ -121,6 +186,8 @@ async def create_project_element(
     element_type: str | None = "prop",
     asset_id: int | None = None,
     media_id: int | None = None,
+    path: str | Path | None = None,
+    workspace_dir: str | Path | None = None,
     description: str | None = None,
 ) -> tuple[ProjectElement, bool]:
     project = await _live_project(session, project_id)
@@ -131,6 +198,9 @@ async def create_project_element(
         session,
         asset_id=asset_id,
         media_id=media_id,
+        path=path,
+        workspace_dir=workspace_dir,
+        project_id=project_id,
         title=clean_name,
     )
 

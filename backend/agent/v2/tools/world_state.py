@@ -24,7 +24,25 @@ from world_state_service import (
         ToolParameter(
             name="scene_id",
             type="integer",
-            description="Optional current scene ID to fetch focused scene context and continuity from previous scene",
+            description="Optional scene id for a focused lookup; use this when the scene id is already known",
+            required=False,
+        ),
+        ToolParameter(
+            name="sequence_number",
+            type="integer",
+            description="Optional sequence number from the user's request, for example 1 in 'sequence 1, scene 3'",
+            required=False,
+        ),
+        ToolParameter(
+            name="scene_number",
+            type="integer",
+            description="Optional scene number from the user's request, for example 3 in 'sequence 1, scene 3'",
+            required=False,
+        ),
+        ToolParameter(
+            name="board_id",
+            type="integer",
+            description="Optional scene board id when the user identifies the board instead of the scene",
             required=False,
         ),
         ToolParameter(
@@ -38,6 +56,9 @@ from world_state_service import (
 )
 async def get_world_state(
     scene_id: Optional[int] = None,
+    sequence_number: Optional[int] = None,
+    scene_number: Optional[int] = None,
+    board_id: Optional[int] = None,
     shot_prompt: Optional[str] = None,
     **kwargs: Any,
 ) -> Dict[str, Any]:
@@ -46,9 +67,44 @@ async def get_world_state(
     if not session or not project_id:
         return {"error": "This chat is not attached to a project."}
 
-    state = await build_project_world_state(session, project_id=project_id, scene_id=scene_id)
+    state = await build_project_world_state(
+        session,
+        project_id=project_id,
+        scene_id=scene_id,
+        sequence_number=sequence_number,
+        scene_number=scene_number,
+        board_id=board_id,
+    )
     if "error" in state:
         return state
+
+    if (
+        (scene_id is not None or board_id is not None
+         or sequence_number is not None or scene_number is not None)
+        and state.get("current_scene") is None
+    ):
+        selector = []
+        if sequence_number is not None:
+            selector.append(f"sequence {sequence_number}")
+        if scene_number is not None:
+            selector.append(f"scene {scene_number}")
+        if board_id is not None:
+            selector.append(f"board {board_id}")
+        if scene_id is not None:
+            selector.append(f"scene id {scene_id}")
+        return {
+            "error": f"No scene found for {', '.join(selector)} in project {project_id}.",
+            "available_scenes": [
+                {
+                    "id": scene.get("id"),
+                    "sequence_number": scene.get("sequence_number"),
+                    "scene_number": scene.get("scene_number"),
+                    "title": scene.get("title"),
+                    "board_id": scene.get("board_id"),
+                }
+                for scene in state.get("scenes", [])
+            ],
+        }
 
     missing = []
     if shot_prompt or state.get("current_scene"):

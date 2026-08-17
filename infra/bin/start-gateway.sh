@@ -1,12 +1,25 @@
 #!/bin/sh
 set -eu
 
-ROOT=/Users/mac/adp/comfy
-TOKEN_FILE=/Users/mac/.config/adp-comfy/modal-proxy-token.json
-MODAL_PY=/Users/mac/.local/share/uv/tools/modal/bin/python
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOKEN_FILE="${MODAL_PROXY_TOKEN_FILE:-$HOME/.config/adp-comfy/modal-proxy-token.json}"
+
+# Resolve Python environment that has modal installed
+MODAL_PY=""
+if [ -x "$HOME/.local/share/uv/tools/modal/bin/python" ]; then
+  MODAL_PY="$HOME/.local/share/uv/tools/modal/bin/python"
+elif [ -x "$ROOT/ComfyUI/.venv/bin/python" ]; then
+  MODAL_PY="$ROOT/ComfyUI/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  MODAL_PY="python3"
+else
+  echo "Python 3 introuvable pour Modal." >&2
+  exit 1
+fi
 
 if [ ! -r "$TOKEN_FILE" ]; then
   echo "Modal proxy token is missing: $TOKEN_FILE" >&2
+  echo "Exécutez 'bin/setup-modal.sh' pour configurer automatiquement votre environnement." >&2
   exit 1
 fi
 
@@ -44,16 +57,24 @@ trap cleanup INT TERM HUP EXIT
 
 start_bridge() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage modal_bridge.py..."
-  "$ROOT/ComfyUI/.venv/bin/python" "$ROOT/modal_bridge.py" \
+  PYTHON_EXE="$ROOT/ComfyUI/.venv/bin/python"
+  if [ ! -x "$PYTHON_EXE" ]; then
+    PYTHON_EXE="$MODAL_PY"
+  fi
+  "$PYTHON_EXE" "$ROOT/modal_bridge.py" \
     >>"$ROOT/logs/modal-bridge.log" 2>&1 &
   BRIDGE_PID=$!
 }
 
 start_comfy() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage ComfyUI local STP (port 8188)..."
+  PYTHON_EXE="$ROOT/ComfyUI/.venv/bin/python"
+  if [ ! -x "$PYTHON_EXE" ]; then
+    PYTHON_EXE="$MODAL_PY"
+  fi
   (
     cd "$ROOT/ComfyUI"
-    exec .venv/bin/python main.py \
+    exec "$PYTHON_EXE" main.py \
       --cpu \
       --listen 127.0.0.1 \
       --port 8188 \

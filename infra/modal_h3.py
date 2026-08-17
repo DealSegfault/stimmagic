@@ -47,6 +47,8 @@ download_image = (
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})
 )
 
+ROOT_DIR = Path(__file__).resolve().parent
+
 comfy_image = (
     modal.Image.from_registry(
         "nvidia/cuda:13.0.2-devel-ubuntu24.04",
@@ -94,27 +96,27 @@ comfy_image = (
     # workflow. Keep the remote image pinned for H3, but overlay these small
     # integration files so both tools use the same authenticated bridge.
     .add_local_file(
-        "/Users/mac/adp/comfy/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/outputs.py",
+        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/outputs.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/outputs.py",
         copy=True,
     )
     .add_local_file(
-        "/Users/mac/adp/comfy/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/__init__.py",
+        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/__init__.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/__init__.py",
         copy=True,
     )
     .add_local_file(
-        "/Users/mac/adp/comfy/ComfyUI/custom_nodes/ComfyUI-Stimma/stp_server/discovery.py",
+        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/stp_server/discovery.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/stp_server/discovery.py",
         copy=True,
     )
     .add_local_file(
-        "/Users/mac/adp/comfy/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json",
+        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json",
         copy=True,
     )
     .add_local_file(
-        "/Users/mac/adp/comfy/patches/minimax_h3_attention_containers.patch",
+        str(ROOT_DIR / "patches/minimax_h3_attention_containers.patch"),
         "/tmp/minimax_h3_attention_containers.patch",
         copy=True,
     )
