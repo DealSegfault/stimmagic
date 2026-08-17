@@ -33,6 +33,21 @@
 
     <!-- Right side controls -->
     <div class="flex items-center gap-1.5">
+      <!-- Requirements & Assets Drawer Toggle -->
+      <button
+        @click="$emit('toggle-requirements-drawer')"
+        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-semibold transition-colors border"
+        :class="requirementsDrawerVisible
+          ? 'text-accent bg-accent/15 border-accent/30 hover:bg-accent/20'
+          : 'text-content-secondary bg-surface border-edge hover:text-content hover:bg-surface-raised'"
+        title="Ouvrir le panneau des Requirements et Assets du projet actif"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5 text-accent">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
+        </svg>
+        <span>Requirements</span>
+      </button>
+
       <!-- Settings Panel Toggle -->
       <button
         @click="$emit('toggle-settings-panel')"
@@ -157,16 +172,19 @@ interface Props {
   chatId: number
   viewMode: 'raw' | 'chat'
   settingsPanelVisible: boolean
+  requirementsDrawerVisible?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   chatName: '',
   settingsPanelVisible: true,
+  requirementsDrawerVisible: false,
 })
 
 const emit = defineEmits<{
   (e: 'toggle-view'): void
   (e: 'toggle-settings-panel'): void
+  (e: 'toggle-requirements-drawer'): void
   (e: 'delete'): void
   (e: 'clone'): void
   (e: 'clear'): void

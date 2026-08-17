@@ -7,13 +7,25 @@
       :chat-id="chatId"
       :view-mode="viewMode"
       :settings-panel-visible="settingsPanelVisible"
+      :requirements-drawer-visible="requirementsDrawerVisible"
       @toggle-view="toggleView"
       @toggle-settings-panel="toggleSettingsPanel"
+      @toggle-requirements-drawer="requirementsDrawerVisible = !requirementsDrawerVisible"
       @delete="confirmDelete"
       @clone="cloneChat"
       @clear="clearChat"
       @copy-raw-messages="copyAllRawMessages"
       @rename="renameChatFromStrip"
+    />
+
+    <!-- Requirements & Assets Drawer for Active Project -->
+    <ProjectRequirementsDrawer
+      v-if="!embedded"
+      :open="requirementsDrawerVisible"
+      :project-id="chat?.project_id || 1"
+      :project-name="elementProjectName || chat?.name || 'Projet Actif'"
+      @close="requirementsDrawerVisible = false"
+      @send-to-chat="handleSendFromDrawer"
     />
 
     <!-- Content area: artifact stage (standalone only) + chat column -->
@@ -620,6 +632,18 @@
                       @click="openSlideshow(seg.mediaId, 0)"
                     />
                   </template>
+                </div>
+                <!-- 1-Click Seedance 2.0 (Chinese) Action Button -->
+                <div v-if="getDisplayText(item)" class="flex items-center gap-2 pt-0.5">
+                  <button
+                    type="button"
+                    @click="generateOrCopySeedancePrompt(item)"
+                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-accent/30 bg-accent/10 hover:bg-accent/20 text-accent text-xs font-semibold transition-colors shadow-xs select-none"
+                    :title="hasChinesePrompt(item) ? 'Copier le prompt chinois Seedance 2.0' : 'Convertir en prompt Seedance 2.0 officiel (en chinois, 15s 21:9, Lubezki × Deakins, handles @image, micro-acting)'"
+                  >
+                    <FilmIcon class="w-3.5 h-3.5" />
+                    <span>{{ hasChinesePrompt(item) ? 'Copier Seedance 2.0 (中文)' : '🎬 Seedance 2.0 (中文)' }}</span>
+                  </button>
                 </div>
                 <!-- Per-item token usage -->
                 <div v-if="getItemMetadata(item)?.llm_usage" class="text-[10px] text-content-muted font-mono px-1 select-none flex items-center gap-1.5 flex-wrap">
@@ -1519,9 +1543,11 @@ import {
   ShieldExclamationIcon,
   SparklesIcon,
   Cog6ToothIcon,
+  FilmIcon,
 } from '@heroicons/vue/24/outline'
 import ChatItemWrapper from '../components/chat/ChatItemWrapper.vue'
 import ChatErrorDisclosure from '../components/chat/ChatErrorDisclosure.vue'
+import ProjectRequirementsDrawer from '../components/chat/ProjectRequirementsDrawer.vue'
 import { useMediaApi } from '../composables/useMediaApi'
 import { useStimpacksApi } from '../composables/useStimpacksApi'
 import { useSlideshow } from '../composables/useSlideshow'
@@ -1583,6 +1609,33 @@ const selectedImageBackend = ref(null)
 const savingImageBackend = ref(false)
 const videoQuickMode = ref(false)
 const savingVideoQuickMode = ref(false)
+const requirementsDrawerVisible = ref(false)
+
+function handleSendFromDrawer(text: string) {
+  messageInput.value = text
+  sendMessage()
+}
+
+function hasChinesePrompt(item: any): boolean {
+  const text = getDisplayText(item) || ''
+  return text.includes('提示词') || text.includes('镜头') || text.includes('机位') || text.includes('8K IMAX') || text.includes('【镜头')
+}
+
+async function generateOrCopySeedancePrompt(item: any) {
+  const text = getDisplayText(item) || ''
+  if (hasChinesePrompt(item)) {
+    try {
+      await navigator.clipboard.writeText(text)
+      addToast('Prompt Seedance 2.0 (chinois) copié dans le presse-papier !', 'success', 2500)
+    } catch (e) {
+      console.error('Failed to copy', e)
+    }
+  } else {
+    const req = `Convertis immédiatement ce plan en prompt Seedance 2.0 officiel (en chinois, 15s 21:9, éclairage practicals-only, Lubezki × Deakins, handles @image, micro-acting et synchronisation caméra-émotion) :\n\n"${text.slice(0, 1500)}"`
+    messageInput.value = req
+    sendMessage()
+  }
+}
 const messageHistory = ref([])  // History of sent messages
 const historyIndex = ref(-1)    // -1 = current input, 0+ = history position
 const savedCurrentInput = ref('') // Saves current input when browsing history
@@ -3493,8 +3546,9 @@ const imageUnsupportedMessage = computed(() => {
 })
 
 const IMAGE_BACKEND_LABELS = {
-  codex_imagegen: 'ChatGPT / Codex ImageGen',
   antigravity: 'Antigravity',
+  codex_imagegen: 'ChatGPT / Codex ImageGen',
+  both: 'Antigravity + Codex (Parallèle)',
 }
 
 function parseGenerationSettings(value) {

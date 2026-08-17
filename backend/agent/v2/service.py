@@ -332,6 +332,9 @@ def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool
     return False
 
 
+_is_generation_run_code = _is_generation_tool_call
+
+
 def _dump_tool_args(arguments: dict) -> str:
     return json.dumps(arguments)
 
@@ -466,6 +469,7 @@ async def _execute_tool_call(
     parent_remaining: list | None = None,
     effective_model_slug: str | None = None,
     needs_continuation_out: list[bool] | None = None,
+    session_lock: Optional[asyncio.Lock] = None,
 ) -> str:
     """Execute a single tool call and save the result ChatItem. Returns result string.
 
@@ -506,15 +510,28 @@ async def _execute_tool_call(
             kwargs["_injected_messages"] = injected_messages
             if needs_continuation_out is not None:
                 kwargs["_needs_continuation_out"] = needs_continuation_out
-            result_str = await tool.handler(
-                session=session,
-                chat_id=chat_id,
-                workspace_dir=workspace_dir,
-                project_workspace_dir=project_workspace_dir,
-                project_id=chat.project_id if chat else None,
-                interrupt_checker=lambda: _is_interrupted(chat_id),
-                **kwargs,
-            )
+
+            if session_lock and fn_name != "bash":
+                async with session_lock:
+                    result_str = await tool.handler(
+                        session=session,
+                        chat_id=chat_id,
+                        workspace_dir=workspace_dir,
+                        project_workspace_dir=project_workspace_dir,
+                        project_id=chat.project_id if chat else None,
+                        interrupt_checker=lambda: _is_interrupted(chat_id),
+                        **kwargs,
+                    )
+            else:
+                result_str = await tool.handler(
+                    session=session,
+                    chat_id=chat_id,
+                    workspace_dir=workspace_dir,
+                    project_workspace_dir=project_workspace_dir,
+                    project_id=chat.project_id if chat else None,
+                    interrupt_checker=lambda: _is_interrupted(chat_id),
+                    **kwargs,
+                )
             # Pick up LLM usage from run_code (stashed on the mutable container)
             tool_llm_usage = usage_out.get("llm_usage")
             _raise_if_interrupted(chat_id)
@@ -560,32 +577,55 @@ async def _execute_tool_call(
         tool_result=_serialize_tool_result(fn_name, result_str),
         item_metadata=json.dumps(result_metadata_dict) if result_metadata_dict else None,
     )
-    session.add(result_item)
-    await session.commit()
-    await ws_manager.broadcast("chat_item_created", {
-        "chat_id": chat_id,
-        "item": result_item.to_dict(),
-    })
-
-    # Inject skill content as conversation messages (from skill tool invoke).
-    # The item_type stays "stimpack_injection" so existing history renders.
-    if injected_messages:
-        for inj in injected_messages:
-            inj_item = ChatItem(
-                chat_id=chat_id,
-                item_type="stimpack_injection",
-                message_text=inj["content"],
-                item_metadata=json.dumps({
-                    "skill_name": inj.get("skill_name", ""),
-                    "skill_display_name": inj.get("skill_display_name", ""),
-                }),
-            )
-            session.add(inj_item)
+    if session_lock:
+        async with session_lock:
+            session.add(result_item)
             await session.commit()
             await ws_manager.broadcast("chat_item_created", {
                 "chat_id": chat_id,
-                "item": inj_item.to_dict(),
+                "item": result_item.to_dict(),
             })
+            if injected_messages:
+                for inj in injected_messages:
+                    inj_item = ChatItem(
+                        chat_id=chat_id,
+                        item_type="stimpack_injection",
+                        message_text=inj["content"],
+                        item_metadata=json.dumps({
+                            "skill_name": inj.get("skill_name", ""),
+                            "skill_display_name": inj.get("skill_display_name", ""),
+                        }),
+                    )
+                    session.add(inj_item)
+                    await session.commit()
+                    await ws_manager.broadcast("chat_item_created", {
+                        "chat_id": chat_id,
+                        "item": inj_item.to_dict(),
+                    })
+    else:
+        session.add(result_item)
+        await session.commit()
+        await ws_manager.broadcast("chat_item_created", {
+            "chat_id": chat_id,
+            "item": result_item.to_dict(),
+        })
+        if injected_messages:
+            for inj in injected_messages:
+                inj_item = ChatItem(
+                    chat_id=chat_id,
+                    item_type="stimpack_injection",
+                    message_text=inj["content"],
+                    item_metadata=json.dumps({
+                        "skill_name": inj.get("skill_name", ""),
+                        "skill_display_name": inj.get("skill_display_name", ""),
+                    }),
+                )
+                session.add(inj_item)
+                await session.commit()
+                await ws_manager.broadcast("chat_item_created", {
+                    "chat_id": chat_id,
+                    "item": inj_item.to_dict(),
+                })
 
     # Broadcast run_code LLM usage so dev mode UI updates in real-time
     if tool_llm_usage and tool_llm_usage.get("calls", 0) > 0:
@@ -1434,16 +1474,16 @@ async def _run_agentic_loop_inner(
         )
         effective_image_backend = image_backend or "antigravity"
 
-        if effective_image_backend == "antigravity":
+        if effective_image_backend == "both":
             system_reminders.append(
-                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via Antigravity (`agy`). "
+                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via BOTH Antigravity (`agy`) and ChatGPT / Codex ImageGen (`codex`) in parallel. "
                 "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
-                "To generate the first image, run via `bash` (timeout=600): "
-                "/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1. "
-                "For follow-up edits or scene continuations in the same chat, add `--continue` (e.g. `/Users/mac/.local/bin/agy --continue ...`) to reuse the local session memory with only the prompt delta. "
-                "Then immediately call `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and stop."
+                "When requested to generate an image or scene, execute BOTH backends concurrently by emitting two `bash` tool calls in parallel within the same turn: "
+                "1) Antigravity: `/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1`\n"
+                "2) Codex: `/Users/mac/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1`\n"
+                "Both tool calls will execute simultaneously in parallel. Once both complete, show both resulting images using `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")`."
             )
-        else:
+        elif effective_image_backend == "codex_imagegen":
             system_reminders.append(
                 "IMAGE DISPATCH MODE (authoritative for this chat): Routed via ChatGPT / Codex ImageGen (`codex`). "
                 "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
@@ -1451,6 +1491,15 @@ async def _run_agentic_loop_inner(
                 "/Users/mac/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1. "
                 "For follow-up edits or scene continuations in the same chat, use `codex exec resume --last` to reuse local session memory with only the prompt delta. "
                 "Then immediately call `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")` and stop."
+            )
+        else:
+            system_reminders.append(
+                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via Antigravity (`agy`). "
+                "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
+                "To generate the first image, run via `bash` (timeout=600): "
+                "/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1. "
+                "For follow-up edits or scene continuations in the same chat, add `--continue` (e.g. `/Users/mac/.local/bin/agy --continue ...`) to reuse the local session memory with only the prompt delta. "
+                "Then immediately call `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and stop."
             )
 
         # Resolve LLM config first so build_messages knows the window size and
@@ -1609,6 +1658,8 @@ async def _run_agentic_loop_inner(
             # it so only the new batch's flags drive the stall check.
             needs_continuation.clear()
             finish_requested = False
+
+            active_tool_calls = []
             for i, tool_call in enumerate(tool_calls):
                 _raise_if_interrupted(chat_id)
                 fn_name = tool_call.name
@@ -1616,12 +1667,7 @@ async def _run_agentic_loop_inner(
                 tool_call_id = tool_call.id or f"call_{uuid.uuid4().hex[:12]}"
 
                 # `finish` is the explicit end-of-turn signal — pure control
-                # flow. Don't persist a tool_call item for it (an unmatched
-                # tool_call would corrupt the next turn's reconstructed
-                # history) and don't execute it. The model's assistant message
-                # is its closing remark; finish just ends the loop. Any tool
-                # calls the model batched *before* finish have already run
-                # above; anything after it is intentionally dropped.
+                # flow. Don't persist a tool_call item for it and don't execute it.
                 if fn_name == "finish":
                     finish_requested = True
                     break
@@ -1638,88 +1684,176 @@ async def _run_agentic_loop_inner(
                     finish_requested = True
                     break
 
-                remaining = []
-                for tc in tool_calls[i + 1:]:
-                    remaining.append({
-                        "fn_name": tc.name,
-                        "fn_arguments": tc.arguments,
-                        "tool_call_id": tc.id or f"call_{uuid.uuid4().hex[:12]}",
-                        "llm_provider_state": resp.provider_state,
-                    })
-
-                # Permission check before execution
-                if await _needs_permission(fn_name, fn_arguments or "", chat, session):
-                    try:
-                        await _pause_for_permission(
-                            fn_name, fn_arguments, tool_call_id,
-                            remaining, turn, chat, session, ws_manager,
-                            llm_provider_state=resp.provider_state,
-                        )
-                    except HumanActionRequired:
-                        raise _PermissionPause()
-
-                # Save tool_call ChatItem
-                call_item = ChatItem(
-                    chat_id=chat_id,
-                    item_type="tool_call",
-                    tool_name=fn_name,
-                    tool_call_id=tool_call_id,
-                    tool_args=_enrich_tool_args(fn_name, fn_arguments),
-                    item_metadata=_provider_state_metadata(resp.provider_state),
-                )
-                session.add(call_item)
-                await session.commit()
-                await ws_manager.broadcast("chat_item_created", {
-                    "chat_id": chat_id,
-                    "item": call_item.to_dict(),
+                active_tool_calls.append({
+                    "fn_name": fn_name,
+                    "fn_arguments": fn_arguments,
+                    "tool_call_id": tool_call_id,
                 })
 
-                # ask_user: pause with HITL prompt instead of executing the tool.
-                # The tool_result (with the user's answer) is saved on resume.
-                if fn_name == "ask_user":
-                    ask_args = _parse_tool_args(fn_arguments)
-                    ask_args, updated_remaining = _annotate_ask_sequence(ask_args, remaining)
-                    await _pause_for_ask_user(
-                        chat=chat,
-                        session=session,
-                        ws_manager=ws_manager,
+            # Check if any tool in the batch needs permission or is ask_user
+            has_pause_or_permission = False
+            for tc_info in active_tool_calls:
+                fname = tc_info["fn_name"]
+                fargs = tc_info["fn_arguments"]
+                if fname == "ask_user" or await _needs_permission(fname, fargs or "", chat, session):
+                    has_pause_or_permission = True
+                    break
+
+            if has_pause_or_permission:
+                for i, tc_info in enumerate(active_tool_calls):
+                    _raise_if_interrupted(chat_id)
+                    fn_name = tc_info["fn_name"]
+                    fn_arguments = tc_info["fn_arguments"]
+                    tool_call_id = tc_info["tool_call_id"]
+
+                    remaining = []
+                    for tc in active_tool_calls[i + 1:]:
+                        remaining.append({
+                            "fn_name": tc["fn_name"],
+                            "fn_arguments": tc["fn_arguments"],
+                            "tool_call_id": tc["tool_call_id"],
+                            "llm_provider_state": resp.provider_state,
+                        })
+
+                    # Permission check before execution
+                    if await _needs_permission(fn_name, fn_arguments or "", chat, session):
+                        try:
+                            await _pause_for_permission(
+                                fn_name, fn_arguments, tool_call_id,
+                                remaining, turn, chat, session, ws_manager,
+                                llm_provider_state=resp.provider_state,
+                            )
+                        except HumanActionRequired:
+                            raise _PermissionPause()
+
+                    # Save tool_call ChatItem
+                    call_item = ChatItem(
+                        chat_id=chat_id,
+                        item_type="tool_call",
+                        tool_name=fn_name,
                         tool_call_id=tool_call_id,
-                        turn=turn,
-                        question_args=ask_args,
-                        remaining_tool_calls=updated_remaining,
+                        tool_args=_enrich_tool_args(fn_name, fn_arguments),
+                        item_metadata=_provider_state_metadata(resp.provider_state),
                     )
-                    return
+                    session.add(call_item)
+                    await session.commit()
+                    await ws_manager.broadcast("chat_item_created", {
+                        "chat_id": chat_id,
+                        "item": call_item.to_dict(),
+                    })
 
-                # Execute tool
-                _raise_if_interrupted(chat_id)
-                turn_stats["tool_call_count"] = turn_stats.get("tool_call_count", 0) + 1
-                try:
-                    await _execute_tool_call(
-                        fn_name, fn_arguments, tool_call_id,
-                        chat_id, workspace_dir, str(project_workspace_dir) if project_workspace_dir else None, session, ws_manager,
-                        session_media_ids=session_media_ids,
-                        chat=chat,
-                        call_item_id=call_item.id,
-                        shown_media_ids=shown_media_ids,
-                        enabled_stimpacks=list(_invoked_skills) if _invoked_skills else None,
-                        parent_turn=turn,
-                        parent_remaining=remaining,
-                        effective_model_slug=effective_model_slug,
-                        needs_continuation_out=needs_continuation,
-                    )
-                except HumanActionRequired:
-                    # Delegate subagent paused for permission — propagate as _PermissionPause
-                    raise _PermissionPause()
+                    # ask_user: pause with HITL prompt
+                    if fn_name == "ask_user":
+                        ask_args = _parse_tool_args(fn_arguments)
+                        ask_args, updated_remaining = _annotate_ask_sequence(ask_args, remaining)
+                        await _pause_for_ask_user(
+                            chat=chat,
+                            session=session,
+                            ws_manager=ws_manager,
+                            tool_call_id=tool_call_id,
+                            turn=turn,
+                            question_args=ask_args,
+                            remaining_tool_calls=updated_remaining,
+                        )
+                        return
 
-                # Track newly invoked skills for run_code lib modules
-                if fn_name == "skill":
+                    # Execute tool
+                    _raise_if_interrupted(chat_id)
+                    turn_stats["tool_call_count"] = turn_stats.get("tool_call_count", 0) + 1
                     try:
-                        skill_args = json.loads(fn_arguments) if fn_arguments else {}
-                        if skill_args.get("action") == "invoke" and skill_args.get("name"):
-                            _invoked_skills.add(skill_args["name"])
-                            _track_skill_invoked(chat_id, skill_args["name"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
+                        await _execute_tool_call(
+                            fn_name, fn_arguments, tool_call_id,
+                            chat_id, workspace_dir, str(project_workspace_dir) if project_workspace_dir else None, session, ws_manager,
+                            session_media_ids=session_media_ids,
+                            chat=chat,
+                            call_item_id=call_item.id,
+                            shown_media_ids=shown_media_ids,
+                            enabled_stimpacks=list(_invoked_skills) if _invoked_skills else None,
+                            parent_turn=turn,
+                            parent_remaining=remaining,
+                            effective_model_slug=effective_model_slug,
+                            needs_continuation_out=needs_continuation,
+                        )
+                    except HumanActionRequired:
+                        # Delegate subagent paused for permission — propagate as _PermissionPause
+                        raise _PermissionPause()
+
+                    # Track newly invoked skills for run_code lib modules
+                    if fn_name == "skill":
+                        try:
+                            skill_args = json.loads(fn_arguments) if fn_arguments else {}
+                            if skill_args.get("action") == "invoke" and skill_args.get("name"):
+                                _invoked_skills.add(skill_args["name"])
+                                _track_skill_invoked(chat_id, skill_args["name"])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            else:
+                # Parallel tool execution for all non-permission tools in batch
+                created_call_items = []
+                for tc_info in active_tool_calls:
+                    fn_name = tc_info["fn_name"]
+                    fn_arguments = tc_info["fn_arguments"]
+                    tool_call_id = tc_info["tool_call_id"]
+                    call_item = ChatItem(
+                        chat_id=chat_id,
+                        item_type="tool_call",
+                        tool_name=fn_name,
+                        tool_call_id=tool_call_id,
+                        tool_args=_enrich_tool_args(fn_name, fn_arguments),
+                        item_metadata=_provider_state_metadata(resp.provider_state),
+                    )
+                    session.add(call_item)
+                    created_call_items.append((tool_call_id, fn_name, fn_arguments, call_item))
+
+                if created_call_items:
+                    await session.commit()
+                    for _, _, _, call_item in created_call_items:
+                        await ws_manager.broadcast("chat_item_created", {
+                            "chat_id": chat_id,
+                            "item": call_item.to_dict(),
+                        })
+
+                    session_lock = asyncio.Lock()
+
+                    async def _run_tool_coro(tc_id: str, fname: str, fargs: str, c_item: ChatItem):
+                        _raise_if_interrupted(chat_id)
+                        turn_stats["tool_call_count"] = turn_stats.get("tool_call_count", 0) + 1
+                        try:
+                            await _execute_tool_call(
+                                fname, fargs, tc_id,
+                                chat_id, workspace_dir, str(project_workspace_dir) if project_workspace_dir else None, session, ws_manager,
+                                session_media_ids=session_media_ids,
+                                chat=chat,
+                                call_item_id=c_item.id,
+                                shown_media_ids=shown_media_ids,
+                                enabled_stimpacks=list(_invoked_skills) if _invoked_skills else None,
+                                parent_turn=turn,
+                                parent_remaining=[],
+                                effective_model_slug=effective_model_slug,
+                                needs_continuation_out=needs_continuation,
+                                session_lock=session_lock,
+                            )
+                        except HumanActionRequired:
+                            raise _PermissionPause()
+
+                        if fname == "skill":
+                            try:
+                                skill_args = json.loads(fargs) if fargs else {}
+                                if skill_args.get("action") == "invoke" and skill_args.get("name"):
+                                    _invoked_skills.add(skill_args["name"])
+                                    _track_skill_invoked(chat_id, skill_args["name"])
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+
+                    if len(created_call_items) == 1:
+                        tc_id, fname, fargs, c_item = created_call_items[0]
+                        await _run_tool_coro(tc_id, fname, fargs, c_item)
+                    else:
+                        tasks = [
+                            _run_tool_coro(tc_id, fname, fargs, c_item)
+                            for tc_id, fname, fargs, c_item in created_call_items
+                        ]
+                        await asyncio.gather(*tasks)
 
             # The model invoked `finish` — explicit end of turn. `finish` is
             # pure control flow; the assistant's message is its closing remark.

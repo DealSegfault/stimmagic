@@ -33,7 +33,7 @@
         <div class="flex items-start justify-between gap-3 pb-2">
           <div>
             <p class="text-xs font-semibold text-content">Backend image</p>
-            <p class="mt-0.5 text-[11px] text-content-muted">Un seul choix actif à la fois.</p>
+            <p class="mt-0.5 text-[11px] text-content-muted">Choisissez Antigravity, Codex, ou les deux en parallèle.</p>
           </div>
           <button
             type="button"
@@ -60,7 +60,10 @@
             @pointerdown.stop
             @click.stop.prevent="toggle(option.value)"
           >
-            <span class="truncate">{{ option.label }}</span>
+            <div class="flex flex-col min-w-0">
+              <span class="truncate">{{ option.label }}</span>
+              <span v-if="option.description" class="text-[10px] opacity-75 font-normal truncate">{{ option.description }}</span>
+            </div>
             <CheckIcon v-if="modelValue === option.value" class="h-4 w-4 flex-shrink-0 text-accent" aria-hidden="true" />
           </button>
         </div>
@@ -86,8 +89,9 @@ const popoverPosition = ref({})
 const POPOVER_WIDTH = 288 // 72 * 4 = 288px
 
 const options = [
-  { value: 'codex_imagegen', label: 'ChatGPT / Codex ImageGen' },
-  { value: 'antigravity', label: 'Antigravity' },
+  { value: 'antigravity', label: 'Antigravity', description: 'Génération via Antigravity CLI (agy)' },
+  { value: 'codex_imagegen', label: 'ChatGPT / Codex ImageGen', description: 'Génération via Codex CLI' },
+  { value: 'both', label: 'Antigravity + Codex ⚡', description: 'Génération simultanée en parallèle' },
 ]
 
 const triggerLabel = computed(() => props.modelValue
