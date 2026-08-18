@@ -1723,6 +1723,29 @@ async def _run_agentic_loop_inner(
             "SHOT CONTRACT GATE: if get_world_state returns generation_contract, it overrides these chat defaults for this shot. "
             "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
         )
+        active_contract = run_context.get("shot_contract") if isinstance(run_context, dict) else None
+        if isinstance(active_contract, dict):
+            manifest_ids = [
+                int(item["media_id"])
+                for item in active_contract.get("reference_manifest") or []
+                if item.get("media_id")
+            ]
+            expected_dimensions = active_contract.get("expected_dimensions") or [1344, 768]
+            expected_width, expected_height = int(expected_dimensions[0]), int(expected_dimensions[1])
+            workflow = active_contract.get("workflow")
+            if workflow == "compose_opening_keyframe_then_i2v":
+                system_reminders.append(
+                    "ACTIVE SHOT WORKFLOW (hard, already resolved): this shot is an insert-to-character return. "
+                    "Do not call R2V/reference_to_video and do not retry a blocked video call. In run_code, first create one opening keyframe with the exact manifest media IDs "
+                    f"{manifest_ids} using the catalog function `from stimma.tools.image_to_image import nano_banana_pro_edit` and `await nano_banana_pro_edit(input_images={manifest_ids}, prompt=..., width={expected_width}, height={expected_height})`. "
+                    "Display it only as `stimma.show(keyframe, role=\"intermediate\")`. Then call `from stimma.tools.image_to_video import minimax_h3_i2v` with exactly `input_images=[keyframe.media_id]`, never the manifest again, and display only the resulting video as role=final. "
+                    "Do not call library to inspect these IDs: the contract already resolved them. Use the exact function names from this instruction."
+                )
+            else:
+                system_reminders.append(
+                    "ACTIVE SHOT WORKFLOW (hard, already resolved): use the generation_contract reference_manifest in its exact order, including the materialized previous last frame. "
+                    "Do not introduce references from chat history or the general library."
+                )
         system_reminders.append(
             f"VIDEO CHAT SETTINGS (authoritative override): requested resolution={video_resolution}, "
             f"duration={video_duration:g}s, effective steps={effective_video_steps}. "

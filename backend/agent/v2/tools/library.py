@@ -1005,6 +1005,19 @@ async def library(
     elif action == "browse_options":
         return await _browse_options(session, facet, filters, query, limit or 25, cursor)
     elif action == "get":
+        if media_ids:
+            # ``media_ids`` is part of the public library schema and agents
+            # naturally use it when the World State manifest contains several
+            # references. Keep get ergonomic by returning one JSON array
+            # instead of failing with the single-item ``media_id`` error.
+            items = []
+            for requested_media_id in dict.fromkeys(int(value) for value in media_ids):
+                raw = await _get(session, requested_media_id, workspace_dir)
+                try:
+                    items.append(json.loads(raw))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    items.append({"media_id": requested_media_id, "result": raw})
+            return json.dumps(items, ensure_ascii=False, default=str)
         return await _get(session, media_id, workspace_dir)
     elif action == "generation_params":
         return await _generation_params(session, media_id)

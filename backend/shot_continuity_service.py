@@ -167,13 +167,19 @@ def validate_generation_request(
     current_run_ids = {int(value) for value in session_media_ids or []}
     if workflow == "compose_opening_keyframe_then_i2v":
         if "reference-to-video" in task_name or "ref2va" in task_name:
+            manifest_ids = [
+                int(value)
+                for value in contract.get("allowed_reference_media_ids") or []
+            ]
             errors.append(
-                "workflow mismatch: this shot requires a composed opening keyframe followed by I2V, not direct multi-reference R2V"
+                "workflow mismatch: this shot requires a composed opening keyframe followed by I2V, not direct multi-reference R2V. "
+                f"First run image-to-image with input_images={manifest_ids}, then run I2V with only the returned keyframe.media_id."
             )
         elif "image-to-video" in task_name:
             if len(input_media_ids) != 1 or not (set(input_media_ids) & current_run_ids):
                 errors.append(
-                    "workflow mismatch: I2V must receive exactly one opening keyframe generated in the current run"
+                    "workflow mismatch: I2V must receive exactly one opening keyframe generated in the current run; "
+                    "do not pass the previous-shot anchor or the full reference manifest directly to I2V"
                 )
         elif is_image_composition:
             previous_frame_id = contract.get("previous_last_frame_media_id")
