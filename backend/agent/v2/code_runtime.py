@@ -807,6 +807,7 @@ class StimmaSDK:
         session_media_ids: list[int] | None = None,
         project_id: int | None = None,
         effective_model_slug: str | None = None,
+        shot_contract: dict[str, Any] | None = None,
     ):
         self.session = session
         self.chat_id = chat_id
@@ -815,6 +816,7 @@ class StimmaSDK:
         self.interrupt_checker = interrupt_checker
         self.project_id = project_id if project_id is not None else infer_project_id_from_workspace_path(project_workspace_dir)
         self._effective_model_slug = effective_model_slug
+        self._shot_contract = shot_contract if isinstance(shot_contract, dict) else None
         self.library = StimmaLibraryAPI(self)
         self._pending_display_calls: list[dict[str, Any]] = []
         self._tool_results: list[ToolResult] = []
@@ -1202,6 +1204,8 @@ class StimmaSDK:
                 workspace_dir=self.workspace_dir,
                 interrupt_checker=self.interrupt_checker,
                 project_id=self.project_id,
+                shot_contract=self._shot_contract,
+                session_media_ids=self._session_media_ids,
             )
         except Exception as e:
             self._tool_failures.append({
@@ -1888,6 +1892,43 @@ class StimmaSDK:
             saved_media_ids = await self._auto_save_paths(payload.get("paths") or [])
             # Merge saved media_ids with any existing ones, drop the paths
             all_media_ids = list(payload.get("media_ids") or []) + saved_media_ids
+            if payload.get("role") == "final" and self._shot_contract and all_media_ids:
+                from shot_continuity_service import (
+                    generation_job_for_media,
+                    record_shot_acceptance,
+                    ensure_last_frame_media,
+                    validate_shot_output,
+                )
+                for media_id in all_media_ids:
+                    output_errors = await validate_shot_output(
+                        self.session,
+                        contract=self._shot_contract,
+                        media_id=int(media_id),
+                    )
+                    if output_errors:
+                        raise RuntimeError(
+                            "Shot output QA blocked final acceptance:\n- "
+                            + "\n- ".join(output_errors)
+                            + "\nThe media remains a candidate and was not registered as the next continuity state."
+                        )
+                for media_id in all_media_ids:
+                    media = await self.session.get(MediaItem, int(media_id))
+                    last_frame_id = int(media_id)
+                    if media and (media.file_format or "").lower() in {"mp4", "webm", "mov", "avi", "mkv", "ogg"}:
+                        last_frame_id = await ensure_last_frame_media(
+                            self.session,
+                            source_media_id=int(media_id),
+                            workspace_dir=self.workspace_dir,
+                            project_id=self.project_id,
+                        )
+                    job = await generation_job_for_media(self.session, int(media_id))
+                    await record_shot_acceptance(
+                        self.session,
+                        contract=self._shot_contract,
+                        media_id=int(media_id),
+                        generation_job_id=job.id if job else None,
+                        last_frame_media_id=last_frame_id,
+                    )
             self._shown_media_ids.extend(all_media_ids)
             await show_tool(
                 role=payload["role"],
@@ -2205,6 +2246,7 @@ async def run_code_in_sandbox(
     enabled_stimpacks: list[str] | None = None,
     project_id: int | None = None,
     effective_model_slug: str | None = None,
+    shot_contract: dict[str, Any] | None = None,
 ) -> tuple[str, dict]:
     stdout = io.StringIO()
 
@@ -2224,6 +2266,7 @@ async def run_code_in_sandbox(
         session_media_ids=session_media_ids,
         project_id=project_id,
         effective_model_slug=effective_model_slug,
+        shot_contract=shot_contract,
     )
 
     # Create a tqdm class bound to this SDK instance so `from tqdm import tqdm` just works

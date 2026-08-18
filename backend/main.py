@@ -123,6 +123,7 @@ log.info(f"TIMING: core.app imported at {time.time() - _startup_time:.2f}s")
 # Import all route modules
 from routes import (
     admin,
+    agent_traces,
     auth,
     assets,
     boards,
@@ -200,6 +201,7 @@ app.include_router(flows.router)
 app.include_router(flow_tasks.router)
 app.include_router(user_tools.router)
 app.include_router(admin.router)
+app.include_router(agent_traces.router)
 app.include_router(realtime.router)
 app.include_router(chats.router)
 app.include_router(prompt_enhancement.router)

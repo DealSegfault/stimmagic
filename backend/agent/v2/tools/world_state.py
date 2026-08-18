@@ -8,8 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..tools_registry import ToolParameter, tool
 from world_state_service import (
     build_project_world_state,
+    build_shot_reference_manifest,
+    build_script_shot_context,
+    compact_world_state_for_agent,
     detect_missing_references,
+    infer_shot_number,
     update_entity_state,
+)
+from shot_continuity_service import (
+    build_shot_generation_contract,
+    latest_previous_shot_acceptance,
+    resolve_contract_last_frame,
 )
 
 
@@ -40,6 +49,12 @@ from world_state_service import (
             required=False,
         ),
         ToolParameter(
+            name="shot_number",
+            type="integer",
+            description="Optional plan/shot number inside the resolved scene; this is distinct from scene_number",
+            required=False,
+        ),
+        ToolParameter(
             name="board_id",
             type="integer",
             description="Optional scene board id when the user identifies the board instead of the scene",
@@ -58,6 +73,7 @@ async def get_world_state(
     scene_id: Optional[int] = None,
     sequence_number: Optional[int] = None,
     scene_number: Optional[int] = None,
+    shot_number: Optional[int] = None,
     board_id: Optional[int] = None,
     shot_prompt: Optional[str] = None,
     **kwargs: Any,
@@ -112,7 +128,46 @@ async def get_world_state(
 
     state["missing_references"] = missing
     state["has_missing_references"] = len(missing) > 0
-    return state
+    requested_shot_number = shot_number or infer_shot_number(shot_prompt)
+    if requested_shot_number is not None:
+        shot_context = build_script_shot_context(
+            state.get("current_scene"), requested_shot_number
+        )
+        if shot_context:
+            previous_acceptance = None
+            current_scene = state.get("current_scene") or {}
+            if current_scene.get("id"):
+                previous_acceptance = await latest_previous_shot_acceptance(
+                    session,
+                    project_id=int(project_id),
+                    scene_id=int(current_scene["id"]),
+                    shot_number=int(requested_shot_number),
+                )
+            reference_manifest = build_shot_reference_manifest(
+                state, shot_context, previous_acceptance
+            )
+            shot_context["reference_manifest"] = reference_manifest
+            shot_context["previous_accepted"] = previous_acceptance
+            state["shot_context"] = shot_context
+            contract = build_shot_generation_contract(
+                project_id=int(project_id),
+                scene=current_scene,
+                shot_context=shot_context,
+                reference_manifest=reference_manifest,
+                previous_acceptance=previous_acceptance,
+            )
+            if contract.get("previous_last_frame_media_id"):
+                try:
+                    await resolve_contract_last_frame(
+                        session,
+                        contract=contract,
+                        workspace_dir=kwargs.get("workspace_dir"),
+                    )
+                    shot_context["reference_manifest"] = contract.get("reference_manifest") or reference_manifest
+                except (RuntimeError, ValueError) as exc:
+                    contract["continuity_materialization_error"] = str(exc)
+            state["generation_contract"] = contract
+    return compact_world_state_for_agent(state)
 
 
 @tool(

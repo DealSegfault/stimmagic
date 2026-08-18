@@ -1,4 +1,5 @@
 import random
+import uuid
 from datetime import datetime
 from typing import Optional, List
 from sqlalchemy import (
@@ -1573,6 +1574,102 @@ class ChatItem(Base):
             "item_metadata": self._parse_json_field("item_metadata"),
         }
         return result
+
+
+class AgentRun(Base):
+    """A persisted, safe-to-display execution trace for one agent turn.
+
+    This is deliberately separate from ``LLMTrace``: it records workflow
+    decisions and artifacts needed to debug/replay a run without exposing the
+    model's private chain of thought.
+    """
+    __tablename__ = "agent_runs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True)
+    chat_id = Column(Integer, ForeignKey("chats.id", ondelete="SET NULL"), nullable=True, index=True)
+    workflow = Column(String, nullable=False, default="agent_chat", index=True)
+    mode = Column(String, nullable=False, default="trace", index=True)  # trace | debug | replay
+    status = Column(String, nullable=False, default="running", index=True)  # running | completed | failed | paused | cancelled
+    request_summary = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("idx_agent_runs_project_started", project_id, started_at.desc()),
+        Index("idx_agent_runs_chat_started", chat_id, started_at.desc()),
+    )
+
+    def to_dict(self, *, include_request: bool = True):
+        return {
+            "id": self.id,
+            "project_id": self.project_id,
+            "chat_id": self.chat_id,
+            "workflow": self.workflow,
+            "mode": self.mode,
+            "status": self.status,
+            "request_summary": self.request_summary if include_request else None,
+            "summary": self.summary,
+            "error": self.error,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+        }
+
+
+class AgentRunStep(Base):
+    """One observable stage inside an :class:`AgentRun`."""
+    __tablename__ = "agent_run_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    stage = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="running", index=True)
+    summary = Column(Text, nullable=True)
+    detail = Column(Text, nullable=True)  # JSON; redacted operational data only
+    tool_call_id = Column(String, nullable=True, index=True)
+    # Keep this as a durable trace reference even if the generation job is
+    # later purged from the operational queue.
+    generation_job_id = Column(Integer, nullable=True, index=True)
+    media_ids = Column(Text, nullable=True)  # JSON array
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    attempt = Column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        Index("idx_agent_run_steps_run_sequence", run_id, sequence),
+        Index("idx_agent_run_steps_run_status", run_id, status),
+    )
+
+    def to_dict(self, *, include_detail: bool = True):
+        import json
+        try:
+            detail = json.loads(self.detail) if self.detail else {}
+        except (TypeError, ValueError):
+            detail = {}
+        try:
+            media_ids = json.loads(self.media_ids) if self.media_ids else []
+        except (TypeError, ValueError):
+            media_ids = []
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "sequence": self.sequence,
+            "stage": self.stage,
+            "name": self.name,
+            "status": self.status,
+            "summary": self.summary,
+            "detail": detail if include_detail else None,
+            "tool_call_id": self.tool_call_id,
+            "generation_job_id": self.generation_job_id,
+            "media_ids": media_ids,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "attempt": self.attempt,
+        }
 
 
 class SavedView(Base):

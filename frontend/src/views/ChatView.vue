@@ -11,6 +11,7 @@
       @toggle-view="toggleView"
       @toggle-settings-panel="toggleSettingsPanel"
       @toggle-requirements-drawer="requirementsDrawerVisible = !requirementsDrawerVisible"
+      @open-agent-trace="showAgentRunTraceModal = true"
       @delete="confirmDelete"
       @clone="cloneChat"
       @clear="clearChat"
@@ -1428,6 +1429,12 @@
       @close="showTraceModal = false; selectedTraceId = null; tracePlanId = null; traceToolCallId = null"
     />
 
+    <AgentRunTraceModal
+      :show="showAgentRunTraceModal"
+      :chat-id="chatId"
+      @close="showAgentRunTraceModal = false"
+    />
+
 
     <!-- Slideshow Mode -->
     <SlideshowMode
@@ -1538,6 +1545,7 @@ import V2PermissionPrompt from '../components/hitl/V2PermissionPrompt.vue'
 import PlanVisualization from '../components/PlanVisualization.vue'
 import NotepadDisplay from '../components/chat/NotepadDisplay.vue'
 import TraceModal from '../components/chat/TraceModal.vue'
+import AgentRunTraceModal from '../components/chat/AgentRunTraceModal.vue'
 import { copyToClipboard } from '../utils/clipboard'
 import { addToast } from '../composables/useToasts'
 import { useAuth } from '../composables/useAuth'
@@ -1688,6 +1696,7 @@ const showDeleteModal = ref(false)
 const showJobInfoModal = ref(false)
 const showJobErrorModal = ref(false)
 const showTraceModal = ref(false)
+const showAgentRunTraceModal = ref(false)
 const selectedTraceId = ref(null)
 const tracePlanId = ref(null)  // Filter traces by plan ID
 const traceToolCallId = ref(null)  // Filter traces by tool_call_id (for delegate subagent traces)

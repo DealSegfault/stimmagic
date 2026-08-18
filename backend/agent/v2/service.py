@@ -12,6 +12,18 @@ from typing import Any, Dict, List, Optional
 
 from llm import llm_completion, QuotaExceededError, ContentFilteredError, Usage, classify_provider_http_error, is_auto_tool_choice_unsupported_error, strip_thinking_tags
 from llm_correlation import llm_correlation_context
+from agent_trace_service import (
+    agent_trace_context,
+    finish_agent_run,
+    finish_agent_step,
+    redact_trace_value,
+    start_agent_run,
+    start_agent_step,
+    trace_action_for_tool,
+    trace_decision_summary,
+    trace_ids_from_value,
+    trace_stage_for_tool,
+)
 from llm_resolver import get_effective_llm_config, get_chat_llm_config, resolve_chat_effort, resolve_chat_model_slug, LLMNotConfiguredError, LLMInsufficientBalanceError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -501,6 +513,7 @@ async def _execute_tool_call(
     needs_continuation_out: list[bool] | None = None,
     session_lock: Optional[asyncio.Lock] = None,
     skip_reason: str | None = None,
+    run_context: dict[str, Any] | None = None,
 ) -> str:
     """Execute a single tool call and save the result ChatItem. Returns result string.
 
@@ -511,6 +524,24 @@ async def _execute_tool_call(
     _raise_if_interrupted(chat_id)
     tool_llm_usage = None
     injected_messages: list[dict] = []
+    try:
+        trace_arguments = json.loads(fn_arguments) if fn_arguments else {}
+    except (json.JSONDecodeError, TypeError):
+        trace_arguments = {"raw_arguments": fn_arguments or ""}
+    trace_step_id = await start_agent_step(
+        session,
+        stage=trace_stage_for_tool(fn_name),
+        name=fn_name,
+        summary=trace_action_for_tool(fn_name, trace_arguments)["label"],
+        detail={
+            "tool": fn_name,
+            "action": trace_action_for_tool(fn_name, trace_arguments),
+            "arguments": redact_trace_value(trace_arguments),
+        },
+        tool_call_id=tool_call_id,
+        ws_manager=ws_manager,
+        session_lock=session_lock,
+    )
     # Dispatch is scope-aware: a flow chat must never execute an agent-only
     # tool even if one somehow made it into the model's tool_calls (stale
     # schema from a prior turn, hallucination, etc.). Returns None → falls
@@ -519,6 +550,14 @@ async def _execute_tool_call(
     chat_project_id = getattr(chat, "project_id", None) if chat else None
     scope = "flow" if chat_flow_id is not None else "agent"
     tool = get_tool(fn_name, scope=scope)
+    raw_code = trace_arguments.get("code") if isinstance(trace_arguments, dict) else None
+    requires_shot_contract = (
+        fn_name == "run_code"
+        and chat_project_id is not None
+        and isinstance(raw_code, str)
+        and any(token in raw_code.casefold() for token in ("minimax_h3", "reference_to_video", "image_to_video", "text_to_video"))
+        and not (run_context and isinstance(run_context.get("shot_contract"), dict))
+    )
     if skip_reason:
         log.warning(
             "Chat %s: %s tool call %s",
@@ -527,6 +566,11 @@ async def _execute_tool_call(
             tool_call_id,
         )
         result_str = skip_reason
+    elif requires_shot_contract:
+        result_str = (
+            "Error: video generation preflight requires get_world_state with an explicit "
+            "sequence_number, scene_number, and shot_number first. No generation job was queued."
+        )
     elif tool:
         try:
             kwargs = json.loads(fn_arguments) if fn_arguments else {}
@@ -551,6 +595,8 @@ async def _execute_tool_call(
             kwargs["_injected_messages"] = injected_messages
             if needs_continuation_out is not None:
                 kwargs["_needs_continuation_out"] = needs_continuation_out
+            if run_context and isinstance(run_context.get("shot_contract"), dict):
+                kwargs["_shot_contract"] = run_context["shot_contract"]
 
             if session_lock and fn_name != "bash":
                 async with session_lock:
@@ -577,8 +623,26 @@ async def _execute_tool_call(
             tool_llm_usage = usage_out.get("llm_usage")
             _raise_if_interrupted(chat_id)
         except (_AgentInterrupted, asyncio.CancelledError):
+            await finish_agent_step(
+                session,
+                trace_step_id,
+                status="cancelled",
+                summary=f"{fn_name} interrupted",
+                detail={"tool": fn_name, "status": "cancelled"},
+                ws_manager=ws_manager,
+                session_lock=session_lock,
+            )
             raise
         except HumanActionRequired:
+            await finish_agent_step(
+                session,
+                trace_step_id,
+                status="paused",
+                summary=f"{fn_name} paused for human approval",
+                detail={"tool": fn_name, "status": "paused_for_human_action"},
+                ws_manager=ws_manager,
+                session_lock=session_lock,
+            )
             raise
         except Exception as e:
             log.error(f"Tool {fn_name} error: {e}")
@@ -593,6 +657,17 @@ async def _execute_tool_call(
         match = re.search(r"<result media_id=(\d+)", result_str)
         if match:
             session_media_ids.append(int(match.group(1)))
+
+    # World State is the source of the shot contract. Keep it in the current
+    # agent run so a later run_code call cannot silently fall back to stale
+    # scene references.
+    if fn_name == "get_world_state" and run_context is not None:
+        try:
+            world_result = result_str if isinstance(result_str, dict) else json.loads(str(result_str or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            world_result = {}
+        if isinstance(world_result, dict) and isinstance(world_result.get("generation_contract"), dict):
+            run_context["shot_contract"] = world_result["generation_contract"]
 
     # Build tool_result metadata
     result_metadata_dict = {}
@@ -667,6 +742,34 @@ async def _execute_tool_call(
                     "chat_id": chat_id,
                     "item": inj_item.to_dict(),
                 })
+
+    generation_job_id, trace_media_ids = trace_ids_from_value(result_str)
+    trace_failed = (
+        isinstance(result_str, str) and result_str.startswith("Error")
+    ) or (
+        isinstance(result_str, dict) and bool(result_str.get("error"))
+    )
+    await finish_agent_step(
+        session,
+        trace_step_id,
+        status="failed" if trace_failed else "completed",
+        summary=(
+            f"{fn_name} failed"
+            if trace_failed
+            else f"{fn_name} completed"
+        ),
+        detail={
+            "tool": fn_name,
+            "action": trace_action_for_tool(fn_name, trace_arguments),
+            "result": redact_trace_value(result_str),
+            "result_summary": str(result_str or "")[:600],
+            "llm_usage": redact_trace_value(tool_llm_usage) if tool_llm_usage else None,
+        },
+        generation_job_id=generation_job_id,
+        media_ids=trace_media_ids,
+        ws_manager=ws_manager,
+        session_lock=session_lock,
+    )
 
     # Broadcast run_code LLM usage so dev mode UI updates in real-time
     if tool_llm_usage and tool_llm_usage.get("calls", 0) > 0:
@@ -748,6 +851,7 @@ async def _pause_for_permission(
     session: AsyncSession,
     ws_manager: WebSocketManager,
     llm_provider_state: dict | None = None,
+    shot_contract: dict | None = None,
 ) -> None:
     """Pause execution and create a HITL request for tool permission."""
     from ..hitl import HumanActionRequest, HumanActionRequired
@@ -795,6 +899,7 @@ async def _pause_for_permission(
         "remaining_tool_calls": remaining_tool_calls,
         "turn": turn,
         "llm_provider_state": llm_provider_state,
+        "shot_contract": shot_contract,
     }
     gen_settings = {}
     if chat.generation_settings:
@@ -961,6 +1066,9 @@ async def run_agent(
     # visible content for the shared refusal classifier).
     turn_started = time.monotonic()
     turn_stats: dict = {"tool_call_count": 0, "llm_config": None, "last_content": None}
+    trace_run_id: Optional[str] = None
+    trace_status = "completed"
+    trace_error: Optional[str] = None
 
     def _track_agent_turn(status: str, error_type: Optional[str] = None) -> None:
         try:
@@ -1018,6 +1126,14 @@ async def run_agent(
     if current_task:
         _active_chat_tasks[chat_id] = current_task
 
+    trace_run_id = await start_agent_run(
+        session,
+        project_id=getattr(chat, "project_id", None),
+        chat_id=chat_id,
+        request_summary=user_message,
+        ws_manager=ws_manager,
+    )
+
     # Copy any user-selected media into the workspace so the agent can access them
     if selected_media_ids:
         copied = await _copy_media_to_workspace(selected_media_ids, chat_id, session, chat.project_id)
@@ -1031,6 +1147,7 @@ async def run_agent(
         await _run_agentic_loop(
             chat, session, ws_manager, max_turns, start_turn=0, turn_stats=turn_stats,
             artifact_context=artifact_context,
+            trace_run_id=trace_run_id,
         )
         await ws_manager.broadcast("agent_stopped", {"chat_id": chat_id, "reason": "completed"})
 
@@ -1038,21 +1155,28 @@ async def run_agent(
         # only the categorical label egresses.
         from refusal_detection import is_refusal
         if is_refusal(turn_stats.get("last_content")):
+            trace_status = "failed"
+            trace_error = "Model refusal"
             _track_agent_turn("failed", error_type="refusal")
         else:
             _track_agent_turn("completed")
 
     except _PermissionPause:
+        trace_status = "paused"
         # Agent paused for permission — frontend will show HITL prompt
         # Don't broadcast agent_stopped; the agent is waiting, not done
         _track_agent_turn("paused_for_permission")
 
     except (_AgentInterrupted, asyncio.CancelledError):
+        trace_status = "cancelled"
+        trace_error = "Agent interrupted"
         log.info(f"Chat {chat_id}: v2 agent interrupted")
         await ws_manager.broadcast("agent_stopped", {"chat_id": chat_id, "reason": "cancelled"})
         _track_agent_turn("cancelled")
 
     except QuotaExceededError as e:
+        trace_status = "failed"
+        trace_error = str(e)
         log.warning(f"Chat {chat_id}: Stimma Cloud quota exceeded: {e}")
         metadata = {
             "error_type": "quota_exceeded",
@@ -1080,6 +1204,8 @@ async def run_agent(
         _track_gate_encountered("quota_exhausted")
 
     except ContentFilteredError as e:
+        trace_status = "failed"
+        trace_error = str(e)
         log.warning(f"Chat {chat_id}: Content filtered")
         metadata = {
             "error_type": "content_filtered",
@@ -1104,6 +1230,8 @@ async def run_agent(
         _track_agent_turn("failed", error_type="content_filtered")
 
     except LLMInsufficientBalanceError as e:
+        trace_status = "failed"
+        trace_error = str(e)
         log.warning(f"Chat {chat_id}: Insufficient balance: {e}")
         metadata = {
             "error_type": e.code,
@@ -1129,6 +1257,8 @@ async def run_agent(
         _track_gate_encountered("tier_required")
 
     except LLMNotConfiguredError as e:
+        trace_status = "failed"
+        trace_error = str(e)
         log.warning(f"Chat {chat_id}: No LLM configured: {e}")
         metadata = {
             "error_type": e.code,
@@ -1154,6 +1284,8 @@ async def run_agent(
         _track_gate_encountered("signin_required")
 
     except Exception as e:
+        trace_status = "failed"
+        trace_error = str(e)
         log.error(f"V2 agent error for chat {chat_id}: {type(e).__name__}: {str(e)[:500]}")
         provider_error = classify_provider_http_error(e)
         metadata = {"raw_error": _format_raw_error(e)}
@@ -1181,6 +1313,14 @@ async def run_agent(
         _track_agent_turn("failed", error_type=_error_type)
 
     finally:
+        await finish_agent_run(
+            session,
+            trace_run_id,
+            status=trace_status,
+            summary=("Agent loop finished" if trace_status == "completed" else None),
+            error=trace_error,
+            ws_manager=ws_manager,
+        )
         _active_chat_executions.discard(chat_id)
         _active_chat_tasks.pop(chat_id, None)
         _clear_interrupt(chat_id)
@@ -1201,6 +1341,8 @@ async def _run_agentic_loop(
     session_media_ids: Optional[list[int]] = None,
     turn_stats: Optional[dict] = None,
     artifact_context: Optional[dict] = None,
+    trace_run_id: Optional[str] = None,
+    run_context_seed: Optional[dict] = None,
 ) -> None:
     """Run the core loop inside a correlation scope.
 
@@ -1209,16 +1351,50 @@ async def _run_agentic_loop(
     requests made anywhere inside (main loop, run_code llm(), specialists)
     carry the mechanical X-Stimma-* correlation headers.
     """
-    agent_context = "flow" if chat.flow_id is not None else "main"
-    with llm_correlation_context(agent_context, chat_id=chat.id):
-        await _run_agentic_loop_inner(
-            chat, session, ws_manager, max_turns,
-            start_turn=start_turn,
-            turn_stats=turn_stats,
-            pending_tool_calls=pending_tool_calls,
-            session_media_ids=session_media_ids,
-            artifact_context=artifact_context,
+    owns_trace_run = trace_run_id is None
+    if trace_run_id is None:
+        trace_run_id = await start_agent_run(
+            session,
+            project_id=chat.project_id,
+            chat_id=chat.id,
+            request_summary="Agent continuation",
+            ws_manager=ws_manager,
         )
+    agent_context = "flow" if chat.flow_id is not None else "main"
+    trace_status = "completed"
+    trace_error = None
+    try:
+        with llm_correlation_context(agent_context, chat_id=chat.id, run_id=trace_run_id), agent_trace_context(trace_run_id):
+            await _run_agentic_loop_inner(
+                chat, session, ws_manager, max_turns,
+                start_turn=start_turn,
+                turn_stats=turn_stats,
+                pending_tool_calls=pending_tool_calls,
+                session_media_ids=session_media_ids,
+                artifact_context=artifact_context,
+                run_context_seed=run_context_seed,
+            )
+    except _PermissionPause:
+        trace_status = "paused"
+        raise
+    except (_AgentInterrupted, asyncio.CancelledError):
+        trace_status = "cancelled"
+        trace_error = "Agent interrupted"
+        raise
+    except Exception as exc:
+        trace_status = "failed"
+        trace_error = str(exc)
+        raise
+    finally:
+        if owns_trace_run:
+            await finish_agent_run(
+                session,
+                trace_run_id,
+                status=trace_status,
+                error=trace_error,
+                summary="Agent continuation finished" if trace_status == "completed" else None,
+                ws_manager=ws_manager,
+            )
 
 
 async def _run_agentic_loop_inner(
@@ -1231,6 +1407,7 @@ async def _run_agentic_loop_inner(
     session_media_ids: Optional[list[int]] = None,
     turn_stats: Optional[dict] = None,
     artifact_context: Optional[dict] = None,
+    run_context_seed: Optional[dict] = None,
 ) -> None:
     """Core agentic loop. Extracted so resume_after_hitl can re-enter.
 
@@ -1262,6 +1439,7 @@ async def _run_agentic_loop_inner(
     if session_media_ids is None:
         session_media_ids = []
     shown_media_ids: set[int] = set()
+    run_context: dict[str, Any] = dict(run_context_seed or {})
     resolved_config = await resolve_agent_config(chat, session)
 
     # Resolve the effective model + effort for this chat (chat -> project -> profile)
@@ -1415,6 +1593,7 @@ async def _run_agentic_loop_inner(
                         fn_name, fn_arguments, tool_call_id,
                         remaining, start_turn, chat, session, ws_manager,
                         llm_provider_state=tc_data.get("llm_provider_state"),
+                        shot_contract=run_context.get("shot_contract"),
                     )
                 except HumanActionRequired:
                     raise _PermissionPause()
@@ -1470,6 +1649,7 @@ async def _run_agentic_loop_inner(
                 enabled_stimpacks=list(_invoked_skills) if _invoked_skills else None,
                 effective_model_slug=effective_model_slug,
                 skip_reason=skip_reason,
+                run_context=run_context,
             )
             # Track newly invoked skills
             if fn_name == "skill":
@@ -1540,6 +1720,10 @@ async def _run_agentic_loop_inner(
             + " Execute video generation immediately via `run_code` by importing the matching function (`from stimma.tools.reference_to_video import minimax_h3_r2v_turbo`, `from stimma.tools.image_to_video import minimax_h3_i2v_turbo`, or `from stimma.tools.text_to_video import minimax_h3_t2v_turbo`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
         )
         system_reminders.append(
+            "SHOT CONTRACT GATE: if get_world_state returns generation_contract, it overrides these chat defaults for this shot. "
+            "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
+        )
+        system_reminders.append(
             f"VIDEO CHAT SETTINGS (authoritative override): requested resolution={video_resolution}, "
             f"duration={video_duration:g}s, effective steps={effective_video_steps}. "
             "The dispatch layer applies these values to every MiniMax H3 video job, even if the code call contains different defaults."
@@ -1591,6 +1775,19 @@ async def _run_agentic_loop_inner(
             overhead_tokens=tools_overhead,
         )
 
+        llm_trace_step_id = await start_agent_step(
+            session,
+            stage="llm",
+            name="llm_completion",
+            summary=f"Ask {llm_config.model or 'configured model'} for the next operational decision",
+            detail={
+                "turn": turn,
+                "model": llm_config.model,
+                "estimated_prompt_tokens": estimated_prompt_tokens,
+                "tool_surface_enabled": bool(tools_schema),
+            },
+            ws_manager=ws_manager,
+        )
         thinking_item = await _create_thinking_item(chat_id, session, ws_manager)
         llm_started_at = time.monotonic()
 
@@ -1608,6 +1805,14 @@ async def _run_agentic_loop_inner(
                 **agent_llm_options(enable_thinking=True),
             )
         except Exception as e:
+            await finish_agent_step(
+                session,
+                llm_trace_step_id,
+                status="failed",
+                summary=f"LLM request failed: {type(e).__name__}",
+                detail={"turn": turn, "error_type": type(e).__name__},
+                ws_manager=ws_manager,
+            )
             if tools_enabled and is_auto_tool_choice_unsupported_error(e):
                 log.error(
                     f"Chat {chat_id}: vLLM rejected tool calling. "
@@ -1716,6 +1921,30 @@ async def _run_agentic_loop_inner(
             }
         await ws_manager.broadcast("llm_usage", usage_broadcast)
         tool_calls = resp.tool_calls or None
+        await finish_agent_step(
+            session,
+            llm_trace_step_id,
+            status="completed",
+            summary=(
+                f"Model returned {len(tool_calls)} tool decision(s)"
+                if tool_calls else
+                "Model returned a user-facing response"
+            ),
+            detail={
+                "turn": turn,
+                "model": resp.model,
+                "has_visible_response": bool(content and content.strip()),
+                "tool_names": [call.name for call in (tool_calls or [])],
+                "decision_summary": trace_decision_summary([call.name for call in (tool_calls or [])]),
+                "usage": {
+                    "prompt_tokens": resp.usage.prompt_tokens,
+                    "completion_tokens": resp.usage.completion_tokens,
+                    "reasoning_tokens": resp.usage.reasoning_tokens,
+                    "elapsed_seconds": round(resp.elapsed_seconds, 3),
+                },
+            },
+            ws_manager=ws_manager,
+        )
         log.info(
             f"Chat {chat_id} turn {turn}: "
             f"reasoning={'yes (' + str(len(reasoning)) + ' chars)' if reasoning else 'none'}, "
@@ -1813,6 +2042,7 @@ async def _run_agentic_loop_inner(
                                 fn_name, fn_arguments, tool_call_id,
                                 remaining, turn, chat, session, ws_manager,
                                 llm_provider_state=resp.provider_state,
+                                shot_contract=run_context.get("shot_contract"),
                             )
                         except HumanActionRequired:
                             raise _PermissionPause()
@@ -1865,6 +2095,7 @@ async def _run_agentic_loop_inner(
                             effective_model_slug=effective_model_slug,
                             needs_continuation_out=needs_continuation,
                             skip_reason=skip_reason,
+                            run_context=run_context,
                         )
                     except HumanActionRequired:
                         # Delegate subagent paused for permission — propagate as _PermissionPause
@@ -1934,6 +2165,7 @@ async def _run_agentic_loop_inner(
                                 needs_continuation_out=needs_continuation,
                                 session_lock=session_lock,
                                 skip_reason=skip_reason,
+                                run_context=run_context,
                             )
                         except HumanActionRequired:
                             raise _PermissionPause()
@@ -2308,6 +2540,9 @@ async def resume_after_hitl(
                 shown_media_ids=shown_media_ids,
                 enabled_stimpacks=enabled_stimpacks or None,
                 effective_model_slug=_effective_model_slug,
+                run_context={
+                    "shot_contract": pending.get("shot_contract"),
+                } if isinstance(pending.get("shot_contract"), dict) else {},
             )
 
             # Continue with remaining tool calls from the same batch, then loop
@@ -2317,6 +2552,9 @@ async def resume_after_hitl(
                 start_turn=pending.get("turn", 0),
                 pending_tool_calls=pending.get("remaining_tool_calls"),
                 session_media_ids=session_media_ids,
+                run_context_seed={
+                    "shot_contract": pending.get("shot_contract"),
+                } if isinstance(pending.get("shot_contract"), dict) else None,
             )
 
         await ws_manager.broadcast("agent_stopped", {"chat_id": chat_id, "reason": "completed"})

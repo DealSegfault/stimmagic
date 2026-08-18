@@ -28,6 +28,290 @@ from database import (
 )
 from project_direction_service import direction_payload, json_value, scene_dict
 from project_element_service import list_project_elements
+from shot_continuity_service import (
+    build_shot_generation_contract,
+    latest_previous_shot_acceptance,
+)
+
+
+_AGENT_TEXT_LIMITS = {
+    "description": 900,
+    "scene_description": 500,
+    "scene_prompt": 5000,
+    "scene_context": 3500,
+    "summary": 2500,
+}
+
+_SHOT_ROW_RE = re.compile(
+    r"^\|\s*\*{0,2}(\d{1,3})\*{0,2}\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*$",
+    re.MULTILINE,
+)
+
+
+def infer_shot_number(shot_prompt: str | None) -> Optional[int]:
+    """Read 'plan 04'/'shot 04' without confusing it with scene_number."""
+    match = re.search(r"\b(?:plan|shot)\s*0*(\d+)\b", shot_prompt or "", re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def extract_script_shots(script_text: str | None) -> list[dict[str, Any]]:
+    """Parse the compact shot-map table stored inside a Direction scene."""
+    shots = []
+    for match in _SHOT_ROW_RE.finditer(script_text or ""):
+        shot_number, duration, code, description, incoming_cut = match.groups()
+        shots.append({
+            "shot_number": int(shot_number),
+            "duration": duration.strip(),
+            "code": code.strip().replace("**", ""),
+            "description": description.strip(),
+            "incoming_cut": incoming_cut.strip(),
+        })
+    return shots
+
+
+def build_script_shot_context(scene: dict[str, Any] | None, shot_number: int | None) -> dict[str, Any] | None:
+    """Return the requested shot plus its neighboring script rows."""
+    if not scene or shot_number is None:
+        return None
+    shots = extract_script_shots(scene.get("description") or scene.get("prompt"))
+    if not shots:
+        return {
+            "shot_number": shot_number,
+            "status": "not_found_in_scene_script",
+            "scene_number": scene.get("scene_number"),
+        }
+    by_number = {shot["shot_number"]: shot for shot in shots}
+    current = by_number.get(shot_number)
+    if current is None:
+        return {
+            "shot_number": shot_number,
+            "status": "not_found_in_scene_script",
+            "scene_number": scene.get("scene_number"),
+            "available_shot_numbers": sorted(by_number),
+        }
+    return {
+        "status": "resolved",
+        "scene_number": scene.get("scene_number"),
+        "scene_title": scene.get("title"),
+        "shot_number": shot_number,
+        "current": current,
+        "previous": by_number.get(shot_number - 1),
+        "next": by_number.get(shot_number + 1),
+        "continuity_policy": (
+            "Use the previous shot's accepted last frame as a semantic continuity anchor. "
+            "Preserve state and hand/prop relationships; do not copy framing unless the script requires frame-perfect matching."
+        ),
+    }
+
+
+def build_shot_reference_manifest(
+    world_state: Dict[str, Any],
+    shot_context: dict[str, Any],
+    previous_acceptance: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Select ordered, role-labelled references for one shot.
+
+    The manifest deliberately prefers a close location element when the shot
+    is kitchen-focused and never falls back to an arbitrary older generation.
+    The agent may describe the prompt, but it cannot silently invent the
+    Picture ordering after this point.
+    """
+    current = shot_context.get("current") or {}
+    text = " ".join(str(current.get(key) or "") for key in ("description", "incoming_cut")).casefold()
+    entities = world_state.get("entities") or {}
+    manifest: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    def add(item: dict[str, Any] | None, role: str, reason: str) -> None:
+        if not item or not item.get("media_id"):
+            return
+        media_id = int(item["media_id"])
+        if media_id in seen:
+            return
+        seen.add(media_id)
+        manifest.append({
+            "label": f"Picture {len(manifest) + 1}",
+            "media_id": media_id,
+            "role": role,
+            "reference_id": item.get("reference_id"),
+            "name": item.get("name"),
+            "reason": reason,
+        })
+
+    previous_frame_id = (previous_acceptance or {}).get("last_frame_media_id")
+    if previous_frame_id:
+        add({"media_id": previous_frame_id, "reference_id": "continuity_previous_last_frame", "name": "previous accepted last frame"}, "continuity_anchor", "accepted last frame of the immediately preceding shot")
+
+    characters = list((entities.get("characters") or {}).values())
+    if characters and any(token in text for token in ("maya", "character", "woman", "personnage")):
+        add(characters[0], "character", "canonical character identity")
+
+    locations = list((entities.get("locations") or {}).values())
+    def _location_priority(item: dict[str, Any]) -> tuple[int, int]:
+        identity = " ".join(str(item.get(key) or "") for key in ("name", "reference_id")).casefold()
+        description = str(item.get("description") or "").casefold()
+        return (
+            0 if any(token in identity for token in ("kitchen", "cuisine")) else 1,
+            0 if any(token in description for token in ("kitchen", "cuisine")) else 1,
+        )
+
+    kitchen_locations = sorted(
+        [
+            item for item in locations
+            if any(token in " ".join(str(item.get(key) or "") for key in ("name", "reference_id", "description")).casefold() for token in ("kitchen", "cuisine"))
+        ],
+        key=_location_priority,
+    )
+    if any(token in text for token in ("kitchen", "cuisine", "cuisine ouverte")) and kitchen_locations:
+        add(kitchen_locations[0], "location_canonical", "kitchen-focused location reference")
+    elif locations:
+        add(locations[0], "location_canonical", "scene location reference")
+
+    props = list((entities.get("props") or {}).values())
+    prop_tokens = (
+        ("sachet", "tea bag", "tea-bag", "thé"),
+        ("tasse", "mug", "cup"),
+        ("bouilloire", "kettle"),
+        ("fenêtre", "fenetre", "window"),
+    )
+    for tokens in prop_tokens:
+        if not any(token in text for token in tokens):
+            continue
+        identity_match = next(
+            (
+                item for item in props
+                if any(token in " ".join(str(item.get(key) or "") for key in ("name", "reference_id")).casefold() for token in tokens)
+            ),
+            None,
+        )
+        match = identity_match or next(
+            (
+                item for item in props
+                if any(token in str(item.get("description") or "").casefold() for token in tokens)
+            ),
+            None,
+        )
+        add(match, "prop", f"prop required by shot: {tokens[0]}")
+
+    return manifest
+
+
+def _agent_text(value: Any, limit: int) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else f"{text[:limit]}… [truncated]"
+
+
+def _compact_agent_json(value: Any, *, limit: int, depth: int = 0) -> Any:
+    """Keep structured continuity context useful without flooding the LLM."""
+    if depth > 4:
+        return "[depth limit]"
+    if isinstance(value, dict):
+        items = list(value.items())[:40]
+        return {
+            str(key): _compact_agent_json(item, limit=limit, depth=depth + 1)
+            for key, item in items
+        }
+    if isinstance(value, list):
+        return [
+            _compact_agent_json(item, limit=limit, depth=depth + 1)
+            for item in value[:40]
+        ]
+    if isinstance(value, str):
+        return _agent_text(value, limit)
+    return value
+
+
+def _compact_agent_element(element: dict[str, Any]) -> dict[str, Any]:
+    """Expose stable ids and descriptions, omitting bookkeeping/timestamps."""
+    return {
+        key: element.get(key)
+        for key in (
+            "id", "project_id", "asset_id", "revision_id", "media_id",
+            "element_type", "name", "reference_id", "file_format",
+        )
+    } | {
+        "description": _agent_text(
+            element.get("description"), _AGENT_TEXT_LIMITS["description"]
+        ),
+    }
+
+
+def _compact_agent_scene(scene: dict[str, Any], *, include_context: bool = False) -> dict[str, Any]:
+    compact = {
+        key: scene.get(key)
+        for key in (
+            "id", "project_id", "board_id", "sequence_number", "scene_number",
+            "title", "status", "validation_status", "generation_count",
+        )
+    }
+    compact["description"] = _agent_text(
+        scene.get("description"), _AGENT_TEXT_LIMITS["scene_description"]
+    )
+    if include_context:
+        compact["prompt"] = _agent_text(
+            scene.get("prompt"), _AGENT_TEXT_LIMITS["scene_prompt"]
+        )
+        compact["context"] = _compact_agent_json(
+            scene.get("context") or {}, limit=_AGENT_TEXT_LIMITS["scene_context"]
+        )
+        compact["dependencies"] = (scene.get("dependencies") or [])[:20]
+        compact["blockers"] = (scene.get("blockers") or [])[:20]
+    return compact
+
+
+def compact_world_state_for_agent(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Return an LLM-sized World State while retaining continuity identities."""
+    entities = state.get("entities") or {}
+    compact_entities = {
+        group: {
+            ref_id: _compact_agent_element(element)
+            for ref_id, element in (entities.get(group) or {}).items()
+        }
+        for group in ("characters", "locations", "props")
+    }
+    compact = {
+        "project_id": state.get("project_id"),
+        "project_name": state.get("project_name"),
+        "script_name": state.get("script_name"),
+        "summary": _agent_text(state.get("summary"), _AGENT_TEXT_LIMITS["summary"]),
+        "global_context": _compact_agent_json(
+            state.get("global_context") or {}, limit=3500
+        ),
+        "entities": compact_entities,
+        "total_scenes": state.get("total_scenes", 0),
+        "scenes": [
+            _compact_agent_scene(scene)
+            for scene in (state.get("scenes") or [])[:100]
+        ],
+        "current_scene": (
+            _compact_agent_scene(state["current_scene"], include_context=True)
+            if state.get("current_scene") else None
+        ),
+        "previous_scene": (
+            _compact_agent_scene(state["previous_scene"], include_context=True)
+            if state.get("previous_scene") else None
+        ),
+        "next_scene": (
+            _compact_agent_scene(state["next_scene"], include_context=True)
+            if state.get("next_scene") else None
+        ),
+        "continuity_buffer": _compact_agent_json(
+            state.get("continuity_buffer") or {}, limit=3500
+        ),
+        "reference_assets": state.get("reference_assets") or [],
+        "world_state_compacted": True,
+    }
+    shot_context = state.get("shot_context")
+    if isinstance(shot_context, dict):
+        compact["shot_context"] = _compact_agent_json(shot_context, limit=5000)
+    if isinstance(state.get("generation_contract"), dict):
+        compact["generation_contract"] = _compact_agent_json(
+            state["generation_contract"], limit=5000
+        )
+    if "missing_references" in state:
+        compact["missing_references"] = state.get("missing_references") or []
+        compact["has_missing_references"] = bool(state.get("has_missing_references"))
+    return compact
 
 
 async def resolve_project_scene(

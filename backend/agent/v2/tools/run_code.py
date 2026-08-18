@@ -56,6 +56,7 @@ async def run_code(code: str, **kwargs) -> str:
         enabled_stimpacks=kwargs.get("_enabled_stimpacks"),
         project_id=kwargs.get("project_id"),
         effective_model_slug=kwargs.get("_effective_model_slug"),
+        shot_contract=kwargs.get("_shot_contract"),
     )
     # Stash usage on the mutable container so _execute_tool_call can read it
     usage_out = kwargs.get("_llm_usage_out")

@@ -48,6 +48,19 @@
         <span>Requirements</span>
       </button>
 
+      <!-- Persisted agent execution trace -->
+      <button
+        @click="$emit('open-agent-trace')"
+        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-semibold text-content-secondary bg-surface border border-edge transition-colors hover:text-content hover:bg-surface-raised"
+        title="Inspecter la trace opérationnelle de la boucle agentique"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5 text-accent">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75h16.5v16.5H3.75z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 15.75v-3m4.5 3V8.25m4.5 7.5v-5.25" />
+        </svg>
+        <span>Agent trace</span>
+      </button>
+
       <!-- Settings Panel Toggle -->
       <button
         @click="$emit('toggle-settings-panel')"
@@ -185,6 +198,7 @@ const emit = defineEmits<{
   (e: 'toggle-view'): void
   (e: 'toggle-settings-panel'): void
   (e: 'toggle-requirements-drawer'): void
+  (e: 'open-agent-trace'): void
   (e: 'delete'): void
   (e: 'clone'): void
   (e: 'clear'): void

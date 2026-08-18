@@ -247,7 +247,7 @@ async def test_app(temp_appdata_dir: Path):
         from routes import (
             assets, boards, chats, generation, image_stack, media, media_files, markers, projects,
             flows, tags, trash, saved_views, search, profiles, keywords, processing,
-            settings as settings_routes, svg_media,
+            settings as settings_routes, svg_media, agent_traces,
         )
         from routes import tasks as flow_tasks
         from routes.presets import router as presets_router
@@ -259,6 +259,7 @@ async def test_app(temp_appdata_dir: Path):
         app.include_router(svg_media.router)
         app.include_router(boards.router)
         app.include_router(chats.router)
+        app.include_router(agent_traces.router)
         app.include_router(generation.router)
         app.include_router(image_stack.router)
         app.include_router(markers.router)

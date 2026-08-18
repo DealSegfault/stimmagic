@@ -171,10 +171,20 @@ def extract_frame_to_image(
 
     out = _grab(t)
     if not out and t > 0.0:
-        # Seeking near the end can land past the last decodable frame; fall back.
-        log.debug(f"No frame at t={t} for {video_path}; falling back to first frame")
-        out = _grab(0.0)
-        t = 0.0
+        # Input-side seeking can land past the last decodable frame when the
+        # requested timestamp is inside the final GOP. Retry a couple of frame
+        # intervals earlier before falling back to the first frame; otherwise a
+        # requested last frame silently becomes the opening frame and corrupts
+        # shot continuity.
+        retry_t = max(0.0, t - (2.0 / fps if fps > 0 else 0.1))
+        log.debug(f"No frame at t={t} for {video_path}; retrying at t={retry_t}")
+        out = _grab(retry_t)
+        if out:
+            t = retry_t
+        else:
+            log.debug(f"No frame at t={retry_t} for {video_path}; falling back to first frame")
+            out = _grab(0.0)
+            t = 0.0
     if not out:
         raise ValueError("Could not decode a frame from the video.")
 

@@ -191,6 +191,12 @@ boards, scene chats, characters (@char_...), locations (@loc_...), props (@prop_
   resolve it with `get_world_state` using its `sequence_number` and `scene_number` (or `board_id`/`scene_id` when provided),
   then use the returned `current_scene`, `reference_assets`, and `entities` as the source of truth. Never answer that the chat
   lacks the context before attempting this project-scoped lookup.
+- Distinguish numbering explicitly: `sequence_number` and `scene_number` identify a Direction scene, while `shot_number`
+  identifies a plan/shot row inside that scene. If the user says “plan 04” or “shot 04”, pass `shot_number=4` (or let
+  `shot_prompt` inference resolve it) and use the returned `shot_context.current`, not a neighboring Direction scene.
+  Treat the returned `shot_context.previous` as the immediately preceding script shot. Use its accepted last frame as a
+  semantic continuity reference when available; preserve state, hand/prop relationships and action phase, but do not force
+  the previous framing when the script declares an independent cut or insert.
 - Before planning or generating video scenes, call `get_world_state` (or `get_project_direction`) to inspect active visual references and continuity from prior shots.
 - **Proactive Asset Creation**: If the user asks to generate a scene or shot featuring a character, location, or key prop that lacks a reference asset in World State (`has_missing_references` is true in `get_world_state`), do NOT hallucinate or render a video blindly. Pause and propose creating or selecting the reference image first interactively in the chat.
 - Once the user selects or generates the approved visual reference, register it as a project element using `library(action="element", operation="create", element_type="character"|"location"|"prop", element_name="...", asset_id=...)` so it is permanently anchored.
@@ -198,6 +204,10 @@ boards, scene chats, characters (@char_...), locations (@loc_...), props (@prop_
 - If the user asks to change the script or its consequences, call `get_project_direction` first, apply the requested change to the complete script, then call `update_project_script` with the full replacement. Do not leave the edit only in the chat or in a workspace file. The update tool reconciles matching scenes and cascades the change to linked boards and scene-chat context while preserving existing generation history.
 - Use `update_project_scene` for a scene status, validation, blocker or approved-prompt change.
 - When rendering with H3 (`Ref2VA`, `FL2VA`, `I2VA`), ground `<Picture 1>`, `<Picture 2>` in the resolved `media_id` of the referenced project elements.
+- Before executing a generation, verify the shot duration, aspect ratio, mode, and reference manifest against `shot_context.current` and
+  the previous accepted shot output. Never reuse a stale frame from an earlier shot just because it is present in the project.
+- When `generation_contract` is returned by `get_world_state`, it is authoritative. Use its ordered `reference_manifest` exactly; do not add a global location, prior-shot frame, or prop merely because it is available in the library. The continuity anchor must be the materialized `previous_last_frame_media_id`, not the previous shot's blocking image or an older shot's frame.
+- Treat a failed generation preflight as a required correction, not as a reason to bypass the contract. Resolve the listed mismatch and retry only after the World State, prompt Picture labels, and actual `input_images` agree. Use `stimma.show(..., role="intermediate")` for a keyframe awaiting review and `role="final"` only after hard output QA passes.
 
 ## Handing back
 

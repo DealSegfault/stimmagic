@@ -27,6 +27,7 @@ from agent.tools.stp_utils import (
     _snap_to_allowed,
 )
 from ..video_settings import apply_video_chat_preferences, normalize_video_chat_settings
+from shot_continuity_service import validate_generation_request
 
 log = get_logger(__name__)
 
@@ -713,6 +714,47 @@ async def execute_call_tool(
             "video_resolution": normalized_video_settings["resolution"] if video_chat_settings else None,
             "video_duration": normalized_video_settings["duration"] if video_chat_settings else job_params.get("duration"),
         }
+
+    # A project shot contract is resolved by get_world_state and carried through
+    # run_code. Validate the effective request after chat preferences and tool
+    # dimension snapping have been applied, but before a paid job is queued.
+    shot_contract = kwargs.get("shot_contract")
+    if isinstance(shot_contract, dict):
+        if "video" in str(task_type).lower():
+            expected_duration = shot_contract.get("expected_duration")
+            expected_dimensions = shot_contract.get("expected_dimensions") or []
+            if expected_duration is not None and "duration" in param_props:
+                job_params["duration"] = float(expected_duration)
+            if len(expected_dimensions) == 2 and "width" in param_props and "height" in param_props:
+                width, height = int(expected_dimensions[0]), int(expected_dimensions[1])
+                job_params["width"], job_params["height"] = width, height
+            job_params.setdefault("prompt_metadata", {})["shot_contract"] = {
+                "sequence_number": shot_contract.get("sequence_number"),
+                "scene_number": shot_contract.get("scene_number"),
+                "shot_number": shot_contract.get("shot_number"),
+                "expected_duration": shot_contract.get("expected_duration"),
+                "expected_dimensions": shot_contract.get("expected_dimensions"),
+                "workflow": shot_contract.get("workflow"),
+                "previous_last_frame_media_id": shot_contract.get("previous_last_frame_media_id"),
+                "reference_manifest": shot_contract.get("reference_manifest") or [],
+            }
+        validation_errors = validate_generation_request(
+            shot_contract,
+            task_type=task_type,
+            final_params={**final_params, **job_params, "width": width, "height": height},
+            input_media_ids=[
+                int(value)
+                for value in (final_params.get("input_media_ids") or [])
+                if str(value).isdigit()
+            ],
+            session_media_ids=kwargs.get("session_media_ids") or [],
+        )
+        if validation_errors:
+            raise ValueError(
+                "Shot generation preflight blocked this job:\n- "
+                + "\n- ".join(validation_errors)
+                + "\nResolve the World State contract and retry; no generation job was queued."
+            )
     disposition_kwargs = {}
     if kwargs.get("output_disposition") is not None:
         disposition_kwargs = {
