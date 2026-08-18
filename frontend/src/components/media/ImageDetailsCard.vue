@@ -41,7 +41,9 @@
           <h4 v-if="genStep?.tool_id" class="m-0 text-sm font-bold text-content truncate">
             {{ toolHeading }}
           </h4>
-          <span v-else class="m-0 text-sm font-semibold text-content">Image details</span>
+          <span v-else class="m-0 text-sm font-semibold text-content">
+            {{ isVideoMedia ? 'Video details' : 'Image details' }}
+          </span>
         </div>
 
         <div v-if="modelName" class="flex flex-wrap items-center gap-1.5">
@@ -201,6 +203,11 @@
       </div>
 
       <!-- Generation facts: typeset key·value, not field tiles -->
+      <div v-if="videoMetadataRows.length > 0">
+        <div class="text-xs font-semibold text-content-secondary mb-1">Video metadata</div>
+        <KeyValueList :rows="videoMetadataRows" />
+      </div>
+
       <div v-if="genStep?.model || displayParams.length > 0 || genStep?.generated_at">
         <div class="text-xs font-semibold text-content-secondary mb-1">Generation</div>
         <KeyValueList :rows="generationRows" />
@@ -279,6 +286,8 @@ import { addToast } from '../../composables/useToasts'
 import { getFilterDisplayLabel } from '../../utils/filterDefs'
 import { toolDisplayName } from '../../utils/toolDisplay'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
+import { getMediaType } from '../../utils/mediaTypes'
+import { getVideoGenerationRows } from '../../utils/videoGenerationMetadata'
 
 const props = defineProps({
   // Full media item (must include `id` and generation_metadata)
@@ -311,6 +320,7 @@ const { availableMarkers, hasMarker, toggleMarker: toggleMarkerFn, init: initMar
 const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
 
 const mediaId = computed(() => props.media.id)
+const isVideoMedia = computed(() => getMediaType(props.media) === 'video')
 const recreating = ref(false)
 const copiedPrompt = ref(false)
 const copiedNegativePrompt = ref(false)
@@ -349,6 +359,10 @@ const genStep = computed(() => {
     tool_id: meta.tool_id || null
   }
 })
+
+const videoMetadataRows = computed(() => (
+  getVideoGenerationRows(parseMeta(props.media), props.media)
+))
 
 const modelName = computed(() => {
   const meta = parseMeta(props.media)
@@ -489,7 +503,8 @@ const inspiredParentCount = computed(() => props.parentNodes.filter(p => p.inspi
 const excludedParams = new Set([
   'prompt', 'negative_prompt', 'selected_loras', 'loras',
   'width', 'height', 'input_width', 'input_height', 'output_width', 'output_height',
-  'output_size', 'bbox', 'checkpoint'
+  'output_size', 'bbox', 'checkpoint', 'fps', 'output_quality', 'quality',
+  'workflow_type', 'workflow_id', 'resolution', 'video_metadata_version'
 ])
 
 const stepLabelOverrides = {

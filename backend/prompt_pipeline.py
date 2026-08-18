@@ -309,6 +309,86 @@ _H3_DIALOGUE_CONTROL_RE = re.compile(
     r"(?:^\s*\[[^\[\]\n]+\]\s*|</?(?:scenetrans|cutoff)>|</?d>)",
     re.IGNORECASE,
 )
+_H3_REFERENCE_TAG_RE = re.compile(r"<(?:Picture|Video|Audio)\s+\d+>")
+_H3_REFERENCE_TEXT_RE = re.compile(
+    r"\b(?:Picture|Video|Audio|Shot)\s+\d+\b", re.IGNORECASE
+)
+_H3_NUMBER_RE = re.compile(r"(?<![A-Za-z])\d+(?:[.,]\d+)?")
+_H3_SCHEMA_FIELDS = {
+    "integrated_multimodal_description",
+    "overall_soundscape",
+    "non_diegetic_music",
+    # Keep these too when a user supplies a Seedance-style prompt before the
+    # H3 enhancer is run. Translation must not silently reshape that input.
+    "subject_definitions",
+    "summary",
+    "retention_analysis",
+    "detailed_description",
+}
+
+
+def _translation_numeric_signature(value: str) -> List[str]:
+    """Numbers are semantic prompt data, not prose for an LLM to rewrite."""
+    return _H3_NUMBER_RE.findall(value)
+
+
+def _h3_translation_signature(value: str) -> Dict[str, Any]:
+    """Extract the H3/Context-IR tokens a translation is never allowed to change."""
+    fields = re.findall(
+        r"(?m)^\s*([a-z][a-z0-9_]*)\s*:", value
+    )
+    fields = [field for field in fields if field in _H3_SCHEMA_FIELDS]
+
+    numeric_source = _H3_REFERENCE_TEXT_RE.sub(" ", value)
+    numbers = _H3_NUMBER_RE.findall(numeric_source)
+    return {
+        "references": _H3_REFERENCE_TAG_RE.findall(value),
+        "fields": fields,
+        "numbers": numbers,
+        "dialogue": _H3_DIALOGUE_CONTENT_RE.findall(value),
+        "first_line": value.strip().splitlines()[0] if value.strip() else "",
+    }
+
+
+def _h3_translation_is_structurally_preserved(
+    candidate: str,
+    source: str,
+    task: str,
+    reference_manifest: Optional[List[Dict[str, Any]]] = None,
+) -> bool:
+    """Ensure Chinese translation cannot turn H3 references/timing into prose."""
+    source_sig = _h3_translation_signature(source)
+    candidate_sig = _h3_translation_signature(candidate)
+
+    if source_sig["references"] != candidate_sig["references"]:
+        return False
+    if source_sig["fields"] != candidate_sig["fields"]:
+        return False
+    if source_sig["numbers"] != candidate_sig["numbers"]:
+        return False
+    if source_sig["dialogue"] != candidate_sig["dialogue"]:
+        return False
+
+    # H3 alignment lines and the R2V leading field are protocol text. Keep
+    # them byte-for-byte so the local validator and the ComfyUI node agree.
+    source_first_line = source_sig["first_line"]
+    if (
+        source_first_line.startswith("How the reference pictures align with")
+        or source_first_line.startswith("For the target video, at 0.00 seconds")
+    ) and candidate_sig["first_line"] != source_first_line:
+        return False
+    if task == "ref2va" and source_first_line.startswith(
+        "integrated_multimodal_description:"
+    ) and not candidate_sig["first_line"].startswith(
+        "integrated_multimodal_description:"
+    ):
+        return False
+
+    for item in reference_manifest or []:
+        label = str(item.get("label") or "").strip()
+        if label and f"<{label}>" not in candidate:
+            return False
+    return True
 
 
 def _normalized_h3_dialogue(value: str) -> str:
@@ -335,7 +415,13 @@ def _h3_dialogue_is_grounded(candidate: str, source_prompt: str) -> bool:
 
 
 async def _translate_with_verbatim_protection(
-    prompt: str, language_code: str, project_id: Optional[int] = None
+    prompt: str,
+    language_code: str,
+    project_id: Optional[int] = None,
+    *,
+    h3_task: Optional[str] = None,
+    h3_duration: Optional[float] = None,
+    h3_reference_manifest: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     from routes.prompt_enhancement import (
         PROMPT_LANGUAGE_ENGLISH_BY_CODE,
@@ -347,22 +433,49 @@ async def _translate_with_verbatim_protection(
     if not target:
         return prompt  # unknown code — nothing to do
 
-    prompt_with_placeholders, segments = extract_verbatim(prompt)
+    prompt_with_placeholders, segments = extract_verbatim(
+        prompt, preserve_h3_structure=h3_task is not None
+    )
+    source_numbers = _translation_numeric_signature(prompt_with_placeholders)
 
     for attempt in range(_MAX_LLM_RETRIES):
         request = TranslatePromptRequest(
             prompt=prompt_with_placeholders,
             target_language=target,
             project_id=project_id,
+            h3_task=h3_task,
+            h3_duration=h3_duration,
+            h3_reference_manifest=h3_reference_manifest or [],
         )
         candidate = (await translate_prompt(request)).translated_prompt
-        if not segments:
-            return candidate
-        if verify_verbatim_preserved(candidate, segments):
+        if segments and not verify_verbatim_preserved(candidate, segments):
+            log.warning(
+                f"[prompt-pipeline] Translate attempt {attempt + 1}: "
+                "verbatim placeholders dropped, retrying..."
+            )
+            continue
+        if not h3_task and _translation_numeric_signature(candidate) != source_numbers:
+            log.warning(
+                f"[prompt-pipeline] Translate attempt {attempt + 1}: "
+                "numeric values changed, retrying..."
+            )
+            continue
+        if h3_task and not _h3_translation_is_structurally_preserved(
+            candidate, prompt_with_placeholders, h3_task, h3_reference_manifest
+        ):
+            log.warning(
+                f"[prompt-pipeline] Translate attempt {attempt + 1}: "
+                "H3 structure/timing/references changed, retrying..."
+            )
+            continue
+        if segments:
             return restore_verbatim(candidate, segments)
-        log.warning(f"[prompt-pipeline] Translate attempt {attempt + 1}: verbatim placeholders dropped, retrying...")
+        return candidate
 
-    log.warning("[prompt-pipeline] All translate retries failed to preserve verbatim text, using untranslated prompt")
+    log.warning(
+        "[prompt-pipeline] All translate retries failed validation, "
+        "using untranslated prompt"
+    )
     return prompt
 
 
@@ -602,14 +715,18 @@ async def run_prompt_pipeline(
                 raise
             log.info("[prompt-pipeline] No LLM configured; skipping enhancement")
 
-    # 3) Translate.
-    # H3 Base's Context-IR field names and prose must remain English; the H3
-    # enhancer itself preserves dialogue/lyrics and visible text in their source
-    # language. A generic translation pass would corrupt that required schema.
-    if translate.get("enabled") and translate.get("language") and h3_task is None:
+    # 3) Translate. H3 gets a dedicated translation pass: natural-language
+    # prose is translated, while Context-IR fields, references, dialogue,
+    # numeric values, and task-specific alignment syntax are protected.
+    if translate.get("enabled") and translate.get("language"):
         try:
             processed = await _translate_with_verbatim_protection(
-                processed, translate["language"], project_id
+                processed,
+                translate["language"],
+                project_id,
+                h3_task=h3_task,
+                h3_duration=h3_duration,
+                h3_reference_manifest=h3_reference_manifest,
             )
         except Exception as e:
             if not _is_llm_unconfigured_error(e):

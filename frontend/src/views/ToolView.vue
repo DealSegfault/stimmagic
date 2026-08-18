@@ -940,6 +940,7 @@
           @dismiss-job="dismissJob"
           @retry-job="retryJob"
           @cancel-job="cancelJob"
+          @use-seed="handleUseLiveSeed"
           @cancel-and-dismiss-batch="cancelAndDismissBatch"
           @dismiss-batch="dismissBatch"
           @retry-chain="jobsManager.retryChainRun"
@@ -1651,6 +1652,16 @@ function stagePinJob(job: any) {
 function handleLiveClick(job: any) {
   if (layoutMode.value !== 'stage') return
   stageLiveJobId.value = job.id
+}
+
+// A live batch tile is a seed candidate. Keep the selected seed for the next
+// full run and turn off automatic reseeding so the user's choice is honored.
+function handleUseLiveSeed({ seed }: { seed: number | string | null, jobId: number }) {
+  const numericSeed = Number(seed)
+  if (!Number.isSafeInteger(numericSeed) || numericSeed < 0) return
+  modelParams.value.seed = numericSeed
+  modelParams.value.randomizeSeed = false
+  addToast(`Seed ${numericSeed} selected for the next run`, 'success', 2500)
 }
 
 // The queue rail is a single control across both modes — route clicks based on

@@ -1334,6 +1334,16 @@
             :disabled="savingVideoQuickMode || !chatId"
             @update:model-value="updateVideoQuickMode"
           />
+          <VideoGenerationSettings
+            :steps="videoSteps"
+            :resolution="videoResolution"
+            :duration="videoDuration"
+            :fast="videoQuickMode"
+            :disabled="savingVideoSettings || savingVideoQuickMode || !chatId"
+            @update:steps="updateVideoSteps"
+            @update:resolution="updateVideoResolution"
+            @update:duration="updateVideoDuration"
+          />
           <SkillsMenuButton
             :skills="eligibleSkills"
             :active-keys="invokedSkillKeySet"
@@ -1479,6 +1489,7 @@ import ChatInputAttachments from '../components/chat/ChatInputAttachments.vue'
 import ChatInputBox from '../components/chat/ChatInputBox.vue'
 import ImageBackendSelector from '../components/chat/ImageBackendSelector.vue'
 import VideoQuickModeToggle from '../components/chat/VideoQuickModeToggle.vue'
+import VideoGenerationSettings from '../components/chat/VideoGenerationSettings.vue'
 import SkillsMenuButton from '../components/chat/SkillsMenuButton.vue'
 import ProjectElementsButton from '../components/chat/ProjectElementsButton.vue'
 import ElementMentionMenu from '../components/chat/ElementMentionMenu.vue'
@@ -1609,6 +1620,10 @@ const selectedImageBackend = ref(null)
 const savingImageBackend = ref(false)
 const videoQuickMode = ref(false)
 const savingVideoQuickMode = ref(false)
+const videoSteps = ref(20)
+const videoResolution = ref('720')
+const videoDuration = ref(5)
+const savingVideoSettings = ref(false)
 const requirementsDrawerVisible = ref(false)
 
 function handleSendFromDrawer(text: string) {
@@ -3571,6 +3586,25 @@ function hydrateChatGenerationModes() {
   const settings = parseGenerationSettings(chat.value?.generation_settings)
   selectedImageBackend.value = normalizeImageBackend(settings.image_backend)
   videoQuickMode.value = settings.video_quick_mode === true
+  videoSteps.value = normalizeVideoSteps(settings.video_steps)
+  videoResolution.value = normalizeVideoResolution(settings.video_resolution)
+  videoDuration.value = normalizeVideoDuration(settings.video_duration)
+}
+
+function normalizeVideoSteps(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(50, Math.max(1, Math.round(number))) : 20
+}
+
+function normalizeVideoResolution(value) {
+  const normalized = String(value || '').toLowerCase()
+  return ['480', '720', '1080', '2k'].includes(normalized) ? normalized : '720'
+}
+
+function normalizeVideoDuration(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return 5
+  return Math.min(15, Math.max(1, Math.round(number * 2) / 2))
 }
 
 async function updateImageBackend(value) {
@@ -3624,6 +3658,43 @@ async function updateVideoQuickMode(value) {
   } finally {
     savingVideoQuickMode.value = false
   }
+}
+
+async function updateVideoSetting(name, value, ref, normalize) {
+  const previousValue = ref.value
+  const nextValue = normalize(value)
+  const currentSettings = parseGenerationSettings(chat.value?.generation_settings)
+  const updatedSettings = { ...currentSettings, [name]: nextValue }
+
+  ref.value = nextValue
+  savingVideoSettings.value = true
+  try {
+    const response = await apiFetch(`/api/chats/${chatId.value}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ generation_settings: JSON.stringify(updatedSettings) }),
+    })
+    if (!response.ok) throw new Error(`Failed to save ${name}`)
+    chat.value = await response.json()
+  } catch (error) {
+    ref.value = previousValue
+    console.error(`Error saving ${name}:`, error)
+    addToast('Impossible d’enregistrer les réglages vidéo.', 'error')
+  } finally {
+    savingVideoSettings.value = false
+  }
+}
+
+function updateVideoSteps(value) {
+  return updateVideoSetting('video_steps', value, videoSteps, normalizeVideoSteps)
+}
+
+function updateVideoResolution(value) {
+  return updateVideoSetting('video_resolution', value, videoResolution, normalizeVideoResolution)
+}
+
+function updateVideoDuration(value) {
+  return updateVideoSetting('video_duration', value, videoDuration, normalizeVideoDuration)
 }
 
 // Send a message (from input or from queue)

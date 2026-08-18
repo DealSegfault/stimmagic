@@ -40,6 +40,7 @@ or run the pieces separately:
 ```bash
 tools/stimma dev backend    # FastAPI on :9191, auto-reload
 tools/stimma dev frontend   # Vite on :9192, HMR
+tools/stimma dev web        # backend + frontend, without the Tauri shell
 tools/stimma dev app        # Tauri shell
 ```
 

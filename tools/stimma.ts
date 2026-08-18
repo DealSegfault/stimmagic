@@ -239,7 +239,7 @@ async function terminateDevProcesses(processes: DevProcess[]): Promise<void> {
   await Promise.all(processes.map((proc) => signalProcessTree(proc, "SIGTERM")));
   if (await waitForDevProcessesToExit(processes, 8000)) return;
 
-  console.warn("[dev all] Some processes did not exit after SIGTERM; sending SIGKILL.");
+  console.warn("[dev stack] Some processes did not exit after SIGTERM; sending SIGKILL.");
   await Promise.all(processes.map((proc) => signalProcessTree(proc, "SIGKILL")));
   await waitForDevProcessesToExit(processes, 3000);
 }
@@ -267,7 +267,7 @@ async function assertTcpPortAvailable(port: number, label: string): Promise<void
     if (await isTcpPortOpen(hostname, port, 150)) {
       throw new Error(
         `${label} port ${port} is already in use on ${hostname}. ` +
-          "Stop the existing dev process or choose another sandbox before running 'stimma dev all'.",
+          "Stop the existing dev process or choose another sandbox before starting Stimma.",
       );
     }
   }
@@ -296,7 +296,7 @@ async function warnIfTcpPortStillOpen(port: number, label: string, timeoutMs = 5
     await sleep(250);
   }
 
-  console.warn(`[dev all] ${label} port ${port} is still listening after shutdown.`);
+  console.warn(`[dev stack] ${label} port ${port} is still listening after shutdown.`);
 }
 
 async function waitForReadyOrExit(processes: DevProcess[], ready: Promise<void>): Promise<void> {
@@ -552,6 +552,7 @@ Commands:
   dev backend     Run Python backend with nodemon (default port 9191)
   dev backend2    Run Rust backend (default port 9191)
   dev app         Run Tauri in dev mode
+  dev web         Run backend + frontend together (no Tauri shell)
   dev all         Run backend + frontend + Tauri together with merged logs
   run backend     Run backend without file watching
   run frontend    Build and serve frontend (no HMR)
@@ -1777,7 +1778,15 @@ function tauriDevConfig(
   });
 }
 
-async function commandDevAll(bundleId: string, sandbox: string, channel: string, runtimeEnv: Record<string, string>): Promise<void> {
+async function commandDevStack(
+  bundleId: string,
+  sandbox: string,
+  channel: string,
+  runtimeEnv: Record<string, string>,
+  mode: "web" | "all",
+): Promise<void> {
+  const launchApp = mode === "all";
+  const logPrefix = `[dev ${mode}]`;
   const ports = await getSandboxPorts(bundleId, sandbox);
   const backendDir = join(repoRoot, "backend");
   const frontendDir = join(repoRoot, "frontend");
@@ -1787,7 +1796,9 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
     STIMMA_BACKEND_PORT: String(ports.server),
     STIMMA_FRONTEND_PORT: String(ports.frontend),
   };
-  const tauriConfig = tauriDevConfig(bundleId, sandbox, ports, await channelIconConfig(channel));
+  const tauriConfig = launchApp
+    ? tauriDevConfig(bundleId, sandbox, ports, await channelIconConfig(channel))
+    : "";
   const components = new Map<string, SupervisedDevComponent>();
   let shuttingDown = false;
   let shutdownPromise: Promise<void> | null = null;
@@ -1802,7 +1813,7 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
     const process = component.start();
     component.process = process;
     component.startedAt = Date.now();
-    console.log(`[dev all] component=${component.label} started pid=${process.child.pid}`);
+    console.log(`${logPrefix} component=${component.label} started pid=${process.child.pid}`);
     void process.status.then(async (status) => {
       if (component.process !== process || shuttingDown) return;
       component.process = undefined;
@@ -1810,16 +1821,16 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
       if (runtimeMs >= COMPONENT_STABILITY_WINDOW_MS) component.restartCount = 0;
       component.restartCount += 1;
       const reason = status.success ? "clean-exit" : (status.signal ? `signal-${status.signal}` : `exit-${status.code}`);
-      console.warn(`[dev all] component=${component.label} stopped pid=${process.child.pid} reason=${reason} runtime_ms=${runtimeMs} restart=${component.restartCount}/${MAX_COMPONENT_RESTARTS}`);
+      console.warn(`${logPrefix} component=${component.label} stopped pid=${process.child.pid} reason=${reason} runtime_ms=${runtimeMs} restart=${component.restartCount}/${MAX_COMPONENT_RESTARTS}`);
       if (component.restartCount > MAX_COMPONENT_RESTARTS) {
-        console.error(`[dev all] component=${component.label} restart budget exhausted; other components remain available. Fix the component, then restart only this dev stack.`);
+        console.error(`${logPrefix} component=${component.label} restart budget exhausted; other components remain available. Fix the component, then restart only this dev stack.`);
         return;
       }
-      console.log(`[dev all] component=${component.label} restarting in ${COMPONENT_RESTART_DELAY_MS}ms; other components stay running.`);
+      console.log(`${logPrefix} component=${component.label} restarting in ${COMPONENT_RESTART_DELAY_MS}ms; other components stay running.`);
       await sleep(COMPONENT_RESTART_DELAY_MS);
       if (!shuttingDown) startComponent(component);
     }).catch((error) => {
-      console.error(`[dev all] component=${component.label} status monitor failed: ${error}`);
+      console.error(`${logPrefix} component=${component.label} status monitor failed: ${error}`);
     });
   };
 
@@ -1850,20 +1861,20 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
   };
 
   const handleSigint = () => {
-    console.log("\n[dev all] Received Ctrl-C; stopping dev stack...");
+    console.log(`\n${logPrefix} Received Ctrl-C; stopping dev stack...`);
     void shutdown(130);
   };
   const handleSigterm = () => {
-    console.log("\n[dev all] Received SIGTERM; stopping dev stack...");
+    console.log(`\n${logPrefix} Received SIGTERM; stopping dev stack...`);
     void shutdown(143);
   };
 
   Deno.addSignalListener("SIGINT", handleSigint);
   Deno.addSignalListener("SIGTERM", handleSigterm);
 
-  console.log(`Starting Stimma dev stack (bundle=${bundleId}, sandbox=${sandbox}, backend=:${ports.server}, frontend=:${ports.frontend})`);
+  console.log(`Starting Stimma ${mode} stack (bundle=${bundleId}, sandbox=${sandbox}, backend=:${ports.server}, frontend=:${ports.frontend})`);
   if (runtimeEnv.STIMMA_DISTRIBUTION === "official") {
-    console.log("Official distribution mode is active for backend, frontend, and app.");
+    console.log(`Official distribution mode is active for backend, frontend${launchApp ? ", and app" : ""}.`);
   }
 
   try {
@@ -1875,13 +1886,19 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
     addComponent("backend", () => spawnDevProcess("backend", "npx", backendArgs, { cwd: backendDir, env: runtimeEnv }));
     addComponent("frontend", () => spawnDevProcess("frontend", "npm", VITE_DEV_ARGS, { cwd: frontendDir, env: { ...runtimeEnv, ...portEnv } }));
 
-    console.log("[dev all] Waiting up to 10 minutes for backend startup; one-time profile migrations report progress below.");
+    console.log(`${logPrefix} Waiting up to 10 minutes for backend startup; one-time profile migrations report progress below.`);
     await Promise.all([
       waitForTcpPort(ports.server, "backend", 10 * 60 * 1000, [DEV_HOST]),
       waitForTcpPort(ports.frontend, "frontend", 60000, [DEV_HOST]),
     ]);
 
-    console.log("[dev all] Backend and frontend are ready; launching Tauri app.");
+    if (!launchApp) {
+      console.log(`${logPrefix} Backend and frontend are ready. Open http://${DEV_HOST}:${ports.frontend} in a browser.`);
+      await new Promise<void>((resolve) => { resolveStopped = resolve; });
+      return;
+    }
+
+    console.log(`${logPrefix} Backend and frontend are ready; launching Tauri app.`);
     // Prefer the project-local Tauri CLI. `cargo tauri` only works when the
     // Rust cargo-tauri subcommand is installed globally; this repo already
     // pins @tauri-apps/cli in frontend/node_modules, so using it keeps the
@@ -1900,10 +1917,10 @@ async function commandDevAll(bundleId: string, sandbox: string, channel: string,
       cwd: appCommand === "cargo" ? repoRoot : join(repoRoot, "src-tauri"),
       env: tauriDevEnv(bundleId, ports, sandbox, runtimeEnv),
     }));
-    console.log("[dev all] App process started. Press Ctrl-C to stop the full stack.");
+    console.log(`${logPrefix} App process started. Press Ctrl-C to stop the full stack.`);
     await new Promise<void>((resolve) => { resolveStopped = resolve; });
   } catch (err) {
-    console.error(`[dev all] ${err}`);
+    console.error(`${logPrefix} ${err}`);
     await shutdown();
     Deno.exit(1);
   } finally {
@@ -2029,7 +2046,9 @@ async function main(): Promise<void> {
           env: tauriDevEnv(bundleId, ports, sandbox, runtimeEnv),
         });
       } else if (sub === "all") {
-        await commandDevAll(bundleId, sandbox, channel, runtimeEnv);
+        await commandDevStack(bundleId, sandbox, channel, runtimeEnv, "all");
+      } else if (sub === "web") {
+        await commandDevStack(bundleId, sandbox, channel, runtimeEnv, "web");
       } else {
         printUsage();
       }

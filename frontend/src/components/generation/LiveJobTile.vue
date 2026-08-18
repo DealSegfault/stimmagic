@@ -61,6 +61,25 @@
       class="pointer-events-none absolute inset-0 z-chrome rounded-media ring-2 ring-inset ring-selection"
     ></div>
 
+    <!-- Batch candidates keep their seed visible while the preview is live,
+         so the user can compare first frames and carry a winner into the
+         next full run. -->
+    <div
+      v-if="seed != null"
+      class="absolute top-1.5 left-1.5 rounded-md bg-black/60 px-2 py-1 text-[10px] font-mono text-white/90 backdrop-blur-sm"
+    >
+      seed {{ seed }}
+    </div>
+
+    <button
+      v-if="seed != null && status === 'processing'"
+      @click.stop="$emit('use-seed')"
+      class="absolute bottom-2 left-1.5 rounded-md bg-black/65 px-2 py-1 text-[10px] font-medium text-white/90 opacity-0 group-hover:opacity-100 hover:bg-blue-600/90 transition-opacity"
+      title="Use this seed for the next run"
+    >
+      Use seed
+    </button>
+
     <button
       v-if="status !== 'waiting'"
       @click.stop="$emit('cancel')"
@@ -110,6 +129,8 @@ const props = withDefaults(defineProps<{
   current?: boolean
   /** Whether clicking selects the live view (stage). */
   clickable?: boolean
+  /** Captured generation seed, shown for live candidate comparison. */
+  seed?: number | string | null
   /** Preview-capable tool that hasn't produced its first frame yet: the
       reported fraction is a floor, not real progress, so hide it. */
   awaitingFirstPreview?: boolean
@@ -120,6 +141,7 @@ const props = withDefaults(defineProps<{
   progress: null,
   current: false,
   clickable: false,
+  seed: null,
   awaitingFirstPreview: false,
 })
 
@@ -162,5 +184,6 @@ const placeholderLabel = computed(() => {
 const emit = defineEmits<{
   (e: 'cancel'): void
   (e: 'click'): void
+  (e: 'use-seed'): void
 }>()
 </script>

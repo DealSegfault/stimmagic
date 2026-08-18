@@ -6,6 +6,8 @@ from codex_cli import (
     CodexCLICompletion,
     CodexCLIError,
     CodexCLIToolCall,
+    _codex_image_args,
+    _last_jsonl_agent_message,
     _output_schema,
     _parse_completion,
     _planner_prompt,
@@ -30,6 +32,35 @@ def test_planner_prompt_contains_history_and_tools_without_inline_binary():
     assert "a" * 5000 not in prompt
 
 
+def test_codex_image_args_normalizes_large_source_png(tmp_path):
+    from PIL import Image
+
+    source = tmp_path / "source.png"
+    Image.new("RGB", (1600, 1200), (20, 40, 60)).save(source)
+
+    args = _codex_image_args(
+        [{"role": "user", "content": [{"type": "image_url", "image_url": {
+            "url": source.as_uri(),
+        }}]}],
+        tmp_path / "codex",
+    )
+
+    assert args[:1] == ["--image"]
+    normalized = Image.open(args[1])
+    assert normalized.format == "JPEG"
+    assert normalized.size == (1024, 768)
+
+
+def test_last_jsonl_agent_message_recovers_structured_output():
+    stdout = b"\n".join([
+        b'{"type":"turn.started"}',
+        b'{"type":"item.completed","item":{"type":"agent_message","text":"{\\"content\\":\\"OK\\"}"}}',
+        b'{"type":"turn.completed"}',
+    ])
+
+    assert _last_jsonl_agent_message(stdout) == '{"content":"OK"}'
+
+
 def test_parse_completion_normalizes_arguments():
     result = _parse_completion(json.dumps({
         "content": "",
@@ -41,6 +72,27 @@ def test_parse_completion_normalizes_arguments():
         "finish_reason": "tool_calls",
     }), {"lookup_weather"})
     assert result.tool_calls[0].arguments == '{"city":"Paris"}'
+
+
+def test_parse_completion_drops_duplicate_tool_call_ids():
+    result = _parse_completion(json.dumps({
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "name": "lookup_weather",
+                "arguments_json": '{"city": "Paris"}',
+            },
+            {
+                "id": "call_1",
+                "name": "lookup_weather",
+                "arguments_json": '{"city": "Paris"}',
+            },
+        ],
+        "finish_reason": "tool_calls",
+    }), {"lookup_weather"})
+
+    assert [call.id for call in result.tool_calls] == ["call_1"]
 
 
 def test_parse_completion_rejects_unknown_tool():

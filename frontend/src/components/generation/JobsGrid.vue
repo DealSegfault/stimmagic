@@ -95,10 +95,12 @@
           :preview-url="jobProgress[item.job.id]?.previewUrl || ''"
           :progress="jobProgress[item.job.id]?.progress ?? null"
           :awaiting-first-preview="previewTiles && !jobProgress[item.job.id]?.previewUrl"
+          :seed="jobSeed(item.job)"
           :current="liveJobId != null && liveJobId === item.job.id"
           :clickable="liveSelectable"
           @cancel="$emit('cancel-job', item.job.id)"
           @click="$emit('live-click', item.job)"
+          @use-seed="$emit('use-seed', { seed: jobSeed(item.job), jobId: item.job.id })"
         />
 
         <!-- Unfilled generation slots (forever mode): the strip reads as a
@@ -444,6 +446,7 @@ const emit = defineEmits<{
   (e: 'trash-media', data: { mediaId: number, assetId?: number }): void
   (e: 'remix-media', mediaId: number): void
   (e: 'live-click', job: Job): void
+  (e: 'use-seed', data: { seed: number | string, jobId: number }): void
 }>()
 
 
@@ -516,6 +519,11 @@ function jobAspect(job: Job): string | null {
   const h = Number(p?.height)
   if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) return `${w} / ${h}`
   return props.fallbackAspect
+}
+
+function jobSeed(job: Job): number | string | null {
+  const seed = jobParams(job)?.seed
+  return seed == null || seed === '' ? null : seed
 }
 
 function isPresentationBatch(batch: BatchInfo): boolean {

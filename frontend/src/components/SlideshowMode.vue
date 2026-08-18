@@ -2057,6 +2057,11 @@ const generationHistory = computed(() => {
       generated_at: currentItem.value.indexed_date,
       source_inputs: [],
       tool_id: null,
+      workflow_type: null,
+      workflow_id: null,
+      quality: null,
+      resolution: null,
+      video: null,
       raw_metadata: currentItem.value.raw_metadata || null
     }]
   }
@@ -2077,7 +2082,12 @@ const generationHistory = computed(() => {
       parameters: stepParameters,
       generated_at: meta.generated_at,
       source_inputs: Array.isArray(meta.source_inputs) ? meta.source_inputs : [],
-      tool_id: meta.tool_id || null
+      tool_id: meta.tool_id || null,
+      workflow_type: meta.workflow_type || null,
+      workflow_id: meta.workflow_id || null,
+      quality: meta.quality || null,
+      resolution: meta.resolution || null,
+      video: meta.video || null
     }
 
     // External imports: preserve imported UI treatment + raw metadata link
@@ -2114,7 +2124,12 @@ const generationHistory = computed(() => {
           parameters: ancestorParameters,
           generated_at: ancestor.generated_at,
           source_inputs: Array.isArray(ancestor.source_inputs) ? ancestor.source_inputs : [],
-          tool_id: ancestor.tool_id || null
+          tool_id: ancestor.tool_id || null,
+          workflow_type: ancestor.workflow_type || null,
+          workflow_id: ancestor.workflow_id || null,
+          quality: ancestor.quality || null,
+          resolution: ancestor.resolution || null,
+          video: ancestor.video || null
         })
       }
     }

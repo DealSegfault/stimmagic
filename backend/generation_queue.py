@@ -2859,7 +2859,7 @@ class GenerationQueue:
 
             # Generate output filename
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            if task_type in ["image-to-video", "text-to-video", "video-to-video", "upscale-video", "video-stitch", "video-extend"]:
+            if task_type in ["image-to-video", "text-to-video", "reference-to-video", "video-to-video", "upscale-video", "video-stitch", "video-extend"]:
                 file_extension = ".mp4"
             elif task_type in ("text-to-audio", "text-to-music", "text-to-speech", "audio-to-audio"):
                 file_extension = ".flac"

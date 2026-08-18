@@ -26,6 +26,7 @@ from agent.tools.stp_utils import (
     _get_allowed_dimensions,
     _snap_to_allowed,
 )
+from ..video_settings import apply_video_chat_preferences, normalize_video_chat_settings
 
 log = get_logger(__name__)
 
@@ -329,9 +330,20 @@ async def execute_call_tool(
         )
 
     provider, tool_descriptor = provider_tool
-    if task_type_override and task_type_override in (tool_descriptor.task_types or []):
-        # Explicit namespace import (stimma.tools.<task>.<tool>) pins the task type
-        # deterministically rather than inferring it from input shape.
+    if task_type_override:
+        # An explicit namespace import (for example
+        # ``stimma.tools.reference_to_video``) is a routing contract, not a
+        # hint. Falling back to input-shape inference here can silently turn a
+        # Ref2VA call with two references into an I2V job when the live catalog
+        # is stale or a binding is mismatched.
+        declared_task_types = set(tool_descriptor.task_types or [])
+        if task_type_override not in declared_task_types:
+            raise ValueError(
+                f"Tool '{tool_id}' does not support the explicitly requested "
+                f"task type '{task_type_override}'. Declared task types: "
+                f"{', '.join(sorted(declared_task_types)) or 'none'}. "
+                "Refresh the tool catalog instead of inferring a different video mode."
+            )
         task_type = task_type_override
     else:
         task_type = _resolve_effective_task_type(tool_descriptor, params)
@@ -638,6 +650,8 @@ async def execute_call_tool(
     chat_id = kwargs.get("chat_id")
     auto_delete_duration = kwargs.get("auto_delete_duration")
     video_quick_mode = False
+    video_chat_settings: dict[str, Any] = {}
+    normalized_video_settings: dict[str, Any] | None = None
     if chat_id is not None:
         # V2 tool execution runs outside the legacy generation helpers, so read
         # the chat's canonical generation preferences explicitly.
@@ -650,11 +664,27 @@ async def execute_call_tool(
             if chat and chat.generation_settings:
                 try:
                     chat_settings = json.loads(chat.generation_settings)
-                    if auto_delete_duration is None:
-                        auto_delete_duration = chat_settings.get("auto_delete_duration")
-                    video_quick_mode = chat_settings.get("video_quick_mode") is True
+                    if isinstance(chat_settings, dict):
+                        video_chat_settings = chat_settings
+                        if auto_delete_duration is None:
+                            auto_delete_duration = chat_settings.get("auto_delete_duration")
+                        video_quick_mode = chat_settings.get("video_quick_mode") is True
                 except (json.JSONDecodeError, TypeError):
                     pass
+
+    if "video" in str(task_type).lower() and video_chat_settings:
+        # Chat-level controls are authoritative for video jobs. Apply them
+        # after tool defaults/agent arguments so a model cannot accidentally
+        # bypass the user's selected steps, duration, or resolution.
+        width, height, normalized_video_settings = apply_video_chat_preferences(
+            job_params,
+            width,
+            height,
+            param_props,
+            video_chat_settings,
+            allowed_dims,
+        )
+        video_quick_mode = normalized_video_settings["fast"]
 
     if "video" in str(task_type).lower() and video_quick_mode:
         # The fast switch is a hard routing constraint. Existing H3 fast
@@ -672,10 +702,16 @@ async def execute_call_tool(
     # worker filters this metadata out before calling a provider, so an
     # adapter that does not understand it never receives a fake tool argument.
     if "video" in str(task_type).lower():
+        normalized_video_settings = normalized_video_settings or normalize_video_chat_settings(video_chat_settings)
         job_params["prompt_metadata"] = {
             "video_backend": "minimax_h3_fast" if video_quick_mode else "minimax_h3_standard",
             "video_backend_label": "MiniMax H3 ⚡" if video_quick_mode else "MiniMax H3 standard",
             "video_quick_mode": video_quick_mode,
+            "video_steps": (
+                8 if video_quick_mode else normalized_video_settings["steps"]
+            ) if video_chat_settings else job_params.get("steps"),
+            "video_resolution": normalized_video_settings["resolution"] if video_chat_settings else None,
+            "video_duration": normalized_video_settings["duration"] if video_chat_settings else job_params.get("duration"),
         }
     disposition_kwargs = {}
     if kwargs.get("output_disposition") is not None:

@@ -161,7 +161,7 @@ def _db(session_factory=None):
 
 
 class TestRunPromptPipeline:
-    async def test_h3_context_reaches_enhancer_and_skips_generic_translation(
+    async def test_h3_context_reaches_enhancer_and_translates_with_contract(
         self, generation_app, generation_db_session, monkeypatch
     ):
         import routes.prompt_enhancement as pe
@@ -178,11 +178,18 @@ class TestRunPromptPipeline:
                 "overall_soundscape: Wind and tires.\n\nnon_diegetic_music: N/A"
             )
 
-        async def fail_translate(request):
-            raise AssertionError("H3 Context-IR must remain English and must not be generically translated")
+        async def fake_translate(request):
+            seen["translate_request"] = request
+            return pe.TranslatePromptResponse(
+                translated_prompt=(
+                    request.prompt
+                    .replace("A cyclist rides.", "一名骑自行车的人正在骑行。")
+                    .replace("Wind and tires.", "风声与轮胎声。")
+                )
+            )
 
         monkeypatch.setattr(pe, "improve_prompt", fake_improve)
-        monkeypatch.setattr(pe, "translate_prompt", fail_translate)
+        monkeypatch.setattr(pe, "translate_prompt", fake_translate)
 
         out = await pp.run_prompt_pipeline(
             _db(generation_db_session),
@@ -215,8 +222,58 @@ class TestRunPromptPipeline:
         assert request.h3_duration == 8
         assert request.h3_media_ids == [11, 22]
         assert request.h3_generate_audio is False
+        translate_request = seen["translate_request"]
+        assert translate_request.h3_task == "fl2va"
+        assert translate_request.h3_duration == 8
+        assert translate_request.target_language == "Simplified Chinese"
         assert out.startswith("How the reference pictures align with the target video —")
         assert "[Shot 1]" in out
+        assert "一名骑自行车的人正在骑行。" in out
+        assert "风声与轮胎声。" in out
+
+    async def test_r2v_translation_keeps_reference_tags_and_numbers(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        attempts = []
+
+        async def fake_translate(request):
+            attempts.append(request)
+            translated = (
+                "integrated_multimodal_description: "
+                "<Picture 1> 保持角色身份；<Picture 2> 保持环境与构图。"
+                "\n\noverall_soundscape: 风声。\n\n"
+                "non_diegetic_music: N/A"
+            )
+            if len(attempts) == 1:
+                translated = translated.replace("保持角色身份", "保持角色身份 15秒")
+            return pe.TranslatePromptResponse(
+                translated_prompt=translated
+            )
+
+        monkeypatch.setattr(pe, "translate_prompt", fake_translate)
+
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session),
+            "integrated_multimodal_description: <Picture 1> Keep the subject identity; "
+            "<Picture 2> keep the environment and composition.\n\n"
+            "overall_soundscape: Wind.\n\nnon_diegetic_music: N/A",
+            {"translate": {"enabled": True, "language": "zh-Hans"}},
+            model="minimax-h3-r2v-turbo",
+            is_video=True,
+            h3_task="ref2va",
+            h3_duration=6,
+            h3_reference_manifest=[
+                {"label": "Picture 1", "kind": "image"},
+                {"label": "Picture 2", "kind": "image"},
+            ],
+        )
+
+        assert "<Picture 1>" in out and "<Picture 2>" in out
+        assert "保持角色身份" in out
+        assert out.startswith("integrated_multimodal_description:")
+        assert len(attempts) == 2
 
     async def test_h3_retries_when_context_ir_shape_is_missing(
         self, generation_app, generation_db_session, monkeypatch

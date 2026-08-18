@@ -1,7 +1,11 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from agent.v2.tools.call_tool import _resolve_effective_task_type, call_tool
+from agent.v2.tools.call_tool import (
+    _resolve_effective_task_type,
+    call_tool,
+    execute_call_tool,
+)
 
 
 class _FakeToolDescriptor:
@@ -133,3 +137,24 @@ def test_resolve_effective_task_type_routes_input_videos():
     descriptor.task_types = ["text-to-video", "video-to-video"]
 
     assert _resolve_effective_task_type(descriptor, {"input_videos": [202]}) == "video-to-video"
+
+
+@pytest.mark.asyncio
+async def test_explicit_reference_task_does_not_fall_back_to_i2v(
+    session, fake_provider, fake_descriptor, monkeypatch
+):
+    """A mismatched Ref2VA binding must fail before submitting an I2V job."""
+    registry = MagicMock()
+    registry.get_tool.return_value = (fake_provider, fake_descriptor)
+    monkeypatch.setattr(
+        "agent.v2.tools.call_tool.ProviderRegistry.get_instance",
+        lambda: registry,
+    )
+
+    with pytest.raises(ValueError, match="explicitly requested task type 'reference-to-video'"):
+        await execute_call_tool(
+            tool_id="comfyui:minimax-h3-r2v-turbo",
+            parameters={"prompt": "two references", "input_images": [1, 2]},
+            task_type_override="reference-to-video",
+            session=session,
+        )

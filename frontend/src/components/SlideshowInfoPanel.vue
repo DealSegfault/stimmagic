@@ -765,6 +765,7 @@ import { isImage as isImageType, hasVisualContent, getMediaType } from '../utils
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import { useAssetApi } from '../composables/useAssetApi'
 import { hasAssetIdentity, mediaIdOf } from '../utils/assetIdentity'
+import { getVideoGenerationRows } from '../utils/videoGenerationMetadata'
 
 import IconButton from './ui/IconButton.vue'
 import Tooltip from './ui/Tooltip.vue'
@@ -1131,6 +1132,20 @@ function stepFactRows(step) {
   if (step.model && step.model.toLowerCase() !== getToolDisplayName(step).toLowerCase()) {
     rows.push({ label: 'Model', value: step.model, mono: false, truncate: true })
   }
+  const currentMedia = props.currentItem && step.media_id === mediaIdOf(props.currentItem)
+    ? props.currentItem
+    : null
+  rows.push(...getVideoGenerationRows({
+    task_type: step.task_type,
+    tool_id: step.tool_id,
+    generator: step.generator,
+    workflow_type: step.workflow_type,
+    workflow_id: step.workflow_id,
+    quality: step.quality,
+    resolution: step.resolution,
+    video: step.video,
+    parameters: step.parameters,
+  }, currentMedia))
   return rows
 }
 function stepParamRows(step) {
@@ -1280,7 +1295,12 @@ const effectiveGenerationHistory = computed(() => {
       parameters: stepParameters,
       generated_at: meta.generated_at,
       source_inputs: Array.isArray(meta.source_inputs) ? meta.source_inputs : [],
-      tool_id: meta.tool_id || null
+      tool_id: meta.tool_id || null,
+      workflow_type: meta.workflow_type || null,
+      workflow_id: meta.workflow_id || null,
+      quality: meta.quality || null,
+      resolution: meta.resolution || null,
+      video: meta.video || null
     }
 
     // External imports: preserve imported UI treatment + raw metadata link
@@ -1314,7 +1334,12 @@ const effectiveGenerationHistory = computed(() => {
           parameters: ancestorParameters,
           generated_at: ancestor.generated_at,
           source_inputs: Array.isArray(ancestor.source_inputs) ? ancestor.source_inputs : [],
-          tool_id: ancestor.tool_id || null
+          tool_id: ancestor.tool_id || null,
+          workflow_type: ancestor.workflow_type || null,
+          workflow_id: ancestor.workflow_id || null,
+          quality: ancestor.quality || null,
+          resolution: ancestor.resolution || null,
+          video: ancestor.video || null
         })
       }
     }
@@ -1586,7 +1611,8 @@ function getStepParameters(stepLike) {
 const excludedStepParams = new Set([
   'prompt', 'negative_prompt', 'selected_loras', 'loras',
   'width', 'height', 'input_width', 'input_height', 'output_width', 'output_height',
-  'output_size', 'bbox',
+  'output_size', 'bbox', 'fps', 'output_quality', 'quality',
+  'workflow_type', 'workflow_id', 'resolution', 'video_metadata_version',
   'checkpoint',  // Already shown via step.model
 ])
 

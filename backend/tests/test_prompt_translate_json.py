@@ -57,6 +57,16 @@ def test_translate_request_model():
     req = TranslatePromptRequest(prompt="a red car", target_language="Simplified Chinese")
     assert req.prompt == "a red car"
     assert req.target_language == "Simplified Chinese"
+    h3 = TranslatePromptRequest(
+        prompt="integrated_multimodal_description: <Picture 1> a car",
+        target_language="Simplified Chinese",
+        h3_task="ref2va",
+        h3_duration=6,
+        h3_reference_manifest=[{"label": "Picture 1", "kind": "image"}],
+    )
+    assert h3.h3_task == "ref2va"
+    assert h3.h3_duration == 6
+    assert h3.h3_reference_manifest[0]["label"] == "Picture 1"
 
 
 def test_translate_response_model():

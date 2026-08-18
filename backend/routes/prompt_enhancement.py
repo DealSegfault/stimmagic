@@ -483,6 +483,11 @@ class TranslatePromptRequest(BaseModel):
     # The target language as a human-readable English name, e.g. "Simplified
     # Chinese" — the frontend maps its language code to this before sending.
     target_language: str
+    # When present, use the H3-aware translator. It translates descriptive
+    # prose but preserves the Context-IR contract used by the video node.
+    h3_task: Optional[str] = None
+    h3_duration: Optional[float] = None
+    h3_reference_manifest: List[Dict[str, Any]] = Field(default_factory=list)
     # Project whose model override should apply, when the editor is scoped
     # to one. Absent -> the profile's Tool Assistant setting.
     project_id: Optional[int] = None
@@ -1004,14 +1009,50 @@ async def translate_prompt(request: TranslatePromptRequest):
             detail={"code": e.code, "message": str(e)},
         )
 
-    system_prompt_template = get_prompt("prompt_enhancement", "translate_system_prompt")
+    if request.h3_task:
+        system_prompt_template = get_prompt(
+            "prompt_enhancement", "translate_minimax_h3_system_prompt"
+        )
+    else:
+        system_prompt_template = get_prompt("prompt_enhancement", "translate_system_prompt")
     if not system_prompt_template:
-        raise HTTPException(status_code=500, detail="translate_system_prompt not configured")
-    system_prompt = system_prompt_template.replace("{target_language}", request.target_language.strip())
+        raise HTTPException(status_code=500, detail="translation prompt not configured")
+    system_prompt = system_prompt_template.replace(
+        "{target_language}", request.target_language.strip()
+    )
+    if request.h3_task:
+        duration = (
+            f"{float(request.h3_duration):.2f}"
+            if request.h3_duration is not None
+            else "not specified"
+        )
+        reference_labels = ", ".join(
+            f"<{item.get('label')}>"
+            for item in request.h3_reference_manifest
+            if item.get("label")
+        ) or "none"
+        system_prompt = system_prompt.replace("{h3_task}", request.h3_task)
+        system_prompt = system_prompt.replace("{h3_duration}", duration)
+        system_prompt = system_prompt.replace("{h3_reference_labels}", reference_labels)
 
+    if request.h3_task:
+        duration = (
+            f"{float(request.h3_duration):.2f} seconds"
+            if request.h3_duration is not None
+            else "the duration configured by the generation request"
+        )
+        user_content = (
+            f"Translate this MiniMax H3 {request.h3_task.upper()} prompt into "
+            f"{request.target_language.strip()}. This is translation only, not a rewrite. "
+            f"The generation parameter is {duration}; do not invent or change any duration "
+            "inside the prompt. Return only the translated prompt:\n\n"
+            f"{request.prompt}"
+        )
+    else:
+        user_content = request.prompt
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": request.prompt},
+        {"role": "user", "content": user_content},
     ]
 
     with llm_correlation_context("prompt-agent"):

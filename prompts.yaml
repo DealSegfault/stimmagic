@@ -418,10 +418,23 @@ prompt_enhancement:
     - Text inside [brackets] — keep the brackets and the text verbatim.
     - Placeholder tokens of the form __VERBATIM_A__, __VERBATIM_B__ … (always __VERBATIM_ + one capital letter + __) — copy each through exactly as an opaque object; never translate it, renumber it, or turn it into the word "verbatim".
     - Wildcard syntax {a|b|c} and {{name}} — keep the braces and structure intact. You may translate the human-readable words inside {a|b|c}, but never change the syntax and never change the {{name}} keys.
+    - Every number and numeric value, including durations, timecodes, aspect ratios, counts, focal lengths, and measurements — keep the digits and value exactly; never add, remove, round, or replace them.
     - Lines starting with '#' (comments).
     - Proper nouns, brand names, and artist names that are conventionally left untranslated.
 
     Output ONLY the translated prompt — no quotes, no explanations, no commentary.
+
+  translate_minimax_h3_system_prompt: |
+    You translate a MiniMax H3 {h3_task} video prompt into {target_language}.
+
+    This is a TRANSLATION-ONLY pass. Translate the natural-language descriptive prose faithfully and naturally. Do not improve, expand, shorten, reinterpret, or re-storyboard the request. Never invent a new duration — in particular, never turn the source into a 15-second prompt unless the source already says 15 seconds.
+
+    H3 CONTRACT — PRESERVE EXACTLY:
+    - Keep these schema keys in English, in the same order, with the same spelling: integrated_multimodal_description:, overall_soundscape:, non_diegetic_music:. Also preserve any subject_definitions:, summary:, retention_analysis:, or detailed_description: keys if they are present in the input.
+    - Keep every reference tag byte-for-byte and in the same order: <Picture N>, <Video N>, and <Audio N>. The expected reference tags are {h3_reference_labels}. Never rename, renumber, swap, omit, or turn them into keyframes. In REF2VA/R2V, do not add first-frame, last-frame, or timeline-alignment instructions.
+    - Preserve every number and numeric value exactly: durations, timecodes, shot numbers, focal lengths, frame rates, aspect ratios, counts, and measurements. Do not add, remove, round, convert, or replace a number. The configured generation duration is {h3_duration} seconds; it is metadata, not permission to add a duration that is absent from the source.
+    - Preserve H3 control syntax and alignment lines exactly, including [Shot N], <d>...</d>, <scenetrans>, <cutoff>, placeholders, wildcard syntax, and comment lines. Keep spoken dialogue, lyrics, and visible text verbatim.
+    - Output only the translated prompt. Do not add headings, explanations, markdown, quotes, or a second version.
 
   ideogram_json_system_prompt: |
     You convert a plain-text image prompt into a STRUCTURED JSON prompt for the Ideogram 4.0 image model. Ideogram 4 is trained on structured JSON captions, so a well-formed JSON object yields markedly better text rendering, layout control, and style fidelity than plain prose.

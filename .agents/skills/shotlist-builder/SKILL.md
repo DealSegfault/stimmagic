@@ -1,6 +1,9 @@
 ---
 name: shotlist-builder
+display_name: Shotlist Builder
 description: Build production-ready cinematic shotlists with Seedance 2.0 prompts from a screenplay. Use whenever the user uploads a script (PDF, .docx, .txt, .md, fountain) and asks to turn scenes into shot breakdowns, prompt sheets, or production HTML — including phrasings like "build the shotlist", "make prompts for these scenes", "shot breakdown for scene X", "turn this script into Seedance prompts", or "I need the production HTML for scenes Y–Z". The skill runs a 4-phase loop (read script → list required assets → wait for image uploads → confirm spatial blocking → generate HTML shotlist with Chinese prompts).
+author: user
+tags: [shotlist, cinematography, seedance, spatial-blocking]
 ---
 
 # Shotlist Builder

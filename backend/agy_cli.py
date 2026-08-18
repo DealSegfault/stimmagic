@@ -189,6 +189,7 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> AgyCLICompletion:
         content = str(content)
 
     parsed_calls: List[AgyCLIToolCall] = []
+    seen_call_ids: set[str] = set()
     calls = payload.get("tool_calls") or []
     if not isinstance(calls, list):
         raise AgyCLIError("Antigravity CLI response field 'tool_calls' is not a list.")
@@ -231,9 +232,14 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> AgyCLICompletion:
         if not isinstance(decoded_arguments, dict):
             raise AgyCLIError(f"Antigravity CLI arguments for tool {name!r} must be an object.")
 
+        call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}")
+        if call_id in seen_call_ids:
+            log.warning("Ignoring duplicate Antigravity tool call id", tool=name, call_id=call_id)
+            continue
+        seen_call_ids.add(call_id)
         parsed_calls.append(
             AgyCLIToolCall(
-                id=str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+                id=call_id,
                 name=name,
                 arguments=json.dumps(decoded_arguments, ensure_ascii=False, separators=(",", ":")),
             )

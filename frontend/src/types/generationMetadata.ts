@@ -53,6 +53,20 @@ export interface LineageTraceEntry {
   generated_at?: string
   source_inputs?: GenerationSourceInput[]
   tool_id?: string
+  workflow_type?: string
+  workflow_id?: string | null
+  quality?: string
+  resolution?: string | null
+  video?: VideoMetadata
+}
+
+export interface VideoMetadata {
+  width?: number
+  height?: number
+  resolution?: string
+  quality?: string
+  fps?: number
+  duration?: number
 }
 
 export interface GenerationMetadata {
@@ -69,6 +83,13 @@ export interface GenerationMetadata {
   negative_prompt?: string
   /** Flat dict of the params actually used (seed, steps, cfg, fps, generation_time, ...). */
   parameters?: Record<string, unknown>
+  /** Video provenance and encoded-output facts, added by the video finalizer. */
+  video_metadata_version?: number
+  workflow_type?: string
+  workflow_id?: string | null
+  quality?: string
+  resolution?: string | null
+  video?: VideoMetadata
   prompt_metadata?: PromptMetadata | null
   source_inputs?: GenerationSourceInput[]
   lineage_trace?: LineageTraceEntry[]

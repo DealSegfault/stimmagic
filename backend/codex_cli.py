@@ -8,14 +8,17 @@ keeps ownership of tool execution and its permission model.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
 import tempfile
 import uuid
 from dataclasses import dataclass, field
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 from core.logging import get_logger
 
@@ -41,6 +44,10 @@ class CodexCLICompletion:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+
+
+CODEX_IMAGE_MAX_SIDE = 1024
+CODEX_IMAGE_JPEG_QUALITY = 85
 
 
 def _codex_executable() -> str:
@@ -71,6 +78,90 @@ def _scrub_large_data(value: Any) -> Any:
     ):
         return "[inline binary asset omitted; use the available Stimma media tools]"
     return value
+
+
+def _normalize_codex_image(source: bytes | Path, destination: Path) -> bool:
+    """Write a bounded, orientation-correct JPEG for ``codex exec --image``.
+
+    The CLI's image upload path is unreliable for large source PNGs. Chat
+    messages already use the same bounded JPEG policy for provider vision, so
+    apply it here too before handing files to the local CLI.
+    """
+    try:
+        from PIL import Image, ImageOps
+
+        stream = BytesIO(source) if isinstance(source, bytes) else source
+        with Image.open(stream) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+        if max(image.size) > CODEX_IMAGE_MAX_SIDE:
+            scale = CODEX_IMAGE_MAX_SIDE / max(image.size)
+            image = image.resize(
+                (int(image.width * scale), int(image.height * scale)),
+                Image.LANCZOS,
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        image.save(
+            destination,
+            format="JPEG",
+            quality=CODEX_IMAGE_JPEG_QUALITY,
+            optimize=True,
+        )
+        image.close()
+        return True
+    except Exception as exc:
+        log.warning("Failed to normalize image for codex exec", error=str(exc))
+        return False
+
+
+def _last_jsonl_agent_message(stdout: bytes) -> Optional[str]:
+    """Return the last completed agent message emitted by ``codex --json``."""
+    last_message: Optional[str] = None
+    for raw_line in stdout.decode("utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item")
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "agent_message"
+            and isinstance(item.get("text"), str)
+        ):
+            last_message = item["text"]
+    return last_message
+
+
+def _codex_image_args(
+    messages: List[Dict[str, Any]],
+    temp_dir: Path,
+) -> List[str]:
+    """Materialize multimodal message images as bounded CLI image files."""
+    image_args: List[str] = []
+    image_count = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "image_url":
+                continue
+            url = (block.get("image_url") or {}).get("url", "")
+            source: bytes | Path | None = None
+            if isinstance(url, str) and url.startswith("data:") and "base64," in url:
+                try:
+                    source = base64.b64decode(url.split("base64,", 1)[1])
+                except Exception as exc:
+                    log.warning("Failed to decode image for codex exec", error=str(exc))
+            elif isinstance(url, str) and url.startswith("file://"):
+                source = Path(unquote(url[7:]))
+
+            if source is None:
+                continue
+            image_count += 1
+            image_file = temp_dir / f"input_image_{image_count}.jpg"
+            if _normalize_codex_image(source, image_file):
+                image_args.extend(["--image", str(image_file)])
+    return image_args
 
 
 def _output_schema(tool_names: List[str]) -> Dict[str, Any]:
@@ -169,6 +260,7 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> CodexCLICompletion:
         raise CodexCLIError("Codex CLI response is missing string field 'content'.")
 
     parsed_calls: List[CodexCLIToolCall] = []
+    seen_call_ids: set[str] = set()
     calls = payload.get("tool_calls") or []
     if not isinstance(calls, list):
         raise CodexCLIError("Codex CLI response field 'tool_calls' is not a list.")
@@ -208,8 +300,13 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> CodexCLICompletion:
                 ) from exc
         if not isinstance(decoded_arguments, dict):
             raise CodexCLIError(f"Codex CLI arguments for tool {name!r} must be an object.")
+        call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}")
+        if call_id in seen_call_ids:
+            log.warning("Ignoring duplicate Codex tool call id", tool=name, call_id=call_id)
+            continue
+        seen_call_ids.add(call_id)
         parsed_calls.append(CodexCLIToolCall(
-            id=str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}"),
+            id=call_id,
             name=name,
             arguments=json.dumps(decoded_arguments, ensure_ascii=False, separators=(",", ":")),
         ))
@@ -276,9 +373,8 @@ async def complete_with_codex_cli(
     ).expanduser()
     prompt = _planner_prompt(messages, tools, workdir)
 
-    import base64
-
     with tempfile.TemporaryDirectory(prefix="stimma-codex-") as temp_dir:
+        temp_path = Path(temp_dir)
         schema_path = Path(temp_dir) / "output-schema.json"
         output_path = Path(temp_dir) / "last-message.json"
         schema_path.write_text(
@@ -286,26 +382,7 @@ async def complete_with_codex_cli(
             encoding="utf-8",
         )
 
-        image_args = []
-        image_count = 0
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "image_url":
-                        url = (block.get("image_url") or {}).get("url", "")
-                        if url.startswith("data:") and "base64," in url:
-                            try:
-                                b64_data = url.split("base64,", 1)[1]
-                                img_bytes = base64.b64decode(b64_data)
-                                image_count += 1
-                                img_file = Path(temp_dir) / f"input_image_{image_count}.jpg"
-                                img_file.write_bytes(img_bytes)
-                                image_args.extend(["-i", str(img_file)])
-                            except Exception as e:
-                                log.warning(f"Failed to decode image for codex exec: {e}")
-                        elif url.startswith("file://"):
-                            image_args.extend(["-i", url[7:]])
+        image_args = _codex_image_args(messages, temp_path)
 
         command = [
             executable,
@@ -359,7 +436,23 @@ async def complete_with_codex_cli(
                 f"Codex CLI exited with status {process.returncode}: {detail or 'no diagnostic'}"
             )
         if not output_path.exists():
-            raise CodexCLIError("Codex CLI did not write its structured response.")
+            fallback = _last_jsonl_agent_message(stdout)
+            if fallback:
+                log.warning(
+                    "Codex CLI omitted --output-last-message; using its JSONL agent message"
+                )
+                completion = _parse_completion(fallback, set(tool_names))
+                _apply_usage(completion, stdout)
+                return completion
+            stdout_tail = stdout.decode("utf-8", errors="replace").strip()[-1200:]
+            stderr_tail = stderr.decode("utf-8", errors="replace").strip()[-1200:]
+            diagnostics = "; ".join(
+                detail for detail in (stdout_tail, stderr_tail) if detail
+            )
+            raise CodexCLIError(
+                "Codex CLI did not write its structured response"
+                + (f": {diagnostics}" if diagnostics else ".")
+            )
 
         completion = _parse_completion(
             output_path.read_text(encoding="utf-8"),

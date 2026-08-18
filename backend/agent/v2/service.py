@@ -31,6 +31,7 @@ from .tools.bash import get_shell_runtime_name
 from .tools_registry import get_tools_schema, get_tool, get_all_tools
 from .tools.notepad import format_notepad_for_prompt
 from .workspace import get_project_workspace, get_workspace_dir
+from .video_settings import normalize_video_chat_settings
 
 log = get_logger(__name__)
 
@@ -335,6 +336,33 @@ def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool
 _is_generation_run_code = _is_generation_tool_call
 
 
+def _generation_call_key(fn_name: str, raw_arguments: Optional[str]) -> str | None:
+    """Return a stable key for an equivalent paid generation request."""
+    if not _is_generation_tool_call(fn_name, raw_arguments):
+        return None
+
+    arguments = _parse_tool_args(raw_arguments)
+    value = arguments.get("code" if fn_name == "run_code" else "command")
+    if not isinstance(value, str):
+        return None
+    return f"{fn_name}:{value.strip()}"
+
+
+def _claim_generation_call(
+    fn_name: str,
+    raw_arguments: Optional[str],
+    claimed_keys: set[str],
+) -> str | None:
+    """Claim a generation in the current tool batch or return a skip reason."""
+    key = _generation_call_key(fn_name, raw_arguments)
+    if key is None:
+        return None
+    if key not in claimed_keys:
+        claimed_keys.add(key)
+        return None
+    return "Skipped duplicate generation request; the equivalent request is already running."
+
+
 def _dump_tool_args(arguments: dict) -> str:
     return json.dumps(arguments)
 
@@ -472,6 +500,7 @@ async def _execute_tool_call(
     effective_model_slug: str | None = None,
     needs_continuation_out: list[bool] | None = None,
     session_lock: Optional[asyncio.Lock] = None,
+    skip_reason: str | None = None,
 ) -> str:
     """Execute a single tool call and save the result ChatItem. Returns result string.
 
@@ -490,7 +519,15 @@ async def _execute_tool_call(
     chat_project_id = getattr(chat, "project_id", None) if chat else None
     scope = "flow" if chat_flow_id is not None else "agent"
     tool = get_tool(fn_name, scope=scope)
-    if tool:
+    if skip_reason:
+        log.warning(
+            "Chat %s: %s tool call %s",
+            chat_id,
+            skip_reason,
+            tool_call_id,
+        )
+        result_str = skip_reason
+    elif tool:
         try:
             kwargs = json.loads(fn_arguments) if fn_arguments else {}
             kwargs["_tool_scope"] = scope
@@ -1354,6 +1391,7 @@ async def _run_agentic_loop_inner(
 
     # If resuming with pending tool calls, execute them first
     if pending_tool_calls:
+        pending_generation_keys: set[str] = set()
         for index, tc_data in enumerate(pending_tool_calls):
             _raise_if_interrupted(chat_id)
             fn_name = tc_data["fn_name"]
@@ -1419,6 +1457,9 @@ async def _run_agentic_loop_inner(
 
             _raise_if_interrupted(chat_id)
             turn_stats["tool_call_count"] = turn_stats.get("tool_call_count", 0) + 1
+            skip_reason = _claim_generation_call(
+                fn_name, fn_arguments, pending_generation_keys
+            )
             await _execute_tool_call(
                 fn_name, fn_arguments, tool_call_id,
                 chat_id, workspace_dir, str(project_workspace_dir) if project_workspace_dir else None, session, ws_manager,
@@ -1428,6 +1469,7 @@ async def _run_agentic_loop_inner(
                 shown_media_ids=shown_media_ids,
                 enabled_stimpacks=list(_invoked_skills) if _invoked_skills else None,
                 effective_model_slug=effective_model_slug,
+                skip_reason=skip_reason,
             )
             # Track newly invoked skills
             if fn_name == "skill":
@@ -1475,19 +1517,32 @@ async def _run_agentic_loop_inner(
         # including the Codex/AGY CLI planner paths.
         video_quick_mode = False
         image_backend = None
+        video_steps = 20
+        video_resolution = "720"
+        video_duration = 5.0
         if chat_generation_settings:
             try:
                 gen_settings = json.loads(chat_generation_settings)
                 video_quick_mode = gen_settings.get("video_quick_mode") is True
                 image_backend = gen_settings.get("image_backend")
+                video_preferences = normalize_video_chat_settings(gen_settings)
+                video_steps = video_preferences["steps"]
+                video_resolution = video_preferences["resolution"]
+                video_duration = video_preferences["duration"]
             except (json.JSONDecodeError, TypeError):
                 pass
+        effective_video_steps = 8 if video_quick_mode else video_steps
         system_reminders.append(
             "VIDEO DISPATCH MODE (authoritative for this chat): "
-            + ("MiniMax H3 ⚡ fast (Turbo 4-Step); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
+            + ("MiniMax H3 ⚡ fast (8 steps imposed); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
                if video_quick_mode else
-               "MiniMax H3 standard (Full sampling); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
+               f"MiniMax H3 standard (full sampling, {video_steps} steps); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
             + " Execute video generation immediately via `run_code` by importing the matching function (`from stimma.tools.reference_to_video import minimax_h3_r2v_turbo`, `from stimma.tools.image_to_video import minimax_h3_i2v_turbo`, or `from stimma.tools.text_to_video import minimax_h3_t2v_turbo`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
+        )
+        system_reminders.append(
+            f"VIDEO CHAT SETTINGS (authoritative override): requested resolution={video_resolution}, "
+            f"duration={video_duration:g}s, effective steps={effective_video_steps}. "
+            "The dispatch layer applies these values to every MiniMax H3 video job, even if the code call contains different defaults."
         )
         effective_image_backend = image_backend or "antigravity"
 
@@ -1677,11 +1732,26 @@ async def _run_agentic_loop_inner(
             finish_requested = False
 
             active_tool_calls = []
+            seen_tool_call_ids: set[str] = set()
+            claimed_generation_keys: set[str] = set()
             for i, tool_call in enumerate(tool_calls):
                 _raise_if_interrupted(chat_id)
                 fn_name = tool_call.name
                 fn_arguments = tool_call.arguments
                 tool_call_id = tool_call.id or f"call_{uuid.uuid4().hex[:12]}"
+
+                # Some local transports can return the same structured tool
+                # call twice. Persisting/executing it twice would submit a
+                # paid generation twice, and duplicate IDs make the next
+                # provider turn ambiguous.
+                if tool_call_id in seen_tool_call_ids:
+                    log.warning(
+                        "Chat %s: ignoring duplicate tool call id %s",
+                        chat_id,
+                        tool_call_id,
+                    )
+                    continue
+                seen_tool_call_ids.add(tool_call_id)
 
                 # `finish` is the explicit end-of-turn signal — pure control
                 # flow. Don't persist a tool_call item for it and don't execute it.
@@ -1705,6 +1775,9 @@ async def _run_agentic_loop_inner(
                     "fn_name": fn_name,
                     "fn_arguments": fn_arguments,
                     "tool_call_id": tool_call_id,
+                    "skip_reason": _claim_generation_call(
+                        fn_name, fn_arguments, claimed_generation_keys
+                    ),
                 })
 
             # Check if any tool in the batch needs permission or is ask_user
@@ -1722,6 +1795,7 @@ async def _run_agentic_loop_inner(
                     fn_name = tc_info["fn_name"]
                     fn_arguments = tc_info["fn_arguments"]
                     tool_call_id = tc_info["tool_call_id"]
+                    skip_reason = tc_info.get("skip_reason")
 
                     remaining = []
                     for tc in active_tool_calls[i + 1:]:
@@ -1790,6 +1864,7 @@ async def _run_agentic_loop_inner(
                             parent_remaining=remaining,
                             effective_model_slug=effective_model_slug,
                             needs_continuation_out=needs_continuation,
+                            skip_reason=skip_reason,
                         )
                     except HumanActionRequired:
                         # Delegate subagent paused for permission — propagate as _PermissionPause
@@ -1811,6 +1886,7 @@ async def _run_agentic_loop_inner(
                     fn_name = tc_info["fn_name"]
                     fn_arguments = tc_info["fn_arguments"]
                     tool_call_id = tc_info["tool_call_id"]
+                    skip_reason = tc_info.get("skip_reason")
                     call_item = ChatItem(
                         chat_id=chat_id,
                         item_type="tool_call",
@@ -1820,11 +1896,13 @@ async def _run_agentic_loop_inner(
                         item_metadata=_provider_state_metadata(resp.provider_state),
                     )
                     session.add(call_item)
-                    created_call_items.append((tool_call_id, fn_name, fn_arguments, call_item))
+                    created_call_items.append(
+                        (tool_call_id, fn_name, fn_arguments, call_item, skip_reason)
+                    )
 
                 if created_call_items:
                     await session.commit()
-                    for _, _, _, call_item in created_call_items:
+                    for _, _, _, call_item, _ in created_call_items:
                         await ws_manager.broadcast("chat_item_created", {
                             "chat_id": chat_id,
                             "item": call_item.to_dict(),
@@ -1832,7 +1910,13 @@ async def _run_agentic_loop_inner(
 
                     session_lock = asyncio.Lock()
 
-                    async def _run_tool_coro(tc_id: str, fname: str, fargs: str, c_item: ChatItem):
+                    async def _run_tool_coro(
+                        tc_id: str,
+                        fname: str,
+                        fargs: str,
+                        c_item: ChatItem,
+                        skip_reason: str | None,
+                    ):
                         _raise_if_interrupted(chat_id)
                         turn_stats["tool_call_count"] = turn_stats.get("tool_call_count", 0) + 1
                         try:
@@ -1849,6 +1933,7 @@ async def _run_agentic_loop_inner(
                                 effective_model_slug=effective_model_slug,
                                 needs_continuation_out=needs_continuation,
                                 session_lock=session_lock,
+                                skip_reason=skip_reason,
                             )
                         except HumanActionRequired:
                             raise _PermissionPause()
@@ -1863,12 +1948,12 @@ async def _run_agentic_loop_inner(
                                 pass
 
                     if len(created_call_items) == 1:
-                        tc_id, fname, fargs, c_item = created_call_items[0]
-                        await _run_tool_coro(tc_id, fname, fargs, c_item)
+                        tc_id, fname, fargs, c_item, skip_reason = created_call_items[0]
+                        await _run_tool_coro(tc_id, fname, fargs, c_item, skip_reason)
                     else:
                         tasks = [
-                            _run_tool_coro(tc_id, fname, fargs, c_item)
-                            for tc_id, fname, fargs, c_item in created_call_items
+                            _run_tool_coro(tc_id, fname, fargs, c_item, skip_reason)
+                            for tc_id, fname, fargs, c_item, skip_reason in created_call_items
                         ]
                         await asyncio.gather(*tasks)
 

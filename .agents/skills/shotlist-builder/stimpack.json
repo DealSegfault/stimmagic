@@ -1,0 +1,9 @@
+{
+  "name": "shotlist-builder",
+  "display_name": "Shotlist Builder",
+  "description": "Build production-ready cinematic shotlists with structured prompts and spatial blocking.",
+  "version": "1",
+  "format": 1,
+  "author": "user",
+  "tags": ["shotlist", "cinematography", "seedance", "spatial-blocking"]
+}

@@ -6,6 +6,8 @@ without PyTorch dependency.
 """
 
 import gc
+import os
+import sys
 import threading
 from PIL import Image
 import numpy as np
@@ -20,6 +22,34 @@ log = get_logger(__name__)
 # Expected embedding dimension for the current ONNX model (ViT-B/32)
 # Old PyTorch model (ViT-g-14) produced 1024-dimensional embeddings
 CLIP_EMBEDDING_DIM = 512
+
+
+def _get_clip_execution_providers(ort):
+    """Choose ONNX Runtime providers for the CLIP sessions.
+
+    CoreML only receives a small subset of the current CLIP graph on macOS,
+    while still creating a large additional memory footprint. Keep CLIP on
+    CPU by default there; ``STIMMA_CLIP_USE_COREML=1`` restores the previous
+    provider selection for benchmarking or hardware-specific setups.
+    """
+    available = ort.get_available_providers()
+    use_coreml = os.getenv("STIMMA_CLIP_USE_COREML", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+    if sys.platform == "darwin" and not use_coreml:
+        if "CPUExecutionProvider" in available:
+            log.info(
+                "CLIP: using CPUExecutionProvider on macOS "
+                "(set STIMMA_CLIP_USE_COREML=1 to opt into CoreML)"
+            )
+            return ["CPUExecutionProvider"]
+        log.warning(
+            "CLIP: CPUExecutionProvider is unavailable; falling back to "
+            "ONNX Runtime's available providers"
+        )
+
+    return available
 
 
 class CLIPService:
@@ -111,7 +141,7 @@ class CLIPService:
                 "clip/clip_text_model_vitb32.onnx",
                 legacy_paths=[pkg_data / "clip_text_model_vitb32.onnx"],
             )
-            providers = ort.get_available_providers()
+            providers = _get_clip_execution_providers(ort)
             return (
                 ort.InferenceSession(str(image_path), providers=providers),
                 ort.InferenceSession(str(text_path), providers=providers),

@@ -1,0 +1,9 @@
+{
+  "name": "maya-stimma-continuity",
+  "display_name": "Maya Stimma Continuity",
+  "description": "Continuity-safe asset and shot generation for Maya projects in Stimma.",
+  "version": "1",
+  "format": 1,
+  "author": "user",
+  "tags": ["maya", "continuity", "nano-banana", "minimax-h3", "stimma"]
+}
