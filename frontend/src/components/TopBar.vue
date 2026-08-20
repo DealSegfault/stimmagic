@@ -307,6 +307,10 @@
         >{{ updatePillLabel }}</span>
       </button>
 
+      <!-- Tool-provider managers (e.g. ComfyUI): one icon per provider that
+           advertises a management UI over STP. -->
+      <ProviderManagerButton :show-separator="profiles.length > 1" />
+
       <!-- Profile picker: exists only when a second profile does -->
       <div v-if="profiles.length > 1" class="relative profile-menu">
         <!-- Ghost trigger, not a pill — bordered+filled chips aren't Atelier
@@ -490,6 +494,7 @@ import { useReleaseNotes } from '../composables/useReleaseNotes'
 import WhatsNewModal from './WhatsNewModal.vue'
 import { captioningEnabledRef } from '../appConfig'
 import GlobalSearchBox from './search/GlobalSearchBox.vue'
+import ProviderManagerButton from './ProviderManagerButton.vue'
 import Spinner from './ui/Spinner.vue'
 import Modal from './ui/Modal.vue'
 import { formatEta } from '../utils/timeFormat'

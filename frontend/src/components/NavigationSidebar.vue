@@ -1338,6 +1338,7 @@ function getToolSubtitle(fullToolId: string): string {
   const availability = getToolAvailability(fullToolId)
   const provider = getToolProvider(fullToolId)
   if (availability === 'disconnected') return `${provider} · disconnected`
+  if (availability === 'needs_setup') return `${provider} · not ready`
   if (availability !== 'available') return `${provider} · not configured`
   return provider
 }
@@ -2340,19 +2341,20 @@ async function loadSavedViews() {
 // list) into the lookup maps using the persisted pin metadata, so they still
 // show their provider identity and read as "not configured". Never overrides a
 // live entry.
-function mergePinFallbacks(toolsMap: Map<string, any>, availabilityMap: Map<string, string>) {
+function mergePinFallbacks(toolsMap: Map<string, any>, availabilityMap: Map<string, string>, needsSetup: Set<string> = new Set()) {
   for (const pin of pinnedTools.value as any[]) {
+    const fallback = needsSetup.has(pin.full_tool_id) ? 'needs_setup' : 'unconfigured'
     if (!toolsMap.has(pin.full_tool_id)) {
       toolsMap.set(pin.full_tool_id, {
         full_tool_id: pin.full_tool_id,
         provider_id: pin.provider_id,
         provider_name: pin.provider_name,
         task_types: pin.task_types || [],
-        availability: 'unconfigured',
+        availability: fallback,
       })
     }
     if (!availabilityMap.has(pin.full_tool_id)) {
-      availabilityMap.set(pin.full_tool_id, 'unconfigured')
+      availabilityMap.set(pin.full_tool_id, fallback)
     }
   }
 }
@@ -2381,14 +2383,20 @@ async function loadPinnedTools() {
 
 async function loadToolAvailability() {
   try {
-    const { tools } = await fetchProvidersAndTools()
+    const { providers, tools } = await fetchProvidersAndTools()
     const availabilityMap = new Map<string, string>()
     const toolsMap = new Map<string, any>()
     for (const tool of tools) {
       availabilityMap.set(tool.full_tool_id, tool.availability || 'available')
       toolsMap.set(tool.full_tool_id, tool)
     }
-    mergePinFallbacks(toolsMap, availabilityMap)
+    // Tools a connected provider knows about but that can't run yet (missing
+    // models/nodes — STP tool_status). Unavailable, but the pin should say why.
+    const needsSetup = new Set<string>()
+    for (const p of providers || []) {
+      for (const tid of (p as any).needs_setup_tool_ids || []) needsSetup.add(`${p.provider_id}:${tid}`)
+    }
+    mergePinFallbacks(toolsMap, availabilityMap, needsSetup)
     toolAvailabilityMap.value = availabilityMap
     allToolsMap.value = toolsMap
     liveToolsLoaded.value = true

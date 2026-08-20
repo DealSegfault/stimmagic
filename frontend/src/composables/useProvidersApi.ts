@@ -38,6 +38,14 @@ export interface Provider {
   status: ProviderStatus
   tool_count: number
   max_concurrent: number
+  // STP presentation / provider state (absent for providers without them)
+  state?: 'ready' | 'in_progress' | 'warning' | 'error' | null
+  state_summary?: string | null
+  attention?: 'update_available' | null
+  management_url?: string | null
+  icon?: string | null
+  needs_setup_count?: number
+  needs_setup_tool_ids?: string[]
 }
 
 /**

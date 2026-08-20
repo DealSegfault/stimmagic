@@ -163,6 +163,7 @@ from routes import (
     user_tools,
     tunnel,
     gateway,
+    provider_manage,
 )
 
 log.info(f"TIMING: routes imported at {time.time() - _startup_time:.2f}s")
@@ -179,6 +180,7 @@ async def root():
 
 # Include all routers
 app.include_router(auth.router)
+app.include_router(provider_manage.router)
 app.include_router(assets.router)
 app.include_router(boards.router)
 app.include_router(cloud.router)

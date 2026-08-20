@@ -338,6 +338,27 @@ class JsonRpcProviderManager:
 
             provider._on_tools_changed = on_tools_changed
 
+            async def on_state_changed(p):
+                from utils.websocket import ws_manager
+                await ws_manager.broadcast("provider_state_changed", {
+                    "provider_id": provider_id,
+                    "state": p.provider_state,
+                    "summary": p.provider_state_summary,
+                    "attention": p.provider_attention,
+                }, include_profile=False)
+
+            provider._on_state_changed = on_state_changed
+
+            async def on_notification(p, note):
+                from utils.websocket import ws_manager
+                await ws_manager.broadcast("provider_notification", {
+                    "provider_id": provider_id,
+                    "provider_name": p.provider_name,
+                    **note,
+                }, include_profile=False)
+
+            provider._on_notification = on_notification
+
             await provider.connect()
 
             # Register with provider registry

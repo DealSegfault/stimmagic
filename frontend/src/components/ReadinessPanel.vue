@@ -90,6 +90,7 @@
                 </div>
                 <div class="mt-6">
                   <AIServicesSection
+                    ref="aiServicesSection"
                     :llm-settings="settings?.llm_settings || []"
                     :setup-required="!llmReady"
                     wizard
@@ -110,6 +111,7 @@
                 </div>
                 <div class="mt-6">
                   <ToolProvidersSection
+                    ref="toolProvidersSection"
                     :providers="settings?.tool_providers || []"
                     :setup-required="!generationReady"
                     wizard
@@ -189,7 +191,8 @@
               </button>
               <button
                 type="button"
-                class="rounded-lg px-5 py-2.5 text-sm font-semibold text-white"
+                :disabled="primaryBusy"
+                class="rounded-lg px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-wait disabled:opacity-70"
                 :class="step === 'complete' && allReady
                   ? 'bg-gradient-to-r from-teal-600 via-cyan-500 to-indigo-500 shadow-lg shadow-cyan-500/15 hover:from-teal-500 hover:via-cyan-400 hover:to-indigo-400'
                   : 'bg-accent hover:bg-accent/90 shadow-lg shadow-accent/15'"
@@ -364,10 +367,15 @@ const settings = ref(null)
 const loading = ref(false)
 const loadError = ref('')
 const panelVisible = ref(false)
+const primaryBusy = ref(false)
+const aiServicesSection = ref(null)
+const toolProvidersSection = ref(null)
+const pendingToolProviderWrites = new Set()
 const llmReady = computed(() => Boolean(readiness.value?.has_agent_llm))
 const generationReady = computed(() => Boolean(readiness.value?.has_generation))
 const allReady = computed(() => llmReady.value && generationReady.value)
 const primaryActionLabel = computed(() => {
+  if (primaryBusy.value) return 'Saving…'
   if (step.value === 'welcome') return 'Get started'
   if (step.value === 'llm' || step.value === 'generation') return 'Continue'
   if (step.value === 'folders') return 'Continue'
@@ -414,11 +422,28 @@ function goBack() {
 }
 
 async function handlePrimaryAction() {
-  if (step.value === 'welcome') return goToStep('llm')
-  if (step.value === 'llm') return goToStep('generation')
-  if (step.value === 'generation') return goToStep('folders')
-  if (step.value === 'folders') return goToStep('complete')
-  dismissWizard()
+  if (primaryBusy.value) return
+  primaryBusy.value = true
+  try {
+    if (step.value === 'welcome') return await goToStep('llm')
+    if (step.value === 'llm') {
+      const saved = await aiServicesSection.value?.commitWizardStep?.()
+      if (saved === false) return
+      return await goToStep('generation')
+    }
+    if (step.value === 'generation') {
+      await toolProvidersSection.value?.commitWizardStep?.()
+      if (pendingToolProviderWrites.size) {
+        const saved = await Promise.all([...pendingToolProviderWrites])
+        if (saved.includes(false)) return
+      }
+      return await goToStep('folders')
+    }
+    if (step.value === 'folders') return await goToStep('complete')
+    dismissWizard()
+  } finally {
+    primaryBusy.value = false
+  }
 }
 
 function dismissWizard() {
@@ -458,7 +483,17 @@ async function handleFolderRescan() {
   }
 }
 
-async function handleToolProviderUpdate({ providerId, data }) {
+function trackToolProviderWrite(operation) {
+  pendingToolProviderWrites.add(operation)
+  operation.finally(() => pendingToolProviderWrites.delete(operation))
+  return operation
+}
+
+function handleToolProviderUpdate(payload) {
+  return trackToolProviderWrite(persistToolProviderUpdate(payload))
+}
+
+async function persistToolProviderUpdate({ providerId, data }) {
   const originalProvider = settings.value?.tool_providers.find(provider => provider.id === providerId)
   const startsConnection = toolProviderUpdateStartsConnection(data)
   if (settings.value) {
@@ -472,6 +507,7 @@ async function handleToolProviderUpdate({ providerId, data }) {
   try {
     await updateToolProvider(providerId, data)
     await refreshReadiness()
+    return true
   } catch (error) {
     console.error('Failed to persist tool provider:', error)
     if (settings.value && originalProvider) {
@@ -480,10 +516,15 @@ async function handleToolProviderUpdate({ providerId, data }) {
         tool_providers: settings.value.tool_providers.map(provider => provider.id === providerId ? originalProvider : provider),
       }
     }
+    return false
   }
 }
 
-async function handleToolProviderCreate(providerConfig) {
+function handleToolProviderCreate(providerConfig) {
+  return trackToolProviderWrite(persistToolProviderCreate(providerConfig))
+}
+
+async function persistToolProviderCreate(providerConfig) {
   const temporaryProvider = {
     id: providerConfig.id,
     name: providerConfig.name || providerConfig.id,
@@ -500,11 +541,13 @@ async function handleToolProviderCreate(providerConfig) {
   try {
     await createToolProvider(providerConfig)
     await refreshWizardState()
+    return true
   } catch (error) {
     if (settings.value) {
       settings.value = { ...settings.value, tool_providers: settings.value.tool_providers.filter(provider => provider.id !== providerConfig.id) }
     }
     addToast(error.message || 'Could not add provider', 'error')
+    return false
   }
 }
 

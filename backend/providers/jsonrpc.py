@@ -761,6 +761,19 @@ class JsonRpcProvider(ToolProvider):
         self._server: Optional[str] = None          # software identifier, e.g. "ComfyUI-Stimma/1.2.3"
         self._stp_version: Optional[str] = None      # protocol version the provider speaks
         self._capabilities: dict = {}
+        # Presentation hints (STP `presentation`): icon data URI + management URL
+        self._presentation: dict = {}
+        self._management_url: Optional[str] = None   # absolute, resolved against the WS origin
+        # Provider-level state (STP provider.state): ready | in_progress | warning | error
+        self._provider_state: str = "ready"
+        self._provider_state_summary: Optional[str] = None
+        self._provider_attention: Optional[str] = None
+        # Callbacks (set by the registry) for state changes and notifications
+        self._on_state_changed: Optional[Callable] = None
+        self._on_notification: Optional[Callable] = None
+        # needs_setup tools the provider listed and we dropped (ids)
+        self._needs_setup_count: int = 0
+        self._needs_setup_ids: List[str] = []
 
     @property
     def provider_id(self) -> str:
@@ -773,6 +786,42 @@ class JsonRpcProvider(ToolProvider):
     @property
     def capabilities(self) -> Dict[str, Any]:
         return self._capabilities
+
+    @property
+    def presentation(self) -> Dict[str, Any]:
+        return self._presentation
+
+    @property
+    def management_url(self) -> Optional[str]:
+        """Absolute URL of the provider's management UI, if it advertised one."""
+        return self._management_url
+
+    @property
+    def provider_state(self) -> str:
+        return self._provider_state
+
+    @property
+    def provider_state_summary(self) -> Optional[str]:
+        return self._provider_state_summary
+
+    @property
+    def provider_attention(self) -> Optional[str]:
+        return self._provider_attention
+
+    @property
+    def needs_setup_count(self) -> int:
+        return self._needs_setup_count
+
+    @property
+    def needs_setup_tool_ids(self) -> List[str]:
+        return list(self._needs_setup_ids)
+
+    @property
+    def management_auth_headers(self) -> Dict[str, str]:
+        """Headers the manage proxy should forward (provider auth token)."""
+        cfg = self._config
+        token = getattr(cfg, "auth_token", None)
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     @property
     def provider_type(self) -> str:
@@ -997,6 +1046,57 @@ class JsonRpcProvider(ToolProvider):
                     provider=self.provider_id,
                 )
 
+        elif method == "provider.state":
+            state = params.get("state")
+            if state in ("ready", "in_progress", "warning", "error"):
+                summary = params.get("summary")
+                attention = params.get("attention")
+                if attention != "update_available":
+                    attention = None
+                changed = (
+                    (state != self._provider_state)
+                    or (summary != self._provider_state_summary)
+                    or (attention != self._provider_attention)
+                )
+                self._provider_state = state
+                self._provider_state_summary = summary if isinstance(summary, str) else None
+                self._provider_attention = attention
+                log.info(
+                    "provider state",
+                    provider=self.provider_id,
+                    state=state,
+                    summary=self._provider_state_summary,
+                    attention=self._provider_attention,
+                )
+                if changed and self._on_state_changed:
+                    try:
+                        r = self._on_state_changed(self)
+                        if asyncio.iscoroutine(r):
+                            asyncio.create_task(r)
+                    except Exception as e:
+                        log.debug("provider state callback failed", error=str(e))
+            else:
+                log.debug("ignoring malformed provider.state", params=params)
+
+        elif method == "provider.notify":
+            if isinstance(params.get("title"), str) and params.get("title"):
+                note = {
+                    "id": str(params.get("id") or uuid.uuid4()),
+                    "level": params.get("level") if params.get("level") in ("info", "warning", "error") else "info",
+                    "title": params["title"],
+                    "body": params.get("body") if isinstance(params.get("body"), str) else None,
+                    "action": params.get("action") if params.get("action") in ("manage",) else None,
+                    "anchor": params.get("anchor") if isinstance(params.get("anchor"), str) else None,
+                }
+                log.info("provider notification", provider=self.provider_id, title=note["title"], level=note["level"])
+                if self._on_notification:
+                    try:
+                        r = self._on_notification(self, note)
+                        if asyncio.iscoroutine(r):
+                            asyncio.create_task(r)
+                    except Exception as e:
+                        log.debug("provider notify callback failed", error=str(e))
+
         elif method == "tools.changed":
             log.info("provider tools changed, refreshing", provider=self.provider_id)
             # Run in a detached task — refresh_tools() sends a tools.refresh RPC
@@ -1054,6 +1154,11 @@ class JsonRpcProvider(ToolProvider):
             self._reported_name = params.get("provider_name") or params.get("provider_id")
             self._stp_version = params.get("stp_version")
             self._server = params.get("server")
+            self._presentation = params.get("presentation") if isinstance(params.get("presentation"), dict) else {}
+            self._management_url = None
+            self._provider_state = "ready"
+            self._provider_state_summary = None
+            self._provider_attention = None
 
             # For WebSocket transport, parse asset_endpoint from provider
             # Provider hosts assets and tells us where to upload/download
@@ -1067,6 +1172,19 @@ class JsonRpcProvider(ToolProvider):
                         # Relative path - construct URL from WebSocket origin
                         self._asset_base_url = f"{self._transport.origin}{asset_endpoint.rstrip('/')}"
                     log.info(f"Provider asset URL: {self._asset_base_url}")
+                # management_url resolves the same way as asset_endpoint:
+                # relative → against the origin WE connected to (never the
+                # provider's idea of its own address).
+                murl = self._presentation.get("management_url")
+                if isinstance(murl, str) and murl:
+                    if murl.startswith("http://") or murl.startswith("https://"):
+                        self._management_url = murl
+                    else:
+                        self._management_url = f"{self._transport.origin}/{murl.lstrip('/')}"
+            else:
+                murl = self._presentation.get("management_url")
+                if isinstance(murl, str) and (murl.startswith("http://") or murl.startswith("https://")):
+                    self._management_url = murl
 
             # Send registration response. preview_frames advertises that this
             # host understands in-flight preview frames at all; whether it
@@ -1080,6 +1198,11 @@ class JsonRpcProvider(ToolProvider):
                     "capabilities": {
                         "parameter_options": True,
                         "preview_frames": True,
+                        # We accept needs_setup tools on the wire (and drop
+                        # them at ingestion — not-ready tools are unavailable
+                        # everywhere in Stimma; the provider's manager UI owns
+                        # setup).
+                        "tool_status": True,
                     },
                 },
                 "id": message.get("id"),
@@ -1209,9 +1332,20 @@ class JsonRpcProvider(ToolProvider):
         - Tools with invalid schemas are rejected entirely
         """
         validated_tools = []
+        needs_setup = 0
+        needs_setup_ids: List[str] = []
 
         for tool_data in tools_data:
             tool_id = tool_data.get("id", "unknown")
+            # STP tool_status: tools the provider lists but that can't run
+            # yet (missing models/nodes). Stimma treats them as unavailable —
+            # never in pickers, never executable — so they stop here. Setup
+            # is the provider's manager UI's job.
+            if tool_data.get("status") == "needs_setup":
+                needs_setup += 1
+                if isinstance(tool_id, str):
+                    needs_setup_ids.append(tool_id)
+                continue
             parameter_schema = tool_data.get("parameter_schema", {})
             output_schema = tool_data.get("output_schema", {})
 
@@ -1292,7 +1426,12 @@ class JsonRpcProvider(ToolProvider):
                 )
             )
 
-        rejected_count = len(tools_data) - len(validated_tools)
+        self._needs_setup_count = needs_setup
+        self._needs_setup_ids = needs_setup_ids
+        if needs_setup:
+            log.info("provider listed needs_setup tools (kept off the tool surface)", provider=self.provider_id, count=needs_setup)
+
+        rejected_count = len(tools_data) - len(validated_tools) - needs_setup
         if rejected_count > 0:
             log.warning(
                 "tools validation summary",
