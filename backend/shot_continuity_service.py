@@ -14,10 +14,20 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import GenerationJob, MediaItem, ProjectDirectionEvent
+from database import (
+    Asset,
+    AssetMarker,
+    AssetRevision,
+    GenerationJob,
+    Marker,
+    MediaItem,
+    ProjectDirectionEvent,
+    ProjectScene,
+    ProjectShot,
+)
 
 
 VIDEO_FORMATS = {"mp4", "webm", "mov", "avi", "mkv", "ogg"}
@@ -50,6 +60,25 @@ async def latest_shot_acceptance(
     shot_number: int,
 ) -> dict[str, Any] | None:
     """Return the latest accepted output for one exact shot coordinate."""
+    canonical = await session.scalar(
+        select(ProjectShot).where(
+            ProjectShot.project_id == project_id,
+            ProjectShot.scene_id == scene_id,
+            ProjectShot.shot_number == shot_number,
+            ProjectShot.deleted_at.is_(None),
+            ProjectShot.accepted_media_id.is_not(None),
+        )
+    )
+    if canonical is not None:
+        return {
+            "project_id": project_id,
+            "scene_id": scene_id,
+            "shot_number": shot_number,
+            "media_id": canonical.accepted_media_id,
+            "last_frame_media_id": canonical.accepted_last_frame_media_id or canonical.accepted_media_id,
+            "accepted_at": canonical.updated_at.isoformat() if canonical.updated_at else None,
+            "canonical_shot_id": canonical.id,
+        }
     result = await session.execute(
         select(ProjectDirectionEvent)
         .where(
@@ -78,13 +107,43 @@ async def latest_previous_shot_acceptance(
     scene_id: int,
     shot_number: int,
 ) -> dict[str, Any] | None:
-    if shot_number <= 1:
+    current_shot = await session.scalar(
+        select(ProjectShot).where(
+            ProjectShot.project_id == project_id,
+            ProjectShot.scene_id == scene_id,
+            ProjectShot.shot_number == shot_number,
+            ProjectShot.deleted_at.is_(None),
+        )
+    )
+    if current_shot is None:
         return None
+    ordered_shots = (await session.execute(
+        select(ProjectShot)
+        .join(ProjectScene, ProjectScene.id == ProjectShot.scene_id)
+        .where(
+            ProjectShot.project_id == project_id,
+            ProjectShot.deleted_at.is_(None),
+            ProjectScene.project_id == project_id,
+        )
+        .order_by(
+            ProjectScene.sequence_number,
+            ProjectScene.scene_number,
+            ProjectShot.shot_number,
+            ProjectShot.id,
+        )
+    )).scalars().all()
+    current_index = next(
+        (index for index, shot in enumerate(ordered_shots) if shot.id == current_shot.id),
+        None,
+    )
+    if current_index is None or current_index == 0:
+        return None
+    previous_shot = ordered_shots[current_index - 1]
     return await latest_shot_acceptance(
         session,
         project_id=project_id,
-        scene_id=scene_id,
-        shot_number=shot_number - 1,
+        scene_id=previous_shot.scene_id,
+        shot_number=previous_shot.shot_number,
     )
 
 
@@ -101,7 +160,9 @@ def build_shot_generation_contract(
     duration = parse_shot_duration(current.get("duration"))
     context = scene.get("context") if isinstance(scene.get("context"), dict) else {}
     generation = context.get("generation") if isinstance(context.get("generation"), dict) else {}
-    dimensions = generation.get("dimensions") or context.get("dimensions")
+    dimensions = current.get("dimensions") or generation.get("dimensions") or context.get("dimensions")
+    if not dimensions and current.get("width") and current.get("height"):
+        dimensions = [current["width"], current["height"]]
     if not (
         isinstance(dimensions, (list, tuple))
         and len(dimensions) == 2
@@ -115,10 +176,7 @@ def build_shot_generation_contract(
     allowed_ids = [item.get("media_id") for item in reference_manifest if item.get("media_id")]
     previous_row = shot_context.get("previous") or {}
     workflow = "direct_reference_to_video"
-    if (
-        "insert" in str(previous_row.get("description") or "").casefold()
-        and any(token in str(current.get("description") or "").casefold() for token in ("medium", "close", "retour", "return"))
-    ):
+    if bool(current.get("requires_keyframe_composition")) or bool(shot_context.get("requires_keyframe_composition")):
         workflow = "compose_opening_keyframe_then_i2v"
     return {
         "version": 1,
@@ -126,6 +184,7 @@ def build_shot_generation_contract(
         "scene_id": scene.get("id"),
         "sequence_number": scene.get("sequence_number"),
         "scene_number": scene.get("scene_number"),
+        "shot_id": current.get("id"),
         "shot_number": shot_context.get("shot_number"),
         "expected_duration": duration,
         "expected_dimensions": [int(dimensions[0]), int(dimensions[1])],
@@ -133,7 +192,11 @@ def build_shot_generation_contract(
         "allowed_reference_media_ids": list(dict.fromkeys(int(value) for value in allowed_ids)),
         "previous_accepted": previous_acceptance,
         "previous_last_frame_media_id": previous_frame_id,
-        "requires_previous_last_frame": bool(shot_context.get("previous")) and shot_context.get("shot_number", 1) > 1,
+        "requires_previous_last_frame": (
+            current.get("transition_policy", "continuity") != "independent"
+            and bool(shot_context.get("previous"))
+            and shot_context.get("shot_number", 1) > 1
+        ),
         "current_script_row": current,
         "previous_script_row": shot_context.get("previous"),
         "workflow": workflow,
@@ -176,10 +239,21 @@ def validate_generation_request(
                 f"First run image-to-image with input_images={manifest_ids}, then run I2V with only the returned keyframe.media_id."
             )
         elif "image-to-video" in task_name:
-            if len(input_media_ids) != 1 or not (set(input_media_ids) & current_run_ids):
+            opening_keyframe_id = contract.get("opening_keyframe_media_id")
+            if not opening_keyframe_id:
                 errors.append(
-                    "workflow mismatch: I2V must receive exactly one opening keyframe generated in the current run; "
-                    "do not pass the previous-shot anchor or the full reference manifest directly to I2V"
+                    "workflow mismatch: the composed shot has no bound opening_keyframe_media_id; "
+                    "the image edit must succeed and bind its returned media before I2V"
+                )
+            elif len(input_media_ids) != 1 or int(input_media_ids[0]) != int(opening_keyframe_id):
+                errors.append(
+                    "workflow mismatch: I2V must receive exactly the bound opening keyframe "
+                    f"media {int(opening_keyframe_id)}; received {input_media_ids or 'no media references'}"
+                )
+            elif int(opening_keyframe_id) not in current_run_ids:
+                errors.append(
+                    "workflow mismatch: the bound opening keyframe is not present in the current run; "
+                    "do not reuse a stale keyframe from another run"
                 )
         elif is_image_composition:
             previous_frame_id = contract.get("previous_last_frame_media_id")
@@ -277,7 +351,32 @@ async def record_shot_acceptance(
     generation_job_id: int | None = None,
     last_frame_media_id: int | None = None,
 ) -> None:
-    """Append the accepted shot output and its continuity anchor."""
+    """Update the canonical shot and retain an audit event for compatibility."""
+    shot = None
+    if contract.get("shot_id"):
+        shot = await session.scalar(
+            select(ProjectShot).where(
+                ProjectShot.id == int(contract["shot_id"]),
+                ProjectShot.project_id == int(contract["project_id"]),
+                ProjectShot.deleted_at.is_(None),
+            )
+        )
+    if shot is None and contract.get("scene_id") is not None and contract.get("shot_number") is not None:
+        shot = await session.scalar(
+            select(ProjectShot).where(
+                ProjectShot.project_id == int(contract["project_id"]),
+                ProjectShot.scene_id == int(contract["scene_id"]),
+                ProjectShot.shot_number == int(contract["shot_number"]),
+                ProjectShot.deleted_at.is_(None),
+            )
+        )
+    if shot is not None:
+        shot.accepted_media_id = int(media_id)
+        shot.accepted_last_frame_media_id = int(last_frame_media_id or media_id)
+        shot.status = "complete"
+        shot.validation_status = "approved"
+        shot.revision += 1
+        shot.updated_at = datetime.utcnow()
     payload = {
         "project_id": contract.get("project_id"),
         "scene_id": contract.get("scene_id"),
@@ -290,14 +389,23 @@ async def record_shot_acceptance(
         "reference_manifest": contract.get("reference_manifest") or [],
         "accepted_at": datetime.utcnow().isoformat(),
     }
-    session.add(ProjectDirectionEvent(
-        project_id=int(contract["project_id"]),
-        scene_id=contract.get("scene_id"),
-        generation_job_id=generation_job_id,
-        kind="shot_accepted",
-        actor="agent",
-        payload=json.dumps(payload),
-    ))
+    existing = await session.scalar(
+        select(ProjectDirectionEvent).where(
+            ProjectDirectionEvent.project_id == int(contract["project_id"]),
+            ProjectDirectionEvent.scene_id == contract.get("scene_id"),
+            ProjectDirectionEvent.kind == "shot_accepted",
+            ProjectDirectionEvent.generation_job_id == generation_job_id,
+        ).limit(1)
+    ) if generation_job_id is not None else None
+    if existing is None:
+        session.add(ProjectDirectionEvent(
+            project_id=int(contract["project_id"]),
+            scene_id=contract.get("scene_id"),
+            generation_job_id=generation_job_id,
+            kind="shot_accepted",
+            actor="agent",
+            payload=json.dumps(payload),
+        ))
     await session.commit()
 
 
@@ -308,6 +416,111 @@ async def generation_job_for_media(session: AsyncSession, media_id: int) -> Gene
         .order_by(desc(GenerationJob.completed_at), desc(GenerationJob.id))
         .limit(1)
     )
+
+
+async def list_shot_generation_candidates(
+    session: AsyncSession,
+    *,
+    project_id: int,
+    scene_id: int,
+    shot_number: int,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Return recent completed outputs that carry an exact shot contract."""
+    shot_path = "$.prompt_metadata.shot_contract.shot_number"
+    scene_path = "$.prompt_metadata.shot_contract.scene_id"
+    direction_scene_path = "$._direction_scene_id"
+    exact_filter = [
+        GenerationJob.project_id == project_id,
+        GenerationJob.status == "completed",
+        GenerationJob.result_media_id.is_not(None),
+        func.json_extract(GenerationJob.parameters, '$._ephemeral_run_id').is_(None),
+        func.json_extract(GenerationJob.parameters, shot_path) == int(shot_number),
+        or_(
+            func.json_extract(GenerationJob.parameters, scene_path) == int(scene_id),
+            func.json_extract(GenerationJob.parameters, direction_scene_path) == int(scene_id),
+        ),
+    ]
+    result = await session.execute(
+        select(GenerationJob, MediaItem)
+        .outerjoin(MediaItem, GenerationJob.result_media_id == MediaItem.id)
+        .where(*exact_filter)
+        .order_by(GenerationJob.completed_at.desc(), GenerationJob.created_at.desc(), GenerationJob.id.desc())
+        .limit(max(1, min(int(limit), 20)))
+    )
+    rows = result.all()
+    match_confidence = "exact_shot"
+    if not rows:
+        # Older jobs may predate shot_contract.scene_id/shot_number metadata.
+        # Keep the answer useful without pretending those scene-level outputs
+        # are an exact match; the agent can present them as review candidates.
+        result = await session.execute(
+            select(GenerationJob, MediaItem)
+            .outerjoin(MediaItem, GenerationJob.result_media_id == MediaItem.id)
+            .where(
+                GenerationJob.project_id == project_id,
+                GenerationJob.status == "completed",
+                GenerationJob.result_media_id.is_not(None),
+                func.json_extract(GenerationJob.parameters, '$._ephemeral_run_id').is_(None),
+                func.json_extract(GenerationJob.parameters, direction_scene_path) == int(scene_id),
+            )
+            .order_by(GenerationJob.completed_at.desc(), GenerationJob.created_at.desc(), GenerationJob.id.desc())
+            .limit(max(1, min(int(limit), 20)))
+        )
+        rows = result.all()
+        match_confidence = "scene_recent"
+    if not rows:
+        return []
+
+    media_ids = [int(media.id) for _, media in rows if media is not None]
+    revision_rows = (await session.execute(
+        select(AssetRevision.primary_media_id, Asset.id)
+        .join(Asset, Asset.id == AssetRevision.asset_id)
+        .where(AssetRevision.primary_media_id.in_(media_ids), AssetRevision.deleted_at.is_(None))
+    )).all() if media_ids else []
+    asset_by_media = {int(media_id): int(asset_id) for media_id, asset_id in revision_rows}
+    asset_ids = list(asset_by_media.values())
+    favorite_asset_ids: set[int] = set()
+    if asset_ids:
+        marker_rows = (await session.execute(
+            select(AssetMarker.asset_id)
+            .join(Marker, Marker.id == AssetMarker.marker_id)
+            .where(
+                AssetMarker.asset_id.in_(asset_ids),
+                AssetMarker.deleted_at.is_(None),
+                func.lower(Marker.name).in_(("favorite", "like", "liked")),
+            )
+        )).all()
+        favorite_asset_ids = {int(row[0]) for row in marker_rows}
+
+    accepted = await latest_shot_acceptance(
+        session, project_id=project_id, scene_id=scene_id, shot_number=shot_number
+    )
+    accepted_media_id = int(accepted["media_id"]) if accepted and accepted.get("media_id") else None
+    accepted_last_frame_id = int(accepted["last_frame_media_id"]) if accepted and accepted.get("last_frame_media_id") else None
+    candidates: list[dict[str, Any]] = []
+    for job, media in rows:
+        if media is None:
+            continue
+        media_id = int(media.id)
+        asset_id = asset_by_media.get(media_id)
+        candidates.append({
+            "index": len(candidates) + 1,
+            "job_id": int(job.id),
+            "media_id": media_id,
+            "asset_id": asset_id,
+            "task_type": job.task_type,
+            "status": job.status,
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "file_format": media.file_format,
+            "is_favorite": bool(asset_id and asset_id in favorite_asset_ids),
+            "is_accepted": media_id == accepted_media_id,
+            "last_frame_media_id": accepted_last_frame_id if media_id == accepted_media_id else None,
+            "media_deleted": bool(media.deleted_at),
+            "match_confidence": match_confidence,
+        })
+    return candidates
 
 
 async def ensure_last_frame_media(

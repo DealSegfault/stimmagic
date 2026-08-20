@@ -2,7 +2,7 @@
   <div class="flex flex-col h-full bg-base relative">
     <!-- Control Strip (top bar) - suppressed when embedded -->
     <ChatControlStrip
-      v-if="!embedded"
+      v-if="!embedded && chatId !== null"
       :chat-name="chat?.name || ''"
       :chat-id="chatId"
       :view-mode="viewMode"
@@ -21,12 +21,14 @@
 
     <!-- Requirements & Assets Drawer for Active Project -->
     <ProjectRequirementsDrawer
-      v-if="!embedded"
+      v-if="!embedded && chat?.project_id"
       :open="requirementsDrawerVisible"
-      :project-id="chat?.project_id || 1"
+      :project-id="chat.project_id"
       :project-name="elementProjectName || chat?.name || 'Projet Actif'"
       @close="requirementsDrawerVisible = false"
       @send-to-chat="handleSendFromDrawer"
+      @open-production="router.push({ name: 'project-production', params: { id: chat?.project_id } })"
+      @open-production-shot="(shotId) => router.push({ name: 'project-production', params: { id: chat?.project_id }, query: { shot: String(shotId) } })"
     />
 
     <!-- Content area: artifact stage (standalone only) + chat column -->
@@ -508,11 +510,12 @@
                     <div
                       v-if="attachment.deleted || (attachment.media_id && isMediaBroken(attachment.media_id))"
                       class="w-full h-full bg-surface flex items-center justify-center"
-                      title="Asset deleted"
+                      title="Asset supprimé"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-6 h-6 text-content-muted">
                         <path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.52.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clip-rule="evenodd" />
                       </svg>
+                      <span class="text-[9px] font-semibold text-content-muted">Asset supprimé</span>
                     </div>
                     <!-- Library media (has media_id) — click opens generation/image details -->
                     <MediaImage
@@ -541,7 +544,9 @@
                     v-for="element in getMessageElementRefs(item)"
                     :key="element.reference_id"
                     :element="element"
+                    :removable="true"
                     compact
+                    @remove="handleRemoveElementFromMessage(item, element)"
                   />
                 </div>
                 <!-- Flow reference chips (parsed from the message header so
@@ -620,31 +625,77 @@
                 <div
                   v-if="getDisplayText(item)"
                   class="bg-surface border border-edge-subtle text-content rounded-lg px-4 py-2 prose prose-sm max-w-none select-text"
+                  @click="handleAssistantMessageClick($event, item.id)"
                 >
-                  <template v-for="(seg, segIdx) in parseMarkdownSegments(getDisplayText(item))" :key="segIdx">
-                    <span v-if="seg.type === 'html'" v-html="seg.content"></span>
-                    <MediaImage
-                      v-else-if="seg.type === 'media'"
-                      :media-id="seg.mediaId"
-                      :thumbnail="true"
-                      :thumbnail-size="512"
-                      container-class="w-[320px] h-[200px] rounded-lg overflow-hidden cursor-pointer my-2"
-                      img-class="w-full h-full object-cover"
-                      @click="openSlideshow(seg.mediaId, 0)"
-                    />
-                  </template>
-                </div>
-                <!-- 1-Click Seedance 2.0 (Chinese) Action Button -->
-                <div v-if="getDisplayText(item)" class="flex items-center gap-2 pt-0.5">
-                  <button
-                    type="button"
-                    @click="generateOrCopySeedancePrompt(item)"
-                    class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-accent/30 bg-accent/10 hover:bg-accent/20 text-accent text-xs font-semibold transition-colors shadow-xs select-none"
-                    :title="hasChinesePrompt(item) ? 'Copier le prompt chinois Seedance 2.0' : 'Convertir en prompt Seedance 2.0 officiel (en chinois, 15s 21:9, Lubezki × Deakins, handles @image, micro-acting)'"
+                  <div
+                    v-if="getAssistantReferencedElements(item).length > 0"
+                    class="not-prose mb-2 flex flex-wrap gap-1.5"
+                    aria-label="Éléments mentionnés dans cette réponse"
                   >
-                    <FilmIcon class="w-3.5 h-3.5" />
-                    <span>{{ hasChinesePrompt(item) ? 'Copier Seedance 2.0 (中文)' : '🎬 Seedance 2.0 (中文)' }}</span>
-                  </button>
+                    <AssistantElementReference
+                      v-for="element in getAssistantReferencedElements(item)"
+                      :key="element.reference_id"
+                      :element="element"
+                      :active="getAssistantElementPreview(item.id)?.reference_id === element.reference_id"
+                      @select="toggleAssistantElementPreview(item.id, element.reference_id)"
+                    />
+                  </div>
+                  <template v-if="getH3PromptPair(item)">
+                    <div class="not-prose space-y-2">
+                      <div class="flex items-center justify-between gap-3 text-xs text-content-muted">
+                        <span class="font-medium text-content-secondary">Prompt H3 bilingue</span>
+                        <span class="text-[11px]">中文 utilisé pour la génération</span>
+                      </div>
+                      <details open class="rounded-md border border-edge-subtle bg-surface-raised/50">
+                        <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-content-secondary">
+                          Version anglaise · référence canonique
+                        </summary>
+                        <div class="border-t border-edge-subtle p-3">
+                          <div class="mb-2 flex justify-end">
+                            <button
+                              type="button"
+                              class="text-[11px] text-content-muted hover:text-content"
+                              @click.stop="copyH3Prompt(item, 'english')"
+                            >{{ copiedH3Prompt === `${item.id}:english` ? 'Copié' : 'Copier' }}</button>
+                          </div>
+                          <pre class="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-content-secondary select-text">{{ getH3PromptPair(item).english }}</pre>
+                        </div>
+                      </details>
+                      <details class="rounded-md border border-accent/25 bg-accent/5">
+                        <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-accent">
+                          中文版本 · prompt envoyé au modèle vidéo
+                        </summary>
+                        <div class="border-t border-accent/20 p-3">
+                          <div class="mb-2 flex justify-end">
+                            <button
+                              type="button"
+                              class="text-[11px] text-accent/80 hover:text-accent"
+                              @click.stop="copyH3Prompt(item, 'chinese')"
+                            >{{ copiedH3Prompt === `${item.id}:chinese` ? 'Copié' : 'Copier' }}</button>
+                          </div>
+                          <pre class="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-content select-text">{{ getH3PromptPair(item).chinese }}</pre>
+                        </div>
+                      </details>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <template v-for="(seg, segIdx) in parseMarkdownSegments(getDisplayText(item))" :key="segIdx">
+                      <span v-if="seg.type === 'html'" v-html="seg.content"></span>
+                      <MediaImage
+                        v-else-if="seg.type === 'media'"
+                        :media-id="seg.mediaId"
+                        :thumbnail="true"
+                        :thumbnail-size="512"
+                        container-class="w-[320px] h-[200px] rounded-lg overflow-hidden cursor-pointer my-2"
+                        img-class="w-full h-full object-cover"
+                        @click="openSlideshow(seg.mediaId, 0)"
+                      />
+                    </template>
+                  </template>
+                  <ElementAssetPreview
+                    v-if="getAssistantElementPreview(item.id)"
+                    :element="getAssistantElementPreview(item.id)"
+                  />
                 </div>
                 <!-- Per-item token usage -->
                 <div v-if="getItemMetadata(item)?.llm_usage" class="text-[10px] text-content-muted font-mono px-1 select-none flex items-center gap-1.5 flex-wrap">
@@ -1325,6 +1376,14 @@
             @select="selectElementReference"
             @created="onElementCreated"
           />
+          <button
+            v-if="chat?.project_id"
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:bg-accent/15"
+            @click="router.push({ name: 'project-production', params: { id: chat.project_id } })"
+          >
+            Production
+          </button>
           <ImageBackendSelector
             :model-value="selectedImageBackend"
             :disabled="savingImageBackend || !chatId"
@@ -1435,7 +1494,6 @@
       @close="showAgentRunTraceModal = false"
     />
 
-
     <!-- Slideshow Mode -->
     <SlideshowMode
       v-if="slideshowState.active"
@@ -1502,6 +1560,8 @@ import ProjectElementsButton from '../components/chat/ProjectElementsButton.vue'
 import ElementMentionMenu from '../components/chat/ElementMentionMenu.vue'
 import ElementReferencesTray from '../components/chat/ElementReferencesTray.vue'
 import ElementReferenceChip from '../components/chat/ElementReferenceChip.vue'
+import ElementAssetPreview from '../components/chat/ElementAssetPreview.vue'
+import AssistantElementReference from '../components/chat/AssistantElementReference.vue'
 import FlowRefChip from '../components/flow/FlowRefChip.vue'
 import { useFlowReferences, formatReferencesForMessage, parseMessageReferences, type FlowReference } from '../composables/useFlowReferences'
 import { useProjectElementsApi, type ProjectElement } from '../composables/useProjectElementsApi'
@@ -1605,7 +1665,7 @@ const { slideshowState, enterSlideshow, exitSlideshow } = useSlideshow()
 const mediaDetailsModal = useMediaDetailsModal()
 const { compareState, enterCompare, exitCompare, swapImages: swapCompareImages } = useCompare()
 
-const chatId = ref(null)
+const chatId = ref<number | null>(null)
 const chat = ref(null)
 const items = ref([])
 const { listElements: listProjectElements } = useProjectElementsApi()
@@ -1614,6 +1674,7 @@ const projectElementsLoading = ref(false)
 const elementProjectName = ref('')
 const pendingElementRefs = useElementReferences(chatId as any)
 const mentionActiveIndex = ref(0)
+const assistantElementPreviewRefs = reactive<Record<string, string>>({})
 // Artifact stage: standalone chats only (see props.embedded guard in template
 // and sendMessage). Instantiated unconditionally — cheap when there's no
 // artifact in the chat — so embedded usage never has to special-case it.
@@ -1634,31 +1695,12 @@ const videoDuration = ref(5)
 const savingVideoSettings = ref(false)
 const requirementsDrawerVisible = ref(false)
 
+
 function handleSendFromDrawer(text: string) {
   messageInput.value = text
   sendMessage()
 }
 
-function hasChinesePrompt(item: any): boolean {
-  const text = getDisplayText(item) || ''
-  return text.includes('提示词') || text.includes('镜头') || text.includes('机位') || text.includes('8K IMAX') || text.includes('【镜头')
-}
-
-async function generateOrCopySeedancePrompt(item: any) {
-  const text = getDisplayText(item) || ''
-  if (hasChinesePrompt(item)) {
-    try {
-      await navigator.clipboard.writeText(text)
-      addToast('Prompt Seedance 2.0 (chinois) copié dans le presse-papier !', 'success', 2500)
-    } catch (e) {
-      console.error('Failed to copy', e)
-    }
-  } else {
-    const req = `Convertis immédiatement ce plan en prompt Seedance 2.0 officiel (en chinois, 15s 21:9, éclairage practicals-only, Lubezki × Deakins, handles @image, micro-acting et synchronisation caméra-émotion) :\n\n"${text.slice(0, 1500)}"`
-    messageInput.value = req
-    sendMessage()
-  }
-}
 const messageHistory = ref([])  // History of sent messages
 const historyIndex = ref(-1)    // -1 = current input, 0+ = history position
 const savedCurrentInput = ref('') // Saves current input when browsing history
@@ -1729,6 +1771,7 @@ const editingItemId = ref(null) // ID of item being edited, null if not editing
 const editingText = ref('') // Current text in inline editor
 const editingMinSize = ref({ width: 0, height: 0 }) // Original bubble size when editing started
 const messageQueue = ref([]) // Queued messages when agent is busy: [{text, attachments}]
+const copiedH3Prompt = ref('')
 let lastSendStartedAt = 0 // When the last POST /items started (watchdog grace period)
 let queueBackoffUntil = 0 // Don't retry a failed queued send before this time
 let queueWatchdogTimer = null // Interval that reconciles state while messages are queued
@@ -3269,6 +3312,87 @@ function onElementCreated(element: ProjectElement) {
   else projectElements.value.unshift(element)
 }
 
+function getAssistantElementPreview(itemId: number | string): ProjectElement | null {
+  const referenceId = assistantElementPreviewRefs[String(itemId)]
+  if (!referenceId) return null
+  return projectElements.value.find((element) => element.reference_id === referenceId) || null
+}
+
+function getAssistantReferencedElements(item: any): ProjectElement[] {
+  if (projectElements.value.length === 0) return []
+
+  const metadata = getItemMetadata(item)
+  const contractManifest = metadata?.shot_contract_reference_manifest
+  if (Array.isArray(contractManifest) && contractManifest.length > 0) {
+    const byReference = new Map(projectElements.value.map((element) => [element.reference_id, element]))
+    return contractManifest
+      .map((reference) => byReference.get(reference?.reference_id))
+      .filter(Boolean)
+  }
+
+  // Never infer a creative reference from ordinary prose. A sentence such as
+  // "no phone" must not attach the phone element to the response. Only an
+  // explicit @mention or stimma-element link is authoritative here.
+  const rawText = String(getDisplayText(item) || '')
+  const explicitIds = []
+  const seen = new Set()
+  const patterns = [
+    /@([a-zA-Z0-9_]+)/g,
+    /stimma-element:([a-zA-Z0-9_]+)/g,
+  ]
+  for (const pattern of patterns) {
+    for (const match of rawText.matchAll(pattern)) {
+      const referenceId = match[1]
+      if (!seen.has(referenceId)) {
+        seen.add(referenceId)
+        explicitIds.push(referenceId)
+      }
+    }
+  }
+  const byReference = new Map(projectElements.value.map((element) => [element.reference_id, element]))
+  return explicitIds.map((referenceId) => byReference.get(referenceId)).filter(Boolean)
+}
+
+function toggleAssistantElementPreview(itemId: number | string, referenceId: string) {
+  const key = String(itemId)
+  if (assistantElementPreviewRefs[key] === referenceId) {
+    delete assistantElementPreviewRefs[key]
+  } else {
+    assistantElementPreviewRefs[key] = referenceId
+  }
+}
+
+function handleAssistantMessageClick(event: MouseEvent, itemId: number | string) {
+  const origin = event.target
+  if (!(origin instanceof Element)) return
+  const shotTrigger = origin.closest<HTMLElement>('[data-stimma-shot]')
+  if (shotTrigger) {
+    event.preventDefault()
+    const mediaId = shotTrigger.dataset.stimmaShot
+    if (!mediaId || !chat.value?.project_id) return
+    // Selecting a candidate is a production action, not a new chat turn. The
+    // Production screen owns the shot identity and the explicit approval gate.
+    router.push({
+      name: 'project-production',
+      params: { id: chat.value.project_id },
+      query: { candidate: mediaId },
+    })
+    return
+  }
+  const trigger = origin.closest<HTMLElement>('[data-stimma-element]')
+  if (!trigger) return
+
+  event.preventDefault()
+  const referenceId = trigger.dataset.stimmaElement
+  if (!referenceId || !projectElements.value.some((element) => element.reference_id === referenceId)) return
+
+  toggleAssistantElementPreview(itemId, referenceId)
+  trigger.setAttribute(
+    'aria-expanded',
+    String(assistantElementPreviewRefs[String(itemId)] === referenceId),
+  )
+}
+
 function selectElementReference(element: ProjectElement) {
   const match = mentionMatch.value
   if (match) {
@@ -3311,6 +3435,9 @@ watch(messageInput, (text) => {
 watch(() => chat.value?.project_id, (projectId, previousProjectId) => {
   if (projectId !== previousProjectId) {
     pendingElementRefs.clear()
+    for (const key of Object.keys(assistantElementPreviewRefs)) {
+      delete assistantElementPreviewRefs[key]
+    }
     loadProjectElements(projectId)
   }
 }, { immediate: true })
@@ -3430,7 +3557,9 @@ function queueMessage() {
     media_id: a.media_id || null,
     asset_id: a.asset_id || null,
     path: a.path || null,
-    filename: a.filename || null
+    filename: a.filename || null,
+    media_type: a.media_type || null,
+    file_format: a.file_format || null
   }))
 
   // Fold any attached flow references into the queued message body. The
@@ -3789,7 +3918,9 @@ async function sendMessage(queuedMessage = null) {
       media_id: a.media_id || null,
       asset_id: a.asset_id || null,
       path: a.path || null,
-      filename: a.filename || null
+      filename: a.filename || null,
+      media_type: a.media_type || null,
+      file_format: a.file_format || null
     }))
   }
 
@@ -4183,6 +4314,43 @@ function getDisplayText(item) {
   return text.trim() || null
 }
 
+const H3_EN_START = '<!-- STIMMA_H3_PROMPT_EN -->'
+const H3_ZH_START = '<!-- STIMMA_H3_PROMPT_ZH -->'
+const H3_END = '<!-- STIMMA_H3_PROMPT_END -->'
+
+function getH3PromptPair(item) {
+  const metadataPair = getItemMetadata(item)?.h3_prompt_pair
+  if (metadataPair?.english && metadataPair?.chinese) {
+    return {
+      english: String(metadataPair.english),
+      chinese: String(metadataPair.chinese),
+    }
+  }
+
+  const text = String(getDisplayText(item) || '')
+  const englishStart = text.indexOf(H3_EN_START)
+  const chineseStart = text.indexOf(H3_ZH_START)
+  const end = text.indexOf(H3_END)
+  if (englishStart < 0 || chineseStart < 0 || end < 0 || !(englishStart < chineseStart && chineseStart < end)) {
+    return null
+  }
+  const english = text.slice(englishStart + H3_EN_START.length, chineseStart).trim()
+  const chinese = text.slice(chineseStart + H3_ZH_START.length, end).trim()
+  return english && chinese ? { english, chinese } : null
+}
+
+async function copyH3Prompt(item, language) {
+  const pair = getH3PromptPair(item)
+  const text = language === 'chinese' ? pair?.chinese : pair?.english
+  if (!text) return
+  const success = await copyToClipboard(text)
+  if (!success) return
+  copiedH3Prompt.value = `${item.id}:${language}`
+  window.setTimeout(() => {
+    if (copiedH3Prompt.value === `${item.id}:${language}`) copiedH3Prompt.value = ''
+  }, 1600)
+}
+
 function isStopEvent(item) {
   const meta = getItemMetadata(item)
   return meta && meta.stop_event
@@ -4222,6 +4390,46 @@ function getMessageElementRefs(item: any): ProjectElement[] {
 }
 function getMessageBodyText(item: any): string {
   return parsedUserMessage(item).text
+}
+
+async function handleRemoveElementFromMessage(item: any, element: ProjectElement) {
+  if (element?.reference_id) {
+    pendingElementRefs.remove(element.reference_id)
+  }
+  if (!item || !item.message_text) return
+
+  const lines = item.message_text.split('\n')
+  const newLines = lines.filter((line: string) => !line.includes(`@${element.reference_id}`))
+  const hasRemainingItems = newLines.some((l: string) => l.startsWith('> - '))
+  const finalLines = hasRemainingItems ? newLines : newLines.filter((l: string) => !l.includes('**Project elements:**'))
+  const newText = finalLines.join('\n').trim()
+
+  item.message_text = newText
+  const metadata = getItemMetadata(item)
+  if (metadata) {
+    if (Array.isArray(metadata.element_media_ids) && element?.media_id) {
+      metadata.element_media_ids = metadata.element_media_ids.filter(
+        (mediaId: unknown) => Number(mediaId) !== Number(element.media_id),
+      )
+    }
+    if (Array.isArray(metadata.element_references) && element?.reference_id) {
+      metadata.element_references = metadata.element_references.filter(
+        (reference: any) => reference?.reference_id !== element.reference_id,
+      )
+    }
+    item.item_metadata = metadata
+  }
+  parsedMessageCache.clear()
+
+  try {
+    await fetch(`/api/chats/items/${item.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message_text: newText, item_metadata: metadata || undefined })
+    })
+  } catch (e) {
+    console.error('Failed to update message after removing element ref', e)
+  }
 }
 
 // Queued messages carry already-baked-in reference headers (queueMessage folds
@@ -4371,9 +4579,20 @@ function parseMediaIdFromHref(href) {
   return null
 }
 
+function parseElementReferenceFromHref(href: string | null | undefined): string | null {
+  const match = String(href || '').match(/^stimma-element:(?:@)?([a-zA-Z0-9_]+)$/)
+  return match ? match[1] : null
+}
+
+function parseShotReferenceFromHref(href: string | null | undefined): string | null {
+  const match = String(href || '').match(/^stimma-shot:(\d+)$/)
+  return match ? match[1] : null
+}
+
 function renderMarkdown(text) {
   if (!text) return ''
   const renderer = new marked.Renderer()
+  const renderDefaultLink = renderer.link.bind(renderer)
   renderer.code = (token) => {
     const code = typeof token === 'string' ? token : (token?.text || '')
     const lang = typeof token === 'string' ? '' : (token?.lang || '')
@@ -4381,6 +4600,22 @@ function renderMarkdown(text) {
     const normalized = language === 'py' ? 'python' : language === 'sh' ? 'bash' : language
     const highlighted = renderHighlightedCode(code, normalized)
     return `<div class="rounded-lg border border-edge-subtle bg-black/20 p-3 overflow-x-auto my-3"><pre class="text-sm leading-6 select-text"><code>${highlighted}</code></pre></div>`
+  }
+  renderer.link = (token) => {
+    const href = typeof token === 'string' ? token : (token?.href || '')
+    const shotMediaId = parseShotReferenceFromHref(href)
+    if (shotMediaId) {
+      const rawLabel = typeof token === 'string' ? 'Sélectionner cette génération' : (token?.text || 'Sélectionner cette génération')
+      return `<button type="button" class="not-prose inline-flex items-center rounded-md border border-accent/35 bg-accent/10 px-2 py-1 text-xs font-medium text-accent no-underline transition-colors duration-150 hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 ring-accent/60" data-stimma-shot="${escapeHtmlAttribute(shotMediaId)}" aria-label="Sélectionner cette génération">${escapeHtml(rawLabel)}</button>`
+    }
+    const referenceId = parseElementReferenceFromHref(href)
+    if (!referenceId) return renderDefaultLink(token as any)
+
+    const element = projectElements.value.find((item) => item.reference_id === referenceId)
+    const rawLabel = typeof token === 'string' ? `@${referenceId}` : (token?.text || `@${referenceId}`)
+    if (!element) return escapeHtml(rawLabel)
+
+    return `<button type="button" class="not-prose inline-flex items-center rounded-md bg-accent/10 px-1.5 py-0.5 font-mono text-xs font-medium text-accent no-underline transition-colors duration-150 hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 ring-accent/60" data-stimma-element="${escapeHtmlAttribute(referenceId)}" aria-expanded="false" aria-label="Afficher l’aperçu de ${escapeHtmlAttribute(element.name)}">${escapeHtml(rawLabel)}</button>`
   }
   renderer.image = (token) => {
     const href = typeof token === 'string' ? token : (token?.href || '')
@@ -4585,6 +4820,26 @@ function handleMediaTrashed(mediaId: number) {
         if (row.output?.media_id === mediaId) {
           row.output.status = 'trashed'
         }
+      }
+    }
+  }
+}
+
+function handleAssetTrashed(data: any) {
+  const mediaIds = data?.media_ids || (data?.media_id ? [data.media_id] : [])
+  const assetIds = new Set(data?.asset_ids || (data?.asset_id ? [data.asset_id] : []))
+  if (assetIds.size > 0) {
+    projectElements.value = projectElements.value.filter(
+      (element) => !assetIds.has(Number(element.asset_id)),
+    )
+  }
+  for (const mediaId of mediaIds) {
+    handleMediaTrashed(Number(mediaId))
+    for (const item of items.value) {
+      const attachments = item.item_metadata?.attachments
+      if (!Array.isArray(attachments)) continue
+      for (const attachment of attachments) {
+        if (Number(attachment.media_id) === Number(mediaId)) attachment.deleted = true
       }
     }
   }
@@ -5748,6 +6003,12 @@ function setupWebSocketSubscriptions() {
     if (!mediaId) return
     handleMediaTrashed(mediaId)
   }))
+
+  // Canonical Asset lifecycle events also carry the affected revision media
+  // IDs, so attachments and generated chat rows can show the deleted state.
+  for (const event of ['asset_trashed', 'asset_deleted', 'assets_trashed', 'asset_identity_deleted']) {
+    wsUnsubscribes.push(onWsEvent(event, handleAssetTrashed))
+  }
 
   // media_bulk_deleted - multiple media items were trashed
   wsUnsubscribes.push(onWsEvent('media_bulk_deleted', (data) => {

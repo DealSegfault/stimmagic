@@ -10,14 +10,14 @@
             <div class="flex items-center gap-2">
               <span class="inline-flex items-center gap-1.5 rounded-full bg-accent/15 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-accent">
                 <FilmIcon class="w-3.5 h-3.5" />
-                Direction
+                Script
               </span>
               <span v-if="direction?.script_name" class="truncate text-xs font-medium text-content-muted">
                 {{ direction.script_name }}
               </span>
             </div>
             <h1 class="text-2xl font-bold tracking-tight text-content">
-              Script, scènes et continuité
+              Script, séquences et continuité
             </h1>
             <p class="text-sm text-content-secondary max-w-2xl leading-relaxed">
               Source de vérité directrice connectée aux boards, chats, contextes IA et générations du projet.
@@ -61,12 +61,12 @@
 
         <!-- Metrics KPI Cards -->
         <div v-if="direction?.progress" class="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4 border-t border-edge-subtle pt-5">
-          <!-- Total Scenes -->
+          <!-- Total Sequences -->
           <div class="rounded-xl border border-edge-subtle bg-base/50 p-3.5">
-            <div class="text-xs text-content-muted font-medium">Scènes totales</div>
+            <div class="text-xs text-content-muted font-medium">Séquences totales</div>
             <div class="mt-1 flex items-baseline gap-1.5">
               <span class="text-xl font-bold text-content">{{ direction.progress.total }}</span>
-              <span class="text-xs text-content-muted">scènes</span>
+              <span class="text-xs text-content-muted">séquences</span>
             </div>
           </div>
 
@@ -116,6 +116,19 @@
           </div>
         </div>
       </header>
+
+      <details
+        v-if="direction?.script_directives"
+        class="rounded-2xl border border-accent/20 bg-accent/[0.04] shadow-sm"
+      >
+        <summary class="cursor-pointer list-none px-5 py-4 text-sm font-semibold text-content">
+          Instructions globales du script
+          <span class="ml-2 text-xs font-normal text-content-muted">hors séquences et plans</span>
+        </summary>
+        <div class="border-t border-accent/15 px-5 py-4">
+          <pre class="whitespace-pre-wrap font-sans text-xs leading-relaxed text-content-secondary">{{ direction.script_directives }}</pre>
+        </div>
+      </details>
 
       <!-- Re-import / Script Import Section -->
       <section
@@ -329,12 +342,43 @@
             <p class="whitespace-pre-wrap font-sans">{{ scene.description }}</p>
           </div>
 
+          <div v-if="scene.shots?.length" class="rounded-lg border border-edge-subtle bg-base/40 p-3">
+            <div class="mb-2 flex items-center justify-between">
+              <div>
+                <h3 class="text-xs font-semibold text-content">Plans individuels</h3>
+                <p class="mt-0.5 text-[11px] text-content-muted">{{ scene.shots.length }} plan(s) canoniques dans cette séquence</p>
+              </div>
+              <button
+                type="button"
+                class="text-[11px] font-semibold text-accent hover:underline"
+                @click="openProduction(scene)"
+              >
+                Ouvrir Production
+              </button>
+            </div>
+            <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              <button
+                v-for="shot in scene.shots"
+                :key="shot.id"
+                type="button"
+                class="flex min-w-0 items-start gap-2 rounded-md border border-edge bg-surface px-2.5 py-2 text-left transition-colors hover:border-accent/50 hover:bg-accent/[0.04]"
+                @click="openProductionShot(shot)"
+              >
+                <span class="shrink-0 font-mono text-[10px] text-accent">P{{ String(shot.shot_number).padStart(2, '0') }}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-[11px] font-medium text-content">{{ shot.title }}</span>
+                  <span class="mt-0.5 block text-[10px] text-content-muted">{{ shot.duration }} s · {{ shot.validation_status === 'approved' ? 'approuvé' : 'à produire' }}</span>
+                </span>
+              </button>
+            </div>
+          </div>
+
           <!-- Prompt Directeur Editor -->
           <div class="rounded-lg border border-edge-subtle bg-base/60 p-3 space-y-2">
             <div class="flex items-center justify-between">
               <label class="flex items-center gap-1.5 text-xs font-medium text-content">
                 <SparklesIcon class="w-3.5 h-3.5 text-accent" />
-                Prompt directeur
+                Notes de séquence (optionnelles)
               </label>
               <span class="text-[10px] text-content-muted">
                 {{ savingSceneId === scene.id ? 'Enregistrement…' : 'Modifications enregistrées automatiquement' }}
@@ -344,7 +388,7 @@
               v-model="scene.prompt"
               rows="2"
               class="w-full rounded-md border border-edge bg-surface px-3 py-1.5 text-xs text-content placeholder:text-content-muted focus:border-accent focus:outline-none transition-colors"
-              placeholder="Définir la direction visuelle, composition, ambiance, focale ou rendu pour cette scène..."
+              placeholder="Ajouter une note commune à la séquence (les prompts des plans sont gérés individuellement dans Production)..."
               @blur="saveScene(scene)"
             />
           </div>
@@ -674,6 +718,18 @@ async function openChat(scene) {
   } finally {
     openingChatId.value = null
   }
+}
+
+function openProduction(scene) {
+  router.push({ name: 'project-production', params: { id: props.project.id } })
+}
+
+function openProductionShot(shot) {
+  router.push({
+    name: 'project-production',
+    params: { id: props.project.id },
+    query: { shot: String(shot.id) }
+  })
 }
 
 function openScriptModal() {

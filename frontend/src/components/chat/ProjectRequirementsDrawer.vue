@@ -2,7 +2,6 @@
 import { computed, ref, watch, onMounted } from 'vue'
 import {
   XMarkIcon,
-  SparklesIcon,
   PlusIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
@@ -11,7 +10,7 @@ import {
   DocumentTextIcon,
   ArrowPathIcon,
   ArrowUpTrayIcon,
-  CommandLineIcon
+  TrashIcon
 } from '@heroicons/vue/24/outline'
 import MediaImage from '../media/MediaImage.vue'
 import { useProjectElementsApi, type ProjectElement, type ProjectElementType } from '../../composables/useProjectElementsApi'
@@ -29,6 +28,8 @@ const emit = defineEmits<{
   close: []
   sendToChat: [text: string]
   generateWithAntigravity: [prompt: string]
+  openProduction: []
+  openProductionShot: [shotId: number]
 }>()
 
 const activeTab = ref<'elements' | 'shots'>('elements')
@@ -39,16 +40,26 @@ const filterType = ref<'all' | ProjectElementType>('all')
 const uploadInput = ref<HTMLInputElement | null>(null)
 const uploadingElement = ref<ProjectElement | null>(null)
 
-const { listElements, createElement } = useProjectElementsApi()
+const { listElements, createElement, deleteElement } = useProjectElementsApi()
 const { getDirection } = useProjectDirectionApi()
 const { fetchAssets } = useAssetApi()
 const mediaDetailsModal = useMediaDetailsModal()
+
+async function handleDeleteElement(el: ProjectElement) {
+  if (!confirm(`Supprimer l'élément @${el.reference_id} (${el.name}) du World State ?`)) return
+  try {
+    await deleteElement(projectEffectiveId.value, el.id)
+    elements.value = elements.value.filter(e => e.id !== el.id)
+  } catch (err) {
+    console.error('Failed to delete element', err)
+  }
+}
 
 function openMediaDetails(mediaId: number) {
   if (mediaId) mediaDetailsModal.open(mediaId)
 }
 
-const projectEffectiveId = computed(() => props.projectId || 1)
+const projectEffectiveId = computed(() => props.projectId || 0)
 
 async function loadData() {
   if (!projectEffectiveId.value) return
@@ -100,27 +111,12 @@ const stats = computed(() => {
   }
 })
 
-function getElementAntigravityPrompt(el: ProjectElement): string {
-  if (el.element_type === 'character') {
-    return `/Users/mac/.local/bin/agy --dangerously-skip-permissions --print 'Character reference sheet for ${el.name}, 3-views (front, side, back profile), clean neutral background, 8k photographic character design'`
-  } else if (el.element_type === 'location') {
-    return `/Users/mac/.local/bin/agy --dangerously-skip-permissions --print 'Architectural location concept and panoramic view of ${el.name}, cinematic lighting, photorealistic interior/exterior details'`
-  } else {
-    return `/Users/mac/.local/bin/agy --dangerously-skip-permissions --print 'Detailed hero prop close-up photo of ${el.name}, macro photography, studio practical lighting, photorealistic'`
-  }
-}
-
 function handleGenerateAntigravity(el: ProjectElement) {
   const prompt = `Génère l'asset de référence @${el.reference_id} (${el.name}, ${el.element_type}) avec Antigravity CLI en respectant les spécifications de notre projet.`
   emit('sendToChat', prompt)
   emit('close')
 }
 
-function handleInsertShotPrompt(shot: any) {
-  const prompt = `Génère le prompt Seedance 2.0 officiel (en chinois, 15s 21:9, éclairage practicals-only, Lubezki × Deakins, handles @image, micro-acting et synchronisation caméra-émotion) pour le Plan ${shot.scene_number || shot.id}: "${shot.title || shot.description || ''}".`
-  emit('sendToChat', prompt)
-  emit('close')
-}
 </script>
 
 <template>
@@ -205,7 +201,7 @@ function handleInsertShotPrompt(shot: any) {
           :class="activeTab === 'shots' ? 'border-accent text-accent' : 'border-transparent text-content-muted hover:text-content'"
         >
           <DocumentTextIcon class="w-3.5 h-3.5" />
-          Scènes & Plans ({{ direction?.scenes?.length || 0 }})
+          Séquences & Plans ({{ direction?.scenes?.length || 0 }})
         </button>
       </div>
 
@@ -251,21 +247,31 @@ function handleInsertShotPrompt(shot: any) {
                 </div>
               </div>
 
-              <!-- Status Badge -->
-              <span
-                v-if="el.asset_id || el.media_id"
-                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400 flex-shrink-0"
-              >
-                <CheckCircleIcon class="w-3 h-3" />
-                Prêt
-              </span>
-              <span
-                v-else
-                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-400 flex-shrink-0"
-              >
-                <ExclamationTriangleIcon class="w-3 h-3" />
-                Manquant
-              </span>
+              <!-- Status Badge & Delete Button -->
+              <div class="flex items-center gap-1.5 flex-shrink-0">
+                <span
+                  v-if="el.asset_id || el.media_id"
+                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400"
+                >
+                  <CheckCircleIcon class="w-3 h-3" />
+                  Prêt
+                </span>
+                <span
+                  v-else
+                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-400"
+                >
+                  <ExclamationTriangleIcon class="w-3 h-3" />
+                  Manquant
+                </span>
+                <button
+                  type="button"
+                  @click.stop="handleDeleteElement(el)"
+                  class="p-1 rounded text-content-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                  :title="`Supprimer @${el.reference_id} du World State`"
+                >
+                  <TrashIcon class="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             <!-- Thumbnail if available -->
@@ -286,15 +292,14 @@ function handleInsertShotPrompt(shot: any) {
             </button>
 
             <!-- Action Buttons -->
-            <div class="flex items-center gap-2 pt-1">
+            <div class="flex flex-wrap items-center gap-1.5 pt-1">
               <button
                 type="button"
                 @click="handleGenerateAntigravity(el)"
-                class="flex-1 inline-flex items-center justify-center gap-1.5 py-1 px-2.5 rounded-lg border border-accent/30 bg-accent/10 hover:bg-accent/20 text-accent text-[11px] font-semibold transition-colors shadow-sm"
-                title="Générer avec Antigravity CLI par défaut"
+                class="inline-flex items-center justify-center p-1 rounded-lg border border-edge bg-surface text-content-muted hover:text-accent hover:bg-overlay-light transition-colors text-[11px]"
+                title="Générer directement avec Antigravity CLI"
               >
-                <SparklesIcon class="w-3.5 h-3.5" />
-                Générer (Agy)
+                <PhotoIcon class="w-3.5 h-3.5" />
               </button>
 
               <button
@@ -312,7 +317,7 @@ function handleInsertShotPrompt(shot: any) {
         <!-- TAB 2: SHOTS & SCENES -->
         <template v-if="activeTab === 'shots'">
           <div v-if="!direction?.scenes?.length" class="text-center py-8 text-xs text-content-muted">
-            Aucune scène synchronisée dans ce projet.
+            Aucune séquence synchronisée dans ce projet.
           </div>
 
           <div
@@ -341,14 +346,31 @@ function handleInsertShotPrompt(shot: any) {
               {{ sc.description }}
             </p>
 
-            <div class="pt-1 flex items-center justify-end">
+            <div v-if="sc.shots?.length" class="space-y-1.5 border-t border-edge-subtle pt-2">
+              <div class="text-[10px] font-semibold uppercase tracking-wide text-content-muted">
+                Plans · {{ sc.shots.length }}
+              </div>
+              <button
+                v-for="shot in sc.shots"
+                :key="shot.id"
+                type="button"
+                class="flex w-full items-center gap-2 rounded-md border border-edge bg-surface px-2 py-1.5 text-left hover:border-accent/50"
+                @click="$emit('openProductionShot', shot.id)"
+              >
+                <span class="font-mono text-[10px] text-accent">P{{ String(shot.shot_number).padStart(2, '0') }}</span>
+                <span class="min-w-0 flex-1 truncate text-[10px] text-content">{{ shot.title }}</span>
+                <span class="shrink-0 text-[10px] text-content-muted">{{ shot.duration }}s</span>
+              </button>
+            </div>
+
+            <div class="pt-1 flex justify-end">
               <button
                 type="button"
-                @click="handleInsertShotPrompt(sc)"
-                class="inline-flex items-center gap-1 py-1 px-2 rounded-lg bg-surface-raised hover:bg-overlay-light border border-edge text-[11px] font-medium text-content transition-colors"
+                class="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent/15"
+                @click="$emit('openProduction')"
               >
-                <CommandLineIcon class="w-3.5 h-3.5 text-accent" />
-                Prompt Seedance 2.0 (中文)
+                Gérer dans Production
+                <ArrowPathIcon class="h-3.5 w-3.5" />
               </button>
             </div>
           </div>

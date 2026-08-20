@@ -67,7 +67,8 @@
             :disabled="agentUnavailable"
             @click="openUploadPicker"
             class="w-8 h-8 flex items-center justify-center rounded-full text-content-muted hover:text-content-secondary hover:bg-overlay-subtle transition-colors disabled:pointer-events-none disabled:opacity-50"
-            title="Add image"
+            title="Add image or video"
+            aria-label="Add image or video"
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -121,7 +122,7 @@
     <input
       ref="uploadInputRef"
       type="file"
-      accept="image/jpeg,image/png,image/webp"
+      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,.m4v,.mpg,.mpeg"
       class="hidden"
       :disabled="agentUnavailable"
       @change="handleUploadSelect"
@@ -257,31 +258,47 @@ async function handleUploadSelect(event) {
 }
 
 async function uploadFileToAttachments(file) {
-  if (!file.type.startsWith('image/')) return
+  const isVideo = isVideoFile(file)
+  const isImage = file.type.startsWith('image/')
+  if (!isImage && !isVideo) return
   try {
     // Clipboard images may not have a filename. The upload endpoint validates
     // extensions, so provide one derived from the MIME type when necessary.
-    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || 'png'
+    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || (isVideo ? 'mp4' : 'png')
     const filename = file.name && /\.[a-z0-9]+$/i.test(file.name)
       ? file.name
-      : `clipboard-${Date.now()}.${extension}`
+      : `${isVideo ? 'video' : 'clipboard'}-${Date.now()}.${extension}`
     const uploadFile = file.name === filename
       ? file
       : new File([file], filename, { type: file.type, lastModified: file.lastModified })
     const formData = new FormData()
     formData.append('file', uploadFile)
-    const response = await axios.post('/api/generate/upload-reference', formData, {
+    const mediaType = isVideo ? 'video' : 'image'
+    const endpoint = isVideo
+      ? '/api/generate/upload-reference-video'
+      : '/api/generate/upload-reference'
+    const response = await axios.post(endpoint, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     updateAttachments([...props.attachments, {
       media_id: response.data.media_id,
       asset_id: response.data.asset_id,
       path: response.data.path,
-      filename: response.data.filename || filename
+      filename: response.data.filename || filename,
+      media_type: mediaType,
+      file_format: response.data.file_format || extension
     }])
   } catch (error) {
     console.error('Failed to upload file:', error)
   }
+}
+
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'mpg', 'mpeg'])
+
+function isVideoFile(file) {
+  if (file.type?.startsWith('video/')) return true
+  const extension = file.name?.split('.').pop()?.toLowerCase()
+  return VIDEO_EXTENSIONS.has(extension)
 }
 
 // ==================== Drag-drop ====================
@@ -318,9 +335,9 @@ async function onDrop(event) {
   // Check for files (external drag)
   const files = event.dataTransfer?.files
   if (files && files.length > 0) {
-    const imageFile = Array.from(files).find(f => f.type.startsWith('image/'))
-    if (imageFile) {
-      await uploadFileToAttachments(imageFile)
+    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f))
+    if (mediaFile) {
+      await uploadFileToAttachments(mediaFile)
       nextTick(() => textareaRef.value?.focus())
     }
   }
@@ -333,12 +350,12 @@ async function onPaste(event) {
   const clipboardData = event.clipboardData
   if (!clipboardData) return
 
-  // Check for image items
+  // Check for image or video items
   const items = clipboardData.items
   if (items && items.length > 0) {
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      if (item.type && item.type.startsWith('image/')) {
+      if (item.type && (item.type.startsWith('image/') || item.type.startsWith('video/'))) {
         const file = item.getAsFile()
         if (file) {
           event.preventDefault()
@@ -353,10 +370,10 @@ async function onPaste(event) {
   // Fallback for files
   const files = clipboardData.files
   if (files && files.length > 0) {
-    const imageFile = Array.from(files).find(f => f.type.startsWith('image/'))
-    if (imageFile) {
+    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f))
+    if (mediaFile) {
       event.preventDefault()
-      await uploadFileToAttachments(imageFile)
+      await uploadFileToAttachments(mediaFile)
       nextTick(() => textareaRef.value?.focus())
     }
   }

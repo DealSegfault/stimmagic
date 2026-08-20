@@ -39,6 +39,21 @@ _PARAM_DATA_FIELDS = {
     "StimmaBoolParam": "value",
 }
 
+
+def _coerce_bool(value: Any) -> bool:
+    """Parse boolean parameters without treating the string ``"false"`` as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off", "n"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "y"}:
+            return True
+    return bool(value)
+
 # Pure output sinks with no downstream consumers. Stripped from STP jobs (when
 # the workflow has Stimma output nodes) so generations leave no copies in
 # ComfyUI's output directory.
@@ -1065,7 +1080,7 @@ def _inject_params(
         elif class_type == "StimmaFloatParam":
             value = float(value)
         elif class_type == "StimmaBoolParam":
-            value = bool(value)
+            value = _coerce_bool(value)
 
         prompt[node_id]["inputs"][data_field] = value
 

@@ -100,7 +100,7 @@ def trace_stage_for_tool(tool_name: str) -> str:
         return "evaluation"
     if tool_name in {"update_world_state", "update_project_scene", "update_project_script", "save_memory"}:
         return "continuity_update"
-    if tool_name in {"run_code", "call_tool"}:
+    if tool_name in {"run_code", "call_tool", "antigravity_image"}:
         return "generation"
     if tool_name in {"delegate", "stimpack", "skill", "ask_user"}:
         return "orchestration"
@@ -203,6 +203,15 @@ def trace_action_for_tool(tool_name: str, arguments: Any) -> dict[str, Any]:
                 "kind": "python_execution",
                 "label": "Execute production Python code",
             })
+    elif tool_name == "antigravity_image":
+        action.update({
+            "kind": "image_generation",
+            "label": "Generate or edit image with Antigravity CLI",
+        })
+        if isinstance(args.get("prompt"), str):
+            action["prompt_preview"] = args["prompt"][:600]
+        if args.get("output_role"):
+            action["output_role"] = args["output_role"]
     elif tool_name in {"view_image", "analyze_image", "browse_web", "web_search"}:
         action.update({
             "kind": "evaluation",

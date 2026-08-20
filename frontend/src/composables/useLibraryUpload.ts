@@ -16,9 +16,29 @@ function getAPIBase() {
 // Image file types we accept
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
 const ACCEPTED_VIDEO_TYPES = ['video/mp4', 'video/webm', 'video/quicktime']
-const ACCEPTED_TYPES = [...ACCEPTED_IMAGE_TYPES, ...ACCEPTED_VIDEO_TYPES]
+const ACCEPTED_AUDIO_TYPES = [
+  'audio/mpeg',
+  'audio/wav',
+  'audio/x-wav',
+  'audio/flac',
+  'audio/x-flac',
+  'audio/aac',
+  'audio/x-aac',
+  'audio/mp4',
+  'audio/x-m4a',
+  'audio/ogg',
+]
+const ACCEPTED_TYPES = [
+  ...ACCEPTED_IMAGE_TYPES,
+  ...ACCEPTED_VIDEO_TYPES,
+  ...ACCEPTED_AUDIO_TYPES,
+]
 
-const ACCEPTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm', '.mov']
+const ACCEPTED_EXTENSIONS = [
+  '.jpg', '.jpeg', '.png', '.webp', '.gif',
+  '.mp4', '.webm', '.mov',
+  '.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg',
+]
 
 export interface UploadProgress {
   isUploading: boolean

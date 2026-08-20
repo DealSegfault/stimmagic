@@ -44,6 +44,11 @@ from .tools_registry import get_tools_schema, get_tool, get_all_tools
 from .tools.notepad import format_notepad_for_prompt
 from .workspace import get_project_workspace, get_workspace_dir
 from .video_settings import normalize_video_chat_settings
+from h3_prompt_pair import (
+    format_h3_prompt_pair,
+    parse_h3_prompt_pair,
+    prompt_pair_metadata,
+)
 
 log = get_logger(__name__)
 
@@ -145,6 +150,113 @@ def _format_raw_error(e: BaseException) -> str:
     return "".join(parts)
 
 
+def _looks_like_h3_prompt_request(request_message: str | None, content: str) -> bool:
+    """Recognize a prompt-only answer that needs the bilingual H3 envelope.
+
+    The H3 schema check keeps this conservative: ordinary video replies and
+    tool receipts never get sent through a second translation call.
+    """
+    if not request_message or not content:
+        return False
+    has_context_ir = "integrated_multimodal_description:" in content
+    has_ref2va_ir = all(
+        field in content
+        for field in ("subject_definitions:", "detailed_description:", "overall_soundscape:")
+    )
+    if not (has_context_ir or has_ref2va_ir):
+        return False
+    request = request_message.casefold()
+    prompt_signal = re.search(
+        r"\b(prompt|prompts|h3|traduction|translation|translate|chinois|chinese)\b|中文",
+        request,
+    )
+    if not prompt_signal:
+        return False
+    media_signal = re.search(r"\b(video|vidéo|render|anime|lance|génère)\b", request)
+    # “génère le prompt” is still a prompt request; a bare “génère la vidéo” is
+    # not. Keep the explicit prompt/chinese wording authoritative.
+    return not media_signal or bool(re.search(r"prompt|chinois|chinese|中文", request))
+
+
+def _h3_translation_context(
+    content: str,
+    shot_contract: dict[str, Any] | None,
+) -> tuple[str, float | None, list[dict[str, Any]]]:
+    """Infer the translator's protocol context without changing the prompt."""
+    contract = shot_contract if isinstance(shot_contract, dict) else {}
+    manifest = list(contract.get("reference_manifest") or [])
+    stripped = content.lstrip()
+    if manifest or "subject_definitions:" in stripped:
+        task = "ref2va"
+    elif stripped.startswith("For the target video, at 0.00 seconds"):
+        task = "i2va"
+    elif stripped.startswith("How the reference pictures align"):
+        task = "l2va" if "<Picture 1> (from [Shot" in stripped else "fl2va"
+    else:
+        task = "t2va"
+
+    duration = contract.get("expected_duration")
+    if duration is None:
+        match = re.search(r"(?<![A-Za-z])(\d+(?:\.\d+)?)\s*-?second", content, re.IGNORECASE)
+        duration = float(match.group(1)) if match else None
+    try:
+        duration = float(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    return task, duration, manifest
+
+
+async def _ensure_h3_prompt_pair(
+    content: str,
+    *,
+    request_message: str | None,
+    project_id: int | None,
+    shot_contract: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Attach a validated Chinese production prompt to a prompt-only answer."""
+    existing = parse_h3_prompt_pair(content)
+    if existing:
+        task, _, _ = _h3_translation_context(existing["english"], shot_contract)
+        return content, prompt_pair_metadata(existing, h3_task=task)
+    if not _looks_like_h3_prompt_request(request_message, content):
+        return content, None
+
+    from routes.prompt_enhancement import (
+        TranslatePromptRequest,
+        translate_prompt,
+    )
+    from prompt_pipeline import _h3_translation_is_structurally_preserved
+
+    task, duration, manifest = _h3_translation_context(content, shot_contract)
+    try:
+        translated = (
+            await translate_prompt(
+                TranslatePromptRequest(
+                    prompt=content,
+                    target_language="Simplified Chinese",
+                    h3_task=task,
+                    h3_duration=duration,
+                    h3_reference_manifest=manifest,
+                    project_id=project_id,
+                )
+            )
+        ).translated_prompt.strip()
+    except Exception as exc:
+        # The English prompt remains useful if the optional translation call is
+        # temporarily unavailable. The next explicit prompt request can retry.
+        log.warning("H3 bilingual prompt translation failed: %s", exc)
+        return content, None
+
+    if not translated or not re.search(r"[\u3400-\u9fff]", translated) or not _h3_translation_is_structurally_preserved(
+        translated, content, task, manifest
+    ):
+        log.warning("H3 bilingual prompt translation failed language/structural validation")
+        return content, None
+
+    pair = {"english": content.strip(), "chinese": translated}
+    return format_h3_prompt_pair(**pair), prompt_pair_metadata(pair, h3_task=task)
+
+
 class _AgentInterrupted(Exception):
     """Internal signal that the current v2 run was interrupted by the user."""
 
@@ -186,6 +298,8 @@ async def _finalize_thinking_item(
     elapsed_seconds: float = 0.0,
     tokens_per_second: float = 0.0,
     estimated_prompt_tokens: int = 0,
+    shot_contract: dict[str, Any] | None = None,
+    h3_prompt_pair: dict[str, Any] | None = None,
 ) -> None:
     item.message_text = message_text
     metadata = {
@@ -206,6 +320,10 @@ async def _finalize_thinking_item(
             "tokens_per_second": round(tokens_per_second, 1),
             "estimated_prompt_tokens": int(estimated_prompt_tokens),
         }
+    if isinstance(shot_contract, dict) and shot_contract.get("reference_manifest"):
+        metadata["shot_contract_reference_manifest"] = shot_contract["reference_manifest"]
+    if h3_prompt_pair:
+        metadata["h3_prompt_pair"] = h3_prompt_pair
     item.item_metadata = json.dumps(metadata)
     await session.commit()
     await ws_manager.broadcast("chat_item_updated", {
@@ -342,6 +460,8 @@ def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool
         return isinstance(cmd, str) and (
             "/Users/mac/.local/bin/agy" in cmd or "/Users/mac/.local/bin/codex" in cmd or "agy " in cmd or "codex exec" in cmd
         )
+    if fn_name == "antigravity_image":
+        return True
     return False
 
 
@@ -354,6 +474,8 @@ def _generation_call_key(fn_name: str, raw_arguments: Optional[str]) -> str | No
         return None
 
     arguments = _parse_tool_args(raw_arguments)
+    if fn_name == "antigravity_image":
+        return f"{fn_name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
     value = arguments.get("code" if fn_name == "run_code" else "command")
     if not isinstance(value, str):
         return None
@@ -652,8 +774,8 @@ async def _execute_tool_call(
 
     _raise_if_interrupted(chat_id)
 
-    # Track media_ids produced by call_tool for lineage across tool calls
-    if session_media_ids is not None and fn_name == "call_tool" and "<result media_id=" in result_str:
+    # Track media_ids produced by generation tools for lineage across tool calls
+    if session_media_ids is not None and "<result media_id=" in result_str:
         match = re.search(r"<result media_id=(\d+)", result_str)
         if match:
             session_media_ids.append(int(match.group(1)))
@@ -814,6 +936,11 @@ def _build_tool_prompt(fn_name: str, kwargs: dict) -> str:
         inputs = kwargs.get("inputs", {})
         prompt = str(inputs.get("prompt", ""))[:80]
         return f"Generate with {tool_id}: {prompt}" if prompt else f"Generate with {tool_id}"
+    elif fn_name == "antigravity_image":
+        prompt = str(kwargs.get("prompt", "")).strip()
+        refs = kwargs.get("reference_media_ids") or []
+        suffix = f" with {len(refs)} reference image(s)" if refs else ""
+        return f"Generate/edit one image with Antigravity CLI (Nano Banana Pro){suffix}: {prompt[:120]}"
     return f"Use tool: {fn_name}"
 
 
@@ -986,6 +1113,12 @@ async def _copy_media_to_workspace(
                 else:
                     shutil.copy2(file_path, dest)
                 entry: Dict[str, Any] = {"media_id": item.id, "filename": filename}
+                file_format = (item.file_format or Path(filename).suffix.lstrip(".")).lower()
+                if file_format in {"mp4", "mov", "avi", "mkv", "webm", "m4v", "mpg", "mpeg"}:
+                    entry["media_type"] = "video"
+                elif file_format in {"png", "jpg", "jpeg", "webp", "bmp"}:
+                    entry["media_type"] = "image"
+                entry["file_format"] = file_format
                 if item.id in asset_ids:
                     entry["asset_id"] = asset_ids[item.id]
                 gen = {}
@@ -1148,6 +1281,7 @@ async def run_agent(
             chat, session, ws_manager, max_turns, start_turn=0, turn_stats=turn_stats,
             artifact_context=artifact_context,
             trace_run_id=trace_run_id,
+            request_message=user_message,
         )
         await ws_manager.broadcast("agent_stopped", {"chat_id": chat_id, "reason": "completed"})
 
@@ -1343,6 +1477,7 @@ async def _run_agentic_loop(
     artifact_context: Optional[dict] = None,
     trace_run_id: Optional[str] = None,
     run_context_seed: Optional[dict] = None,
+    request_message: str | None = None,
 ) -> None:
     """Run the core loop inside a correlation scope.
 
@@ -1373,6 +1508,7 @@ async def _run_agentic_loop(
                 session_media_ids=session_media_ids,
                 artifact_context=artifact_context,
                 run_context_seed=run_context_seed,
+                request_message=request_message,
             )
     except _PermissionPause:
         trace_status = "paused"
@@ -1408,6 +1544,7 @@ async def _run_agentic_loop_inner(
     turn_stats: Optional[dict] = None,
     artifact_context: Optional[dict] = None,
     run_context_seed: Optional[dict] = None,
+    request_message: str | None = None,
 ) -> None:
     """Core agentic loop. Extracted so resume_after_hitl can re-enter.
 
@@ -1720,8 +1857,15 @@ async def _run_agentic_loop_inner(
             + " Execute video generation immediately via `run_code` by importing the matching function (`from stimma.tools.reference_to_video import minimax_h3_r2v_turbo`, `from stimma.tools.image_to_video import minimax_h3_i2v_turbo`, or `from stimma.tools.text_to_video import minimax_h3_t2v_turbo`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
         )
         system_reminders.append(
+            "CHAT VIDEO REFERENCE ROUTING (authoritative): if the user attaches a video, "
+            "treat it as a whole-video semantic reference and use MiniMax H3 R2V directly. "
+            "Pass the attached file through `input_videos` (it is injected automatically when "
+            "available), preserve `<Video N>` and matching `<Audio N>` tags, and never route "
+            "that request through I2V or T2V."
+        )
+        system_reminders.append(
             "SHOT CONTRACT GATE: if get_world_state returns generation_contract, it overrides these chat defaults for this shot. "
-            "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
+            "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. User-mentioned @references that are absent from the manifest are out of scope and must not be added to the prompt or input_images. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
         )
         active_contract = run_context.get("shot_contract") if isinstance(run_context, dict) else None
         if isinstance(active_contract, dict):
@@ -1730,21 +1874,21 @@ async def _run_agentic_loop_inner(
                 for item in active_contract.get("reference_manifest") or []
                 if item.get("media_id")
             ]
-            expected_dimensions = active_contract.get("expected_dimensions") or [1344, 768]
-            expected_width, expected_height = int(expected_dimensions[0]), int(expected_dimensions[1])
             workflow = active_contract.get("workflow")
             if workflow == "compose_opening_keyframe_then_i2v":
                 system_reminders.append(
-                    "ACTIVE SHOT WORKFLOW (hard, already resolved): this shot is an insert-to-character return. "
-                    "Do not call R2V/reference_to_video and do not retry a blocked video call. In run_code, first create one opening keyframe with the exact manifest media IDs "
-                    f"{manifest_ids} using the catalog function `from stimma.tools.image_to_image import nano_banana_pro_edit` and `await nano_banana_pro_edit(input_images={manifest_ids}, prompt=..., width={expected_width}, height={expected_height})`. "
-                    "Display it only as `stimma.show(keyframe, role=\"intermediate\")`. Then call `from stimma.tools.image_to_video import minimax_h3_i2v` with exactly `input_images=[keyframe.media_id]`, never the manifest again, and display only the resulting video as role=final. "
-                    "Do not call library to inspect these IDs: the contract already resolved them. Use the exact function names from this instruction."
+                    "ACTIVE SHOT WORKFLOW (hard): this shot requires one composed opening keyframe followed by I2V. "
+                    "RULES: "
+                    "1. If the user asks for a prompt (e.g. 'Genère le prompt pour le plan N...'), return ONLY the complete Markdown prompt text without calling any image/video generation tools or announcing planning steps. "
+                    f"2. Run `antigravity_image` once with the exact ordered reference manifest {manifest_ids} and output_role='intermediate'. "
+                    "3. Then run I2V with exactly the returned keyframe media id; never pass the full manifest directly to I2V. "
+                    "4. Do not retry or bypass a blocked workflow."
                 )
             else:
                 system_reminders.append(
-                    "ACTIVE SHOT WORKFLOW (hard, already resolved): use the generation_contract reference_manifest in its exact order, including the materialized previous last frame. "
-                    "Do not introduce references from chat history or the general library."
+                    "ACTIVE SHOT WORKFLOW: we already have the references and continuity last frame. "
+                    "For direct video generation, call `minimax_h3_r2v` (or `minimax_h3_i2v`) with the resolved reference manifest in its exact order. "
+                    "If the user asks for a prompt, return the formatted prompt text in Markdown without executing any generation tools."
                 )
         system_reminders.append(
             f"VIDEO CHAT SETTINGS (authoritative override): requested resolution={video_resolution}, "
@@ -1773,12 +1917,13 @@ async def _run_agentic_loop_inner(
             )
         else:
             system_reminders.append(
-                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via Antigravity (`agy`). "
+                "IMAGE DISPATCH MODE (authoritative for this chat): Routed via Antigravity (agy). "
                 "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
-                "To generate the first image, run via `bash` (timeout=600): "
-                "/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1. "
-                "For follow-up edits or scene continuations in the same chat, add `--continue` (e.g. `/Users/mac/.local/bin/agy --continue ...`) to reuse the local session memory with only the prompt delta. "
-                "Then immediately call `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and stop."
+                "For every still-image generation or edit, call the real `antigravity_image` tool. "
+                "For a new image omit `reference_media_ids`; for an edit pass the exact ordered reference_media_ids and write the complete prompt with matching <Picture N> roles. "
+                "The tool materializes references, invokes the real Antigravity CLI, ingests the output, and records lineage. "
+                "Do not import local `stimma.tools.image_to_image` adapters and do not call the retired `call_tool` image route. "
+                "Then call `show(media_id=<returned media_id>, role=\"final\")` (or role=\"intermediate\" for a candidate) and stop."
             )
 
         # Resolve LLM config first so build_messages knows the window size and
@@ -1854,6 +1999,15 @@ async def _run_agentic_loop_inner(
             raise
 
         content = resp.content
+        active_contract = run_context.get("shot_contract") if isinstance(run_context, dict) else None
+        prompt_pair_metadata_value = None
+        if content:
+            content, prompt_pair_metadata_value = await _ensure_h3_prompt_pair(
+                content,
+                request_message=request_message,
+                project_id=chat_project_id,
+                shot_contract=active_contract,
+            )
         reasoning = resp.thinking
         if content and content.strip():
             produced_visible_output = True
@@ -1881,6 +2035,8 @@ async def _run_agentic_loop_inner(
                 elapsed_seconds=cumulative_llm_seconds,
                 tokens_per_second=resp.tokens_per_second,
                 estimated_prompt_tokens=estimated_prompt_tokens,
+                shot_contract=active_contract,
+                h3_prompt_pair=prompt_pair_metadata_value,
             )
         else:
             # No thinking content — remove the thinking item so no empty
@@ -1910,6 +2066,10 @@ async def _run_agentic_loop_inner(
                         "estimated_prompt_tokens": int(estimated_prompt_tokens),
                     }
                 }
+                if isinstance(active_contract, dict) and active_contract.get("reference_manifest"):
+                    usage_metadata["shot_contract_reference_manifest"] = active_contract["reference_manifest"]
+                if prompt_pair_metadata_value:
+                    usage_metadata["h3_prompt_pair"] = prompt_pair_metadata_value
                 text_item = ChatItem(
                     chat_id=chat_id,
                     item_type="assistant_message",
@@ -2534,7 +2694,23 @@ async def resume_after_hitl(
             })
 
             _raise_if_interrupted(chat_id)
+            # Preserve the paid opening keyframe across a permission resume.
+            # The shot contract is persisted in the pending HITL state, while
+            # the per-run media list is intentionally reconstructed here. The
+            # exact keyframe must remain visible to the I2V preflight after a
+            # second permission boundary.
             session_media_ids: list[int] = []
+            resumed_keyframe_id = (pending.get("shot_contract") or {}).get(
+                "opening_keyframe_media_id"
+            )
+            if resumed_keyframe_id:
+                try:
+                    session_media_ids.append(int(resumed_keyframe_id))
+                except (TypeError, ValueError):
+                    log.warning(
+                        "Ignoring invalid resumed opening keyframe media id %r",
+                        resumed_keyframe_id,
+                    )
             shown_media_ids: set[int] = set()
 
             # Resolve invoked skills from conversation history for run_code lib

@@ -1,6 +1,7 @@
 import json
 
 from world_state_service import (
+    build_shot_reference_manifest,
     build_script_shot_context,
     compact_world_state_for_agent,
     extract_script_shots,
@@ -24,6 +25,69 @@ def test_script_shot_context_separates_scene_and_plan_numbers():
     assert context["current"]["shot_number"] == 4
     assert context["previous"]["shot_number"] == 3
     assert context["scene_number"] == 1
+
+
+def test_shot_reference_manifest_matches_named_project_elements():
+    state = {
+        "current_scene": {"title": "La station de métro"},
+        "entities": {
+            "characters": {
+                "char_demo_nora": {
+                    "media_id": 10,
+                    "reference_id": "char_demo_nora",
+                    "name": "Nora",
+                },
+                "char_demo_jules": {
+                    "media_id": 11,
+                    "reference_id": "char_demo_jules",
+                    "name": "Jules",
+                },
+            },
+            "locations": {
+                "loc_demo_metro": {
+                    "media_id": 20,
+                    "reference_id": "loc_demo_metro",
+                    "name": "Station de métro",
+                },
+                "loc_demo_bureau": {
+                    "media_id": 21,
+                    "reference_id": "loc_demo_bureau",
+                    "name": "Bureau",
+                },
+            },
+            "props": {
+                "prop_demo_parapluie": {
+                    "media_id": 30,
+                    "reference_id": "prop_demo_parapluie",
+                    "name": "Parapluie rouge",
+                },
+                "prop_demo_tasse": {
+                    "media_id": 31,
+                    "reference_id": "prop_demo_tasse",
+                    "name": "Tasse",
+                },
+            },
+        },
+    }
+    shot_context = {
+        "current": {
+            "description": "Nora ramasse le parapluie rouge sur le quai.",
+            "incoming_cut": "Raccord mouvement.",
+        },
+    }
+
+    manifest = build_shot_reference_manifest(
+        state,
+        shot_context,
+        {"last_frame_media_id": 5},
+    )
+
+    assert [item["media_id"] for item in manifest] == [5, 10, 20, 30]
+    assert [item["reference_id"] for item in manifest[1:]] == [
+        "char_demo_nora",
+        "loc_demo_metro",
+        "prop_demo_parapluie",
+    ]
 
 
 def test_compact_world_state_keeps_ids_and_bounds_scene_context():

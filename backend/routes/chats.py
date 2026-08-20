@@ -59,6 +59,8 @@ class AttachmentInfo(PydanticBaseModel):
     asset_id: Optional[int] = None  # Stable Asset identity when available
     path: Optional[str] = None  # For uploaded files
     filename: Optional[str] = None
+    media_type: Optional[str] = None  # image | video
+    file_format: Optional[str] = None
 
 
 class ChatItemCreateRequest(PydanticBaseModel):
@@ -75,7 +77,7 @@ class ChatItemCreateRequest(PydanticBaseModel):
     parent_item_id: Optional[int] = None
     item_metadata: Optional[str] = None
     selected_media_ids: Optional[List[int]] = None  # Media IDs user selected before sending
-    attachments: Optional[List[AttachmentInfo]] = None  # Images attached to message
+    attachments: Optional[List[AttachmentInfo]] = None  # Images or videos attached to message
     artifact_context: Optional[dict] = None  # {asset_id, revision_id, revision_number} user is viewing
 
 
@@ -1966,6 +1968,48 @@ async def get_chat_by_item(
         raise HTTPException(status_code=410, detail="Chat has been deleted")
 
     return ChatResponse(**chat.to_dict())
+
+
+class UpdateChatItemRequest(PydanticBaseModel):
+    message_text: Optional[str] = None
+    item_metadata: Optional[dict] = None
+
+
+@router.patch("/items/{chat_item_id}", response_model=ChatItemResponse)
+async def update_chat_item(
+    chat_item_id: int,
+    request: UpdateChatItemRequest,
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Update a chat item's message_text or metadata."""
+    result = await session.execute(
+        select(ChatItem).where(ChatItem.id == chat_item_id)
+    )
+    chat_item = result.scalar_one_or_none()
+
+    if not chat_item:
+        raise HTTPException(status_code=404, detail="Chat item not found")
+
+    # Historical assistant/tool records are immutable. The only supported
+    # edit is removing a user's attached project reference before the next
+    # agent turn; media display metadata has its dedicated endpoint below.
+    if chat_item.item_type != "user_message":
+        raise HTTPException(status_code=400, detail="Only user messages can be edited")
+
+    if request.message_text is not None:
+        chat_item.message_text = request.message_text
+    if request.item_metadata is not None:
+        chat_item.item_metadata = json.dumps(request.item_metadata)
+
+    await session.commit()
+
+    from utils.websocket import ws_manager
+    await ws_manager.broadcast("chat_item_updated", {
+        "chat_id": chat_item.chat_id,
+        "item": chat_item.to_dict(),
+    })
+
+    return ChatItemResponse(**chat_item.to_dict())
 
 
 @router.patch("/items/{chat_item_id}/metadata")

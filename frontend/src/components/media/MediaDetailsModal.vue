@@ -34,17 +34,20 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMediaDetailsModal } from '../../composables/useMediaDetailsModal'
 import { useMediaApi } from '../../composables/useMediaApi'
+import { useWebSocket } from '../../composables/useWebSocket'
 import ImageDetailsCard from './ImageDetailsCard.vue'
 import Modal from '../ui/Modal.vue'
 
 const router = useRouter()
 const mediaDetails = useMediaDetailsModal()
 const { getMediaItem } = useMediaApi()
+const { on: onWsEvent } = useWebSocket()
 
 const media = ref(null)
 const error = ref(null)
 const currentMediaId = ref(null)
 let loadToken = 0
+let wsUnsubscribes = []
 
 async function loadMedia(id) {
   media.value = null
@@ -71,6 +74,17 @@ function openFlow(flowId) {
   router.push({ name: 'flow', params: { id: String(flowId) } })
 }
 
+function eventTargetsCurrentMedia(data) {
+  if (!media.value && !currentMediaId.value) return false
+  const mediaIds = new Set(data?.media_ids || (data?.media_id ? [data.media_id] : []))
+  const assetIds = new Set(data?.asset_ids || (data?.asset_id ? [data.asset_id] : []))
+  return mediaIds.has(Number(currentMediaId.value)) || (media.value?.asset_id && assetIds.has(Number(media.value.asset_id)))
+}
+
+function closeWhenAssetLifecycleChanges(data) {
+  if (eventTargetsCurrentMedia(data)) mediaDetails.close()
+}
+
 watch(
   () => mediaDetails.state.value.visible ? mediaDetails.state.value.mediaId : null,
   (id) => {
@@ -89,6 +103,15 @@ function handleKeydown(e) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', handleKeydown, true))
-onUnmounted(() => window.removeEventListener('keydown', handleKeydown, true))
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown, true)
+  for (const event of ['asset_trashed', 'asset_deleted', 'assets_trashed', 'asset_identity_deleted', 'media_deleted', 'media_bulk_deleted', 'media_permanently_deleted']) {
+    wsUnsubscribes.push(onWsEvent(event, closeWhenAssetLifecycleChanges))
+  }
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown, true)
+  wsUnsubscribes.forEach((unsubscribe) => unsubscribe())
+  wsUnsubscribes = []
+})
 </script>

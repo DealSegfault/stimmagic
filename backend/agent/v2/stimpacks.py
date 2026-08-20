@@ -949,30 +949,57 @@ def find_skill(
     """Resolve a skill by pack-qualified name, or by bare slug when unique.
 
     Also accepts a pack name for legacy single-skill packs (old chat history
-    and old prompts address packs by name).
+    and old prompts address packs by name), as well as alias/fuzzy tokens.
     """
     if not name:
         return None
     packs = list_installed_stimpacks(profile_id=profile_id)
+    norm_target = name.strip().lower().replace("_", "-")
+
+    # 1. Exact match on qualified name
     for pack in packs:
         for skill in pack.skills:
-            if skill.qualified_name == name:
+            if skill.qualified_name.lower() == norm_target:
                 return pack, skill
+
+    # 2. Exact match on bare slug
     bare_matches = [
         (pack, skill)
         for pack in packs
         for skill in pack.skills
-        if skill.slug == name
+        if skill.slug.lower() == norm_target
     ]
     if len(bare_matches) == 1:
         return bare_matches[0]
     if len(bare_matches) > 1:
         log.warning(f"Skill name '{name}' is ambiguous across packs — use the qualified name")
         return None
-    # Legacy: a pack name addressing its only skill.
+
+    # 3. Legacy: a pack name addressing its only skill
     for pack in packs:
-        if pack.name == name and len(pack.skills) == 1:
+        if pack.name.lower() == norm_target and len(pack.skills) == 1:
             return pack, pack.skills[0]
+
+    # 4. Alias / fuzzy resolution (e.g. minimax-h3-prompt-enhancer -> minimax-h3-prompting/h3-video-prompt-enhancer)
+    alias_matches: list[tuple[StimpackInfo, SkillInfo]] = []
+    target_tokens = set(re.split(r"[-_\s/]+", norm_target)) - {"prompt", "prompts", "prompting", "enhancer", "video"}
+    for pack in packs:
+        for skill in pack.skills:
+            qname = skill.qualified_name.lower()
+            display = skill.display_name.lower()
+            if target_tokens and all(tok in qname or tok in display for tok in target_tokens):
+                alias_matches.append((pack, skill))
+            elif norm_target in qname or qname in norm_target:
+                alias_matches.append((pack, skill))
+
+    if len(alias_matches) == 1:
+        return alias_matches[0]
+    if len(alias_matches) > 1:
+        log.warning(
+            "Skill alias '%s' is ambiguous across installed skills; use a qualified name",
+            name,
+        )
+
     return None
 
 

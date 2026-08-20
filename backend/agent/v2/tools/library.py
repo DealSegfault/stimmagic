@@ -21,7 +21,7 @@ from project_service import infer_project_id_from_workspace_path
 from providers.registry import ProviderRegistry
 from database import (
     Asset, AssetMarker, AssetRevision, AssetTag, BoardAssetItem, ProjectAsset,
-    MediaItem, MediaLineage, Tag,
+    MediaItem, MediaLineage, Tag, ProjectElement,
     Board, BoardItem, BoardSection, Marker,
     Keyword, MediaKeyword, MediaToolLineage, Face,
 )
@@ -926,7 +926,7 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
     name="library",
     description="Search, retrieve, save, browse media library and manage assets, elements, tags, markers, boards. media_id resolves to owning Asset automatically.",
     parameters=[
-        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | element | tag | marker | board"),
+        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | asset | element | tag | marker | board"),
         ToolParameter("query", "string", "Text search query.", required=False),
         ToolParameter("search_fields", "string", "prompt (default) | caption | keywords | all", required=False),
         ToolParameter("media_id", "integer", "Media ID target.", required=False),
@@ -952,7 +952,7 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
         ToolParameter("element_type", "string", "location | character | prop", required=False),
         ToolParameter("element_name", "string", "Element display name.", required=False),
         ToolParameter("description", "string", "Element description.", required=False),
-        ToolParameter("operation", "string", "element: create|list|delete; tag: add|remove|list; marker: add|remove|list; board: add|remove|move|list|contents|create|delete|rename", required=False),
+        ToolParameter("operation", "string", "asset: trash|restore; element: create|list|delete; tag: add|remove|list; marker: add|remove|list; board: add|remove|move|list|contents|create|delete|rename", required=False),
     ],
 )
 async def library(
@@ -1040,6 +1040,16 @@ async def library(
             workspace_dir=workspace_dir,
             query=query,
         )
+    elif action == "asset":
+        return await _asset(
+            session,
+            project_id=project_id,
+            operation=op,
+            asset_id=asset_id,
+            asset_ids=asset_ids,
+            media_id=media_id,
+            media_ids=media_ids,
+        )
     elif action == "tag":
         return await _tag(
             session, asset_id, asset_ids, media_id, media_ids, tags, op
@@ -1067,8 +1077,119 @@ async def library(
         return (
             "Error: Unknown action "
             f"'{action}'. Use: search, get, generation_params, browse, browse_schema, browse_options, "
-            "save, lineage, element, tag, marker, board"
+            "save, lineage, asset, element, tag, marker, board"
+    )
+
+
+async def _asset(
+    session: AsyncSession,
+    *,
+    project_id: Optional[int],
+    operation: str,
+    asset_id: Optional[int],
+    asset_ids: Optional[List[int]],
+    media_id: Optional[int],
+    media_ids: Optional[List[int]],
+) -> str:
+    """Apply lifecycle actions to canonical Assets and cascade project elements."""
+    from asset_service import AssetServiceError, restore_asset, trash_asset
+    from utils.websocket import ws_manager
+
+    if operation not in {"trash", "restore"}:
+        return "Error: asset operation must be trash or restore"
+
+    ids, resolution_error = await _resolve_org_asset_ids(
+        session, asset_id, asset_ids, media_id, media_ids
+    ) if operation == "trash" else await _resolve_asset_ids_for_restore(
+        session, asset_id, asset_ids, media_id, media_ids
+    )
+    if resolution_error:
+        return resolution_error
+    if not ids:
+        return "Error: pass asset_id/asset_ids or media_id/media_ids to target an asset action"
+
+    results = []
+    for current_asset_id in ids:
+        try:
+            if operation == "trash":
+                element_query = select(ProjectElement).where(
+                    ProjectElement.asset_id == current_asset_id,
+                    ProjectElement.deleted_at.is_(None),
+                )
+                elements = list((await session.scalars(element_query)).all())
+                asset = await trash_asset(session, asset_id=current_asset_id)
+                results.append({
+                    "asset_id": asset.id,
+                    "status": "trashed",
+                    "deleted_element_ids": [element.id for element in elements],
+                })
+            else:
+                asset = await restore_asset(session, asset_id=current_asset_id)
+                results.append({"asset_id": asset.id, "status": "active"})
+        except AssetServiceError as exc:
+            await session.rollback()
+            return f"Error: {exc}"
+
+    await session.commit()
+    media_rows = (await session.execute(
+        select(AssetRevision.asset_id, AssetRevision.primary_media_id).where(
+            AssetRevision.asset_id.in_([item["asset_id"] for item in results]),
+            AssetRevision.deleted_at.is_(None),
         )
+    )).all() if results else []
+    media_by_asset: Dict[int, List[int]] = {}
+    for current_asset_id, current_media_id in media_rows:
+        media_by_asset.setdefault(int(current_asset_id), []).append(int(current_media_id))
+    for result in results:
+        event = "asset_trashed" if operation == "trash" else "asset_restored"
+        payload = {
+            "asset_id": result["asset_id"],
+            "media_ids": media_by_asset.get(result["asset_id"], []),
+        }
+        await ws_manager.broadcast(event, payload)
+        if operation == "trash":
+            # Keep legacy chat projections in sync while consumers migrate to
+            # the canonical asset lifecycle event.
+            await ws_manager.broadcast("asset_deleted", payload)
+    return json.dumps({"status": "ok", "operation": operation, "items": results})
+
+
+async def _resolve_asset_ids_for_restore(
+    session: AsyncSession,
+    asset_id: Optional[int],
+    asset_ids: Optional[List[int]],
+    media_id: Optional[int],
+    media_ids: Optional[List[int]],
+) -> tuple[List[int], str | None]:
+    requested_assets = _collect_media_ids(asset_id, asset_ids)
+    requested_media = _collect_media_ids(media_id, media_ids)
+    if requested_assets and requested_media:
+        return [], "Error: Do not mix Asset IDs and Media IDs in one asset action"
+    if requested_media:
+        rows = (await session.execute(
+            select(AssetRevision.primary_media_id, Asset.id)
+            .join(Asset, Asset.id == AssetRevision.asset_id)
+            .where(
+                AssetRevision.primary_media_id.in_(requested_media),
+                AssetRevision.deleted_at.is_(None),
+                Asset.state == "trashed",
+            )
+        )).all()
+        by_media = {mid: aid for mid, aid in rows}
+        missing = [value for value in requested_media if value not in by_media]
+        if missing:
+            return [], f"Error: Media IDs do not resolve to trashed Assets: {missing}"
+        return [by_media[mid] for mid in requested_media], None
+    if not requested_assets:
+        return [], None
+    rows = await session.scalars(select(Asset.id).where(
+        Asset.id.in_(requested_assets), Asset.state == "trashed"
+    ))
+    found = set(rows)
+    missing = [value for value in requested_assets if value not in found]
+    if missing:
+        return [], f"Error: Asset IDs are not in Trash: {missing}"
+    return requested_assets, None
 
 
 async def _element(

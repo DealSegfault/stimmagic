@@ -76,7 +76,8 @@ const draftName = ref('')
 const nameInputRef = ref(null)
 const navItems = [
   { name: 'project-overview', label: 'Overview' },
-  { name: 'project-direction', label: 'Direction' },
+  { name: 'project-direction', label: 'Script' },
+  { name: 'project-production', label: 'Production' },
   { name: 'project-tools', label: 'Tools' },
   { name: 'project-assets', label: 'Assets' },
   { name: 'project-boards', label: 'Boards' },

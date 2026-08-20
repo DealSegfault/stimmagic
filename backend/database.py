@@ -1062,6 +1062,74 @@ class ProjectScene(Base):
     )
 
 
+class ProjectShot(Base):
+    """Canonical production unit belonging to a Direction sequence.
+
+    ProjectScene remains the imported/script sequence record for backwards
+    compatibility. A shot is deliberately separate so generation, review and
+    continuity never have to infer a plan from scene Markdown or chat text.
+    """
+    __tablename__ = "project_shots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    scene_id = Column(Integer, ForeignKey('project_scenes.id', ondelete='CASCADE'), nullable=False, index=True)
+    shot_number = Column(Integer, nullable=False, default=1)
+    source_key = Column(String, nullable=False)
+    title = Column(String, nullable=False, default='Plan 1')
+    description = Column(Text, nullable=True)
+    prompt = Column(Text, nullable=True)
+    duration = Column(Float, nullable=False, default=4.0)
+    width = Column(Integer, nullable=False, default=1344)
+    height = Column(Integer, nullable=False, default=768)
+    transition_policy = Column(String, nullable=False, default='continuity')
+    status = Column(String, nullable=False, default='planned', index=True)
+    validation_status = Column(String, nullable=False, default='pending', index=True)
+    accepted_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='SET NULL'), nullable=True, index=True)
+    accepted_last_frame_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='SET NULL'), nullable=True, index=True)
+    revision = Column(Integer, nullable=False, default=1)
+    references = Column(Text, nullable=True)  # JSON typed reference bindings
+    settings = Column(Text, nullable=True)  # JSON generation settings
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        Index(
+            'idx_project_shots_live_identity', 'project_id', 'scene_id', 'shot_number',
+            unique=True, sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_shots_order', 'project_id', 'scene_id', 'shot_number'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ShotAttempt(Base):
+    """Immutable generation attempt metadata for one canonical ProjectShot."""
+    __tablename__ = "shot_attempts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    shot_id = Column(Integer, ForeignKey('project_shots.id', ondelete='CASCADE'), nullable=False, index=True)
+    attempt_number = Column(Integer, nullable=False, default=1)
+    generation_job_id = Column(Integer, ForeignKey('generation_jobs.id', ondelete='SET NULL'), nullable=True, index=True)
+    idempotency_key = Column(String, nullable=False, unique=True)
+    status = Column(String, nullable=False, default='queued', index=True)
+    prompt = Column(Text, nullable=True)
+    parameters = Column(Text, nullable=True)
+    reference_manifest = Column(Text, nullable=True)
+    validation = Column(Text, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    superseded_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('idx_shot_attempts_shot_number', 'shot_id', 'attempt_number', unique=True),
+        {'sqlite_autoincrement': True},
+    )
+
+
 class ProjectDirectionEvent(Base):
     """Append-only audit trail for direction, agent and generation actions."""
     __tablename__ = "project_direction_events"

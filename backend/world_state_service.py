@@ -25,6 +25,7 @@ from database import (
     ProjectDirection,
     ProjectElement,
     ProjectScene,
+    ProjectShot,
 )
 from project_direction_service import direction_payload, json_value, scene_dict
 from project_element_service import list_project_elements
@@ -69,10 +70,41 @@ def extract_script_shots(script_text: str | None) -> list[dict[str, Any]]:
     return shots
 
 
-def build_script_shot_context(scene: dict[str, Any] | None, shot_number: int | None) -> dict[str, Any] | None:
+def build_script_shot_context(
+    scene: dict[str, Any] | None,
+    shot_number: int | None,
+    *,
+    previous_shot: dict[str, Any] | None = None,
+    next_shot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Return the requested shot plus its neighboring script rows."""
     if not scene or shot_number is None:
         return None
+    stored_shots = scene.get("shots") or []
+    if stored_shots:
+        by_number = {
+            int(shot.get("shot_number")): shot
+            for shot in stored_shots
+            if shot.get("shot_number") is not None
+        }
+        current = by_number.get(int(shot_number))
+        if current is None:
+            return {
+                "shot_number": int(shot_number),
+                "status": "not_found_in_sequence",
+                "scene_number": scene.get("scene_number"),
+                "available_shot_numbers": sorted(by_number),
+            }
+        return {
+            "status": "resolved",
+            "scene_number": scene.get("scene_number"),
+            "scene_title": scene.get("title"),
+            "shot_number": int(shot_number),
+            "current": current,
+            "previous": previous_shot or by_number.get(int(shot_number) - 1),
+            "next": next_shot or by_number.get(int(shot_number) + 1),
+            "continuity_policy": current.get("transition_policy", "continuity"),
+        }
     shots = extract_script_shots(scene.get("description") or scene.get("prompt"))
     if not shots:
         return {
@@ -95,8 +127,8 @@ def build_script_shot_context(scene: dict[str, Any] | None, shot_number: int | N
         "scene_title": scene.get("title"),
         "shot_number": shot_number,
         "current": current,
-        "previous": by_number.get(shot_number - 1),
-        "next": by_number.get(shot_number + 1),
+        "previous": previous_shot or by_number.get(shot_number - 1),
+        "next": next_shot or by_number.get(shot_number + 1),
         "continuity_policy": (
             "Use the previous shot's accepted last frame as a semantic continuity anchor. "
             "Preserve state and hand/prop relationships; do not copy framing unless the script requires frame-perfect matching."
@@ -117,10 +149,67 @@ def build_shot_reference_manifest(
     Picture ordering after this point.
     """
     current = shot_context.get("current") or {}
-    text = " ".join(str(current.get(key) or "") for key in ("description", "incoming_cut")).casefold()
+    current_scene = world_state.get("current_scene") or {}
+    text = " ".join(
+        str(value or "")
+        for value in (
+            current.get("description"),
+            current.get("incoming_cut"),
+            current_scene.get("title"),
+        )
+    ).casefold()
     entities = world_state.get("entities") or {}
     manifest: list[dict[str, Any]] = []
     seen: set[int] = set()
+
+    concept_aliases = (
+        ("kitchen", "cuisine"),
+        ("window", "fenêtre", "fenetre"),
+        ("kettle", "bouilloire"),
+        ("cup", "mug", "tasse"),
+        ("tea bag", "tea-bag", "sachet", "thé"),
+        ("phone", "telephone", "téléphone"),
+        ("file", "dossier"),
+    )
+
+    def relevance(item: dict[str, Any], *, include_concepts: bool = True) -> int:
+        """Rank an element from the actual shot language, not project-specific names."""
+        reference_id = str(item.get("reference_id") or "").casefold()
+        name = str(item.get("name") or "").strip().casefold()
+        # Descriptions can mention several other props (for example a last
+        # frame description can mention the kettle, mug and tea bag). They are
+        # context, not bindings. Only the stable element name/id may satisfy a
+        # semantic alias.
+        identity = f"{reference_id} {name}"
+        if reference_id and (f"@{reference_id}" in text or reference_id in text):
+            return 100
+        if name and name in text:
+            return 80
+        if include_concepts and any(
+            any(alias in text for alias in aliases)
+            and any(alias in identity for alias in aliases)
+            for aliases in concept_aliases
+        ):
+            return 60
+
+        # Do not infer references from generic tokens shared by many project
+        # elements ("maya", "plan", "frame", "viewsheet", etc.). Those
+        # heuristics caused a plan-specific prompt to absorb unrelated props
+        # from the sequence. Exact ids/names, semantic aliases, and the
+        # canonical location fallback above are the only implicit matches.
+        return 0
+
+    def ranked_relevant(
+        items: list[dict[str, Any]], *, include_concepts: bool = True
+    ) -> list[dict[str, Any]]:
+        ranked = sorted(
+            (
+                (relevance(item, include_concepts=include_concepts), index, item)
+                for index, item in enumerate(items)
+            ),
+            key=lambda entry: (-entry[0], entry[1]),
+        )
+        return [item for score, _, item in ranked if score >= 20]
 
     def add(item: dict[str, Any] | None, role: str, reason: str) -> None:
         if not item or not item.get("media_id"):
@@ -139,61 +228,55 @@ def build_shot_reference_manifest(
         })
 
     previous_frame_id = (previous_acceptance or {}).get("last_frame_media_id")
-    if previous_frame_id:
+    if previous_frame_id and current.get("transition_policy", "continuity") != "independent":
         add({"media_id": previous_frame_id, "reference_id": "continuity_previous_last_frame", "name": "previous accepted last frame"}, "continuity_anchor", "accepted last frame of the immediately preceding shot")
 
+    # A reviewed shot may carry explicit typed bindings. They are authoritative
+    # and intentionally disable fuzzy element matching for this generation.
+    explicit_bindings = current.get("references") or []
+    if explicit_bindings:
+        by_reference = {
+            str(item.get("reference_id")): item
+            for group in (entities.get("characters") or {}, entities.get("locations") or {}, entities.get("props") or {})
+            for item in group.values()
+            if item.get("reference_id")
+        }
+        for binding in explicit_bindings[: max(0, 8 - len(manifest))]:
+            if not isinstance(binding, dict):
+                continue
+            source = dict(by_reference.get(str(binding.get("reference_id")), {}))
+            source.update(binding)
+            add(source, str(binding.get("role") or "reference"), "explicit shot reference binding")
+        return manifest[:8]
+
     characters = list((entities.get("characters") or {}).values())
-    if characters and any(token in text for token in ("maya", "character", "woman", "personnage")):
-        add(characters[0], "character", "canonical character identity")
+    relevant_characters = ranked_relevant(characters)
+    if not relevant_characters and len(characters) == 1 and any(
+        token in f" {text} "
+        for token in (
+            " elle ", " il ", " femme", " homme", "personnage", "character",
+            " woman", " man ", " he ", " she ",
+        )
+    ):
+        relevant_characters = characters
+    for character in relevant_characters:
+        add(character, "character", "character named or implied by the shot")
 
     locations = list((entities.get("locations") or {}).values())
-    def _location_priority(item: dict[str, Any]) -> tuple[int, int]:
-        identity = " ".join(str(item.get(key) or "") for key in ("name", "reference_id")).casefold()
-        description = str(item.get("description") or "").casefold()
-        return (
-            0 if any(token in identity for token in ("kitchen", "cuisine")) else 1,
-            0 if any(token in description for token in ("kitchen", "cuisine")) else 1,
-        )
-
-    kitchen_locations = sorted(
-        [
-            item for item in locations
-            if any(token in " ".join(str(item.get(key) or "") for key in ("name", "reference_id", "description")).casefold() for token in ("kitchen", "cuisine"))
-        ],
-        key=_location_priority,
-    )
-    if any(token in text for token in ("kitchen", "cuisine", "cuisine ouverte")) and kitchen_locations:
-        add(kitchen_locations[0], "location_canonical", "kitchen-focused location reference")
+    # Keep the project-level canonical location unless the shot explicitly
+    # names a different location element. Generic words such as "cuisine"
+    # must not swap it for a secondary close-view asset.
+    relevant_locations = ranked_relevant(locations, include_concepts=False)
+    if relevant_locations:
+        add(relevant_locations[0], "location_canonical", "location matched to the shot")
     elif locations:
-        add(locations[0], "location_canonical", "scene location reference")
+        add(locations[0], "location_canonical", "default canonical scene location")
 
     props = list((entities.get("props") or {}).values())
-    prop_tokens = (
-        ("sachet", "tea bag", "tea-bag", "thé"),
-        ("tasse", "mug", "cup"),
-        ("bouilloire", "kettle"),
-        ("fenêtre", "fenetre", "window"),
-    )
-    for tokens in prop_tokens:
-        if not any(token in text for token in tokens):
-            continue
-        identity_match = next(
-            (
-                item for item in props
-                if any(token in " ".join(str(item.get(key) or "") for key in ("name", "reference_id")).casefold() for token in tokens)
-            ),
-            None,
-        )
-        match = identity_match or next(
-            (
-                item for item in props
-                if any(token in str(item.get("description") or "").casefold() for token in tokens)
-            ),
-            None,
-        )
-        add(match, "prop", f"prop required by shot: {tokens[0]}")
+    for prop in ranked_relevant(props):
+        add(prop, "prop", "prop named by the shot")
 
-    return manifest
+    return manifest[:8]
 
 
 def _agent_text(value: Any, limit: int) -> str:
@@ -256,7 +339,46 @@ def _compact_agent_scene(scene: dict[str, Any], *, include_context: bool = False
         )
         compact["dependencies"] = (scene.get("dependencies") or [])[:20]
         compact["blockers"] = (scene.get("blockers") or [])[:20]
+    if scene.get("shots"):
+        compact["shots"] = [
+            {
+                key: shot.get(key)
+                for key in (
+                    "id", "shot_number", "title", "description", "prompt",
+                    "duration", "width", "height", "transition_policy",
+                    "status", "validation_status", "accepted_media_id",
+                    "accepted_last_frame_media_id", "revision", "references",
+                    "settings",
+                )
+            }
+            for shot in scene.get("shots", [])[:50]
+        ]
     return compact
+
+
+def _world_state_shot_dict(shot: ProjectShot | None) -> dict[str, Any] | None:
+    if shot is None:
+        return None
+    return {
+        "id": shot.id,
+        "scene_id": shot.scene_id,
+        "shot_number": shot.shot_number,
+        "source_key": shot.source_key,
+        "title": shot.title,
+        "description": shot.description or "",
+        "prompt": shot.prompt or "",
+        "duration": shot.duration,
+        "width": shot.width,
+        "height": shot.height,
+        "transition_policy": shot.transition_policy,
+        "status": shot.status,
+        "validation_status": shot.validation_status,
+        "accepted_media_id": shot.accepted_media_id,
+        "accepted_last_frame_media_id": shot.accepted_last_frame_media_id,
+        "revision": shot.revision,
+        "references": json_value(shot.references, []),
+        "settings": json_value(shot.settings, {}),
+    }
 
 
 def compact_world_state_for_agent(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -304,6 +426,14 @@ def compact_world_state_for_agent(state: Dict[str, Any]) -> Dict[str, Any]:
     shot_context = state.get("shot_context")
     if isinstance(shot_context, dict):
         compact["shot_context"] = _compact_agent_json(shot_context, limit=5000)
+    if isinstance(state.get("shot_navigation"), dict):
+        compact["shot_navigation"] = _compact_agent_json(
+            state["shot_navigation"], limit=2500
+        )
+    if state.get("script_directives"):
+        compact["script_directives"] = _agent_text(
+            state["script_directives"], 5000
+        )
     if isinstance(state.get("generation_contract"), dict):
         compact["generation_contract"] = _compact_agent_json(
             state["generation_contract"], limit=5000
@@ -402,6 +532,7 @@ async def build_project_world_state(
     sequence_number: Optional[int] = None,
     scene_number: Optional[int] = None,
     board_id: Optional[int] = None,
+    shot_number: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Aggregate project direction, elements, and continuity buffer into a unified World State."""
     project = await session.get(Project, project_id)
@@ -410,6 +541,7 @@ async def build_project_world_state(
 
     direction = await session.get(ProjectDirection, project_id)
     global_context = json_value(direction.context if direction else None, {})
+    script_directives = str(global_context.get("script_directives") or "").strip()
 
     raw_elements = await list_project_elements(session, project_id=project_id)
     characters: Dict[str, Any] = {}
@@ -439,14 +571,67 @@ async def build_project_world_state(
     previous_scene_data: Optional[Dict[str, Any]] = None
     next_scene_data: Optional[Dict[str, Any]] = None
 
-    resolved_scene = await resolve_project_scene(
-        session,
-        project_id=project_id,
-        scene_id=scene_id,
-        sequence_number=sequence_number,
-        scene_number=scene_number,
-        board_id=board_id,
+    has_scene_selector = any(
+        value is not None
+        for value in (scene_id, sequence_number, scene_number, board_id)
     )
+    shot_resolution: dict[str, Any] | None = None
+    if shot_number is not None and not has_scene_selector:
+        shot_matches = (await session.execute(
+            select(ProjectScene, ProjectShot)
+            .join(
+                ProjectShot,
+                (ProjectShot.scene_id == ProjectScene.id)
+                & (ProjectShot.project_id == ProjectScene.project_id),
+            )
+            .where(
+                ProjectScene.project_id == project_id,
+                ProjectShot.shot_number == int(shot_number),
+                ProjectShot.deleted_at.is_(None),
+            )
+            .order_by(ProjectScene.sequence_number, ProjectScene.scene_number, ProjectShot.id)
+        )).all()
+        if len(shot_matches) == 1:
+            resolved_scene = shot_matches[0][0]
+            shot_resolution = {
+                "status": "resolved",
+                "shot_id": shot_matches[0][1].id,
+                "scene_id": resolved_scene.id,
+                "shot_number": int(shot_number),
+            }
+        elif shot_matches:
+            shot_resolution = {
+                "status": "ambiguous",
+                "shot_number": int(shot_number),
+                "candidates": [
+                    {
+                        "scene_id": scene.id,
+                        "sequence_number": scene.sequence_number,
+                        "scene_number": scene.scene_number,
+                        "title": scene.title,
+                        "shot_id": shot.id,
+                    }
+                    for scene, shot in shot_matches
+                ],
+            }
+            resolved_scene = None
+        else:
+            shot_resolution = {
+                "status": "not_found",
+                "shot_number": int(shot_number),
+            }
+            resolved_scene = None
+    elif has_scene_selector:
+        resolved_scene = await resolve_project_scene(
+            session,
+            project_id=project_id,
+            scene_id=scene_id,
+            sequence_number=sequence_number,
+            scene_number=scene_number,
+            board_id=board_id,
+        )
+    else:
+        resolved_scene = await resolve_project_scene(session, project_id=project_id)
     resolved_scene_id = resolved_scene.id if resolved_scene else None
 
     if resolved_scene_id is not None:
@@ -458,6 +643,65 @@ async def build_project_world_state(
                 if idx < len(scenes) - 1:
                     next_scene_data = scene_dict(scenes[idx + 1])
                 break
+
+    shot_rows = []
+    if current_scene_data and resolved_scene_id is not None:
+        shots = (
+            await session.execute(
+                select(ProjectShot)
+                .where(
+                    ProjectShot.project_id == project_id,
+                    ProjectShot.scene_id == resolved_scene_id,
+                    ProjectShot.deleted_at.is_(None),
+                )
+                .order_by(ProjectShot.shot_number, ProjectShot.id)
+            )
+        ).scalars().all()
+        shot_rows = [_world_state_shot_dict(shot) for shot in shots]
+        current_scene_data["shots"] = shot_rows
+
+    shot_navigation: dict[str, Any] | None = None
+    if shot_number is not None and resolved_scene_id is not None:
+        all_shot_rows = (await session.execute(
+            select(ProjectShot, ProjectScene)
+            .join(ProjectScene, ProjectScene.id == ProjectShot.scene_id)
+            .where(
+                ProjectShot.project_id == project_id,
+                ProjectShot.deleted_at.is_(None),
+                ProjectScene.project_id == project_id,
+            )
+            .order_by(
+                ProjectScene.sequence_number,
+                ProjectScene.scene_number,
+                ProjectShot.shot_number,
+                ProjectShot.id,
+            )
+        )).all()
+        current_index = next(
+            (
+                index
+                for index, (shot, _) in enumerate(all_shot_rows)
+                if shot.scene_id == resolved_scene_id
+                and shot.shot_number == int(shot_number)
+            ),
+            None,
+        )
+        if current_index is not None:
+            previous = all_shot_rows[current_index - 1][0] if current_index > 0 else None
+            following = all_shot_rows[current_index + 1][0] if current_index + 1 < len(all_shot_rows) else None
+            shot_navigation = {
+                "current_shot_id": all_shot_rows[current_index][0].id,
+                "previous": _world_state_shot_dict(previous) if previous else None,
+                "next": _world_state_shot_dict(following) if following else None,
+            }
+            shot_resolution = shot_resolution or {
+                "status": "resolved",
+                "shot_id": all_shot_rows[current_index][0].id,
+                "scene_id": resolved_scene_id,
+                "shot_number": int(shot_number),
+            }
+        elif shot_resolution is None:
+            shot_resolution = {"status": "not_found", "shot_number": int(shot_number)}
 
     reference_assets = await _board_reference_assets(
         session,
@@ -477,6 +721,7 @@ async def build_project_world_state(
         "script_name": direction.script_name if direction else None,
         "summary": direction.summary if direction else "",
         "global_context": global_context,
+        "script_directives": script_directives,
         "entities": {
             "characters": characters,
             "locations": locations,
@@ -489,6 +734,8 @@ async def build_project_world_state(
         "next_scene": next_scene_data,
         "continuity_buffer": continuity_buffer,
         "reference_assets": reference_assets,
+        "shot_resolution": shot_resolution,
+        "shot_navigation": shot_navigation,
     }
 
 
@@ -501,7 +748,20 @@ def detect_missing_references(
     text_to_scan = (shot_prompt or "").lower()
 
     current_scene = world_state.get("current_scene")
-    if current_scene:
+    shot_context = world_state.get("shot_context") or {}
+    current_shot = shot_context.get("current") or {}
+    if current_shot:
+        # A scene description may contain the entire Markdown shot table.
+        # Once a canonical shot is resolved, only that row may activate
+        # references; otherwise every plan leaks into every World State.
+        text_to_scan = " ".join(
+            (
+                text_to_scan,
+                str(current_shot.get("description") or ""),
+                str(current_shot.get("incoming_cut") or ""),
+            )
+        ).lower()
+    elif current_scene:
         desc = (current_scene.get("description") or "").lower()
         title = (current_scene.get("title") or "").lower()
         text_to_scan = f"{text_to_scan} {desc} {title}"

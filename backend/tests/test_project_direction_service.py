@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from database import Board, Chat, Project, ProjectScene
-from project_direction_service import parse_script, reconcile_script, record_event
+from project_direction_service import extract_script_directives, parse_script, reconcile_script, record_event
 
 
 def test_parse_repeated_shot_tables_as_separate_scenes():
@@ -56,6 +56,58 @@ Le téléphone sonne.
     assert scenes[1]["sequence_number"] == 2
     assert scenes[1]["title"] == "La révélation"
     assert scenes[1]["description"] == "Le téléphone sonne."
+
+
+def test_parse_sequence_shot_table_into_canonical_plans():
+    script = """# SÉQUENCE 1 — Cuisine
+| # | Durée | Code | Plan — texte intégral | Raccord entrant exact |
+|---|---:|---|---|---|
+| **01** | 4 s | **A** | Maya verse le thé. | Début |
+| **02** | 6 s | **C** | Maya regarde la porte. | Raccord exact |
+"""
+
+    scenes = parse_script(script)
+
+    assert len(scenes) == 1
+    assert [shot["shot_number"] for shot in scenes[0]["shots"]] == [1, 2]
+    assert scenes[0]["shots"][0]["transition_policy"] == "independent"
+    assert scenes[0]["shots"][1]["transition_policy"] == "continuity"
+    assert scenes[0]["shots"][1]["incoming_cut"] == "Raccord exact"
+    assert scenes[0]["scene_description"] == ""
+
+
+def test_shot_map_keeps_optional_scene_notes_without_copying_the_table():
+    script = """# SÉQUENCE 1 — Cuisine
+Ambiance chaude, appartement calme.
+
+| # | Durée | Code | Plan — texte intégral | Raccord entrant exact |
+|---|---:|---|---|---|
+| **01** | 4 s | **A** | Maya verse le thé. | Début |
+"""
+
+    scenes = parse_script(script)
+
+    assert scenes[0]["scene_description"] == "Ambiance chaude, appartement calme."
+    assert "| **01** |" in scenes[0]["description"]
+
+
+def test_script_preamble_is_directive_not_sequence_content():
+    script = """# FILM — production-safe
+## LÉGENDE GÉNÉRATION
+- A = génération indépendante.
+- B = même moment, angle différent.
+
+# SÉQUENCE 1 — Le calme
+| # | Durée | Code | Plan — texte intégral | Raccord entrant exact |
+|---|---:|---|---|---|
+| **01** | 4 s | **A** | Maya regarde la fenêtre. | Début |
+"""
+
+    scenes = parse_script(script)
+
+    assert extract_script_directives(script).startswith("# FILM")
+    assert "LÉGENDE GÉNÉRATION" not in scenes[0]["description"]
+    assert scenes[0]["shots"][0]["description"] == "Maya regarde la fenêtre."
 
 
 def test_explicit_scene_headings_still_take_precedence():

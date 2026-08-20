@@ -46,20 +46,16 @@ async def run_code(code: str, **kwargs) -> str:
 
     shot_contract = kwargs.get("_shot_contract")
     if isinstance(shot_contract, dict) and shot_contract.get("workflow") == "compose_opening_keyframe_then_i2v":
-        # The catalog exposes Nano Banana Pro's edit adapter as
-        # ``nano_banana_pro_edit``. Catch the common hallucinated alias before
-        # entering the sandbox, where it otherwise looks like a hung image
-        # generation and gives the agent no useful recovery signal.
-        if (
-            "from stimma.tools.image_to_image import nano_banana_pro" in code
-            and "nano_banana_pro_edit" not in code
-        ):
+        # Image composition belongs to the real Antigravity CLI path. Catch
+        # local image-adapter attempts before entering the sandbox, where they
+        # would bypass the prompt+reference workflow and create a misleading
+        # paid-tool approval.
+        if "stimma.tools.image_to_image" in code or "nano_banana_pro" in code:
             return (
-                "Error: shot workflow requires the catalog function "
-                "`from stimma.tools.image_to_image import nano_banana_pro_edit`; "
-                "`nano_banana_pro` is not a valid image-to-image function. "
-                "Retry the keyframe step with the exact function name, then pass only "
-                "keyframe.media_id to minimax_h3_i2v. No generation job was queued."
+                "Error: shot workflow image composition must use the real `antigravity_image` "
+                "tool with the exact ordered reference_media_ids and edit prompt. "
+                "Do not import a local image_to_image adapter. After the returned keyframe, "
+                "pass only its media_id to `minimax_h3_i2v`. No generation job was queued."
             )
 
     result, llm_usage = await run_code_in_sandbox(

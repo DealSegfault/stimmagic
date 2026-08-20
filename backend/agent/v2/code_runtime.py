@@ -1894,9 +1894,6 @@ class StimmaSDK:
             all_media_ids = list(payload.get("media_ids") or []) + saved_media_ids
             if payload.get("role") == "final" and self._shot_contract and all_media_ids:
                 from shot_continuity_service import (
-                    generation_job_for_media,
-                    record_shot_acceptance,
-                    ensure_last_frame_media,
                     validate_shot_output,
                 )
                 for media_id in all_media_ids:
@@ -1911,24 +1908,9 @@ class StimmaSDK:
                             + "\n- ".join(output_errors)
                             + "\nThe media remains a candidate and was not registered as the next continuity state."
                         )
-                for media_id in all_media_ids:
-                    media = await self.session.get(MediaItem, int(media_id))
-                    last_frame_id = int(media_id)
-                    if media and (media.file_format or "").lower() in {"mp4", "webm", "mov", "avi", "mkv", "ogg"}:
-                        last_frame_id = await ensure_last_frame_media(
-                            self.session,
-                            source_media_id=int(media_id),
-                            workspace_dir=self.workspace_dir,
-                            project_id=self.project_id,
-                        )
-                    job = await generation_job_for_media(self.session, int(media_id))
-                    await record_shot_acceptance(
-                        self.session,
-                        contract=self._shot_contract,
-                        media_id=int(media_id),
-                        generation_job_id=job.id if job else None,
-                        last_frame_media_id=last_frame_id,
-                    )
+                # Displaying a result is not editorial approval. The canonical
+                # continuity state is written only by the explicit project
+                # production approval endpoint.
             self._shown_media_ids.extend(all_media_ids)
             await show_tool(
                 role=payload["role"],

@@ -46,6 +46,11 @@ const error = ref('')
 const uploadInput = ref<HTMLInputElement | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 
+function isVideoFormat(fileFormat?: string | null) {
+  const normalized = (fileFormat || '').toLowerCase().replace(/^\./, '')
+  return ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'].includes(normalized)
+}
+
 const filteredElements = computed(() => {
   const term = search.value.trim().toLowerCase()
   return props.elements.filter((element) => {
@@ -288,6 +293,7 @@ watch(() => props.projectId, () => {
               :asset-id="element.asset_id || undefined"
               :file-hash="element.file_hash || undefined"
               :file-format="element.file_format || undefined"
+              :is-video="isVideoFormat(element.file_format)"
               :alt="element.name"
               :enable-context-menu="false"
               :draggable="false"
@@ -314,10 +320,10 @@ watch(() => props.projectId, () => {
           <div class="flex items-center justify-between border-b border-edge-subtle px-5 py-3">
             <div>
               <h3 class="text-sm font-medium text-content">Choose an Asset</h3>
-              <p class="text-xs text-content-muted">Browse your Stimma library or upload a new image.</p>
+              <p class="text-xs text-content-muted">Browse your Stimma library or upload a new image or video.</p>
             </div>
             <Button variant="secondary" size="sm" @click="openExternalUpload">Upload file</Button>
-            <input ref="uploadInput" type="file" accept="image/*" class="hidden" @change="uploadExternal" />
+            <input ref="uploadInput" type="file" accept="image/*,video/*" class="hidden" @change="uploadExternal" />
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto p-4">
             <div class="grid grid-cols-3 gap-3 xl:grid-cols-4">
@@ -334,6 +340,7 @@ watch(() => props.projectId, () => {
                   :asset-id="asset.asset_id"
                   :file-hash="asset.file_hash"
                   :file-format="asset.file_format"
+                  :is-video="isVideoFormat(asset.file_format)"
                   :alt="asset.asset_title || 'Asset'"
                   :enable-context-menu="false"
                   :draggable="false"
@@ -364,6 +371,7 @@ watch(() => props.projectId, () => {
               :asset-id="selectedAsset.asset_id"
               :file-hash="selectedAsset.file_hash"
               :file-format="selectedAsset.file_format"
+              :is-video="isVideoFormat(selectedAsset.file_format)"
               :alt="elementName || 'Selected Asset'"
               :enable-context-menu="false"
               :draggable="false"

@@ -17,6 +17,7 @@ from database import (
     AssetSnapshot,
     MediaItem,
     MediaOwner,
+    ProjectElement,
     WorkingDocument,
 )
 
@@ -596,28 +597,53 @@ async def clear_snapshot_source_bindings(
 
 
 async def trash_asset(session: AsyncSession, *, asset_id: int) -> Asset:
-    """Move an Asset root to Trash without releasing any Media ownership."""
+    """Move an Asset root to Trash without releasing Media ownership.
+
+    Project elements are durable names for an Asset. Keeping a live element
+    after its backing Asset is trashed would leave a misleading reference in
+    World State, so the element tombstones cascade in the same transaction.
+    """
     asset = await session.get(Asset, asset_id)
     if asset is None:
         raise AssetServiceError("Asset not found")
     if asset.state == "deleting":
         raise AssetServiceError("Asset deletion is already in progress")
+    now = datetime.utcnow()
     if asset.state != "trashed":
-        now = datetime.utcnow()
         asset.state = "trashed"
         asset.deleted_at = now
         asset.updated_at = now
-        await session.flush()
+    elements = await session.scalars(
+        select(ProjectElement).where(
+            ProjectElement.asset_id == asset_id,
+            ProjectElement.deleted_at.is_(None),
+        )
+    )
+    for element in elements:
+        element.deleted_at = now
+        element.updated_at = now
+    await session.flush()
     return asset
 
 
 async def restore_asset(session: AsyncSession, *, asset_id: int) -> Asset:
-    """Restore a trashed Asset and clear the expiration that put it there."""
+    """Restore a trashed Asset and the elements tombstoned with that action."""
     asset = await session.get(Asset, asset_id)
     if asset is None:
         raise AssetServiceError("Asset not found")
     if asset.state != "trashed":
         raise AssetServiceError("Asset is not in Trash")
+    trashed_at = asset.deleted_at
+    if trashed_at is not None:
+        elements = await session.scalars(
+            select(ProjectElement).where(
+                ProjectElement.asset_id == asset_id,
+                ProjectElement.deleted_at == trashed_at,
+            )
+        )
+        for element in elements:
+            element.deleted_at = None
+            element.updated_at = datetime.utcnow()
     asset.state = "active"
     asset.deleted_at = None
     asset.expires_at = None

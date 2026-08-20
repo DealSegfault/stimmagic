@@ -10,7 +10,7 @@
         v-if="attachment.media_id"
         type="button"
         class="w-full h-full p-0 border-0 bg-transparent text-left cursor-pointer focus:outline-none hover:ring-1 hover:ring-accent transition-all"
-        title="Voir l'image"
+        :title="attachmentTitle(attachment)"
         @click="mediaDetailsModal.open(attachment.media_id)"
       >
         <MediaImage
@@ -20,9 +20,20 @@
           container-class="w-full h-full"
         />
       </button>
+      <!-- Uploaded video reference preview. Library-backed media keeps the
+           thumbnail above, while path-only attachments can still preview the
+           actual clip without routing it through <img>. -->
+      <video
+        v-if="!attachment.media_id && isVideoAttachment(attachment)"
+        :src="getAttachmentUrl(attachment)"
+        class="w-full h-full object-cover"
+        muted
+        playsinline
+        preload="metadata"
+      />
       <!-- Reference file or blob URL - not draggable -->
       <AppImage
-        v-else
+        v-else-if="!attachment.media_id"
         :src="getAttachmentUrl(attachment)"
         :alt="`Attachment ${index + 1}`"
         container-class="w-full h-full"
@@ -62,7 +73,10 @@ function getAttachmentUrl(attachment) {
   if (attachment.path) {
     const profileId = getCurrentProfileId()
     const pin = getCachedPin(profileId)
-    let url = `${getApiBase()}/generate/reference-file?path=${encodeURIComponent(attachment.path)}&profile=${encodeURIComponent(profileId)}`
+    const endpoint = isVideoAttachment(attachment)
+      ? 'reference-video-file'
+      : 'reference-file'
+    let url = `${getApiBase()}/generate/${endpoint}?path=${encodeURIComponent(attachment.path)}&profile=${encodeURIComponent(profileId)}`
     if (pin) url += `&pin=${encodeURIComponent(pin)}`
     return url
   }
@@ -71,6 +85,16 @@ function getAttachmentUrl(attachment) {
     return attachment.localUrl
   }
   return ''
+}
+
+function isVideoAttachment(attachment) {
+  if (attachment?.media_type === 'video') return true
+  const format = attachment?.file_format || attachment?.filename || attachment?.path || ''
+  return /\.(mp4|mov|avi|mkv|webm|m4v|mpg|mpeg)$/i.test(String(format))
+}
+
+function attachmentTitle(attachment) {
+  return isVideoAttachment(attachment) ? 'Voir la vidéo' : "Voir l'image"
 }
 
 function removeAttachment(index) {

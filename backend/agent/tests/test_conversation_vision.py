@@ -51,6 +51,35 @@ async def test_user_message_multimodal_attachment(tmp_path, monkeypatch):
     assert img_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
+def test_user_message_video_attachment_is_r2v_reference(tmp_path):
+    video_path = tmp_path / "motion_ref.mp4"
+    video_path.write_bytes(b"not decoded by the chat vision layer")
+
+    item = ChatItem(
+        chat_id=42,
+        item_type="user_message",
+        message_text="Use this motion as the reference.",
+        item_metadata=json.dumps({
+            "workspace_files": [
+                {
+                    "filename": video_path.name,
+                    "media_id": 123,
+                    "media_type": "video",
+                    "path": str(video_path),
+                }
+            ]
+        }),
+    )
+
+    msg = _item_to_message(item, include_images=True)
+    assert msg is not None
+    assert msg["role"] == "user"
+    assert isinstance(msg["content"], str)
+    assert "<Audio 1>" in msg["content"]
+    assert "<Video 1>" in msg["content"]
+    assert "whole-video references" in msg["content"]
+
+
 def test_inject_last_user_context_multimodal():
     messages = [
         {"role": "system", "content": "system prompt"},
@@ -71,3 +100,43 @@ def test_inject_last_user_context_multimodal():
     assert "<system-reminder>test</system-reminder>" in user_content[0]["text"]
     assert "user original text" in user_content[0]["text"]
     assert user_content[1]["type"] == "image_url"
+
+
+@pytest.mark.asyncio
+async def test_user_message_project_element_references(tmp_path, monkeypatch):
+    # Mock media file location
+    media_dir = tmp_path / "objects" / "media" / "101"
+    media_dir.mkdir(parents=True)
+    img_path = media_dir / "mug.png"
+    img = Image.new("RGB", (80, 80), color="brown")
+    img.save(img_path)
+
+    monkeypatch.setattr("core.profile_context.get_current_profile", lambda: "default")
+    monkeypatch.setattr("app_dirs.get_profile_dir", lambda profile: tmp_path)
+
+    message_text = (
+        "> **Project elements:**\n"
+        "> - prop · **tasse_maya_viewsheet** · `@prop_tasse_maya_viewsheet` (element_id: 12, asset_id: 5, media_id: 101, file_hash: abc, file_format: png)\n\n"
+        "Describe prompt with mug"
+    )
+
+    item = ChatItem(
+        chat_id=42,
+        item_type="user_message",
+        message_text=message_text,
+    )
+
+    msg = _item_to_message(item, include_images=True)
+    assert msg is not None
+    assert msg["role"] == "user"
+    assert isinstance(msg["content"], list)
+    assert len(msg["content"]) == 2
+
+    text_part = msg["content"][0]
+    img_part = msg["content"][1]
+
+    assert text_part["type"] == "text"
+    assert "<Picture 1>" in text_part["text"]
+    assert "tasse_maya_viewsheet" in text_part["text"]
+    assert "media_id=101" in text_part["text"]
+    assert img_part["type"] == "image_url"

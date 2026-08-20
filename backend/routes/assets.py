@@ -72,6 +72,18 @@ from utils.websocket import ws_manager
 
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
+
+
+async def _media_ids_for_assets(session: AsyncSession, asset_ids: list[int]) -> list[int]:
+    if not asset_ids:
+        return []
+    rows = await session.scalars(
+        select(AssetRevision.primary_media_id).where(
+            AssetRevision.asset_id.in_(asset_ids),
+            AssetRevision.deleted_at.is_(None),
+        )
+    )
+    return list(dict.fromkeys(int(media_id) for media_id in rows))
 log = get_logger(__name__)
 
 
@@ -1461,7 +1473,10 @@ async def trash_assets(
             continue
     await session.commit()
     if changed:
-        await ws_manager.broadcast("assets_trashed", {"asset_ids": changed})
+        await ws_manager.broadcast(
+            "assets_trashed",
+            {"asset_ids": changed, "media_ids": await _media_ids_for_assets(session, changed)},
+        )
     return {"status": "success", "asset_ids": changed}
 
 
@@ -2077,7 +2092,10 @@ async def delete_asset(asset_id: int, session: AsyncSession = Depends(get_db_ses
     except AssetServiceError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await session.commit()
-    await ws_manager.broadcast("asset_deleted", {"asset_id": asset_id})
+    await ws_manager.broadcast(
+        "asset_deleted",
+        {"asset_id": asset_id, "media_ids": await _media_ids_for_assets(session, [asset_id])},
+    )
     return {"asset": asset.to_dict()}
 
 

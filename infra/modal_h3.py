@@ -111,6 +111,11 @@ comfy_image = (
         copy=True,
     )
     .add_local_file(
+        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/fields.py"),
+        "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/fields.py",
+        copy=True,
+    )
+    .add_local_file(
         str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json",
         copy=True,

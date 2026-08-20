@@ -125,3 +125,64 @@ test('video inputs carry internal media ids even when the provider schema omits 
   ])
   assert.deepEqual(parameters.input_video_media_ids, [null, 52])
 })
+
+test('H3 reference settings and mixed media inputs survive payload capture', () => {
+  const h3State = state()
+  h3State.globalPrefs.inputImages = [{ path: '/library/style.png', mediaId: 101 }]
+  h3State.globalPrefs.inpaintRefImages = []
+  h3State.globalPrefs.inputVideos = [{ path: '/library/motion.mp4', mediaId: 202 }]
+  h3State.modelParams = {
+    width: 544,
+    height: 960,
+    duration: 7.5,
+    generate_audio: false,
+    model_precision: 'FP8',
+    ref_image_size: 'max',
+    sampler: 'res_multistep',
+    scheduler: 'simple',
+    seed: 42,
+    spectrum: false,
+    steps: 12,
+  }
+
+  const h3Config: PayloadBuilderConfig = {
+    ...config,
+    tool: {
+      ...config.tool,
+      task_type: 'reference-to-video',
+      parameter_schema: {
+        properties: {
+          width: { type: 'integer' },
+          height: { type: 'integer' },
+          input_images: { type: 'array', maxItems: 9 },
+          input_videos: { type: 'array', maxItems: 3 },
+          duration: { type: 'number' },
+          generate_audio: { type: 'boolean' },
+          model_precision: { type: 'string' },
+          ref_image_size: { type: 'string' },
+          sampler: { type: 'string' },
+          scheduler: { type: 'string' },
+          seed: { type: 'integer' },
+          spectrum: { type: 'boolean' },
+          steps: { type: 'integer' },
+        },
+      },
+    },
+  }
+
+  const parameters = extractParameters(h3Config, h3State)
+
+  assert.deepEqual(parameters.input_images, ['/library/style.png'])
+  assert.deepEqual(parameters.input_media_ids, [101])
+  assert.deepEqual(parameters.input_videos, ['/library/motion.mp4'])
+  assert.deepEqual(parameters.input_video_media_ids, [202])
+  assert.equal(parameters.duration, 7.5)
+  assert.equal(parameters.generate_audio, false)
+  assert.equal(parameters.model_precision, 'FP8')
+  assert.equal(parameters.ref_image_size, 'max')
+  assert.equal(parameters.sampler, 'res_multistep')
+  assert.equal(parameters.scheduler, 'simple')
+  assert.equal(parameters.seed, 42)
+  assert.equal(parameters.spectrum, false)
+  assert.equal(parameters.steps, 12)
+})

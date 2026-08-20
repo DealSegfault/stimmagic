@@ -26,6 +26,7 @@ sys.modules["stp_server.config"] = config_mod
 # Now we can import executor functions
 from stp_server.executor import (
     _hydrate_missing_widget_defaults,
+    _inject_params,
     _inject_fields,
     _is_input_required,
     _strip_unprovided_input_chains,
@@ -178,6 +179,50 @@ class TestHydrateMissingWidgetDefaults(unittest.TestCase):
         self.assertIs(prompt["26"]["inputs"]["required"], True)
         self.assertEqual(prompt["26"]["inputs"]["target_fps"], 0)
         self.assertNotIn("frames", prompt["26"]["inputs"])
+
+
+class TestInjectParams(unittest.TestCase):
+    def test_h3_settings_are_injected_and_false_values_stay_false(self):
+        prompt = {
+            "duration": {"class_type": "StimmaFloatParam", "inputs": {"value": 5.0}},
+            "generate_audio": {"class_type": "StimmaBoolParam", "inputs": {"value": True}},
+            "model_precision": {"class_type": "StimmaDropdownParam", "inputs": {"value": "INT8 ConvRot"}},
+            "ref_image_size": {"class_type": "StimmaDropdownParam", "inputs": {"value": "match"}},
+            "sampler": {"class_type": "StimmaDropdownParam", "inputs": {"value": "res_multistep"}},
+            "scheduler": {"class_type": "StimmaDropdownParam", "inputs": {"value": "simple"}},
+            "seed": {"class_type": "StimmaIntParam", "inputs": {"value": 1}},
+            "steps": {"class_type": "StimmaIntParam", "inputs": {"value": 20}},
+            "spectrum": {"class_type": "StimmaBoolParam", "inputs": {"value": True}},
+        }
+        workflow = MagicMock()
+        workflow.param_nodes = [
+            {"node_id": name, "class_type": node["class_type"], "name": name}
+            for name, node in prompt.items()
+        ]
+
+        _inject_params(
+            prompt,
+            workflow,
+            {
+                "duration": "7.5",
+                "generate_audio": "false",
+                "model_precision": "FP8",
+                "ref_image_size": "max",
+                "sampler": "res_multistep",
+                "scheduler": "simple",
+                "seed": "42",
+                "steps": "12",
+                "spectrum": False,
+            },
+        )
+
+        self.assertEqual(prompt["duration"]["inputs"]["value"], 7.5)
+        self.assertIs(prompt["generate_audio"]["inputs"]["value"], False)
+        self.assertEqual(prompt["model_precision"]["inputs"]["value"], "FP8")
+        self.assertEqual(prompt["ref_image_size"]["inputs"]["value"], "max")
+        self.assertEqual(prompt["seed"]["inputs"]["value"], 42)
+        self.assertEqual(prompt["steps"]["inputs"]["value"], 12)
+        self.assertIs(prompt["spectrum"]["inputs"]["value"], False)
 
 
 class TestStripUnprovidedInputChains(unittest.TestCase):

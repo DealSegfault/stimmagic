@@ -498,9 +498,9 @@ async def upload_reference_image(
     session: AsyncSession = Depends(get_db_session),
 ):
     """
-    Upload a reference image for image-to-image tasks.
+    Upload reference media for image/video generation tasks.
 
-    The image is uploaded directly into the library with a database record,
+    The media is uploaded directly into the library with a database record,
     so it won't be lost if referenced in generation data.
 
     Returns the path and metadata of the uploaded file.
@@ -527,6 +527,7 @@ async def upload_reference_image(
             "media_id": media_item.id,
             "asset_id": asset.id if asset is not None else None,
             "file_hash": media_item.file_hash,
+            "file_format": media_item.file_format,
             "width": media_item.width,
             "height": media_item.height,
         }

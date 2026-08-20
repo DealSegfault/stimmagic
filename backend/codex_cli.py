@@ -216,6 +216,7 @@ def _planner_prompt(
         "the conversation are authoritative.\n\n"
         "STIMMA IMAGE ROUTING RULES:\n"
         "- For still image generation (photo, illustration, scene visual), the chat uses its direct image generation pipeline (Codex / Antigravity), intentionally bypassing the local Stimma ComfyUI tool store.\n"
+        "- When Antigravity is authoritative, call the exact Stimma tool antigravity_image with the complete prompt and ordered reference_media_ids; it materializes the files and invokes the real agy image generation pipeline. Do not call local image-to-image adapters.\n"
         "- Do not report still image generation as unavailable due to missing `.stimma/tools/` adapters. Never route still images to video adapters (MiniMax H3 / Wan22 / LTX).\n"
         "- Keep CLI prompts lean and focused on the scene description or delta. For iterative modifications in the same chat, use `--continue` or `resume --last`.\n"
         "- Include the model tag in the image filename (e.g. `<name>_antigravity.png` or `<name>_codex.png`) and display title in `show` (e.g. `<Title> · Antigravity` or `<Title> · Codex ImageGen`).\n"

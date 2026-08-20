@@ -15,12 +15,12 @@ from database import Chat, Project
 log = get_logger(__name__)
 
 # Tools that require permission prompts before execution.
-# Shell (bash) is the only gated capability: it's the one tool that can reach outside the
-# workspace sandbox to bring files in or push them out. run_code and browse_web are ungated
+# Shell (bash) and Antigravity image generation are gated capabilities: they can reach
+# outside the local tool catalogue and/or launch an external generation service. run_code and browse_web are ungated
 # — run_code is confined to its workspace + Stimma APIs (in-app effects are what the agent is
 # for), and web browsing is read-only info gathering.
 # Note: call_tool is NOT here — it uses per-STP-tool-id gating via check_stp_permission
-GATED_TOOLS = {"bash"}
+GATED_TOOLS = {"bash", "antigravity_image"}
 
 # Legacy aliases — old permission keys that map to current tool names
 PERMISSION_ALIASES = {}

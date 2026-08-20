@@ -2,10 +2,13 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from agent.v2.tools.call_tool import (
+    _r2v_variant_tool_id,
     _resolve_effective_task_type,
+    _select_h3_generation_prompt,
     call_tool,
     execute_call_tool,
 )
+from h3_prompt_pair import format_h3_prompt_pair
 
 
 class _FakeToolDescriptor:
@@ -137,6 +140,28 @@ def test_resolve_effective_task_type_routes_input_videos():
     descriptor.task_types = ["text-to-video", "video-to-video"]
 
     assert _resolve_effective_task_type(descriptor, {"input_videos": [202]}) == "video-to-video"
+
+
+def test_h3_video_reference_promotes_i2v_or_t2v_to_r2v():
+    assert _r2v_variant_tool_id("comfyui:minimax-h3-i2v") == "comfyui:minimax-h3-r2v"
+    assert _r2v_variant_tool_id("comfyui:minimax_h3_t2v_turbo") == "comfyui:minimax_h3_r2v_turbo"
+    assert _r2v_variant_tool_id("comfyui:wan-i2v") is None
+
+
+@pytest.mark.asyncio
+async def test_h3_video_dispatch_selects_chinese_from_prompt_envelope():
+    english = "integrated_multimodal_description: [Shot 1] Maya waits."
+    chinese = "integrated_multimodal_description: [Shot 1] Maya保持等待。"
+
+    selected, pair = await _select_h3_generation_prompt(
+        format_h3_prompt_pair(english, chinese),
+        task_type="reference-to-video",
+        session=object(),
+        chat_id=None,
+    )
+
+    assert selected == chinese
+    assert pair == {"english": english, "chinese": chinese}
 
 
 @pytest.mark.asyncio

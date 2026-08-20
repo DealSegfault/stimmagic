@@ -24,6 +24,7 @@ from database import (
     ProjectAsset,
     ProjectDirection,
     ProjectDirectionEvent,
+    ProjectShot,
     ProjectScene,
 )
 
@@ -64,6 +65,115 @@ def scene_dict(scene: ProjectScene, *, generation_count: int = 0) -> dict[str, A
         "validation_status": scene.validation_status, "generation_count": generation_count,
         "created_at": scene.created_at.isoformat(), "updated_at": scene.updated_at.isoformat(),
     }
+
+
+def _clean_shot_cell(value: str) -> str:
+    value = re.sub(r"<br\s*/?>", "\n", value or "", flags=re.I)
+    value = value.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def parse_shot_table(text: str, scene_source_key: str) -> list[dict[str, Any]]:
+    """Extract explicit shot rows from a Markdown shot-map section.
+
+    The parser is intentionally deterministic: it only accepts rows whose
+    first cell is an integer and whose duration cell contains seconds. It does
+    not invent additional plans from prose, so a malformed table stays
+    reviewable instead of silently becoming paid generations.
+    """
+    shots: list[dict[str, Any]] = []
+    for line in (text or "").splitlines():
+        raw = line.strip()
+        if not raw.startswith("|") or raw.count("|") < 4:
+            continue
+        cells = [cell.strip() for cell in raw.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        number_match = re.fullmatch(r"\*{0,2}\s*(\d+)\s*\*{0,2}", cells[0])
+        if not number_match:
+            continue
+        duration_match = re.search(
+            r"(\d+(?:[\.,]\d+)?)\s*(?:s|sec(?:onde)?s?)\b",
+            cells[1],
+            re.I,
+        )
+        if not duration_match:
+            continue
+        shot_number = int(number_match.group(1))
+        duration = float(duration_match.group(1).replace(",", "."))
+        code = _clean_shot_cell(cells[2])
+        description = _clean_shot_cell(cells[3])
+        incoming_cut = _clean_shot_cell(cells[4]) if len(cells) > 4 else ""
+        short_title = re.split(r"[.!?]\s+", description, maxsplit=1)[0].strip()
+        short_title = short_title[:84].rstrip() or "Sans description"
+        shots.append({
+            "shot_number": shot_number,
+            "source_key": f"{scene_source_key}::shot:{shot_number}",
+            "title": f"Plan {shot_number:02d} · {short_title}",
+            "description": description,
+            "prompt": description,
+            "duration": duration,
+            "code": code,
+            "incoming_cut": incoming_cut,
+            # A/B are intentionally independent generations. Only an
+            # explicit frame-perfect C row enables previous-frame continuity.
+            "transition_policy": "continuity" if code.upper().startswith("C") else "independent",
+        })
+    return sorted(shots, key=lambda shot: shot["shot_number"])
+
+
+def extract_scene_description(text: str, shots: list[dict[str, Any]]) -> str:
+    """Keep prose-level scene notes without duplicating an explicit shot map.
+
+    The canonical shot rows are stored on ProjectShot. The raw Markdown table
+    remains available through ProjectDirection.script_text, but must not also
+    become the scene prompt shown to users or sent as scene-level direction.
+    """
+    if not shots:
+        return (text or "").strip()
+    shot_table_re = re.compile(
+        r"^\s*\|\s*#\s*\|\s*(?:durée|duration)\b.*\|\s*$",
+        re.I,
+    )
+    lines = (text or "").splitlines()
+    table_start = next((index for index, line in enumerate(lines) if shot_table_re.match(line)), None)
+    if table_start is None:
+        return (text or "").strip()
+    notes = "\n".join(lines[:table_start]).strip()
+    notes = re.sub(r"(?m)^\s*---\s*$", "", notes).strip()
+    return notes
+
+
+def extract_script_directives(script: str) -> str:
+    """Return the operational preamble before the first sequence/shot block."""
+    text = (script or "").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    sequence_re = re.compile(
+        r"^\s*(?:#+\s*)?(?:sequence|séquence)\b", re.I
+    )
+    scene_re = re.compile(
+        r"^\s*(?:#+\s*)?(?:scene|sc[eè]ne)\b", re.I
+    )
+    slug_re = re.compile(r"^\s*(?:INT\.|EXT\.|INT/EXT\.|I/E\.)\s+", re.I)
+    shot_table_re = re.compile(
+        r"^\s*\|\s*#\s*\|\s*(?:durée|duration)\b.*\|\s*$", re.I
+    )
+    first_structure = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if sequence_re.match(line)
+            or scene_re.match(line)
+            or slug_re.match(line)
+            or shot_table_re.match(line)
+        ),
+        None,
+    )
+    if first_structure is None:
+        return ""
+    return "\n".join(lines[:first_structure]).strip()
 
 
 def parse_script(script: str) -> list[dict[str, Any]]:
@@ -107,12 +217,30 @@ def parse_script(script: str) -> list[dict[str, Any]]:
     has_multiple_sequences = sum(bool(match) for match in sequence_matches) > 1
     shot_table_indexes = [index for index, line in enumerate(lines) if shot_table_re.match(line)]
     has_multiple_shot_tables = len(shot_table_indexes) > 1
+    structure_start = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if sequence_re.match(line)
+            or scene_re.match(line)
+            or slug_re.match(line)
+            or (has_multiple_shot_tables and shot_table_re.match(line))
+        ),
+        None,
+    )
+    if structure_start is not None:
+        # Everything before the first structural block is global production
+        # guidance. It is stored separately by reconcile_script and must never
+        # become the description of S01 or a visual shot prompt.
+        lines = lines[structure_start:]
 
     def finish() -> None:
         nonlocal current
         if current is None:
             return
         current["description"] = "\n".join(current.pop("body")).strip()
+        current["shots"] = parse_shot_table(current["description"], current["source_key"])
+        current["scene_description"] = extract_scene_description(current["description"], current["shots"])
         scenes.append(current)
         current = None
 
@@ -176,18 +304,48 @@ async def record_event(session: AsyncSession, project_id: int, kind: str, *, act
 async def direction_payload(session: AsyncSession, project_id: int) -> dict[str, Any]:
     direction = await session.get(ProjectDirection, project_id)
     scenes = (await session.execute(select(ProjectScene).where(ProjectScene.project_id == project_id).order_by(ProjectScene.sequence_number, ProjectScene.scene_number))).scalars().all()
+    shots = (await session.execute(
+        select(ProjectShot)
+        .where(ProjectShot.project_id == project_id, ProjectShot.deleted_at.is_(None))
+        .order_by(ProjectShot.scene_id, ProjectShot.shot_number, ProjectShot.id)
+    )).scalars().all()
+    shots_by_scene: dict[int, list[ProjectShot]] = {}
+    for shot in shots:
+        shots_by_scene.setdefault(int(shot.scene_id), []).append(shot)
     jobs = (await session.execute(select(GenerationJob).where(GenerationJob.project_id == project_id))).scalars().all()
     by_scene: dict[int, int] = {}
     for job in jobs:
         params = json_value(job.parameters, {})
         scene_id = params.get("_direction_scene_id")
         if isinstance(scene_id, int): by_scene[scene_id] = by_scene.get(scene_id, 0) + 1
+    direction_context = json_value(direction.context if direction else None, {})
+    scene_rows = []
+    for scene in scenes:
+        row = scene_dict(scene, generation_count=by_scene.get(scene.id, 0))
+        row["shots"] = [
+            {
+                "id": shot.id,
+                "shot_number": shot.shot_number,
+                "title": shot.title,
+                "description": shot.description or "",
+                "duration": shot.duration,
+                "transition_policy": shot.transition_policy,
+                "status": shot.status,
+                "validation_status": shot.validation_status,
+                "accepted_media_id": shot.accepted_media_id,
+                "revision": shot.revision,
+                "settings": json_value(shot.settings, {}),
+            }
+            for shot in shots_by_scene.get(int(scene.id), [])
+        ]
+        scene_rows.append(row)
     return {
         "script_name": direction.script_name if direction else None,
         "script_text": direction.script_text if direction else "",
         "summary": direction.summary if direction else "",
-        "context": json_value(direction.context if direction else None, {}),
-        "scenes": [scene_dict(scene, generation_count=by_scene.get(scene.id, 0)) for scene in scenes],
+        "context": direction_context,
+        "script_directives": direction_context.get("script_directives", ""),
+        "scenes": scene_rows,
         "progress": {"total": len(scenes), "validated": sum(s.validation_status == "approved" for s in scenes), "blocked": sum(bool(json_value(s.blockers, [])) for s in scenes), "generated": sum(by_scene.values())},
     }
 
@@ -264,13 +422,26 @@ async def reconcile_script(
     if not parsed:
         raise ValueError("The script is empty")
     direction = await session.get(ProjectDirection, project_id)
+    existing_context = json_value(direction.context if direction else None, {})
+    merged_context = {**existing_context, **(context or {})}
+    directives = extract_script_directives(script)
+    if directives:
+        merged_context["script_directives"] = directives
+    else:
+        merged_context.pop("script_directives", None)
     old_scenes = []
     if direction is None:
-        direction = ProjectDirection(project_id=project_id, script_name=script_name, script_text=script, summary=summary, context=json.dumps(context or {}))
+        direction = ProjectDirection(
+            project_id=project_id,
+            script_name=script_name,
+            script_text=script,
+            summary=summary,
+            context=json.dumps(merged_context, ensure_ascii=False),
+        )
         session.add(direction)
     else:
         direction.script_name, direction.script_text, direction.summary = script_name, script, summary
-        direction.context, direction.updated_at = json.dumps(context or {}), datetime.utcnow()
+        direction.context, direction.updated_at = json.dumps(merged_context, ensure_ascii=False), datetime.utcnow()
         old_scenes = (await session.execute(
             select(ProjectScene)
             .where(ProjectScene.project_id == project_id)
@@ -340,8 +511,8 @@ async def reconcile_script(
         scene.sequence_number = item["sequence_number"]
         scene.scene_number = index
         scene.title = item["title"]
-        scene.description = item["description"]
-        scene.prompt = item["description"]
+        scene.description = item.get("scene_description", item["description"])
+        scene.prompt = scene.description
         if (
             not is_new_scene
             and (previous_title != scene.title or previous_description != scene.description)
@@ -365,6 +536,94 @@ async def reconcile_script(
         if is_new_scene:
             created_scene_ids.append(scene.id)
         updated_chat_ids.extend(await _sync_scene_chat_contexts(session, scene))
+
+        # Explicit Markdown shot rows are canonical. A prose-only scene gets
+        # one conservative fallback shot; no parser inference is performed.
+        parsed_shots = item.get("shots") or [{
+            "shot_number": 1,
+            "source_key": f"{_parsed_scene_key(item)}::shot:1",
+            "title": f"Plan 1 · {item['title']}",
+            "description": item["description"],
+            "prompt": item["description"],
+            "duration": 4.0,
+            "code": "",
+            "incoming_cut": "",
+            "transition_policy": "continuity",
+        }]
+        live_shots = (await session.execute(
+            select(ProjectShot).where(
+                ProjectShot.project_id == project_id,
+                ProjectShot.scene_id == scene.id,
+                ProjectShot.deleted_at.is_(None),
+            )
+        )).scalars().all()
+        shots_by_source = {shot.source_key: shot for shot in live_shots}
+        shots_by_number = {shot.shot_number: shot for shot in live_shots}
+        used_shot_ids: set[int] = set()
+        now = datetime.utcnow()
+        for shot_spec in parsed_shots:
+            shot = shots_by_source.get(shot_spec["source_key"])
+            if shot is None:
+                # Reuse a legacy Plan 1 row when possible so an existing
+                # review link remains attached during first normalization.
+                candidate = shots_by_number.get(int(shot_spec["shot_number"]))
+                if candidate is not None and candidate.id not in used_shot_ids:
+                    shot = candidate
+            is_new_shot = shot is None
+            if shot is None:
+                shot = ProjectShot(
+                    project_id=project_id,
+                    scene_id=scene.id,
+                    shot_number=int(shot_spec["shot_number"]),
+                    source_key=shot_spec["source_key"],
+                )
+            previous_shot_signature = (
+                shot.source_key,
+                shot.title,
+                shot.description,
+                shot.prompt,
+                shot.duration,
+                shot.transition_policy,
+            )
+            shot.source_key = shot_spec["source_key"]
+            shot.shot_number = int(shot_spec["shot_number"])
+            shot.title = shot_spec["title"]
+            shot.description = shot_spec["description"]
+            shot.prompt = shot_spec["prompt"]
+            shot.duration = float(shot_spec["duration"])
+            shot.transition_policy = shot_spec["transition_policy"]
+            shot.references = shot.references or json.dumps([], ensure_ascii=False)
+            shot_settings = json_value(shot.settings, {})
+            shot_settings.update({
+                "code": shot_spec.get("code") or None,
+                "incoming_cut": shot_spec.get("incoming_cut") or None,
+            })
+            shot.settings = json.dumps(shot_settings, ensure_ascii=False)
+            shot.deleted_at = None
+            current_shot_signature = (
+                shot.source_key,
+                shot.title,
+                shot.description,
+                shot.prompt,
+                shot.duration,
+                shot.transition_policy,
+            )
+            if is_new_shot or previous_shot_signature != current_shot_signature:
+                if not is_new_shot and shot.validation_status == "approved":
+                    shot.validation_status = "pending"
+                    if shot.status == "complete":
+                        shot.status = "planned"
+                shot.updated_at = now
+            session.add(shot)
+            await session.flush()
+            used_shot_ids.add(shot.id)
+
+        # Removed rows remain in the database for audit/history but disappear
+        # from the live production tree and cannot be selected for approval.
+        for stale_shot in live_shots:
+            if stale_shot.id not in used_shot_ids:
+                stale_shot.deleted_at = now
+                stale_shot.updated_at = now
 
         sections = (await session.execute(
             select(BoardSection)

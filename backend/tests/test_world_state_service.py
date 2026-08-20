@@ -14,9 +14,11 @@ from database import (
     ProjectDirection,
     ProjectElement,
     ProjectScene,
+    ProjectShot,
 )
 from tests.helpers.media import create_media_item
 from world_state_service import (
+    build_shot_reference_manifest,
     build_project_world_state,
     detect_missing_references,
     distill_h3_shot_context,
@@ -256,3 +258,123 @@ def test_project_context_read_tools_are_available_to_agent_chats():
     names = {item["function"]["name"] for item in get_tools_schema("agent")}
     assert "get_world_state" in names
     assert "get_project_direction" in names
+
+
+def test_shot_reference_manifest_does_not_match_generic_project_tokens():
+    state = {
+        "current_scene": {"title": "LE CALME"},
+        "entities": {
+            "characters": {
+                "char_maya": {
+                    "media_id": 1,
+                    "reference_id": "char_maya",
+                    "name": "mayaalvarez",
+                    "description": "Maya",
+                },
+            },
+            "locations": {
+                "loc_appartement": {
+                    "media_id": 2,
+                    "reference_id": "loc_appartement",
+                    "name": "appartement",
+                    "description": "Open kitchen and living room",
+                },
+            },
+            "props": {
+                "prop_tea": {
+                    "media_id": 3,
+                    "reference_id": "prop_tea",
+                    "name": "sachet_the_maya_viewsheet",
+                    "description": "Canonical tea bag viewsheet",
+                },
+                "prop_kettle": {
+                    "media_id": 4,
+                    "reference_id": "prop_kettle",
+                    "name": "bouilloire_maya_viewsheet",
+                    "description": "Kettle from the previous plan",
+                },
+                "prop_last_frame": {
+                    "media_id": 5,
+                    "reference_id": "prop_maya_last_frame_plan_3",
+                    "name": "last_frame_plan_3",
+                    "description": "Accepted frame from the previous plan",
+                },
+            },
+        },
+    }
+    shot_context = {
+        "current": {
+            "description": "Maya lowers the tea bag into the mug and waits.",
+            "incoming_cut": "Independent return to character.",
+            "transition_policy": "independent",
+        },
+    }
+
+    manifest = build_shot_reference_manifest(state, shot_context)
+
+    assert [item["reference_id"] for item in manifest] == [
+        "char_maya",
+        "loc_appartement",
+        "prop_tea",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_world_state_resolves_global_plan_and_neighbors_without_scene_mixup(db_session):
+    async with db_session() as session:
+        project = Project(name="Global shot lookup")
+        session.add(project)
+        await session.flush()
+        first = ProjectScene(
+            project_id=project.id,
+            sequence_number=1,
+            scene_number=1,
+            title="Le calme",
+            description="La séquence calme.",
+        )
+        second = ProjectScene(
+            project_id=project.id,
+            sequence_number=2,
+            scene_number=2,
+            title="La porte",
+            description="La séquence de la porte.",
+        )
+        session.add_all([first, second])
+        await session.flush()
+        session.add_all([
+            ProjectShot(
+                project_id=project.id,
+                scene_id=first.id,
+                shot_number=1,
+                source_key="sequence:1::shot:1",
+                title="Plan 01 · pluie",
+                description="Pluie contre les fenêtres.",
+                prompt="Pluie contre les fenêtres.",
+                transition_policy="independent",
+            ),
+            ProjectShot(
+                project_id=project.id,
+                scene_id=second.id,
+                shot_number=2,
+                source_key="sequence:2::shot:2",
+                title="Plan 02 · porte",
+                description="Maya regarde la porte.",
+                prompt="Maya regarde la porte.",
+                transition_policy="independent",
+            ),
+        ])
+        await session.commit()
+        project_id = project.id
+
+    async with db_session() as session:
+        state = await get_world_state(
+            shot_number=2,
+            shot_prompt="Génère le plan 02",
+            session=session,
+            project_id=project_id,
+        )
+
+    assert state["current_scene"]["title"] == "La porte"
+    assert state["shot_context"]["current"]["title"] == "Plan 02 · porte"
+    assert state["shot_context"]["previous"]["title"] == "Plan 01 · pluie"
+    assert state["generation_contract"]["shot_id"] == state["shot_context"]["current"]["id"]

@@ -372,6 +372,31 @@ class StimmaVideoParam:
             pass
 
         if frames_tensor is None:
+            # OpenCV is not present in every ComfyUI deployment, and some
+            # builds cannot decode the uploaded H.264 stream even when the
+            # import succeeds.  ComfyUI itself already depends on PyAV for
+            # video inputs, so use it as the reliable fallback before trying
+            # to interpret the video as a still image.
+            try:
+                import av
+
+                with av.open(video_path, mode="r") as container:
+                    video_stream = next(
+                        stream for stream in container.streams if stream.type == "video"
+                    )
+                    rate = video_stream.average_rate or video_stream.base_rate
+                    source_fps = int(round(float(rate))) if rate else 30
+                    decoded = [
+                        frame.to_ndarray(format="rgb24")
+                        for frame in container.decode(video_stream)
+                    ]
+                if decoded:
+                    arr = np.stack(decoded, axis=0).astype(np.float32) / 255.0
+                    frames_tensor = torch.from_numpy(arr)
+            except Exception:
+                pass
+
+        if frames_tensor is None:
             # Fallback: load as single image frame
             img = Image.open(video_path)
             img = img.convert("RGB")

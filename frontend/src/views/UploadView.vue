@@ -53,7 +53,7 @@
           {{ isDragging ? 'Drop to upload' : 'Drag files here to upload' }}
         </h2>
         <p class="text-sm text-content-tertiary">
-          Images and videos will be imported
+          Images, videos and audio will be imported
         </p>
       </div>
 
@@ -65,7 +65,7 @@
         ref="fileInput"
         type="file"
         multiple
-        accept="image/*,video/*"
+        accept="image/*,video/*,audio/*"
         class="hidden"
         @change="handleFileSelect"
       />

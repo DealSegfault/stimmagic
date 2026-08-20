@@ -1,8 +1,16 @@
+import json
+from datetime import datetime
+
+import pytest
+
+from database import GenerationJob, Project, ProjectScene
 from shot_continuity_service import (
     build_shot_generation_contract,
+    list_shot_generation_candidates,
     parse_shot_duration,
     validate_generation_request,
 )
+from tests.helpers.media import create_media_item
 
 
 def _contract():
@@ -82,4 +90,73 @@ def test_insert_return_requires_keyframe_then_i2v():
         input_media_ids=[901],
         session_media_ids=[901],
     )
-    assert i2v_errors == []
+    assert any("no bound opening_keyframe_media_id" in error for error in i2v_errors)
+
+    contract["opening_keyframe_media_id"] = 901
+    wrong_keyframe_errors = validate_generation_request(
+        contract,
+        task_type="image-to-video",
+        final_params={"duration": 4, "width": 1344, "height": 768},
+        input_media_ids=[902],
+        session_media_ids=[902],
+    )
+    assert any("exactly the bound opening keyframe media 901" in error for error in wrong_keyframe_errors)
+
+    accepted_errors = validate_generation_request(
+        contract,
+        task_type="image-to-video",
+        final_params={"duration": 4, "width": 1344, "height": 768},
+        input_media_ids=[901],
+        session_media_ids=[901],
+    )
+    assert accepted_errors == []
+
+
+@pytest.mark.asyncio
+async def test_list_shot_generation_candidates_matches_scene_and_shot(db_session):
+    async with db_session() as session:
+        project = Project(name="Continuity")
+        session.add(project)
+        await session.flush()
+        scene = ProjectScene(
+            project_id=project.id,
+            sequence_number=1,
+            scene_number=1,
+            title="Kitchen",
+            context=json.dumps({"script": []}),
+        )
+        session.add(scene)
+        media = await create_media_item(
+            session,
+            file_path="/continuity/shot-3.mp4",
+            file_format="mp4",
+            duration=4,
+        )
+        await session.flush()
+        job = GenerationJob(
+            status="completed",
+            task_type="image-to-video",
+            generator_type="test",
+            generator_name="test",
+            model_name="test",
+            parameters=json.dumps({
+                "prompt_metadata": {"shot_contract": {"scene_id": scene.id, "shot_number": 3}},
+            }),
+            folder_path="/continuity",
+            project_id=project.id,
+            result_media_id=media.id,
+            completed_at=datetime.utcnow(),
+        )
+        session.add(job)
+        await session.commit()
+
+        candidates = await list_shot_generation_candidates(
+            session,
+            project_id=project.id,
+            scene_id=scene.id,
+            shot_number=3,
+        )
+
+    assert len(candidates) == 1
+    assert candidates[0]["media_id"] == media.id
+    assert candidates[0]["job_id"] == job.id

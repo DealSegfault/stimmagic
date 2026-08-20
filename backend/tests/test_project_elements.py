@@ -5,7 +5,8 @@ import pytest
 from sqlalchemy import select
 
 from agent.v2.tools.library import library
-from database import Project, ProjectAsset, ProjectElement
+from database import Asset, Project, ProjectAsset, ProjectElement
+from asset_service import restore_asset
 from project_element_service import build_element_reference
 from tests.helpers.media import create_media_item
 
@@ -112,6 +113,62 @@ async def test_library_tool_creates_element_from_attached_media(db_session):
 
 
 @pytest.mark.asyncio
+async def test_library_asset_trash_cascades_project_element(db_session):
+    async with db_session() as session:
+        project = Project(name="Maya")
+        session.add(project)
+        await session.flush()
+        media = await create_media_item(
+            session,
+            file_path=Path("/elements/maya-tea-cup.png"),
+            file_format="png",
+        )
+        element = json.loads(await library(
+            action="element",
+            operation="create",
+            element_type="prop",
+            element_name="Tasse",
+            media_id=media.id,
+            project_id=project.id,
+            session=session,
+        ))
+
+        result = json.loads(await library(
+            action="asset",
+            operation="trash",
+            media_id=media.id,
+            project_id=project.id,
+            session=session,
+        ))
+
+        assert result["status"] == "ok"
+        assert result["items"][0]["deleted_element_ids"] == [element["id"]]
+        asset = await session.scalar(select(Asset).where(Asset.id == element["asset_id"]))
+        row = await session.get(ProjectElement, element["id"])
+        assert asset is not None and asset.state == "trashed"
+        assert row is not None and row.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_restoring_asset_restores_elements_tombstoned_by_trash(db_session):
+    async with db_session() as session:
+        project = Project(name="Restore symmetry")
+        session.add(project)
+        await session.flush()
+        media = await create_media_item(session, file_path=Path("/elements/restore.png"), file_format="png")
+        element = json.loads(await library(
+            action="element", operation="create", element_type="prop",
+            element_name="Restore prop", media_id=media.id,
+            project_id=project.id, session=session,
+        ))
+        await library(action="asset", operation="trash", media_id=media.id, project_id=project.id, session=session)
+        asset = await session.scalar(select(Asset).where(Asset.id == element["asset_id"]))
+        await restore_asset(session, asset_id=asset.id)
+        restored = await session.get(ProjectElement, element["id"])
+        assert restored is not None and restored.deleted_at is None
+
+
+@pytest.mark.asyncio
 async def test_library_tool_prefers_valid_media_when_asset_id_is_stale(db_session):
     async with db_session() as session:
         project = Project(name="Maya")
@@ -166,4 +223,3 @@ async def test_library_tool_creates_element_from_path(tmp_path, db_session):
         assert result["created"] is True
         assert result["reference_id"] == "loc_maya_kitchen_close_view"
         assert result["media_id"] is not None
-

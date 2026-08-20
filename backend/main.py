@@ -142,6 +142,7 @@ from routes import (
     preferences,
     projects,
     project_direction,
+    production,
     processing,
     prompt_enhancement,
     profiles,
@@ -199,6 +200,7 @@ app.include_router(svg_media.router)
 app.include_router(preferences.router)
 app.include_router(projects.router)
 app.include_router(project_direction.router)
+app.include_router(production.router)
 app.include_router(flows.router)
 app.include_router(flow_tasks.router)
 app.include_router(user_tools.router)

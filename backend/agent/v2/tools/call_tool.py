@@ -7,6 +7,7 @@ import random
 import re
 import shutil
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,8 @@ from ..tools_registry import tool, ToolParameter
 import app_dirs
 from core.logging import get_logger
 from core.profile_context import get_current_profile
-from database import Chat, MediaItem
+from database import Chat, MediaItem, ProjectShot
+from database import ChatItem
 from providers.registry import ProviderRegistry
 from generation_queue import get_generation_queue
 from agent.jobs import wait_for_jobs
@@ -32,6 +34,7 @@ from shot_continuity_service import validate_generation_request
 log = get_logger(__name__)
 
 CONTROLNET_PREPROCESSORS = {"canny", "depth", "lineart", "lineart_realistic", "lineart_anime", "pose", "pose_hands"}
+REFERENCE_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg"}
 
 # Keys the agent uses to request controlnet preprocessing inline
 _CONTROLNET_TYPE_KEYS = {"x-controlnet", "controlnet", "controlnet_type",
@@ -76,6 +79,57 @@ def _coerce_dict_arg(value: Any) -> Any:
         return json.loads(stripped)
     except json.JSONDecodeError:
         return value
+
+
+def _prompt_match_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+async def _select_h3_generation_prompt(
+    prompt: Any,
+    *,
+    task_type: str,
+    session: AsyncSession,
+    chat_id: int | None,
+) -> tuple[Any, dict[str, str] | None]:
+    """Use the Chinese member of the latest bilingual H3 prompt pair.
+
+    The agent may pass the whole envelope or copy only the English prompt from
+    chat history. Both paths are resolved before a paid video job is queued.
+    """
+    if not isinstance(prompt, str) or "video" not in str(task_type).casefold():
+        return prompt, None
+
+    from h3_prompt_pair import parse_h3_prompt_pair, select_chinese_h3_prompt
+
+    selected, pair = select_chinese_h3_prompt(prompt)
+    if pair:
+        return selected, pair
+    if chat_id is None:
+        return prompt, None
+
+    try:
+        result = await session.execute(
+            select(ChatItem.item_metadata)
+            .where(ChatItem.chat_id == chat_id, ChatItem.item_type == "assistant_message")
+            .order_by(ChatItem.created_at.desc())
+            .limit(30)
+        )
+        for raw_metadata in result.scalars().all():
+            metadata = raw_metadata
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            if not isinstance(metadata, dict):
+                continue
+            stored_pair = parse_h3_prompt_pair(metadata.get("h3_prompt_pair"))
+            if stored_pair and _prompt_match_key(prompt) == _prompt_match_key(stored_pair["english"]):
+                return stored_pair["chinese"], stored_pair
+    except Exception as exc:
+        log.debug("Could not resolve bilingual H3 prompt from chat history: %s", exc)
+    return prompt, None
 
 
 def _extract_controlnet_config(
@@ -132,6 +186,139 @@ def _resolve_effective_task_type(tool_descriptor, params: Dict[str, Any]) -> str
         return "video-to-video"
 
     return primary
+
+
+def _r2v_variant_tool_id(tool_id: str) -> str | None:
+    """Map an H3 I2V/T2V tool binding to its matching R2V binding."""
+    if not re.search(r"minimax[_-]?h3", str(tool_id), re.IGNORECASE):
+        return None
+    if not re.search(r"(?:i2v|t2v)", str(tool_id), re.IGNORECASE):
+        return None
+    return re.sub(r"(?:i2v|t2v)", "r2v", str(tool_id), count=1, flags=re.IGNORECASE)
+
+
+async def _chat_reference_videos(
+    chat_id: int,
+    session: AsyncSession,
+    workspace_dir: Optional[str],
+) -> list[dict[str, Any]]:
+    """Return whole-video references attached to the current chat turn.
+
+    Chat attachments are copied into the turn workspace before the agent starts.
+    Resolve those workspace files here so an R2V call can consume them even when
+    the model only selects the R2V tool and omits the repetitive file plumbing.
+    """
+    result = await session.execute(
+        select(ChatItem.item_metadata)
+        .where(ChatItem.chat_id == chat_id, ChatItem.item_type == "user_message")
+        .order_by(ChatItem.created_at.desc())
+        .limit(1)
+    )
+    raw_metadata = result.scalar_one_or_none()
+    if not raw_metadata:
+        return []
+    try:
+        metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else raw_metadata
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(metadata, dict):
+        return []
+
+    refs = list(metadata.get("workspace_files") or []) + list(metadata.get("attachments") or [])
+    seen_media_ids: set[int] = set()
+    seen_paths: set[str] = set()
+    videos: list[dict[str, Any]] = []
+    workspace = Path(workspace_dir).resolve() if workspace_dir else None
+
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        raw_media_id = ref.get("media_id")
+        try:
+            media_id = int(raw_media_id) if raw_media_id is not None else None
+        except (TypeError, ValueError):
+            media_id = None
+        filename = str(ref.get("filename") or ref.get("name") or "")
+        path_value = ref.get("path")
+        candidate: Optional[Path] = None
+        if path_value:
+            candidate = Path(str(path_value)).expanduser()
+            if not candidate.is_absolute() and workspace:
+                candidate = workspace / candidate
+            if not candidate.is_file():
+                candidate = None
+        if candidate is None and workspace and filename:
+            workspace_candidate = workspace / Path(filename).name
+            if workspace_candidate.is_file():
+                candidate = workspace_candidate
+
+        media = None
+        if media_id is not None:
+            try:
+                media = await session.get(MediaItem, media_id)
+            except Exception:
+                media = None
+            if candidate is None and media and media.file_path:
+                media_candidate = Path(media.file_path)
+                if media_candidate.is_file():
+                    candidate = media_candidate
+            if not filename and media and media.file_path:
+                filename = Path(media.file_path).name
+
+        suffix = (candidate.suffix if candidate else Path(filename).suffix).lower()
+        declared_type = str(ref.get("media_type") or "").lower()
+        file_format = str(ref.get("file_format") or (media.file_format if media else "")).lower().lstrip(".")
+        is_video = declared_type == "video" or suffix in REFERENCE_VIDEO_EXTENSIONS or f".{file_format}" in REFERENCE_VIDEO_EXTENSIONS
+        if not is_video or candidate is None:
+            continue
+
+        resolved_path = str(candidate.resolve())
+        if resolved_path in seen_paths or (media_id is not None and media_id in seen_media_ids):
+            continue
+        seen_paths.add(resolved_path)
+        if media_id is not None:
+            seen_media_ids.add(media_id)
+        videos.append({"path": resolved_path, "media_id": media_id})
+
+    return videos
+
+
+async def _inject_chat_reference_videos(
+    final_params: Dict[str, Any],
+    chat_id: Optional[int],
+    session: AsyncSession,
+    workspace_dir: Optional[str],
+) -> None:
+    """Make attached chat videos implicit inputs for a Ref2VA tool call."""
+    if chat_id is None:
+        return
+    refs = await _chat_reference_videos(chat_id, session, workspace_dir)
+    if not refs:
+        return
+
+    current = final_params.get("input_videos") or []
+    if not isinstance(current, list):
+        current = [current]
+    raw_ids = final_params.get("input_video_media_ids") or []
+    if not isinstance(raw_ids, list):
+        raw_ids = [raw_ids]
+    ordered_ids = [
+        int(value) for value in raw_ids
+        if str(value).isdigit()
+    ]
+    current_ids = set(ordered_ids)
+    current_paths = {str(value) for value in current}
+    for ref in refs:
+        if ref["path"] in current_paths or (ref["media_id"] is not None and ref["media_id"] in current_ids):
+            continue
+        current.append(ref["path"])
+        current_paths.add(ref["path"])
+        if ref["media_id"] is not None:
+            current_ids.add(ref["media_id"])
+            ordered_ids.append(ref["media_id"])
+    final_params["input_videos"] = current
+    if ordered_ids:
+        final_params["input_video_media_ids"] = ordered_ids
 
 
 def _get_default_folder(workspace_dir: Optional[str] = None) -> str:
@@ -324,6 +511,24 @@ async def execute_call_tool(
 
     # 1. Look up tool
     registry = ProviderRegistry.get_instance()
+    chat_id = kwargs.get("chat_id")
+    workspace_dir = kwargs.get("workspace_dir")
+    # Chat attachments are references, not a request to animate a first frame.
+    # If an H3 I2V/T2V binding is selected despite the authoritative chat
+    # reminder, transparently switch to the matching R2V variant before schema
+    # validation. This keeps the user-facing chat mode automatic and safe.
+    r2v_tool_id = _r2v_variant_tool_id(str(tool_id))
+    if chat_id is not None and r2v_tool_id:
+        attached_videos = await _chat_reference_videos(chat_id, session, workspace_dir)
+        if attached_videos:
+            if registry.get_tool(r2v_tool_id):
+                log.info(
+                    "[call_tool_v2] Chat video reference detected; routing %s to %s",
+                    tool_id,
+                    r2v_tool_id,
+                )
+                tool_id = r2v_tool_id
+                task_type_override = "reference-to-video"
     provider_tool = registry.get_tool(tool_id)
     if not provider_tool:
         raise ValueError(
@@ -359,6 +564,28 @@ async def execute_call_tool(
         if "default" in prop_info:
             final_params[prop_name] = prop_info["default"]
     final_params.update(params)
+
+    h3_prompt_pair = None
+    if "video" in str(task_type).casefold() and "prompt" in final_params:
+        selected_prompt, h3_prompt_pair = await _select_h3_generation_prompt(
+            final_params.get("prompt"),
+            task_type=task_type,
+            session=session,
+            chat_id=chat_id,
+        )
+        if h3_prompt_pair:
+            final_params["prompt"] = selected_prompt
+
+    # A video attached to a chat is a semantic reference. Once the agent has
+    # selected Ref2VA, make that video an implicit typed input so the mode and
+    # the media payload cannot drift apart.
+    if task_type == "reference-to-video" and "input_videos" in param_schema.get("properties", {}):
+        await _inject_chat_reference_videos(
+            final_params,
+            kwargs.get("chat_id"),
+            session,
+            kwargs.get("workspace_dir"),
+        )
 
     # 3. Resolve LoRAs
     loras = final_params.get("loras", [])
@@ -714,6 +941,11 @@ async def execute_call_tool(
             "video_resolution": normalized_video_settings["resolution"] if video_chat_settings else None,
             "video_duration": normalized_video_settings["duration"] if video_chat_settings else job_params.get("duration"),
         }
+        if h3_prompt_pair:
+            job_params["prompt_metadata"].update({
+                "h3_prompt_language": "zh-Hans",
+                "h3_prompt_english": h3_prompt_pair["english"],
+            })
 
     # A project shot contract is resolved by get_world_state and carried through
     # run_code. Validate the effective request after chat preferences and tool
@@ -729,6 +961,8 @@ async def execute_call_tool(
                 width, height = int(expected_dimensions[0]), int(expected_dimensions[1])
                 job_params["width"], job_params["height"] = width, height
             job_params.setdefault("prompt_metadata", {})["shot_contract"] = {
+                "shot_id": shot_contract.get("shot_id"),
+                "scene_id": shot_contract.get("scene_id"),
                 "sequence_number": shot_contract.get("sequence_number"),
                 "scene_number": shot_contract.get("scene_number"),
                 "shot_number": shot_contract.get("shot_number"),
@@ -780,6 +1014,23 @@ async def execute_call_tool(
         auto_delete_duration=auto_delete_duration,
         **disposition_kwargs,
     )
+
+    # Bind every contract-backed generation to an immutable production
+    # attempt. This makes the job discoverable from the Project Production
+    # screen and prevents approval from relying on chat text or timestamps.
+    if isinstance(shot_contract, dict) and shot_contract.get("shot_id"):
+        from production_service import create_attempt
+        shot = await session.get(ProjectShot, int(shot_contract["shot_id"]))
+        if shot is not None:
+            await create_attempt(
+                session,
+                shot=shot,
+                generation_job_id=job_id,
+                prompt=job_params.get("prompt") or job_params.get("positive_prompt"),
+                parameters=job_params,
+                reference_manifest=shot_contract.get("reference_manifest") or [],
+                idempotency_key=f"shot:{int(shot_contract['shot_id'])}:job:{int(job_id)}",
+            )
 
     # Direction chats carry a stable scene envelope in their instructions.
     # Preserve that provenance on every agent-generated job without exposing
