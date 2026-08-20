@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -8,6 +9,7 @@ from agent.v2.service import _generation_call_key, _is_generation_tool_call
 from agent.v2.tools.antigravity_image import (
     antigravity_image,
     build_antigravity_prompt,
+    normalize_generated_still,
     validate_generated_still,
 )
 from agent.v2.tools.run_code import run_code
@@ -29,6 +31,15 @@ def test_validate_generated_still_requires_readable_expected_canvas(tmp_path):
     unreadable.write_text("not an image", encoding="utf-8")
     errors = validate_generated_still(unreadable, [1344, 768])
     assert any("not readable" in error for error in errors)
+
+
+def test_normalize_generated_still_center_crops_agy_canvas(tmp_path):
+    generated = tmp_path / "agy-1376.png"
+    Image.new("RGB", (1376, 768), "black").save(generated)
+
+    assert normalize_generated_still(generated, [1344, 768]) == []
+    with Image.open(generated) as image:
+        assert image.size == (1344, 768)
 
 
 def test_build_antigravity_prompt_declares_ordered_references(tmp_path):
@@ -113,6 +124,56 @@ async def test_compose_keyframe_binds_exact_returned_media_without_calling_agy_l
     assert contract["opening_keyframe_source_media_ids"] == [1]
     assert contract["opening_keyframe_backend"] == "antigravity:generate_image"
     assert session_media_ids == [77]
+
+
+@pytest.mark.asyncio
+async def test_complete_image_is_ingested_when_agy_print_mode_stays_open(monkeypatch, tmp_path):
+    release = asyncio.Event()
+
+    class HangingProcess:
+        returncode = None
+
+        async def communicate(self):
+            Image.new("RGB", (1344, 768), "white").save(tmp_path / "hanging.png")
+            await release.wait()
+            return b"image created", b""
+
+        def terminate(self):
+            self.returncode = -15
+            release.set()
+
+        def kill(self):
+            self.returncode = -9
+            release.set()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return HangingProcess()
+
+    async def fake_save_workspace_file(**kwargs):
+        return json.dumps({"media_id": 88, "filename": "hanging.png"})
+
+    monkeypatch.setattr(antigravity_module, "_agy_executable", lambda: "agy")
+    monkeypatch.setattr(
+        antigravity_module.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(
+        antigravity_module,
+        "save_workspace_file",
+        fake_save_workspace_file,
+    )
+
+    result = await antigravity_image(
+        "Generate one location clean plate.",
+        output_name="hanging.png",
+        output_role="intermediate",
+        expected_dimensions=[1344, 768],
+        session=object(),
+        workspace_dir=tmp_path,
+    )
+
+    assert "<result media_id=88" in result
 
 
 @pytest.mark.asyncio

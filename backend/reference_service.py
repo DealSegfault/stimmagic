@@ -34,6 +34,14 @@ from database import (
     ProjectScene,
     ProjectShot,
 )
+from location_prompt_service import (
+    MNESIS_MORNING,
+    MNESIS_NIGHT,
+    MNESIS_PROMPT_PROFILE,
+    advances_to_morning,
+    is_mnesis_shot_map,
+    location_state_for_shot,
+)
 
 
 class ReferenceServiceError(ValueError):
@@ -562,6 +570,8 @@ async def sync_location_views_from_blocking(
         )
     )
     scene_by_id = {int(scene.id): scene for scene in scenes}
+    mnesis_project = is_mnesis_shot_map(shots)
+    interior_phase = MNESIS_NIGHT
     blocking_state: dict[str, Any] = {}
     clusters: list[dict[str, Any]] = []
     for shot in shots:
@@ -574,9 +584,20 @@ async def sync_location_views_from_blocking(
         location = blocking.get("location") or {}
         if not camera or location.get("id") in {None, "black"}:
             continue
+        if mnesis_project and advances_to_morning(shot):
+            interior_phase = MNESIS_MORNING
+        location_state = location_state_for_shot(
+            shot,
+            location_id=str(location.get("id") or ""),
+            interior_phase=interior_phase,
+            mnesis=mnesis_project,
+        )
         matched = None
         for cluster in clusters:
-            if cluster["location_id"] != location.get("id"):
+            if (
+                cluster["location_id"] != location.get("id")
+                or cluster["location_state"] != location_state
+            ):
                 continue
             distance = math.dist(
                 (float(cluster["camera"]["x"]), float(cluster["camera"]["y"])),
@@ -589,6 +610,7 @@ async def sync_location_views_from_blocking(
             matched = {
                 "location_id": location.get("id"),
                 "location_label": location.get("label") or "Location",
+                "location_state": location_state,
                 "camera": dict(camera),
                 "shot_ids": [],
                 "shot_numbers": [],
@@ -614,12 +636,15 @@ async def sync_location_views_from_blocking(
         view_key = f"{_slug(location_id)}_a{per_location_index[location_id]:02d}"
         spec = {
             "location": {"id": location_id, "label": cluster["location_label"]},
+            "location_state": cluster["location_state"],
             "camera": cluster["camera"],
             "used_by_shots": cluster["shot_ids"],
             "shot_numbers": cluster["shot_numbers"],
             "clean_plate": True,
             "source": "blocking-cluster-v1",
         }
+        if mnesis_project:
+            spec["prompt_profile"] = MNESIS_PROMPT_PROFILE
         view = await session.scalar(
             select(ProjectReferenceView).where(
                 ProjectReferenceView.pack_id == pack.id,
@@ -641,7 +666,10 @@ async def sync_location_views_from_blocking(
                 project_id=project_id,
                 pack_id=pack.id,
                 view_key=view_key,
-                label=f"{cluster['location_label']} · A{per_location_index[location_id]:02d}",
+                label=(
+                    f"{cluster['location_label']} · A{per_location_index[location_id]:02d}"
+                    + (" · Matin" if cluster["location_state"] == MNESIS_MORNING else "")
+                ),
                 view_type="location_camera",
                 state_key="default",
                 view_spec=_dump(spec),
@@ -656,17 +684,35 @@ async def sync_location_views_from_blocking(
             previous_spec = json_object(view.view_spec, {})
             previous_visual_contract = {
                 key: previous_spec.get(key)
-                for key in ("location", "camera", "clean_plate", "source")
+                for key in (
+                    "location",
+                    "location_state",
+                    "camera",
+                    "clean_plate",
+                    "prompt_profile",
+                    "source",
+                )
             }
             next_visual_contract = {
                 key: spec.get(key)
-                for key in ("location", "camera", "clean_plate", "source")
+                for key in (
+                    "location",
+                    "location_state",
+                    "camera",
+                    "clean_plate",
+                    "prompt_profile",
+                    "source",
+                )
             }
             if previous_visual_contract != next_visual_contract and view.approved_revision_id:
                 view.status = "stale"
                 pack.status = "review"
                 stale += 1
             view.view_spec = _dump(spec)
+            view.label = (
+                f"{cluster['location_label']} · A{per_location_index[location_id]:02d}"
+                + (" · Matin" if cluster["location_state"] == MNESIS_MORNING else "")
+            )
             view.updated_at = datetime.utcnow()
             updated += 1
         seen_view_ids.add(int(view.id))

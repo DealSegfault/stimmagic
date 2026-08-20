@@ -13,7 +13,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, ImageStat
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from agent.v2.tools.antigravity_image import antigravity_image
+from agent.v2.tools.antigravity_image import antigravity_image, normalize_generated_still
 from agent.v2.tools.library import save_workspace_file
 from agent.v2.workspace import get_project_workspace
 from asset_association_service import attach_asset_to_project
@@ -30,6 +30,7 @@ from database import (
     ProjectReferencePack,
     ProjectReferenceView,
 )
+from location_prompt_service import build_location_prompt_augmentation
 from reference_service import (
     ReferenceServiceError,
     get_composition,
@@ -124,6 +125,48 @@ def _parse_agy_result(result: str) -> int:
     return int(match.group(1))
 
 
+async def _recover_completed_view_output(
+    session: AsyncSession,
+    *,
+    view: ProjectReferenceView,
+    output_path: Path,
+    prompt: str,
+    reference_media_ids: list[int],
+    dimensions: list[int],
+    project_id: int,
+) -> int | None:
+    """Ingest an AGY file left behind when print mode timed out after rendering."""
+    if (
+        view.status not in {"error", "generating"}
+        or view.candidate_media_id
+        or not output_path.is_file()
+        or normalize_generated_still(output_path, dimensions)
+    ):
+        return None
+    saved = json.loads(await save_workspace_file(
+        session=session,
+        path=str(output_path),
+        workspace_dir=output_path.parent,
+        save_tags=None,
+        provenance={
+            "task_type": "image-to-image" if reference_media_ids else "text-to-image",
+            "tool_id": "antigravity:generate_image",
+            "parameters": {
+                "prompt": prompt,
+                "reference_media_ids": reference_media_ids,
+                "model": "Antigravity Image",
+                "output_role": "intermediate",
+                "recovered_after_print_timeout": True,
+            },
+            "source_media_ids": reference_media_ids,
+        },
+        project_id=project_id,
+        metadata_source="agent_v2_antigravity_recovery",
+        materialize_asset=False,
+    ))
+    return int(saved["media_id"]) if saved.get("media_id") else None
+
+
 def _view_contract_text(pack: ProjectReferencePack, view: ProjectReferenceView) -> str:
     spec = json_object(view.view_spec, {})
     if pack.pack_type == "prop":
@@ -143,6 +186,26 @@ def _view_contract_text(pack: ProjectReferencePack, view: ProjectReferenceView) 
     return (
         f"Produce the {view.label} identity reference. Preserve the exact face, hair, proportions, wardrobe and "
         f"scale. No collage and no duplicate. View contract: {json.dumps(spec, ensure_ascii=False)}."
+    )
+
+
+def _location_reference_lock(view: ProjectReferenceView) -> str:
+    spec = json_object(view.view_spec, {})
+    state = str(spec.get("location_state") or "")
+    if state == "APT_MORNING":
+        return (
+            "REFERENCE USE — EDIT THE APPROVED APARTMENT, DO NOT REBUILD IT\n"
+            "<Picture 1> is the exact approved MNESIS apartment master. Treat it as a geometry plate: preserve every "
+            "wall, opening, door, window, cabinet, floor, sofa, hallway depth and fixed furniture relationship. "
+            "This is a controlled relight/state conversion to APT_MORNING only: rain stops and white morning light "
+            "enters. Do not replace the apartment with a new modern room, alter the floor plan, or add a balcony."
+        )
+    return (
+        "REFERENCE USE — PRESERVE THE APPROVED APARTMENT GEOMETRY\n"
+        "<Picture 1> is the exact approved MNESIS apartment master. Use it as the architectural source of truth even "
+        "when the requested crop changes. Preserve the same door, windows, kitchen cabinetry, hallway depth, floor, "
+        "sofa and fixed furniture. Do not reinterpret the room as a different apartment. Additional references are "
+        "continuity anchors only; never make a collage or combine two architectures."
     )
 
 
@@ -205,15 +268,27 @@ async def build_view_generation_request(
         )
 
     role_text = "\n".join(roles) if roles else "No visual reference exists yet; establish the first canonical anchor from the written identity contract."
-    prompt = (
-        f"IDENTITY CONTRACT — version {pack.prompt_version}:\n{identity_prompt}\n\n"
-        f"ORDERED REFERENCE ROLES:\n{role_text}\n\n"
-        f"VIEW TASK:\n{_view_contract_text(pack, view)}\n\n"
-        "RETENTION RULES:\n"
-        "Preserve all identity-defining shapes, proportions, materials, markings and color relationships from the "
-        "approved references. Do not redesign the subject. Generate exactly one still image.\n"
-        + (f"\nEXCLUSIONS:\n{pack.negative_prompt.strip()}\n" if pack.negative_prompt else "")
+    automatic_augmentation = (
+        build_location_prompt_augmentation(json_object(view.view_spec, {}))
+        if pack.pack_type == "location"
+        else ""
     )
+    prompt_parts = [
+        f"IDENTITY CONTRACT — version {pack.prompt_version}:\n{identity_prompt}\n\n",
+    ]
+    if automatic_augmentation:
+        prompt_parts.append(f"{automatic_augmentation}\n\n")
+    prompt_parts.extend([
+        f"ORDERED REFERENCE ROLES:\n{role_text}\n\n",
+        f"{_location_reference_lock(view)}\n\n" if pack.pack_type == "location" else "",
+        f"VIEW TASK:\n{_view_contract_text(pack, view)}\n\n",
+        "RETENTION RULES:\n",
+        "Preserve all identity-defining shapes, proportions, materials, markings and color relationships from the "
+        "approved references. Do not redesign the subject. Generate exactly one still image.\n",
+    ])
+    if pack.negative_prompt:
+        prompt_parts.append(f"\nEXCLUSIONS:\n{pack.negative_prompt.strip()}\n")
+    prompt = "".join(prompt_parts)
     dimensions = [1344, 768] if pack.pack_type == "location" else [1024, 1024]
     return prompt, references, dimensions
 
@@ -226,34 +301,44 @@ async def generate_view_candidate(
 ) -> dict[str, Any]:
     view = await get_view(session, project_id=project_id, view_id=view_id)
     pack = await get_pack(session, project_id=project_id, pack_id=view.pack_id)
-    view.status = "generating"
-    view.updated_at = datetime.utcnow()
-    await session.commit()
-
     prompt, reference_media_ids, dimensions = await build_view_generation_request(
         session, project_id=project_id, view=view
     )
     output_name = f"{pack.pack_type}_{pack.id}_{view.view_key}_v{pack.prompt_version}_antigravity.png"
-    try:
-        result = await antigravity_image(
-            prompt,
-            reference_media_ids=reference_media_ids,
-            output_name=output_name,
-            output_role="intermediate",
-            expected_dimensions=dimensions,
-            workspace_dir=get_project_workspace(project_id),
-            session=session,
-            project_id=project_id,
-        )
-        media_id = _parse_agy_result(result)
-    except Exception as exc:
-        view = await get_view(session, project_id=project_id, view_id=view_id)
-        view.status = "error"
+    workspace = get_project_workspace(project_id)
+    media_id = await _recover_completed_view_output(
+        session,
+        view=view,
+        output_path=workspace / output_name,
+        prompt=prompt,
+        reference_media_ids=reference_media_ids,
+        dimensions=dimensions,
+        project_id=project_id,
+    )
+    if media_id is None:
+        view.status = "generating"
         view.updated_at = datetime.utcnow()
         await session.commit()
-        if isinstance(exc, ReferenceServiceError):
-            raise
-        raise ReferenceServiceError(str(exc)) from exc
+        try:
+            result = await antigravity_image(
+                prompt,
+                reference_media_ids=reference_media_ids,
+                output_name=output_name,
+                output_role="intermediate",
+                expected_dimensions=dimensions,
+                workspace_dir=workspace,
+                session=session,
+                project_id=project_id,
+            )
+            media_id = _parse_agy_result(result)
+        except Exception as exc:
+            view = await get_view(session, project_id=project_id, view_id=view_id)
+            view.status = "error"
+            view.updated_at = datetime.utcnow()
+            await session.commit()
+            if isinstance(exc, ReferenceServiceError):
+                raise
+            raise ReferenceServiceError(str(exc)) from exc
 
     view = await get_view(session, project_id=project_id, view_id=view_id)
     view.candidate_media_id = media_id

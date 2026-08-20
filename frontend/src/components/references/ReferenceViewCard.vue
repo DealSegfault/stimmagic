@@ -23,6 +23,8 @@ const shotNumbers = computed(() => {
   const values = props.view.view_spec?.shot_numbers
   return Array.isArray(values) ? values : []
 })
+const locationState = computed(() => props.view.view_spec?.location_state || '')
+const usesMnesisAugmentation = computed(() => props.view.view_spec?.prompt_profile === 'mnesis-location-v1')
 </script>
 
 <template>
@@ -59,6 +61,10 @@ const shotNumbers = computed(() => {
         <p v-else class="mt-1 font-mono text-[9px] text-content-muted">
           {{ view.view_type }} · {{ view.state_key }}
         </p>
+        <div v-if="locationState" class="mt-2 flex flex-wrap items-center gap-1.5">
+          <span class="rounded bg-overlay-subtle px-1.5 py-0.5 font-mono text-[9px] text-content-secondary">{{ locationState }}</span>
+          <span v-if="usesMnesisAugmentation" class="rounded bg-accent/10 px-1.5 py-0.5 text-[9px] text-accent">Prompt MNESIS auto</span>
+        </div>
       </div>
 
       <div v-if="isCandidate" class="grid grid-cols-2 gap-2">

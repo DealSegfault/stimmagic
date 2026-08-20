@@ -111,19 +111,27 @@ function submitState() {
     <section class="rounded-lg border border-edge bg-surface">
       <div class="flex items-center justify-between border-b border-edge-subtle px-5 py-4">
         <div>
-          <h2 class="text-sm font-semibold text-content">Contrat d’identité AGY</h2>
-          <p class="mt-1 text-xs text-content-muted">Les vues partagent ce socle. Toute modification rend les sorties précédentes obsolètes.</p>
+          <h2 class="text-sm font-semibold text-content">{{ pack.pack_type === 'location' ? 'Augmentation AGY du lieu' : 'Contrat d’identité AGY' }}</h2>
+          <p class="mt-1 text-xs text-content-muted">
+            {{ pack.pack_type === 'location'
+              ? 'Le blocking, l’état MNESIS, la géographie et les interdictions sont injectés automatiquement pour chaque angle.'
+              : 'Les vues partagent ce socle. Toute modification rend les sorties précédentes obsolètes.' }}
+          </p>
         </div>
         <span class="font-mono text-[10px] text-content-muted">prompt v{{ pack.prompt_version }}</span>
       </div>
+      <div v-if="pack.pack_type === 'location'" class="mx-5 mt-5 rounded-md border border-accent/25 bg-accent/5 px-4 py-3">
+        <p class="text-xs font-medium text-content">Aucun prompt manuel requis</p>
+        <p class="mt-1 text-[11px] leading-relaxed text-content-muted">AGY reçoit automatiquement la location state, les ancres visibles, la famille caméra, les plans concernés et les failure locks du skill MNESIS. Les champs ci-dessous ne servent qu’à ajouter une intention artistique.</p>
+      </div>
       <div class="grid gap-4 p-5 lg:grid-cols-2">
         <label class="space-y-1.5 text-[11px] font-medium text-content-muted">
-          Identité à préserver
-          <textarea v-model="identityPrompt" rows="5" class="w-full resize-y rounded-md border border-edge bg-base px-3 py-2 text-xs leading-relaxed text-content outline-none focus:border-accent" placeholder="Décris précisément la forme, les matières, les couleurs et l’échelle…" />
+          {{ pack.pack_type === 'location' ? 'Direction artistique optionnelle' : 'Identité à préserver' }}
+          <textarea v-model="identityPrompt" rows="5" class="w-full resize-y rounded-md border border-edge bg-base px-3 py-2 text-xs leading-relaxed text-content outline-none focus:border-accent" :placeholder="pack.pack_type === 'location' ? 'Optionnel — matières ou intention non définies par le script…' : 'Décris précisément la forme, les matières, les couleurs et l’échelle…'" />
         </label>
         <label class="space-y-1.5 text-[11px] font-medium text-content-muted">
-          Exclusions
-          <textarea v-model="negativePrompt" rows="5" class="w-full resize-y rounded-md border border-edge bg-base px-3 py-2 text-xs leading-relaxed text-content outline-none focus:border-accent" placeholder="Éléments à ne jamais introduire ou modifier…" />
+          {{ pack.pack_type === 'location' ? 'Exclusions complémentaires' : 'Exclusions' }}
+          <textarea v-model="negativePrompt" rows="5" class="w-full resize-y rounded-md border border-edge bg-base px-3 py-2 text-xs leading-relaxed text-content outline-none focus:border-accent" :placeholder="pack.pack_type === 'location' ? 'Optionnel — les interdictions MNESIS sont déjà ajoutées…' : 'Éléments à ne jamais introduire ou modifier…'" />
         </label>
       </div>
       <div class="flex justify-end border-t border-edge-subtle px-5 py-3">

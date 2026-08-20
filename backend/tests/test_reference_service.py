@@ -11,7 +11,10 @@ from database import (
     ProjectReferenceView,
 )
 from project_element_service import create_project_element
-from reference_generation_service import build_composition_generation_request
+from reference_generation_service import (
+    build_composition_generation_request,
+    build_view_generation_request,
+)
 from reference_service import create_composition, ensure_reference_pack
 from tests.helpers.media import create_media_item
 
@@ -119,6 +122,60 @@ async def test_blocking_sync_is_idempotent_and_links_shots(client):
         for shot in sequence["shots"]
     ]
     assert any(reference and reference["pack_id"] == pack["id"] for reference in linked)
+
+
+@pytest.mark.asyncio
+async def test_mnesis_location_prompts_are_automatic_and_split_visual_states(client, db_session):
+    project = (await client.post("/api/projects", json={"name": "MNESIS"})).json()
+    await client.post(
+        f"/api/projects/{project['id']}/elements",
+        json={"name": "Salon", "element_type": "location"},
+    )
+    imported = await client.post(
+        f"/api/projects/{project['id']}/direction/import",
+        json={
+            "script": """# SÉQUENCE 1 — Salon
+| # | Durée | Code | Plan — texte intégral | Raccord entrant exact |
+|---|---:|---|---|---|
+| **01** | 4 s | **A** | MNESIS. Medium Maya dans le salon près du judas. | Début |
+| **02** | 4 s | **A** | Lumière blanche du matin. Medium Maya dans le salon. La pluie a cessé. | Ellipse |
+""",
+        },
+    )
+    assert imported.status_code == 200, imported.text
+    synced = await client.post(f"/api/projects/{project['id']}/references/sync-blocking")
+    assert synced.status_code == 200, synced.text
+
+    pack = (await client.get(f"/api/projects/{project['id']}/references")).json()["packs"][0]
+    blocking_views = [
+        view for view in pack["views"]
+        if view["view_spec"].get("source") == "blocking-cluster-v1"
+    ]
+    assert {view["view_spec"]["location_state"] for view in blocking_views} == {
+        "APT_NIGHT_RAIN",
+        "APT_MORNING",
+    }
+    assert all(
+        view["view_spec"]["prompt_profile"] == "mnesis-location-v1"
+        for view in blocking_views
+    )
+
+    morning = next(
+        view for view in blocking_views
+        if view["view_spec"]["location_state"] == "APT_MORNING"
+    )
+    async with db_session() as session:
+        row = await session.get(ProjectReferenceView, morning["id"])
+        prompt, media_ids, dimensions = await build_view_generation_request(
+            session,
+            project_id=project["id"],
+            view=row,
+        )
+    assert "MNESIS LOCATION SKILL — AUTOMATIC AUGMENTATION" in prompt
+    assert "APT_MORNING" in prompt
+    assert "No extra hallway" in prompt
+    assert media_ids == []
+    assert dimensions == [1344, 768]
 
 
 @pytest.mark.asyncio

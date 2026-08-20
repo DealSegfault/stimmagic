@@ -7,6 +7,7 @@ the Nano Banana generation/edit operation.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import re
 import shutil
@@ -48,6 +49,42 @@ def validate_generated_still(
             f"got {actual_dimensions[0]}x{actual_dimensions[1]}"
         ]
     return []
+
+
+def normalize_generated_still(
+    path: Path,
+    expected_dimensions: list[int] | tuple[int, int] | None,
+) -> list[str]:
+    """Center-crop AGY's near-16:9 canvas and normalize it to the project size."""
+    if not expected_dimensions:
+        return validate_generated_still(path)
+    target_width, target_height = map(int, expected_dimensions)
+    try:
+        with Image.open(path) as source:
+            source.load()
+            if source.size == (target_width, target_height):
+                return []
+            width, height = source.size
+            target_ratio = target_width / target_height
+            actual_ratio = width / height
+            if actual_ratio > target_ratio:
+                crop_width = max(1, round(height * target_ratio))
+                left = max(0, (width - crop_width) // 2)
+                box = (left, 0, min(width, left + crop_width), height)
+            else:
+                crop_height = max(1, round(width / target_ratio))
+                top = max(0, (height - crop_height) // 2)
+                box = (0, top, width, min(height, top + crop_height))
+            normalized = source.crop(box)
+            if normalized.size != (target_width, target_height):
+                normalized = normalized.resize(
+                    (target_width, target_height),
+                    Image.Resampling.LANCZOS,
+                )
+            normalized.save(path, format=source.format or "PNG")
+    except (OSError, UnidentifiedImageError, ValueError, SyntaxError) as exc:
+        return [f"generated still could not be normalized: {exc}"]
+    return validate_generated_still(path, expected_dimensions)
 
 
 def _normalize_media_ids(values: Iterable[Any] | None) -> list[int]:
@@ -127,6 +164,67 @@ def build_antigravity_prompt(
         f"Once generate_image produces the image file, copy/move it to: {output_path}\n"
         "Do not stop after describing the image. Do not save a second candidate."
     )
+
+
+async def _wait_for_agy_output(
+    process: Any,
+    output_path: Path,
+    expected_dimensions: list[int] | tuple[int, int] | None,
+    *,
+    timeout_seconds: float = 600,
+) -> tuple[bytes, bytes, bool]:
+    """Drain AGY while accepting a complete file even if print mode stays open."""
+    communicate_task = asyncio.create_task(process.communicate())
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_signature: tuple[int, int] | None = None
+    stable_checks = 0
+    output_ready = False
+
+    while not communicate_task.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            communicate_task.cancel()
+            if process.returncode is None:
+                process.kill()
+            raise asyncio.TimeoutError
+        await asyncio.wait({communicate_task}, timeout=min(0.5, remaining))
+        if communicate_task.done():
+            break
+        if not output_path.is_file():
+            continue
+        signature = (output_path.stat().st_size, output_path.stat().st_mtime_ns)
+        if signature == last_signature and not validate_generated_still(output_path):
+            stable_checks += 1
+        else:
+            stable_checks = 0
+        last_signature = signature
+        if stable_checks < 1:
+            continue
+        normalization_errors = normalize_generated_still(
+            output_path,
+            expected_dimensions,
+        )
+        if normalization_errors:
+            continue
+        output_ready = True
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
+        except asyncio.TimeoutError:
+            if process.returncode is None:
+                process.kill()
+            communicate_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await communicate_task
+            return b"", b"", output_ready
+        break
+
+    stdout, stderr = await communicate_task
+    return stdout or b"", stderr or b"", output_ready
 
 
 async def _materialize_references(
@@ -298,7 +396,11 @@ async def antigravity_image(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+        stdout, stderr, output_ready = await _wait_for_agy_output(
+            process,
+            output_path,
+            expected_dimensions,
+        )
     except asyncio.TimeoutError:
         if process and process.returncode is None:
             process.kill()
@@ -313,7 +415,7 @@ async def antigravity_image(
     cli_output = "\n".join(
         part.decode(errors="replace") for part in (stdout or b"", stderr or b"") if part
     ).strip()
-    if process.returncode != 0:
+    if process.returncode != 0 and not output_ready:
         return f"Error: Antigravity CLI exited with status {process.returncode}: {cli_output[-2000:] or 'no CLI diagnostic'}"
     if not output_path.is_file():
         return f"Error: Antigravity completed but did not create {output_path.name}: {cli_output[-2000:] or 'no CLI diagnostic'}"
