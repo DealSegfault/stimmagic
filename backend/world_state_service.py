@@ -24,11 +24,13 @@ from database import (
     Project,
     ProjectDirection,
     ProjectElement,
+    ProjectReferencePack,
     ProjectScene,
     ProjectShot,
 )
 from project_direction_service import direction_payload, json_value, scene_dict
 from project_element_service import list_project_elements
+from reference_service import serialize_pack
 from shot_continuity_service import (
     build_shot_generation_contract,
     latest_previous_shot_acceptance,
@@ -225,7 +227,73 @@ def build_shot_reference_manifest(
             "reference_id": item.get("reference_id"),
             "name": item.get("name"),
             "reason": reason,
+            "asset_id": item.get("asset_id"),
+            "revision_id": item.get("revision_id") or item.get("approved_revision_id"),
+            "view_id": item.get("view_id") or (item.get("id") if item.get("view_key") else None),
+            "composition_id": item.get("composition_id"),
         })
+
+    def preferred_reference(
+        item: dict[str, Any],
+        binding: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve approved pack media without letting mutable Asset heads drift."""
+        binding = binding or {}
+        pack = item.get("reference_pack") or {}
+        if binding.get("composition_id"):
+            composition = next(
+                (
+                    candidate
+                    for candidate in pack.get("compositions") or []
+                    if int(candidate.get("id") or 0) == int(binding["composition_id"])
+                    and candidate.get("status") == "approved"
+                    and candidate.get("approved_media_id")
+                ),
+                None,
+            )
+            if composition:
+                return {
+                    **item,
+                    "media_id": composition["approved_media_id"],
+                    "asset_id": composition.get("result_asset_id"),
+                    "revision_id": composition.get("approved_revision_id"),
+                    "composition_id": composition.get("id"),
+                }
+        approved_views = [
+            view for view in pack.get("views") or []
+            if view.get("approved_media_id") and view.get("status") in {"approved", "stale"}
+        ]
+        selected = None
+        if binding.get("view_id"):
+            selected = next(
+                (view for view in approved_views if int(view.get("id") or 0) == int(binding["view_id"])),
+                None,
+            )
+        if selected is None and current.get("id"):
+            selected = next(
+                (
+                    view for view in approved_views
+                    if int(current["id"]) in [
+                        int(value) for value in (view.get("view_spec") or {}).get("used_by_shots", [])
+                    ]
+                ),
+                None,
+            )
+        if selected is None and approved_views:
+            selected = next(
+                (view for view in approved_views if view.get("view_key") in {"master", "hero_3q"}),
+                approved_views[0],
+            )
+        if selected:
+            return {
+                **item,
+                "media_id": selected["approved_media_id"],
+                "asset_id": selected.get("asset_id"),
+                "revision_id": selected.get("approved_revision_id"),
+                "view_id": selected.get("id"),
+                "view_key": selected.get("view_key"),
+            }
+        return item
 
     previous_frame_id = (previous_acceptance or {}).get("last_frame_media_id")
     if previous_frame_id and current.get("transition_policy", "continuity") != "independent":
@@ -246,6 +314,7 @@ def build_shot_reference_manifest(
                 continue
             source = dict(by_reference.get(str(binding.get("reference_id")), {}))
             source.update(binding)
+            source = preferred_reference(source, binding)
             add(source, str(binding.get("role") or "reference"), "explicit shot reference binding")
         return manifest[:8]
 
@@ -260,7 +329,7 @@ def build_shot_reference_manifest(
     ):
         relevant_characters = characters
     for character in relevant_characters:
-        add(character, "character", "character named or implied by the shot")
+        add(preferred_reference(character), "character", "character named or implied by the shot")
 
     locations = list((entities.get("locations") or {}).values())
     # Keep the project-level canonical location unless the shot explicitly
@@ -268,13 +337,13 @@ def build_shot_reference_manifest(
     # must not swap it for a secondary close-view asset.
     relevant_locations = ranked_relevant(locations, include_concepts=False)
     if relevant_locations:
-        add(relevant_locations[0], "location_canonical", "location matched to the shot")
+        add(preferred_reference(relevant_locations[0]), "location_canonical", "approved location view matched to the shot")
     elif locations:
-        add(locations[0], "location_canonical", "default canonical scene location")
+        add(preferred_reference(locations[0]), "location_canonical", "default approved canonical location view")
 
     props = list((entities.get("props") or {}).values())
     for prop in ranked_relevant(props):
-        add(prop, "prop", "prop named by the shot")
+        add(preferred_reference(prop), "prop", "approved prop view named by the shot")
 
     return manifest[:8]
 
@@ -315,6 +384,9 @@ def _compact_agent_element(element: dict[str, Any]) -> dict[str, Any]:
     } | {
         "description": _agent_text(
             element.get("description"), _AGENT_TEXT_LIMITS["description"]
+        ),
+        "reference_pack": _compact_agent_json(
+            element.get("reference_pack") or {}, limit=3500
         ),
     }
 
@@ -548,7 +620,36 @@ async def build_project_world_state(
     locations: Dict[str, Any] = {}
     props: Dict[str, Any] = {}
 
+    packs = list(await session.scalars(
+        select(ProjectReferencePack).where(
+            ProjectReferencePack.project_id == project_id,
+            ProjectReferencePack.deleted_at.is_(None),
+        )
+    ))
+    packs_by_element = {int(pack.project_element_id): pack for pack in packs}
+
     for elem in raw_elements:
+        pack = packs_by_element.get(int(elem.get("id") or 0))
+        if pack is not None:
+            serialized_pack = await serialize_pack(session, pack)
+            serialized_pack["views"] = [
+                {
+                    key: view.get(key)
+                    for key in (
+                        "id", "view_key", "label", "view_type", "state_key",
+                        "view_spec", "asset_id", "approved_revision_id",
+                        "approved_media_id", "status", "source_signature",
+                    )
+                }
+                for view in serialized_pack.get("views") or []
+                if view.get("approved_media_id") and view.get("status") in {"approved", "stale"}
+            ]
+            serialized_pack["compositions"] = [
+                composition
+                for composition in serialized_pack.get("compositions") or []
+                if composition.get("status") == "approved" and composition.get("approved_media_id")
+            ]
+            elem["reference_pack"] = serialized_pack
         etype = elem.get("element_type")
         ref_id = elem.get("reference_id") or f"elem_{elem.get('id')}"
         if etype == "character":

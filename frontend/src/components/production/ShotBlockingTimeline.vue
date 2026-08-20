@@ -37,6 +37,7 @@ function timeLabel(frame) {
         </div>
         <div class="ml-[74px] mt-1.5 space-y-1 text-[11px] leading-relaxed text-content-muted">
           <p>{{ frame.spatial_note }}</p>
+          <p class="text-content-secondary">Jeu · {{ frame.performance_note }}</p>
           <p class="font-mono text-[10px] text-content-tertiary">{{ frame.camera_note }}</p>
           <p v-for="actor in frame.actors" :key="actor.id" class="text-content-secondary">
             Regard {{ actor.gaze_label }} · {{ actor.position_label }}

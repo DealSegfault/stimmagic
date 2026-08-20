@@ -1,7 +1,5 @@
 <template>
   <div class="h-full overflow-y-auto bg-base custom-scrollbar">
-    <ProjectScopeBar :project="project" active-name="project-direction" />
-
     <main class="max-w-6xl mx-auto px-6 py-8 space-y-6">
       <!-- Header Banner & Stats -->
       <header class="relative overflow-hidden rounded-2xl border border-edge bg-surface p-6 shadow-sm">
@@ -533,7 +531,6 @@ import {
   ExclamationTriangleIcon,
   XMarkIcon
 } from '@heroicons/vue/24/outline'
-import ProjectScopeBar from '../components/ProjectScopeBar.vue'
 import { useProjectDirectionApi } from '../composables/useProjectDirectionApi'
 import { useWebSocket } from '../composables/useWebSocket'
 import { addToast } from '../composables/useToasts'

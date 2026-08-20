@@ -11,7 +11,9 @@ from tests.helpers.media import create_media_item
 
 @pytest.mark.asyncio
 async def test_imported_sequence_has_canonical_shot(client, db_session):
-    project = (await client.post("/api/projects", json={"name": "Production test"})).json()
+    project = (
+        await client.post("/api/projects", json={"name": "Production test"})
+    ).json()
     project_id = project["id"]
     response = await client.post(
         f"/api/projects/{project_id}/direction/import",
@@ -30,11 +32,19 @@ async def test_imported_sequence_has_canonical_shot(client, db_session):
     assert len(shot["blocking"]["frames"]) == 4
     assert shot["blocking"]["frames"][0]["time_start"] == 0.0
     assert shot["blocking"]["frames"][-1]["time_end"] == 4.0
+    assert all(
+        frame["time_end"] - frame["time_start"] <= 1.0
+        for frame in shot["blocking"]["frames"]
+    )
+    assert all(frame["performance_note"] for frame in shot["blocking"]["frames"])
+    assert shot["blocking"]["camera"]["distance_meters"] > 0
 
 
 @pytest.mark.asyncio
 async def test_imported_shot_table_creates_each_plan(client):
-    project = (await client.post("/api/projects", json={"name": "Shot map production"})).json()
+    project = (
+        await client.post("/api/projects", json={"name": "Shot map production"})
+    ).json()
     response = await client.post(
         f"/api/projects/{project['id']}/direction/import",
         json={
@@ -58,7 +68,9 @@ async def test_imported_shot_table_creates_each_plan(client):
 
 @pytest.mark.asyncio
 async def test_blocking_keeps_last_actor_position_across_insert(client):
-    project = (await client.post("/api/projects", json={"name": "Blocking continuity"})).json()
+    project = (
+        await client.post("/api/projects", json={"name": "Blocking continuity"})
+    ).json()
     response = await client.post(
         f"/api/projects/{project['id']}/direction/import",
         json={
@@ -83,15 +95,23 @@ async def test_blocking_keeps_last_actor_position_across_insert(client):
 
 @pytest.mark.asyncio
 async def test_approved_blocking_is_persisted_and_counted(client):
-    project = (await client.post("/api/projects", json={"name": "Blocking review"})).json()
+    project = (
+        await client.post("/api/projects", json={"name": "Blocking review"})
+    ).json()
     imported = await client.post(
         f"/api/projects/{project['id']}/direction/import",
         json={"script": "SCÈNE 1 — Salon\nMaya regarde la porte."},
     )
     assert imported.status_code == 200, imported.text
-    first_payload = (await client.get(f"/api/projects/{project['id']}/production")).json()
+    first_payload = (
+        await client.get(f"/api/projects/{project['id']}/production")
+    ).json()
     shot = first_payload["sequences"][0]["shots"][0]
-    approved_blocking = {**shot["blocking"], "status": "approved", "reviewed_at": "2026-08-20T12:00:00Z"}
+    approved_blocking = {
+        **shot["blocking"],
+        "status": "approved",
+        "reviewed_at": "2026-08-20T12:00:00Z",
+    }
     updated = await client.patch(
         f"/api/projects/{project['id']}/production/shots/{shot['id']}",
         json={
@@ -100,7 +120,9 @@ async def test_approved_blocking_is_persisted_and_counted(client):
         },
     )
     assert updated.status_code == 200, updated.text
-    reviewed_payload = (await client.get(f"/api/projects/{project['id']}/production")).json()
+    reviewed_payload = (
+        await client.get(f"/api/projects/{project['id']}/production")
+    ).json()
     reviewed_shot = reviewed_payload["sequences"][0]["shots"][0]
     assert reviewed_shot["blocking"]["status"] == "approved"
     assert reviewed_payload["stats"]["blocking_reviewed_count"] == 1
@@ -108,7 +130,9 @@ async def test_approved_blocking_is_persisted_and_counted(client):
 
 @pytest.mark.asyncio
 async def test_blocking_supports_multiple_character_instances(client):
-    project = (await client.post("/api/projects", json={"name": "Multiple Mayas"})).json()
+    project = (
+        await client.post("/api/projects", json={"name": "Multiple Mayas"})
+    ).json()
     imported = await client.post(
         f"/api/projects/{project['id']}/direction/import",
         json={
@@ -121,8 +145,14 @@ async def test_blocking_supports_multiple_character_instances(client):
     assert imported.status_code == 200, imported.text
     payload = (await client.get(f"/api/projects/{project['id']}/production")).json()
     actors = payload["sequences"][0]["shots"][0]["blocking"]["frames"][0]["actors"]
+    relationships = payload["sequences"][0]["shots"][0]["blocking"]["frames"][0][
+        "relationships"
+    ]
     assert [actor["id"] for actor in actors] == ["maya", "maya_3"]
     assert actors[0]["x"] != actors[1]["x"] or actors[0]["y"] != actors[1]["y"]
+    assert relationships[0]["from"] == "Maya"
+    assert relationships[0]["to"] == "Troisième Maya"
+    assert relationships[0]["distance_meters"] > 0
 
 
 @pytest.mark.asyncio
@@ -148,25 +178,34 @@ async def test_scene_recent_candidate_cannot_be_approved(db_session):
             title="Plan 1",
         )
         session.add(shot)
-        media = await create_media_item(session, file_path="/production/candidate.mp4", file_format="mp4", duration=4)
-        session.add(GenerationJob(
-            status="completed",
-            task_type="image-to-video",
-            generator_type="test",
-            generator_name="test",
-            model_name="test",
-            parameters=json.dumps({"_direction_scene_id": scene.id}),
-            folder_path="/production",
-            project_id=project.id,
-            result_media_id=media.id,
-            completed_at=datetime.utcnow(),
-        ))
+        media = await create_media_item(
+            session,
+            file_path="/production/candidate.mp4",
+            file_format="mp4",
+            duration=4,
+        )
+        session.add(
+            GenerationJob(
+                status="completed",
+                task_type="image-to-video",
+                generator_type="test",
+                generator_name="test",
+                model_name="test",
+                parameters=json.dumps({"_direction_scene_id": scene.id}),
+                folder_path="/production",
+                project_id=project.id,
+                result_media_id=media.id,
+                completed_at=datetime.utcnow(),
+            )
+        )
         await session.commit()
         shot_id = shot.id
     async with db_session() as session:
         row = await session.get(ProjectShot, shot_id)
         candidates = await list_shot_candidates(session, row)
-        exact_candidates = await list_shot_candidates(session, row, include_scene_fallback=False)
+        exact_candidates = await list_shot_candidates(
+            session, row, include_scene_fallback=False
+        )
     assert candidates[0]["match_confidence"] == "scene_recent"
     assert candidates[0]["approval_eligible"] is False
     assert exact_candidates == []

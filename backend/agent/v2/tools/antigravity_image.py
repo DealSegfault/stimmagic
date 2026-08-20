@@ -195,6 +195,13 @@ def _shot_manifest_ids(shot_contract: dict[str, Any] | None) -> list[int]:
             required=False,
             enum=["intermediate", "final"],
         ),
+        ToolParameter(
+            name="expected_dimensions",
+            type="array",
+            description="Optional exact [width, height] canvas for non-shot reference generation",
+            required=False,
+            items={"type": "integer"},
+        ),
     ],
     scope="agent",
 )
@@ -203,6 +210,7 @@ async def antigravity_image(
     reference_media_ids: list[int] | None = None,
     output_name: str | None = None,
     output_role: str = "final",
+    expected_dimensions: list[int] | None = None,
     **kwargs: Any,
 ) -> str:
     workspace_dir = kwargs.get("workspace_dir")
@@ -247,9 +255,21 @@ async def antigravity_image(
         # Never accept a stale file left by a timed-out or interrupted AGY run.
         # The CLI is required to produce a fresh artifact for this invocation.
         output_path.unlink(missing_ok=True)
-        expected_dimensions = (
+        contract_dimensions = (
             shot_contract.get("expected_dimensions")
             if isinstance(shot_contract, dict)
+            else None
+        )
+        requested_dimensions = expected_dimensions or contract_dimensions
+        if requested_dimensions is not None and (
+            not isinstance(requested_dimensions, (list, tuple))
+            or len(requested_dimensions) != 2
+            or any(int(value) <= 0 for value in requested_dimensions)
+        ):
+            raise ValueError("expected_dimensions must be [positive width, positive height]")
+        expected_dimensions = (
+            [int(requested_dimensions[0]), int(requested_dimensions[1])]
+            if requested_dimensions is not None
             else None
         )
         agy_prompt = build_antigravity_prompt(

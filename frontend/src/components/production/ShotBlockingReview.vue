@@ -4,6 +4,7 @@ import { CheckCircleIcon, ChevronLeftIcon, ChevronRightIcon, ExclamationTriangle
 import Button from '../ui/Button.vue'
 import IconButton from '../ui/IconButton.vue'
 import Tooltip from '../ui/Tooltip.vue'
+import { MediaImage } from '../media'
 import ShotBlockingSvg from './ShotBlockingSvg.vue'
 import ShotBlockingTimeline from './ShotBlockingTimeline.vue'
 
@@ -17,7 +18,7 @@ const props = defineProps({
   saving: { type: Boolean, default: false },
 })
 
-defineEmits(['previous', 'next', 'toggle-review'])
+defineEmits(['previous', 'next', 'toggle-review', 'open-reference'])
 
 const activeFrameIndex = ref(0)
 const blocking = computed(() => props.shot.blocking || null)
@@ -26,6 +27,7 @@ const activeFrame = computed(() => frames.value[activeFrameIndex.value] || frame
 const approved = computed(() => blocking.value?.status === 'approved')
 const continuity = computed(() => blocking.value?.continuity || {})
 const continuityTone = computed(() => continuity.value.verdict === 'review' ? 'text-amber-400' : continuity.value.verdict === 'ok' ? 'text-emerald-400' : 'text-content-secondary')
+const locationReference = computed(() => blocking.value?.location_reference || null)
 
 watch(() => props.shot.id, () => { activeFrameIndex.value = 0 })
 </script>
@@ -72,7 +74,35 @@ watch(() => props.shot.id, () => { activeFrameIndex.value = 0 })
 
     <div class="grid gap-6 border-t border-edge-subtle px-5 py-5 2xl:grid-cols-[minmax(0,1.45fr)_minmax(330px,0.75fr)]">
       <ShotBlockingSvg :blocking="blocking" :frame="activeFrame" :previous-blocking="previousShot?.blocking" />
-      <ShotBlockingTimeline :frames="frames" :active-index="activeFrameIndex" @select="activeFrameIndex = $event" />
+      <div class="space-y-4">
+        <ShotBlockingTimeline :frames="frames" :active-index="activeFrameIndex" @select="activeFrameIndex = $event" />
+        <section v-if="locationReference" class="overflow-hidden rounded-lg border border-edge-subtle bg-base">
+          <div v-if="locationReference.approved_media_id" class="aspect-video bg-matte">
+            <MediaImage
+              :media-id="locationReference.approved_media_id"
+              :thumbnail="false"
+              :contain="true"
+              :enable-context-menu="false"
+              :alt="`Location view ${locationReference.label}`"
+              container-class="h-full w-full"
+              img-class="h-full w-full object-contain"
+            />
+          </div>
+          <div class="flex items-center justify-between gap-3 p-3">
+            <div class="min-w-0">
+              <p class="truncate text-[11px] font-semibold text-content">{{ locationReference.label }}</p>
+              <p class="mt-1 font-mono text-[9px] text-content-muted">{{ locationReference.view_key }} · {{ locationReference.status }}</p>
+            </div>
+            <Button size="sm" variant="secondary" @click="$emit('open-reference', locationReference)">
+              {{ locationReference.approved_media_id ? 'Ouvrir la référence' : 'Générer la référence' }}
+            </Button>
+          </div>
+        </section>
+        <section v-else class="rounded-lg border border-dashed border-edge p-4 text-center">
+          <p class="text-[11px] text-content-muted">Aucune location view n’est encore reliée à cet angle.</p>
+          <Button class="mt-3" size="sm" variant="secondary" @click="$emit('open-reference', null)">Synchroniser les vues</Button>
+        </section>
+      </div>
     </div>
 
     <footer class="border-t border-edge-subtle px-5 py-4">

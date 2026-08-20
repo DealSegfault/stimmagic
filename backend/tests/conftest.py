@@ -246,7 +246,7 @@ async def test_app(temp_appdata_dir: Path):
         # Import and include routers
         from routes import (
             assets, boards, chats, generation, image_stack, media, media_files, markers, projects,
-            flows, tags, trash, saved_views, search, profiles, keywords, processing, production, project_direction,
+            flows, tags, trash, saved_views, search, profiles, keywords, processing, production, project_direction, references,
             settings as settings_routes, svg_media, agent_traces,
         )
         from routes import tasks as flow_tasks
@@ -266,6 +266,7 @@ async def test_app(temp_appdata_dir: Path):
         app.include_router(projects.router)
         app.include_router(project_direction.router)
         app.include_router(production.router)
+        app.include_router(references.router)
         app.include_router(flows.router)
         app.include_router(flow_tasks.router)
         app.include_router(tags.router)

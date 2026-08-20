@@ -2,13 +2,25 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from blocking_service import build_blocking_view
-from database import GenerationJob, MediaItem, ProjectDirection, ProjectScene, ProjectShot, ShotAttempt
+from database import (
+    AssetRevision,
+    GenerationJob,
+    MediaItem,
+    ProjectDirection,
+    ProjectElement,
+    ProjectReferencePack,
+    ProjectReferenceView,
+    ProjectScene,
+    ProjectShot,
+    ShotAttempt,
+)
 
 
 def json_value(raw: str | None, fallback: Any) -> Any:
@@ -17,6 +29,11 @@ def json_value(raw: str | None, fallback: Any) -> Any:
     except (TypeError, ValueError, json.JSONDecodeError):
         return fallback
     return value if isinstance(value, type(fallback)) else fallback
+
+
+def _normalized_reference_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    return normalized.encode("ascii", "ignore").decode("ascii").casefold()
 
 
 def shot_dict(
@@ -177,10 +194,48 @@ async def production_payload(session: AsyncSession, project_id: int) -> dict[str
     shots_by_scene: dict[int, list[ProjectShot]] = {}
     for shot in shots:
         shots_by_scene.setdefault(int(shot.scene_id), []).append(shot)
+    reference_rows = (await session.execute(
+        select(ProjectReferenceView, ProjectReferencePack, ProjectElement)
+        .join(ProjectReferencePack, ProjectReferencePack.id == ProjectReferenceView.pack_id)
+        .join(ProjectElement, ProjectElement.id == ProjectReferencePack.project_element_id)
+        .where(
+            ProjectReferenceView.project_id == project_id,
+            ProjectReferenceView.deleted_at.is_(None),
+            ProjectReferencePack.deleted_at.is_(None),
+            ProjectElement.deleted_at.is_(None),
+        )
+        .order_by(ProjectReferenceView.sort_order, ProjectReferenceView.id)
+    )).all()
+    location_reference_by_shot: dict[int, dict[str, Any]] = {}
+    prop_reference_rows: list[dict[str, Any]] = []
+    for view, pack, element in reference_rows:
+        approved_media_id = None
+        if view.approved_revision_id:
+            revision = await session.get(AssetRevision, view.approved_revision_id)
+            approved_media_id = revision.primary_media_id if revision and revision.deleted_at is None else None
+        row = {
+            "pack_id": pack.id,
+            "view_id": view.id,
+            "view_key": view.view_key,
+            "label": view.label,
+            "status": view.status,
+            "approved_revision_id": view.approved_revision_id,
+            "approved_media_id": approved_media_id,
+            "element_id": element.id,
+            "reference_id": element.reference_id,
+            "element_name": element.name,
+            "sheet_asset_id": pack.sheet_asset_id,
+        }
+        if pack.pack_type == "location":
+            for shot_id in json_value(view.view_spec, {}).get("used_by_shots", []):
+                location_reference_by_shot[int(shot_id)] = row
+        elif pack.pack_type == "prop":
+            prop_reference_rows.append(row)
     sequences: list[dict[str, Any]] = []
     total_shots = 0
     accepted_shots = 0
     reviewed_blockings = 0
+    reference_covered_shots = 0
     blocking_state: dict[str, Any] = {}
     for scene in scenes:
         scene_shots = shots_by_scene.get(int(scene.id), [])
@@ -191,6 +246,41 @@ async def production_payload(session: AsyncSession, project_id: int) -> dict[str
             )
             shot_settings = json_value(shot.settings, {})
             blocking = build_blocking_view(shot, scene, blocking_state, settings=shot_settings)
+            location_reference = location_reference_by_shot.get(int(shot.id))
+            if location_reference:
+                blocking["location_reference"] = location_reference
+                reference_covered_shots += int(bool(location_reference.get("approved_media_id")))
+            for prop in blocking.get("props") or []:
+                prop_text = _normalized_reference_text(
+                    f"{prop.get('id', '')} {prop.get('label', '')}"
+                )
+                aliases = {
+                    "kettle": ("kettle", "bouilloire"),
+                    "cup": ("cup", "tasse", "mug"),
+                    "phone": ("phone", "telephone"),
+                    "knife": ("knife", "couteau"),
+                    "chair": ("chair", "chaise"),
+                    "file": ("file", "dossier"),
+                }
+                concepts = next(
+                    (terms for key, terms in aliases.items() if key in prop_text),
+                    tuple(prop_text.split()),
+                )
+                match = next(
+                    (
+                        item for item in prop_reference_rows
+                        if any(
+                            concept in _normalized_reference_text(
+                                f"{item['reference_id']} {item['element_name']}"
+                            )
+                            for concept in concepts
+                            if concept
+                        )
+                    ),
+                    None,
+                )
+                if match:
+                    prop["reference"] = match
             shot_rows.append(shot_dict(shot, generation_count=int(count or 0), blocking=blocking))
             total_shots += 1
             accepted_shots += int(shot.accepted_media_id is not None)
@@ -216,6 +306,7 @@ async def production_payload(session: AsyncSession, project_id: int) -> dict[str
             "pending_count": max(0, total_shots - accepted_shots),
             "blocking_count": total_shots,
             "blocking_reviewed_count": reviewed_blockings,
+            "reference_covered_shot_count": reference_covered_shots,
         },
     }
 

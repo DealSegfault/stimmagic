@@ -34,7 +34,9 @@ from project_element_service import (
     delete_project_element,
     list_project_elements,
     serialize_project_element,
+    update_project_element,
 )
+from reference_service import ensure_reference_pack
 from utils.websocket import ws_manager
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -285,10 +287,15 @@ class _ProjectMediaRequest(BaseModel):
 
 
 class _ProjectElementCreateRequest(BaseModel):
-    name: str
+    name: str = ""
     element_type: str = "prop"
     asset_id: int | None = None
     media_id: int | None = None
+    description: str | None = None
+
+
+class _ProjectElementUpdateRequest(BaseModel):
+    name: str | None = None
     description: str | None = None
 
 
@@ -326,6 +333,7 @@ async def create_element(
             media_id=request.media_id,
             description=request.description,
         )
+        await ensure_reference_pack(session, element)
         await session.commit()
         payload = await serialize_project_element(session, element)
         payload["created"] = created
@@ -334,6 +342,28 @@ async def create_element(
         await session.rollback()
         status_code = 409 if "already exists" in str(exc) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+
+@router.patch("/{project_id}/elements/{element_id}")
+async def update_element(
+    project_id: int,
+    element_id: int,
+    request: _ProjectElementUpdateRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        element = await update_project_element(
+            session,
+            project_id=project_id,
+            element_id=element_id,
+            name=request.name,
+            description=request.description,
+        )
+        await session.commit()
+        return await serialize_project_element(session, element)
+    except ProjectElementError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{project_id}/elements/{element_id}")

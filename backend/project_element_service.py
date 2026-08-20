@@ -7,12 +7,23 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from asset_association_service import attach_asset_to_project
 from asset_service import AssetServiceError, create_asset_from_media
-from database import Asset, AssetRevision, MediaItem, Project, ProjectElement
+from database import (
+    Asset,
+    AssetRevision,
+    MediaItem,
+    Project,
+    ProjectComposition,
+    ProjectCompositionItem,
+    ProjectElement,
+    ProjectElementState,
+    ProjectReferencePack,
+    ProjectReferenceView,
+)
 
 
 ELEMENT_TYPES = {"location", "character", "prop"}
@@ -193,16 +204,27 @@ async def create_project_element(
     project = await _live_project(session, project_id)
     clean_name = (name or "").strip()
     normalized_type = normalize_element_type(element_type)
+    if not clean_name:
+        existing_count = await session.scalar(
+            select(func.count(ProjectElement.id)).where(
+                ProjectElement.project_id == project_id,
+                ProjectElement.element_type == normalized_type,
+                ProjectElement.deleted_at.is_(None),
+            )
+        )
+        clean_name = f"Untitled {normalized_type} {int(existing_count or 0) + 1}"
     reference_id = build_element_reference(normalized_type, project.name, clean_name)
-    asset = await _resolve_asset(
-        session,
-        asset_id=asset_id,
-        media_id=media_id,
-        path=path,
-        workspace_dir=workspace_dir,
-        project_id=project_id,
-        title=clean_name,
-    )
+    asset = None
+    if asset_id is not None or media_id is not None or path is not None:
+        asset = await _resolve_asset(
+            session,
+            asset_id=asset_id,
+            media_id=media_id,
+            path=path,
+            workspace_dir=workspace_dir,
+            project_id=project_id,
+            title=clean_name,
+        )
 
     existing = await session.scalar(
         select(ProjectElement).where(
@@ -212,16 +234,17 @@ async def create_project_element(
         )
     )
     if existing is not None:
-        if existing.asset_id != asset.id:
+        if existing.asset_id != (asset.id if asset else None):
             raise ProjectElementError(
                 f"@{reference_id} already exists with another asset"
             )
         return existing, False
 
-    await attach_asset_to_project(session, project_id, asset.id)
+    if asset is not None:
+        await attach_asset_to_project(session, project_id, asset.id)
     element = ProjectElement(
         project_id=project_id,
-        asset_id=asset.id,
+        asset_id=asset.id if asset else None,
         element_type=normalized_type,
         name=clean_name,
         reference_id=reference_id,
@@ -230,6 +253,30 @@ async def create_project_element(
     session.add(element)
     await session.flush()
     return element, True
+
+
+async def update_project_element(
+    session: AsyncSession,
+    *,
+    project_id: int,
+    element_id: int,
+    name: str | None = None,
+    description: str | None = None,
+) -> ProjectElement:
+    """Update display metadata without mutating the stable @reference id."""
+    element = await get_project_element(
+        session, project_id=project_id, element_id=element_id
+    )
+    if name is not None:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ProjectElementError("Element name cannot be empty")
+        element.name = clean_name
+    if description is not None:
+        element.description = description.strip() or None
+    element.updated_at = datetime.utcnow()
+    await session.flush()
+    return element
 
 
 async def list_project_elements(
@@ -285,6 +332,68 @@ async def delete_project_element(
     )
     element.deleted_at = datetime.utcnow()
     element.updated_at = element.deleted_at
+    packs = list(await session.scalars(
+        select(ProjectReferencePack).where(
+            ProjectReferencePack.project_element_id == element.id,
+            ProjectReferencePack.deleted_at.is_(None),
+        )
+    ))
+    pack_ids = [pack.id for pack in packs]
+    for pack in packs:
+        pack.deleted_at = element.deleted_at
+        pack.updated_at = element.deleted_at
+    if pack_ids:
+        views = list(await session.scalars(
+            select(ProjectReferenceView).where(
+                ProjectReferenceView.pack_id.in_(pack_ids),
+                ProjectReferenceView.deleted_at.is_(None),
+            )
+        ))
+        view_ids = [view.id for view in views]
+        for view in views:
+            view.deleted_at = element.deleted_at
+            view.updated_at = element.deleted_at
+        if view_ids:
+            compositions = list(await session.scalars(
+                select(ProjectComposition).where(
+                    ProjectComposition.location_view_id.in_(view_ids),
+                    ProjectComposition.deleted_at.is_(None),
+                )
+            ))
+            for composition in compositions:
+                composition.deleted_at = element.deleted_at
+                composition.updated_at = element.deleted_at
+                items = await session.scalars(
+                    select(ProjectCompositionItem).where(
+                        ProjectCompositionItem.composition_id == composition.id,
+                        ProjectCompositionItem.deleted_at.is_(None),
+                    )
+                )
+                for item in items:
+                    item.deleted_at = element.deleted_at
+                    item.updated_at = element.deleted_at
+    states = await session.scalars(
+        select(ProjectElementState).where(
+            ProjectElementState.project_element_id == element.id,
+            ProjectElementState.deleted_at.is_(None),
+        )
+    )
+    for state in states:
+        state.deleted_at = element.deleted_at
+        state.updated_at = element.deleted_at
+    dependent_items = list(await session.scalars(
+        select(ProjectCompositionItem).where(
+            ProjectCompositionItem.project_element_id == element.id,
+            ProjectCompositionItem.deleted_at.is_(None),
+        )
+    ))
+    for item in dependent_items:
+        item.deleted_at = element.deleted_at
+        item.updated_at = element.deleted_at
+        composition = await session.get(ProjectComposition, item.composition_id)
+        if composition is not None and composition.deleted_at is None:
+            composition.status = "stale"
+            composition.updated_at = element.deleted_at
     await session.flush()
     return element
 

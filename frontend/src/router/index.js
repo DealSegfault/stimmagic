@@ -25,6 +25,7 @@ import ProjectSettingsView from '../views/ProjectSettingsView.vue'
 import ProjectToolsView from '../views/ProjectToolsView.vue'
 import ProjectDirectionView from '../views/ProjectDirectionView.vue'
 import ProjectProductionView from '../views/ProjectProductionView.vue'
+import ProjectReferencesView from '../views/ProjectReferencesView.vue'
 import OnboardingView from '../views/OnboardingView.vue'
 import SearchResultsView from '../views/SearchResultsView.vue'
 import ForeachMockView from '../views/ForeachMockView.vue'
@@ -93,6 +94,11 @@ const routes = [
         path: 'production',
         name: 'project-production',
         component: ProjectProductionView
+      },
+      {
+        path: 'references',
+        name: 'project-references',
+        component: ProjectReferencesView
       },
       {
         path: 'assets',

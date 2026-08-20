@@ -122,7 +122,9 @@ function midpoint(first, second) {
         <g :transform="cameraTransform(blocking.camera)" aria-label="Position caméra">
           <path d="M 0 0 L 95 -45 L 95 45 Z" class="fill-accent/10 stroke-accent/30" stroke-width="1" />
           <path d="M -13 -11 L 16 0 L -13 11 Z" class="fill-content stroke-base" stroke-width="3" />
-          <text x="-2" y="-20" text-anchor="middle" class="fill-content-secondary text-[10px] font-mono" :transform="`rotate(${-blocking.camera.facing})`">CAM · {{ blocking.camera.lens }}</text>
+          <text x="-2" y="-20" text-anchor="middle" class="fill-content-secondary text-[10px] font-mono" :transform="`rotate(${-blocking.camera.facing})`">
+            CAM · {{ blocking.camera.lens }} · {{ blocking.camera.fov }}° · {{ blocking.camera.distance_meters }} m
+          </text>
         </g>
 
         <g transform="translate(65 565)">

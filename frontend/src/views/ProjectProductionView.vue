@@ -1,7 +1,5 @@
 <template>
   <div class="h-full overflow-y-auto bg-base custom-scrollbar">
-    <ProjectScopeBar :project="project" active-name="project-production" />
-
     <main class="mx-auto max-w-[1440px] px-6 py-6 lg:px-8">
       <header class="mb-6 flex flex-col gap-4 border-b border-edge-subtle pb-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
@@ -127,6 +125,7 @@
             @previous="navigateToShot(previousShotEntry)"
             @next="navigateToShot(nextShotEntry)"
             @toggle-review="toggleBlockingReview"
+            @open-reference="openBlockingReference"
           />
 
           <template v-else>
@@ -186,10 +185,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { FilmIcon, DocumentTextIcon } from '@heroicons/vue/24/outline'
-import ProjectScopeBar from '../components/ProjectScopeBar.vue'
 import { MediaImage } from '../components/media'
 import ShotBlockingReview from '../components/production/ShotBlockingReview.vue'
 import { useProjectProductionApi } from '../composables/useProjectProductionApi'
@@ -244,6 +242,22 @@ function setActiveTab(tab) {
   if (tab === 'blocking') query.tab = 'blocking'
   else delete query.tab
   router.replace({ query })
+}
+
+function handleShotNavigationKeydown(event) {
+  if (activeTab.value !== 'blocking' || !selectedShot.value) return
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+
+  const target = event.target
+  if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]'))) return
+
+  if (event.key === 'ArrowLeft' && previousShotEntry.value) {
+    event.preventDefault()
+    navigateToShot(previousShotEntry.value)
+  } else if (event.key === 'ArrowRight' && nextShotEntry.value) {
+    event.preventDefault()
+    navigateToShot(nextShotEntry.value)
+  }
 }
 
 async function load() {
@@ -328,6 +342,13 @@ async function reject(candidate) {
 }
 
 function openDirection() { router.push({ name: 'project-direction', params: { id: props.project.id } }) }
+function openBlockingReference(reference) {
+  router.push({
+    name: 'project-references',
+    params: { id: props.project.id },
+    query: reference?.pack_id ? { pack: String(reference.pack_id) } : {},
+  })
+}
 function isVideo(candidate) { return ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'].includes(String(candidate.file_format || '').toLowerCase()) }
 function formatDate(value) { return value ? new Date(value).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—' }
 function statusLabel(shot) { return shot.validation_status === 'approved' ? 'Approuvé' : shot.validation_status === 'changes_requested' ? 'À corriger' : shot.generation_count ? 'Candidats disponibles' : 'À générer' }
@@ -338,7 +359,12 @@ watch([selectedShot, activeTab], ([shot, tab]) => {
   Object.assign(draft, { duration: shot.duration, width: shot.width, height: shot.height, transition_policy: shot.transition_policy })
   if (tab === 'shots') loadCandidates()
 })
-onMounted(load)
+onMounted(() => {
+  load()
+  window.addEventListener('keydown', handleShotNavigationKeydown)
+})
+onActivated(() => { if (sequences.value.length) load() })
+onUnmounted(() => window.removeEventListener('keydown', handleShotNavigationKeydown))
 </script>
 
 <style scoped>

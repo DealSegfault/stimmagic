@@ -618,7 +618,7 @@ class ProjectAsset(Base):
 
 
 class ProjectElement(Base):
-    """Named project-scoped visual reference backed by a stable Asset."""
+    """Named project-scoped visual identity, optionally backed by an Asset."""
     __tablename__ = "project_elements"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -642,6 +642,176 @@ class ProjectElement(Base):
             unique=True, sqlite_where=text('deleted_at IS NULL'),
         ),
         Index('idx_project_elements_project_type', 'project_id', 'element_type'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectReferencePack(Base):
+    """Versioned identity contract and approved view sheet for one element."""
+    __tablename__ = "project_reference_packs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    project_element_id = Column(Integer, ForeignKey('project_elements.id', ondelete='CASCADE'), nullable=False, index=True)
+    pack_type = Column(String, nullable=False, index=True)  # location | character | prop
+    identity_prompt = Column(Text, nullable=True)
+    negative_prompt = Column(Text, nullable=True)
+    prompt_version = Column(Integer, nullable=False, default=1)
+    sheet_asset_id = Column(Integer, ForeignKey('assets.id', ondelete='SET NULL'), nullable=True, index=True)
+    approved_sheet_revision_id = Column(Integer, ForeignKey('asset_revisions.id', ondelete='SET NULL'), nullable=True, index=True)
+    status = Column(String, nullable=False, default='draft', index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "pack_type IN ('location', 'character', 'prop')",
+            name='ck_project_reference_packs_type',
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'generating', 'review', 'approved', 'stale', 'error')",
+            name='ck_project_reference_packs_status',
+        ),
+        Index(
+            'idx_project_reference_packs_live_element',
+            'project_element_id',
+            unique=True,
+            sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_reference_packs_project_type', 'project_id', 'pack_type'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectReferenceView(Base):
+    """One stable camera/object view with explicit candidate and approved heads."""
+    __tablename__ = "project_reference_views"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    pack_id = Column(Integer, ForeignKey('project_reference_packs.id', ondelete='CASCADE'), nullable=False, index=True)
+    view_key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    view_type = Column(String, nullable=False, default='identity', index=True)
+    state_key = Column(String, nullable=False, default='default', index=True)
+    view_spec = Column(Text, nullable=True)  # JSON camera/orientation/framing contract
+    asset_id = Column(Integer, ForeignKey('assets.id', ondelete='SET NULL'), nullable=True, index=True)
+    approved_revision_id = Column(Integer, ForeignKey('asset_revisions.id', ondelete='SET NULL'), nullable=True, index=True)
+    candidate_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='SET NULL'), nullable=True, index=True)
+    status = Column(String, nullable=False, default='missing', index=True)
+    source_signature = Column(String, nullable=True, index=True)
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "view_type IN ('identity', 'location_camera', 'detail', 'scale')",
+            name='ck_project_reference_views_type',
+        ),
+        CheckConstraint(
+            "status IN ('missing', 'generating', 'review', 'approved', 'stale', 'inconsistent', 'rejected', 'error')",
+            name='ck_project_reference_views_status',
+        ),
+        Index(
+            'idx_project_reference_views_live_identity',
+            'pack_id', 'view_key', 'state_key',
+            unique=True,
+            sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_reference_views_pack_order', 'pack_id', 'sort_order'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectElementState(Base):
+    """Named semantic state such as kettle off/full or location night/rain."""
+    __tablename__ = "project_element_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    project_element_id = Column(Integer, ForeignKey('project_elements.id', ondelete='CASCADE'), nullable=False, index=True)
+    state_key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    prompt_delta = Column(Text, nullable=True)
+    constraints = Column(Text, nullable=True)  # JSON state-specific invariants
+    is_default = Column(Boolean, nullable=False, default=False, server_default='0')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        Index(
+            'idx_project_element_states_live_key',
+            'project_element_id', 'state_key',
+            unique=True,
+            sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_element_states_project', 'project_id', 'project_element_id'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectComposition(Base):
+    """A non-destructive location view plus placed, revision-pinned elements."""
+    __tablename__ = "project_compositions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    location_view_id = Column(Integer, ForeignKey('project_reference_views.id', ondelete='CASCADE'), nullable=False, index=True)
+    base_location_revision_id = Column(Integer, ForeignKey('asset_revisions.id', ondelete='RESTRICT'), nullable=False, index=True)
+    result_asset_id = Column(Integer, ForeignKey('assets.id', ondelete='SET NULL'), nullable=True, index=True)
+    approved_revision_id = Column(Integer, ForeignKey('asset_revisions.id', ondelete='SET NULL'), nullable=True, index=True)
+    candidate_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='SET NULL'), nullable=True, index=True)
+    placement_guide_media_id = Column(Integer, ForeignKey('media_items.id', ondelete='SET NULL'), nullable=True, index=True)
+    prompt_delta = Column(Text, nullable=True)
+    prompt_version = Column(Integer, nullable=False, default=1)
+    source_signature = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default='draft', index=True)
+    validation = Column(Text, nullable=True)  # JSON background-drift and review report
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('draft', 'generating', 'review', 'approved', 'stale', 'inconsistent', 'rejected', 'error')",
+            name='ck_project_compositions_status',
+        ),
+        Index(
+            'idx_project_compositions_live_signature',
+            'project_id', 'source_signature',
+            unique=True,
+            sqlite_where=text('deleted_at IS NULL'),
+        ),
+        Index('idx_project_compositions_location', 'project_id', 'location_view_id'),
+        {'sqlite_autoincrement': True},
+    )
+
+
+class ProjectCompositionItem(Base):
+    """One exact prop/state/view binding placed inside a composition."""
+    __tablename__ = "project_composition_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    composition_id = Column(Integer, ForeignKey('project_compositions.id', ondelete='CASCADE'), nullable=False, index=True)
+    project_element_id = Column(Integer, ForeignKey('project_elements.id', ondelete='RESTRICT'), nullable=False, index=True)
+    reference_view_id = Column(Integer, ForeignKey('project_reference_views.id', ondelete='RESTRICT'), nullable=False, index=True)
+    source_revision_id = Column(Integer, ForeignKey('asset_revisions.id', ondelete='RESTRICT'), nullable=False, index=True)
+    state_id = Column(Integer, ForeignKey('project_element_states.id', ondelete='SET NULL'), nullable=True, index=True)
+    role = Column(String, nullable=False, default='prop')
+    placement = Column(Text, nullable=True)  # JSON normalized x/y/scale/rotation/mask
+    item_order = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True, index=True)
+
+    __table_args__ = (
+        CheckConstraint("role IN ('prop', 'character', 'set_dressing')", name='ck_project_composition_items_role'),
+        Index('idx_project_composition_items_order', 'composition_id', 'item_order'),
         {'sqlite_autoincrement': True},
     )
 

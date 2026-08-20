@@ -21,7 +21,7 @@ export interface ProjectElement {
 }
 
 export interface CreateProjectElementInput {
-  name: string
+  name?: string
   element_type?: ProjectElementType
   asset_id?: number
   media_id?: number
@@ -49,5 +49,13 @@ export function useProjectElementsApi() {
     await axios.delete(`${api()}/projects/${projectId}/elements/${elementId}`)
   }
 
-  return { listElements, createElement, deleteElement }
+  async function updateElement(
+    projectId: number,
+    elementId: number,
+    input: { name?: string; description?: string },
+  ): Promise<ProjectElement> {
+    return (await axios.patch(`${api()}/projects/${projectId}/elements/${elementId}`, input)).data
+  }
+
+  return { listElements, createElement, updateElement, deleteElement }
 }
