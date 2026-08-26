@@ -20,6 +20,7 @@ AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg'}
 # Structured media types: markdown files (.md) and compound extensions (.stimmaset.json, etc.)
 TEXT_EXTENSIONS = {'.md'}
 VECTOR_EXTENSIONS = {'.svg'}  # Self-contained vector documents (single flat file)
+MODEL_EXTENSIONS = {'.glb', '.gltf', '.obj', '.fbx', '.stl'}
 SET_EXTENSIONS = {'.stimmaset.json'}
 GRID_EXTENSIONS = {'.stimmagrid.json'}
 LAYOUT_EXTENSIONS = {'.stimmalayout'}  # Directory-based bundles (contains index.html + assets)
@@ -30,7 +31,7 @@ STRUCTURED_EXTENSIONS = TEXT_EXTENSIONS | SET_EXTENSIONS | GRID_EXTENSIONS | LAY
 # All supported extensions
 ALL_EXTENSIONS = (
     IMAGE_EXTENSIONS | VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
-    | VECTOR_EXTENSIONS | STRUCTURED_EXTENSIONS
+    | VECTOR_EXTENSIONS | MODEL_EXTENSIONS | STRUCTURED_EXTENSIONS
 )
 
 
@@ -513,6 +514,7 @@ def extract_metadata(file_path: Path) -> dict:
     is_structured = ext in STRUCTURED_EXTENSIONS
     is_layout = ext in LAYOUT_EXTENSIONS
     is_vector = ext in VECTOR_EXTENSIONS
+    is_model = ext in MODEL_EXTENSIONS
 
     # Get file info — for directory-based media, use index.html
     if is_layout and file_path.is_dir():
@@ -572,6 +574,10 @@ def extract_metadata(file_path: Path) -> dict:
             parsed = parse_structured_media(file_path)
             if parsed:
                 raw_metadata = json.dumps(parsed)
+    elif is_model:
+        # Model files are binary payloads. Dimensions are intentionally left at
+        # zero; the frontend uses the GLB viewer instead of image geometry.
+        has_alpha = False
     else:
         # Regular image
         width, height, has_alpha = get_image_dimensions(file_path)

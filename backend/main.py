@@ -138,6 +138,7 @@ from routes import (
     media,
     media_files,
     models,
+    modal_usage,
     postprocessing,
     preferences,
     projects,
@@ -157,6 +158,7 @@ from routes import (
     stimpack_marketplace,
     svg_media,
     tags,
+    trellis2,
     telemetry,
     tools,
     trash,
@@ -188,8 +190,10 @@ app.include_router(boards.router)
 app.include_router(cloud.router)
 app.include_router(media.router)
 app.include_router(models.router)
+app.include_router(modal_usage.router)
 app.include_router(markers.router)
 app.include_router(tags.router)
+app.include_router(trellis2.router)
 app.include_router(trash.router)
 app.include_router(keywords.router)
 app.include_router(generation.router)

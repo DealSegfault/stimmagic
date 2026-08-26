@@ -80,6 +80,34 @@ def test_user_message_video_attachment_is_r2v_reference(tmp_path):
     assert "whole-video references" in msg["content"]
 
 
+def test_user_message_audio_attachment_is_h3_audio_reference(tmp_path):
+    audio_path = tmp_path / "voice_ref.wav"
+    audio_path.write_bytes(b"not decoded by the chat context layer")
+
+    item = ChatItem(
+        chat_id=42,
+        item_type="user_message",
+        message_text="Use this voice reference.",
+        item_metadata=json.dumps({
+            "workspace_files": [
+                {
+                    "filename": audio_path.name,
+                    "media_id": 124,
+                    "media_type": "audio",
+                    "path": str(audio_path),
+                }
+            ]
+        }),
+    )
+
+    msg = _item_to_message(item, include_images=True)
+    assert msg is not None
+    assert msg["role"] == "user"
+    assert isinstance(msg["content"], str)
+    assert "<Audio 1>" in msg["content"]
+    assert "Attached reference audio" in msg["content"]
+
+
 def test_inject_last_user_context_multimodal():
     messages = [
         {"role": "system", "content": "system prompt"},

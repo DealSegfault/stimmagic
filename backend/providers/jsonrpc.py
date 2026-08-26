@@ -1782,6 +1782,10 @@ class JsonRpcProvider(ToolProvider):
             mime_type, _ = mimetypes.guess_type(str(path))
             if not mime_type:
                 mime_type = "application/octet-stream"
+            # Keep generated asset IDs within the STP charset.  Python reports
+            # WAV files as audio/x-wav, whose hyphen would become an invalid
+            # extension in the opaque asset ID; STP accepts the canonical MIME.
+            mime_type = _canon_mime(mime_type) or mime_type
 
             # Schema-driven conversion: if the tool declared accepted MIME types
             # (`x-accept-media`) and the source isn't one of them, transcode to the

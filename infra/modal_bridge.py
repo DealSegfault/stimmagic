@@ -150,7 +150,8 @@ def main() -> None:
     app = web.Application(client_max_size=4 * 1024**3)
     app.cleanup_ctx.append(session_context)
     app.router.add_route("*", "/{path:.*}", http_proxy)
-    web.run_app(app, host="127.0.0.1", port=8190, print=None)
+    port = int(os.environ.get("MODAL_BRIDGE_PORT", "8190"))
+    web.run_app(app, host="127.0.0.1", port=port, print=None)
 
 
 if __name__ == "__main__":

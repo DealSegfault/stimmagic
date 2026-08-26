@@ -17,6 +17,7 @@
           :media-id="attachment.media_id"
           :thumbnail="true"
           :thumbnail-size="128"
+          :is-audio="isAudioAttachment(attachment)"
           container-class="w-full h-full"
         />
       </button>
@@ -75,7 +76,9 @@ function getAttachmentUrl(attachment) {
     const pin = getCachedPin(profileId)
     const endpoint = isVideoAttachment(attachment)
       ? 'reference-video-file'
-      : 'reference-file'
+      : isAudioAttachment(attachment)
+        ? 'reference-audio-file'
+        : 'reference-file'
     let url = `${getApiBase()}/generate/${endpoint}?path=${encodeURIComponent(attachment.path)}&profile=${encodeURIComponent(profileId)}`
     if (pin) url += `&pin=${encodeURIComponent(pin)}`
     return url
@@ -93,8 +96,16 @@ function isVideoAttachment(attachment) {
   return /\.(mp4|mov|avi|mkv|webm|m4v|mpg|mpeg)$/i.test(String(format))
 }
 
+function isAudioAttachment(attachment) {
+  if (attachment?.media_type === 'audio') return true
+  const format = attachment?.file_format || attachment?.filename || attachment?.path || ''
+  return /\.(mp3|wav|flac|aac|m4a|ogg)$/i.test(String(format))
+}
+
 function attachmentTitle(attachment) {
-  return isVideoAttachment(attachment) ? 'Voir la vidéo' : "Voir l'image"
+  if (isVideoAttachment(attachment)) return 'Voir la vidéo'
+  if (isAudioAttachment(attachment)) return "Voir l'audio"
+  return "Voir l'image"
 }
 
 function removeAttachment(index) {

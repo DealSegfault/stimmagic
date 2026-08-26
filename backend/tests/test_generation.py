@@ -1225,6 +1225,42 @@ class TestExtractFrame:
         assert data["duration"] > 1.0  # ~2s clip
         assert data["time_seconds"] > 0.0
 
+    async def test_extract_last_frame_to_asset_promotes_uploaded_still(
+        self, output_folder: str
+    ):
+        """The library action uploads the extracted still and promotes it to an Asset."""
+        from PIL import Image
+
+        video_path = Path(output_folder) / "asset_frame_source.mp4"
+        video_path.write_bytes(b"test video")
+        media = SimpleNamespace(id=42)
+        asset = SimpleNamespace(id=99)
+        upload = AsyncMock(return_value=(media, "/managed/asset_frame_source_last_frame.png"))
+        session = AsyncMock()
+
+        def fake_extract(*_args):
+            return Image.new("RGB", (320, 240)), 1.5, 2.0, 10.0
+
+        with patch("utils.video_frames.extract_frame_to_image", side_effect=fake_extract), \
+                patch("upload_service.get_upload_service", return_value=SimpleNamespace(upload_file=upload)), \
+                patch("routes.generation.asset_for_media", new=AsyncMock(return_value=asset)) as resolve_asset:
+            result = await generation_routes.extract_video_frame_to_asset(
+                source_path=str(video_path),
+                source_name="asset_frame_source.mp4",
+                session=session,
+            )
+
+        assert result["asset_id"] == 99
+        assert result["filename"] == "asset_frame_source_last_frame.png"
+        assert result["width"] == 320 and result["height"] == 240
+        upload.assert_awaited_once()
+        assert upload.await_args.args[1] == "asset_frame_source_last_frame.png"
+        assert upload.await_args.kwargs["materialize_asset"] is True
+        resolve_asset.assert_awaited_once_with(
+            session, 42, promote=True, origin_type="frame-extraction"
+        )
+        session.commit.assert_awaited_once()
+
     async def test_frame_preview_returns_jpeg(
         self, generation_client: httpx.AsyncClient, tmp_path: Path, output_folder: str
     ):

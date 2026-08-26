@@ -65,10 +65,10 @@
           <slot v-else name="model-picker" />
           <button
             :disabled="agentUnavailable"
-            @click="openUploadPicker"
+            @click="openAssetPicker"
             class="w-8 h-8 flex items-center justify-center rounded-full text-content-muted hover:text-content-secondary hover:bg-overlay-subtle transition-colors disabled:pointer-events-none disabled:opacity-50"
-            title="Add image or video"
-            aria-label="Add image or video"
+            title="Add asset"
+            aria-label="Add asset"
           >
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-5 h-5">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
@@ -118,22 +118,20 @@
       </div>
     </div>
 
-    <!-- Hidden file input -->
-    <input
-      ref="uploadInputRef"
-      type="file"
-      accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,video/x-msvideo,video/x-matroska,.m4v,.mpg,.mpeg"
-      class="hidden"
-      :disabled="agentUnavailable"
-      @change="handleUploadSelect"
+    <ChatAssetPickerModal
+      :show="assetPickerOpen"
+      :exclude-ids="attachmentMediaIds"
+      @close="assetPickerOpen = false"
+      @select="addAssetAttachments"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import axios from 'axios'
 import ChatInputAttachments from './ChatInputAttachments.vue'
+import ChatAssetPickerModal from './ChatAssetPickerModal.vue'
 import VoiceInputButton from '../voice/VoiceInputButton.vue'
 import AgentUnavailableInput from './AgentUnavailableInput.vue'
 import { insertNewlineAtCaret } from '../../utils/textInput'
@@ -158,9 +156,10 @@ const emit = defineEmits([
 
 const textareaRef = ref(null)
 const scrollWrapRef = ref(null)
-const uploadInputRef = ref(null)
 const dragging = ref(false)
 const voiceBtn = ref(null)
+const assetPickerOpen = ref(false)
+const attachmentMediaIds = computed(() => props.attachments.map(attachment => attachment.media_id).filter(Boolean))
 
 // Shift+Enter breaks the line (plain Enter submits).
 function insertNewline() {
@@ -245,26 +244,47 @@ function addAttachmentFromMediaId(mediaId) {
   updateAttachments([...props.attachments, { media_id: mediaId }])
 }
 
-function openUploadPicker() {
+function openAssetPicker() {
   if (props.agentUnavailable) return
-  uploadInputRef.value?.click()
+  assetPickerOpen.value = true
 }
 
-async function handleUploadSelect(event) {
-  const file = event.target.files?.[0]
-  if (!file) return
-  event.target.value = ''
-  await uploadFileToAttachments(file)
+function addAssetAttachments(assets) {
+  if (props.agentUnavailable || !Array.isArray(assets)) return
+  const existingIds = new Set(props.attachments.map(attachment => attachment.media_id).filter(Boolean))
+  const additions = assets
+    .filter(asset => asset?.media_id && !existingIds.has(asset.media_id))
+    .map(asset => {
+      const fileFormat = asset.file_format || ''
+      const mediaType = isVideoFile({ type: '', name: fileFormat })
+        ? 'video'
+        : isAudioFile({ type: '', name: fileFormat })
+          ? 'audio'
+          : 'image'
+      existingIds.add(asset.media_id)
+      return {
+        media_id: asset.media_id,
+        asset_id: asset.asset_id,
+        filename: asset.asset_title || null,
+        media_type: mediaType,
+        file_format: fileFormat || null,
+      }
+    })
+  if (additions.length > 0) updateAttachments([...props.attachments, ...additions])
+  assetPickerOpen.value = false
 }
 
 async function uploadFileToAttachments(file) {
   const isVideo = isVideoFile(file)
-  const isImage = file.type.startsWith('image/')
-  if (!isImage && !isVideo) return
+  const isAudio = isAudioFile(file)
+  const isImage = file.type?.startsWith('image/')
+  if (!isImage && !isVideo && !isAudio) return
   try {
     // Clipboard images may not have a filename. The upload endpoint validates
     // extensions, so provide one derived from the MIME type when necessary.
-    const extension = file.type.split('/')[1]?.replace('jpeg', 'jpg') || (isVideo ? 'mp4' : 'png')
+    const extension = file.name?.split('.').pop()?.toLowerCase()
+      || file.type.split('/')[1]?.replace('jpeg', 'jpg')
+      || (isVideo ? 'mp4' : isAudio ? 'wav' : 'png')
     const filename = file.name && /\.[a-z0-9]+$/i.test(file.name)
       ? file.name
       : `${isVideo ? 'video' : 'clipboard'}-${Date.now()}.${extension}`
@@ -273,10 +293,12 @@ async function uploadFileToAttachments(file) {
       : new File([file], filename, { type: file.type, lastModified: file.lastModified })
     const formData = new FormData()
     formData.append('file', uploadFile)
-    const mediaType = isVideo ? 'video' : 'image'
+    const mediaType = isVideo ? 'video' : isAudio ? 'audio' : 'image'
     const endpoint = isVideo
       ? '/api/generate/upload-reference-video'
-      : '/api/generate/upload-reference'
+      : isAudio
+        ? '/api/generate/upload-reference-audio'
+        : '/api/generate/upload-reference'
     const response = await axios.post(endpoint, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
@@ -294,11 +316,18 @@ async function uploadFileToAttachments(file) {
 }
 
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v', 'mpg', 'mpeg'])
+const AUDIO_EXTENSIONS = new Set(['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'])
 
 function isVideoFile(file) {
-  if (file.type?.startsWith('video/')) return true
+  if (file?.type?.startsWith('video/')) return true
   const extension = file.name?.split('.').pop()?.toLowerCase()
   return VIDEO_EXTENSIONS.has(extension)
+}
+
+function isAudioFile(file) {
+  if (file?.type?.startsWith('audio/')) return true
+  const extension = file?.name?.split('.').pop()?.toLowerCase()
+  return AUDIO_EXTENSIONS.has(extension)
 }
 
 // ==================== Drag-drop ====================
@@ -335,7 +364,7 @@ async function onDrop(event) {
   // Check for files (external drag)
   const files = event.dataTransfer?.files
   if (files && files.length > 0) {
-    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f))
+    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f) || isAudioFile(f))
     if (mediaFile) {
       await uploadFileToAttachments(mediaFile)
       nextTick(() => textareaRef.value?.focus())
@@ -350,12 +379,12 @@ async function onPaste(event) {
   const clipboardData = event.clipboardData
   if (!clipboardData) return
 
-  // Check for image or video items
+  // Check for image, video, or audio items
   const items = clipboardData.items
   if (items && items.length > 0) {
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      if (item.type && (item.type.startsWith('image/') || item.type.startsWith('video/'))) {
+      if (item.type && (item.type.startsWith('image/') || item.type.startsWith('video/') || item.type.startsWith('audio/'))) {
         const file = item.getAsFile()
         if (file) {
           event.preventDefault()
@@ -370,7 +399,7 @@ async function onPaste(event) {
   // Fallback for files
   const files = clipboardData.files
   if (files && files.length > 0) {
-    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f))
+    const mediaFile = Array.from(files).find(f => f.type.startsWith('image/') || isVideoFile(f) || isAudioFile(f))
     if (mediaFile) {
       event.preventDefault()
       await uploadFileToAttachments(mediaFile)

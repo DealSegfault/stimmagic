@@ -31,7 +31,8 @@ from shot_continuity_service import (
     description=(
         "Read the unified project World State: characters, locations, props, active wardrobe/props, "
         "scene sequence, continuity buffer from the previous shot, and missing reference alerts for a prompt. "
-        "Always call this before generating or planning video scenes to ensure character and location visual continuity."
+        "Use only in a chat attached to a project, when project-scoped scene or continuity data is needed; "
+        "standalone chats should dispatch from their current prompt and attached references directly."
     ),
     parameters=[
         ToolParameter(

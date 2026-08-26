@@ -37,6 +37,7 @@ IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
 AUDIO_FORMATS = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
 TEXT_FORMATS = ['md']
 VECTOR_FORMATS = ['svg']
+MODEL_FORMATS = ['glb', 'gltf', 'obj', 'fbx', 'stl']
 SET_FORMATS = ['stimmaset.json']
 GRID_FORMATS = ['stimmagrid.json']
 LAYOUT_FORMATS = ['stimmalayout']
@@ -46,7 +47,7 @@ LAYOUT_FORMATS = ['stimmalayout']
 COMPOSITE_FORMATS = SET_FORMATS + GRID_FORMATS
 
 # Atomic media: standalone files that don't contain other media
-ATOMIC_FORMATS = VIDEO_FORMATS + IMAGE_FORMATS + AUDIO_FORMATS + TEXT_FORMATS + VECTOR_FORMATS
+ATOMIC_FORMATS = VIDEO_FORMATS + IMAGE_FORMATS + AUDIO_FORMATS + TEXT_FORMATS + VECTOR_FORMATS + MODEL_FORMATS
 
 # Structured = all non-binary formats (text + vector + composite)
 STRUCTURED_FORMATS = TEXT_FORMATS + VECTOR_FORMATS + SET_FORMATS + GRID_FORMATS + LAYOUT_FORMATS
@@ -451,6 +452,8 @@ def build_filtered_query(
                     format_conditions.append(MediaItem.file_format.in_(TEXT_FORMATS))
                 elif media_type_item == 'vectors':
                     format_conditions.append(MediaItem.file_format.in_(VECTOR_FORMATS))
+                elif media_type_item == 'models':
+                    format_conditions.append(MediaItem.file_format.in_(MODEL_FORMATS))
                 elif media_type_item == 'sets':
                     format_conditions.append(MediaItem.file_format.in_(SET_FORMATS))
                 elif media_type_item == 'grids':
@@ -476,6 +479,8 @@ def build_filtered_query(
                     query = query.where(~MediaItem.file_format.in_(TEXT_FORMATS))
                 elif media_type_item == 'vectors':
                     query = query.where(~MediaItem.file_format.in_(VECTOR_FORMATS))
+                elif media_type_item == 'models':
+                    query = query.where(~MediaItem.file_format.in_(MODEL_FORMATS))
                 elif media_type_item == 'sets':
                     query = query.where(~MediaItem.file_format.in_(SET_FORMATS))
                 elif media_type_item == 'grids':

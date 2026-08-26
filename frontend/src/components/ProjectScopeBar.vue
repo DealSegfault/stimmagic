@@ -80,6 +80,7 @@ const navItems = [
   { name: 'project-references', label: 'Références' },
   { name: 'project-production', label: 'Production' },
   { name: 'project-tools', label: 'Tools' },
+  { name: 'project-3d-assets', label: '3D assets' },
   { name: 'project-assets', label: 'Assets' },
   { name: 'project-boards', label: 'Boards' },
   { name: 'project-chats', label: 'Chats' },

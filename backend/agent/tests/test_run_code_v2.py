@@ -97,6 +97,65 @@ async def test_run_code_captures_stdout_and_blocks_unsafe_imports(session, test_
 
 
 @pytest.mark.asyncio
+async def test_run_code_reports_h3_provider_unavailable_before_sandbox(
+    session, test_chat, tmp_path, monkeypatch
+):
+    _patch_mock_registry(monkeypatch)
+
+    result = await run_code(
+        code=(
+            "from stimma.tools.reference_to_video import minimax_h3_r2v_turbo\n"
+            "r = await minimax_h3_r2v_turbo(prompt='test', input_images=[1, 2])"
+        ),
+        session=session,
+        chat_id=test_chat.id,
+        workspace_dir=tmp_path,
+    )
+
+    assert "MiniMax H3 provider is currently unavailable" in result
+    assert "no video job was queued" in result
+
+
+@pytest.mark.asyncio
+async def test_chat_context_media_is_promoted_to_asset_and_copied(
+    session, tmp_path, monkeypatch
+):
+    from agent.v2.service import _copy_media_to_workspace
+    from asset_association_service import asset_for_media
+    from tests.helpers.media import create_media_item, generate_test_image
+
+    source = tmp_path / "maya.png"
+    generate_test_image(source)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        "agent.v2.service.get_workspace_dir",
+        lambda chat_id, project_id=None: workspace,
+    )
+
+    media = await create_media_item(
+        session,
+        file_path=source,
+        file_format="png",
+        materialize_asset=False,
+    )
+    copied = await _copy_media_to_workspace([media.id], 42, session)
+    asset = await asset_for_media(session, media.id)
+
+    assert asset is not None
+    assert copied == [
+        {
+            "media_id": media.id,
+            "filename": "maya.png",
+            "path": str(workspace / "maya.png"),
+            "media_type": "image",
+            "file_format": "png",
+            "asset_id": asset.id,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(__import__("shutil").which("ffmpeg") is None, reason="ffmpeg not installed")
 async def test_run_code_ffmpeg_and_ffprobe_in_workspace(session, test_chat, tmp_path):
     workspace = tmp_path / "workspace"

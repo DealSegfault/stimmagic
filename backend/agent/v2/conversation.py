@@ -23,6 +23,7 @@ MAX_ACTIVE_VIEW_IMAGES = 4     # Hard multimodal budget; older images stay tool-
 COMPACTION_PCT = 0.80          # Fraction of the context window we're willing to fill
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg"}
 
 
 def response_reserve(max_context_tokens: int) -> int:
@@ -352,6 +353,7 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
         image_blocks = []
         image_notes = []
         video_notes = []
+        audio_notes = []
 
         if workspace_files or attachments or element_refs:
             from .workspace import get_workspace_dir
@@ -405,6 +407,7 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
                 declared_type = str(f.get("media_type") or "").lower()
                 is_video = declared_type == "video" or suffix in VIDEO_EXTENSIONS
                 is_image = declared_type == "image" or suffix in IMAGE_EXTENSIONS
+                is_audio = declared_type == "audio" or suffix in AUDIO_EXTENSIONS
                 note_str = _workspace_file_note(f) if (f.get("filename") or f.get("name")) and f.get("media_id") else (filename or str(media_id))
                 if is_video:
                     # MiniMax H3 presents each reference video's soundtrack
@@ -413,6 +416,9 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
                     video_notes.append(f"<Audio {video_index}> + <Video {video_index}>: {note_str}")
                 elif is_image:
                     image_notes.append(f"<Picture {img_index}>: {note_str}")
+                elif is_audio:
+                    audio_index = len(audio_notes) + 1
+                    audio_notes.append(f"<Audio {audio_index}>: {note_str}")
                 else:
                     image_notes.append(note_str)
 
@@ -446,6 +452,10 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
         if video_notes:
             file_list = ", ".join(video_notes)
             text += f"\n\n[Attached reference videos: {file_list}. These are whole-video references, not first frames. Use the matching <Video N> tokens and route video generation through MiniMax H3 R2V.]"
+
+        if audio_notes:
+            file_list = ", ".join(audio_notes)
+            text += f"\n\n[Attached reference audio: {file_list}. Use the matching <Audio N> token for MiniMax H3 Ref2VA when the audio is paired with a visual reference.]"
 
         if image_blocks:
             return {"role": "user", "content": [{"type": "text", "text": text}] + image_blocks}

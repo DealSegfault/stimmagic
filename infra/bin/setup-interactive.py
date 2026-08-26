@@ -240,6 +240,8 @@ def populate_volumes(modal_bin: str, has_hf_token: bool, download_h3: bool = Tru
     if download_h3:
         log_info("Téléchargement des poids MiniMax H3...")
         run_cmd([modal_bin, "run", "modal_h3.py::download_models"], cwd=ROOT_DIR)
+        log_info("Téléchargement des poids H3 full BF16 pour le worker B300 HD...")
+        run_cmd([modal_bin, "run", "modal_h3.py::download_hd_models"], cwd=ROOT_DIR)
         log_info("Téléchargement des poids MiniMax Music 3...")
         run_cmd([modal_bin, "run", "modal_h3.py::download_music_models"], cwd=ROOT_DIR)
 

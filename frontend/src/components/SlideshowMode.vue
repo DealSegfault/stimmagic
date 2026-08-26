@@ -425,6 +425,14 @@
           class="absolute inset-0"
         />
 
+        <!-- Binary 3D asset viewer -->
+        <ModelViewer
+          v-else-if="isModel"
+          :key="`model-${displayItem?.id}-${refreshKey}`"
+          :src="getMediaFileUrl(displayItem.file_hash)"
+          class="absolute inset-0"
+        />
+
         <!-- Video -->
         <!-- MSE presents repeated A/V fragments on one forward-moving timeline,
              so loop boundaries never trigger a media-element seek. -->
@@ -1257,8 +1265,8 @@ import SlideshowApprovalBar from './flow/SlideshowApprovalBar.vue'
 import { MediaContextMenu, MediaImage } from './media'
 import SceneCutTool from './viewers/SceneCutTool.vue'
 import { formatRemainingTime, getRemainingTimeColor } from '../utils/timeFormat'
-import { getMediaType, isVideo as isVideoType, isAudio as isAudioType, isStructured as isStructuredType, isLayout as isLayoutType, isVector as isVectorType } from '../utils/mediaTypes'
-import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, SvgViewer } from './viewers'
+import { getMediaType, isVideo as isVideoType, isAudio as isAudioType, isModel as isModelType, isStructured as isStructuredType, isLayout as isLayoutType, isVector as isVectorType } from '../utils/mediaTypes'
+import { AudioPlayer, MarkdownViewer, GridViewer, SetOverview, LayoutViewer, SvgViewer, ModelViewer } from './viewers'
 import { makeProfileKey, makeToolDbKey } from '../utils/storageKeys'
 import { MseLoopPlayback } from '../utils/mseLoopPlayback'
 import { useWorkspaceTabs, toolInstanceScopedId, toolInstanceRoute } from '../composables/useWorkspaceTabs'
@@ -1959,6 +1967,11 @@ const isVideo = computed(() => {
 const isAudio = computed(() => {
   if (!displayItem.value) return false
   return isAudioType(displayItem.value)
+})
+
+const isModel = computed(() => {
+  if (!displayItem.value) return false
+  return isModelType(displayItem.value)
 })
 
 const isText = computed(() => {

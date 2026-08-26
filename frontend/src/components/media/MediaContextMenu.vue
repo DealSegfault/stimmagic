@@ -122,6 +122,18 @@
           </svg>
           <span>Edit</span>
         </button>
+        <button
+          v-if="isImage && !isMultiple"
+          @click="handleCopyImage"
+          :disabled="copyingImage"
+          class="w-full px-3 py-2 text-left text-xs text-content hover:bg-overlay-subtle flex items-center gap-2 disabled:cursor-wait disabled:opacity-60"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 flex-shrink-0 text-content-tertiary">
+            <path d="M6.5 2A2.5 2.5 0 004 4.5v7A2.5 2.5 0 006.5 14H8v-1.5H6.5A1 1 0 015.5 11.5v-7a1 1 0 011-1h6a1 1 0 011 1V6H15V4.5A2.5 2.5 0 0012.5 2h-6z" />
+            <path fill-rule="evenodd" d="M9.5 6A2.5 2.5 0 007 8.5v7A2.5 2.5 0 009.5 18h6a2.5 2.5 0 002.5-2.5v-7A2.5 2.5 0 0015.5 6h-6zm-.5 2.5a1 1 0 011-1h6a1 1 0 011 1v7a1 1 0 01-1 1h-6a1 1 0 01-1-1v-7z" clip-rule="evenodd" />
+          </svg>
+          <span>{{ copyingImage ? 'Copying...' : 'Copy image' }}</span>
+        </button>
         <div v-if="isImage && !isMultiple" class="border-t border-edge-subtle my-1"></div>
 
         <!-- Tags -->
@@ -864,6 +876,7 @@ import { useContextMenuPosition, useSubmenuPosition, computeSubmenuX, computeBri
 import { useMediaApi } from '../../composables/useMediaApi'
 import { useAssetApi } from '../../composables/useAssetApi'
 import { addToast } from '../../composables/useToasts'
+import { copyImageToClipboard } from '../../utils/clipboard'
 import { useProvidersApi, type ProviderTool } from '../../composables/useProvidersApi'
 import { useSendToTool } from '../../composables/useSendToTool'
 import { getCurrentProfileId } from '../../composables/useProfile'
@@ -1014,6 +1027,7 @@ function addRecentGenerateToolId(toolId: string) {
 const loadingItem = ref(false)
 const mediaItem = ref<any>(null)
 const mediaFaces = ref<any[]>([])
+const copyingImage = ref(false)
 
 // Tools data
 const loadingTools = ref(false)
@@ -1707,6 +1721,27 @@ function handleEditImage() {
   contextMenu.hide()
   trackTelemetry('edit_image_used')
   void openImageEditor(router, mediaId)
+}
+
+async function handleCopyImage() {
+  const mediaId = mediaIdOf(mediaItem.value) ?? contextMenu.state.value.mediaId
+  if (!mediaId || copyingImage.value) return
+
+  copyingImage.value = true
+  contextMenu.hide()
+  try {
+    const response = await fetch(getMediaFileUrl(mediaId))
+    if (!response.ok) throw new Error(`Image request failed (${response.status})`)
+    const copied = await copyImageToClipboard(await response.blob())
+    if (!copied) throw new Error('Image clipboard is unavailable')
+    trackTelemetry('copy_image_used')
+    addToast('Image copied to clipboard', 'success', 2000)
+  } catch (err: any) {
+    console.error('Failed to copy image:', err)
+    addToast(err?.message || 'Could not copy image to clipboard', 'error', 4000)
+  } finally {
+    copyingImage.value = false
+  }
 }
 
 

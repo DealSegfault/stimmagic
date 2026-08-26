@@ -331,31 +331,94 @@ class Comfy:
     based on POST latency.
     """
 
-    def __init__(self, addresses):
+    def __init__(
+        self,
+        addresses,
+        hd_address: Optional[str] = None,
+        hd_min_megapixels: float = 2.0,
+        hd_min_steps: int = 20,
+    ):
         self.addresses = parse_addresses(addresses)
-        self.instances = [SingleComfy(addr) for addr in self.addresses]
+        self.normal_instances = [SingleComfy(addr) for addr in self.addresses]
+        self.hd_min_megapixels = float(hd_min_megapixels)
+        self.hd_min_steps = int(hd_min_steps)
+
+        hd_addresses = parse_addresses(hd_address) if hd_address else []
+        hd_addr = next(
+            (addr for addr in hd_addresses if addr not in self.addresses),
+            None,
+        )
+        self.hd_instance = SingleComfy(hd_addr) if hd_addr else None
+        self.instances = list(self.normal_instances)
+        if self.hd_instance is not None:
+            self.instances.append(self.hd_instance)
+
         self._available: asyncio.Queue = asyncio.Queue()
-        for inst in self.instances:
+        for inst in self.normal_instances:
             self._available.put_nowait(inst)
+        self._hd_available: asyncio.Queue = asyncio.Queue()
+        if self.hd_instance is not None:
+            self._hd_available.put_nowait(self.hd_instance)
         logger.info(
-            f"ComfyUI client initialized with {len(self.instances)} instance(s): {self.addresses}"
+            "ComfyUI client initialized with normal instance(s)=%s, hd_instance=%s "
+            "(threshold %.2f MP / %d steps)",
+            self.addresses,
+            hd_addr or "disabled",
+            self.hd_min_megapixels,
+            self.hd_min_steps,
         )
 
-    @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[SingleComfy]:
-        """Acquire an instance for the full duration of a job.
+    @staticmethod
+    def _number(value) -> Optional[float]:
+        try:
+            if isinstance(value, bool) or value is None:
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
-        Blocks until an instance is free. Routes uploads, queueing, and
-        monitoring to the same instance, and prevents a second job from
-        landing on this instance until the current one finishes.
+    def is_hd_request(self, parameters: Optional[Dict[str, Any]]) -> bool:
+        """Return whether a job belongs on the dedicated B300 HD worker."""
+        parameters = parameters or {}
+        width = self._number(parameters.get("width"))
+        height = self._number(parameters.get("height"))
+        steps = self._number(parameters.get("steps"))
+        if width is None or height is None or steps is None:
+            return False
+        megapixels = (width * height) / 1_000_000.0
+        return megapixels >= self.hd_min_megapixels and steps >= self.hd_min_steps
+
+    @asynccontextmanager
+    async def acquire(
+        self, parameters: Optional[Dict[str, Any]] = None
+    ) -> AsyncIterator[SingleComfy]:
+        """Acquire the correct ComfyUI instance for the full job lifetime.
+
+        HD jobs (at least 2 MP and 20 steps by default) exclusively use the
+        B300 instance and never fall back to the normal GPU.
         """
         if not self.instances:
             raise RuntimeError("No ComfyUI instances configured")
-        instance = await self._available.get()
+
+        use_hd = self.is_hd_request(parameters)
+        if use_hd:
+            if self.hd_instance is None:
+                raise RuntimeError(
+                    "An HD generation requires the B300 ComfyUI endpoint, "
+                    "but no hd_address is configured."
+                )
+            instance = await self._hd_available.get()
+        else:
+            if not self.normal_instances:
+                raise RuntimeError("No normal ComfyUI instance configured")
+            instance = await self._available.get()
         try:
             yield instance
         finally:
-            self._available.put_nowait(instance)
+            if use_hd:
+                self._hd_available.put_nowait(instance)
+            else:
+                self._available.put_nowait(instance)
 
     async def get_object_info(self) -> Dict[str, Any]:
         """Get object info (samplers/schedulers/models). Uses the first instance.

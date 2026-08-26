@@ -17,13 +17,16 @@ It shares revises's validation posture (role='final', exactly one item, no
 sets/grids) and is mutually exclusive with revises.
 """
 
+import json
+
 import pytest
 from sqlalchemy import select
 
 from agent.v2.tools.show import show
+from agent.v2.tools.library import save_workspace_file
 from asset_service import commit_revision, create_asset_from_media
-from database import AssetRevision
-from tests.helpers.media import create_media_item
+from database import AssetRevision, ChatItem, MediaItem
+from tests.helpers.media import create_media_item, generate_test_image
 from .helpers.runner import NoOpWebSocketManager
 
 
@@ -44,6 +47,77 @@ async def test_show_final_reports_the_created_asset_id(session, test_chat):
     )
     assert revision is not None
     assert f"asset_id={revision.asset_id}" in result
+
+
+@pytest.mark.asyncio
+async def test_show_keeps_generation_prompt_on_chat_display_row(session, test_chat):
+    prompt = "A cinematic corridor keyframe with natural practical lighting."
+    media = await create_media_item(
+        session,
+        file_hash="prompt-on-display",
+        generation_metadata=json.dumps({
+            "version": 3,
+            "task_type": "image-to-image",
+            "prompt": prompt,
+            "negative_prompt": "text, logos",
+            "parameters": {},
+        }),
+    )
+    await session.commit()
+
+    await show(
+        role="intermediate",
+        media_id=media.id,
+        session=session,
+        chat_id=test_chat.id,
+    )
+
+    display_item = await session.scalar(
+        select(ChatItem).where(
+            ChatItem.chat_id == test_chat.id,
+            ChatItem.item_type == "media_display",
+        )
+    )
+    display_data = json.loads(display_item.item_metadata)["display_data"]
+    assert display_data["rows"][0]["input"] == {
+        "type": "prompt_only",
+        "prompt": prompt,
+        "negative_prompt": "text, logos",
+    }
+
+
+@pytest.mark.asyncio
+async def test_save_workspace_file_persists_generation_prompt(session, tmp_path, monkeypatch):
+    source = tmp_path / "generated.png"
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    generate_test_image(source, width=32, height=24)
+    monkeypatch.setattr(
+        "agent.v2.tools.library._get_default_folder",
+        lambda _=None: str(output_dir),
+    )
+
+    prompt = "A single photorealistic storyboard frame in an apartment corridor."
+    raw = await save_workspace_file(
+        session=session,
+        path=str(source),
+        workspace_dir=tmp_path,
+        save_tags=None,
+        provenance={
+            "task_type": "image-to-image",
+            "tool_id": "antigravity:generate_image",
+            "parameters": {
+                "prompt": prompt,
+                "reference_media_ids": [11, 12],
+            },
+        },
+    )
+
+    media_id = json.loads(raw)["media_id"]
+    media = await session.get(MediaItem, media_id)
+    metadata = json.loads(media.generation_metadata)
+    assert metadata["prompt"] == prompt
+    assert metadata["parameters"] == {"reference_media_ids": [11, 12]}
 
 
 @pytest.mark.asyncio

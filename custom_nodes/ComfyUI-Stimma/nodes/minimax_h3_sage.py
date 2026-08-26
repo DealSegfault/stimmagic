@@ -12,11 +12,13 @@ logger = logging.getLogger(__name__)
 _H3_DIFFUSION_MODELS = {
     "INT8 ConvRot": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
     "FP8": "minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+    "BF16 (Full)": "minimax_h3_fl2va_bf16.safetensors",
 }
 
 _H3_REFERENCE_DIFFUSION_MODELS = {
     "INT8 ConvRot": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
     "FP8": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+    "BF16 (Full)": "minimax_h3_ref2va_bf16.safetensors",
 }
 
 
@@ -135,6 +137,38 @@ class StimmaMiniMaxH3SageAttention:
         def enable(_model):
             from comfy.ldm.minimax import model as minimax_model
             from comfy.ldm.minimax import vae as minimax_vae
+
+            # The B300 image currently exposes the SageAttention Python API,
+            # but its shipped CUDA kernel has no executable image for the
+            # B300 runtime.  Let ComfyUI use its native PyTorch attention on
+            # that device; otherwise every H3 attention call pays for a
+            # failed kernel launch before falling back, which can stall the
+            # first diffusion step indefinitely.
+            device_name = ""
+            if torch.cuda.is_available():
+                device_name = torch.cuda.get_device_name(torch.cuda.current_device())
+            if "B300" in device_name.upper():
+                try:
+                    import flash_attn.cute  # noqa: F401
+                except Exception as error:
+                    originals["b300_skipped"] = True
+                    logger.warning(
+                        "FlashAttention-4 is unavailable on %s (%s); "
+                        "using native PyTorch attention",
+                        device_name,
+                        error,
+                    )
+                else:
+                    originals["model"] = minimax_model.optimized_attention
+                    originals["vae"] = minimax_vae.optimized_attention
+                    minimax_model.optimized_attention = _attention_flash4_safe
+                    minimax_vae.optimized_attention = _attention_flash4_safe
+                    originals["b300_flash4"] = True
+                    logger.info(
+                        "Enabled workflow-scoped FlashAttention-4 CuTeDSL on %s",
+                        device_name,
+                    )
+                return
 
             originals["model"] = minimax_model.optimized_attention
             originals["vae"] = minimax_vae.optimized_attention
@@ -268,6 +302,87 @@ def _attention_sage_fp8_safe(
     else:
         out = out.reshape(batch, -1, heads * dim_head)
     return out
+
+
+@torch.compiler.disable()
+def _attention_flash4_safe(
+    q,
+    k,
+    v,
+    heads,
+    mask=None,
+    attn_precision=None,
+    skip_reshape=False,
+    skip_output_reshape=False,
+    **kwargs,
+):
+    """Adapter for FlashAttention-4's SM103/B300 CuTeDSL kernel."""
+    from comfy.ldm.modules.attention import AttentionTensorContainer, attention_pytorch
+    from flash_attn.cute import flash_attn_func
+
+    if isinstance(q, AttentionTensorContainer):
+        if not (
+            isinstance(k, AttentionTensorContainer)
+            and isinstance(v, AttentionTensorContainer)
+        ):
+            raise TypeError("q, k, and v must all be attention tensor containers")
+        q, k, v = q.take(), k.take(), v.take()
+
+    # FA4 expects [batch, sequence, heads, head_dim]. H3's optimized
+    # attention receives either Comfy's packed [B, S, hidden] form or its
+    # already-shaped [B, H, S, D] form.
+    if mask is not None:
+        return attention_pytorch(
+            q,
+            k,
+            v,
+            heads,
+            mask=mask,
+            skip_reshape=skip_reshape,
+            skip_output_reshape=skip_output_reshape,
+            **kwargs,
+        )
+
+    if skip_reshape:
+        batch, _, _, dim_head = q.shape
+        q4, k4, v4 = (
+            tensor.transpose(1, 2).contiguous() for tensor in (q, k, v)
+        )
+    else:
+        batch, _, inner_dim = q.shape
+        dim_head = inner_dim // heads
+        q4, k4, v4 = (
+            tensor.view(batch, -1, heads, dim_head).contiguous()
+            for tensor in (q, k, v)
+        )
+
+    try:
+        out, _ = flash_attn_func(
+            q4,
+            k4,
+            v4,
+            causal=False,
+            softmax_scale=kwargs.get("scale"),
+        )
+    except Exception as error:
+        logger.warning(
+            "MiniMax H3 FlashAttention-4 failed; using PyTorch attention: %s",
+            error,
+        )
+        return attention_pytorch(
+            q,
+            k,
+            v,
+            heads,
+            mask=None,
+            skip_reshape=skip_reshape,
+            skip_output_reshape=skip_output_reshape,
+            **kwargs,
+        )
+
+    if skip_reshape:
+        return out.transpose(1, 2) if skip_output_reshape else out.transpose(1, 2).reshape(batch, -1, heads * dim_head)
+    return out if skip_output_reshape else out.reshape(batch, -1, heads * dim_head)
 
 
 NODE_CLASS_MAPPINGS = {

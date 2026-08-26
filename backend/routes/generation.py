@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import uuid
 import shutil
 from pathlib import Path
@@ -527,7 +528,7 @@ async def upload_reference_image(
             "media_id": media_item.id,
             "asset_id": asset.id if asset is not None else None,
             "file_hash": media_item.file_hash,
-            "file_format": media_item.file_format,
+            "file_format": getattr(media_item, "file_format", None),
             "width": media_item.width,
             "height": media_item.height,
         }
@@ -685,7 +686,10 @@ async def get_reference_video_file(path: str):
 
 
 @router.post("/upload-reference-video")
-async def upload_reference_video(file: UploadFile = File(...)):
+async def upload_reference_video(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+):
     """
     Upload a reference video for video upscale tasks.
 
@@ -700,11 +704,13 @@ async def upload_reference_video(file: UploadFile = File(...)):
         upload_service = get_upload_service()
         content = await file.read()
         media_item, file_path = await upload_service.upload_file(content, file.filename or "upload.mp4")
+        asset = await asset_for_media(session, media_item.id)
 
         return {
             "path": file_path,
             "filename": Path(file_path).name,
             "media_id": media_item.id,
+            "asset_id": asset.id if asset is not None else None,
             "file_hash": media_item.file_hash,
             "width": media_item.width,
             "height": media_item.height,
@@ -770,7 +776,10 @@ async def get_reference_audio_file(path: str):
 
 
 @router.post("/upload-reference-audio")
-async def upload_reference_audio(file: UploadFile = File(...)):
+async def upload_reference_audio(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+):
     """
     Upload a reference audio file for audio-input tasks (lip-sync, avatar, etc.).
 
@@ -785,12 +794,15 @@ async def upload_reference_audio(file: UploadFile = File(...)):
         upload_service = get_upload_service()
         content = await file.read()
         media_item, file_path = await upload_service.upload_file(content, file.filename or "upload.mp3")
+        asset = await asset_for_media(session, media_item.id)
 
         return {
             "path": file_path,
             "filename": Path(file_path).name,
             "media_id": media_item.id,
+            "asset_id": asset.id if asset is not None else None,
             "file_hash": media_item.file_hash,
+            "file_format": media_item.file_format,
             "width": media_item.width,
             "height": media_item.height,
         }
@@ -1011,6 +1023,66 @@ async def extract_video_frame(
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+
+@router.post("/extract-frame-to-asset")
+async def extract_video_frame_to_asset(
+    source_path: str = Form(...),
+    source_name: str | None = Form(None),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Extract a video's last frame and save it as a durable library Asset."""
+    from io import BytesIO
+    from upload_service import get_upload_service, UploadError
+    from utils.video_frames import extract_frame_to_image
+
+    video_path = _validate_media_source_path(source_path)
+    try:
+        image, time_used, duration, fps = await asyncio.to_thread(
+            extract_frame_to_image, video_path, "last"
+        )
+
+        stem = Path(source_name or video_path.name).stem
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "video"
+        filename = f"{stem}_last_frame.png"
+        buffer = BytesIO()
+        image.convert("RGB").save(buffer, "PNG")
+
+        upload_service = get_upload_service()
+        media_item, file_path = await upload_service.upload_file(
+            buffer.getvalue(), filename, materialize_asset=True
+        )
+        asset = await asset_for_media(
+            session,
+            media_item.id,
+            promote=True,
+            origin_type="frame-extraction",
+        )
+        await session.commit()
+
+        return {
+            "filename": filename,
+            "path": file_path,
+            "media_id": media_item.id,
+            "asset_id": asset.id if asset is not None else None,
+            "width": image.width,
+            "height": image.height,
+            "time_seconds": time_used,
+            "duration": duration,
+            "fps": fps,
+        }
+    except UploadError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        log.error(f"Failed to save extracted video frame as asset: {e}")
+        raise HTTPException(status_code=500, detail="Failed to save extracted video frame")
 
 
 @router.post("/split-video")

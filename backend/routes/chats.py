@@ -59,7 +59,7 @@ class AttachmentInfo(PydanticBaseModel):
     asset_id: Optional[int] = None  # Stable Asset identity when available
     path: Optional[str] = None  # For uploaded files
     filename: Optional[str] = None
-    media_type: Optional[str] = None  # image | video
+    media_type: Optional[str] = None  # image | video | audio
     file_format: Optional[str] = None
 
 
@@ -1696,9 +1696,21 @@ async def create_chat_item(
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    # Media attached through the picker, clipboard element chips, or explicit
+    # attachment metadata all become one generation context. Keep the union in
+    # the persisted item so background runs and retries see the same inputs.
+    context_media_ids = list(dict.fromkeys([
+        *(request.selected_media_ids or []),
+        *[
+            attachment.media_id
+            for attachment in (request.attachments or [])
+            if attachment.media_id is not None
+        ],
+    ]))
+
     # Build item_metadata, including attachments if present
     item_metadata = request.item_metadata
-    if request.item_type == "user_message" and request.attachments:
+    if request.item_type == "user_message" and (request.attachments or context_media_ids):
         # Store attachments in metadata for display
         metadata_dict = {}
         if item_metadata:
@@ -1706,7 +1718,10 @@ async def create_chat_item(
                 metadata_dict = json.loads(item_metadata) if isinstance(item_metadata, str) else item_metadata
             except json.JSONDecodeError:
                 pass
-        metadata_dict["attachments"] = [a.dict() for a in request.attachments]
+        if request.attachments:
+            metadata_dict["attachments"] = [a.dict() for a in request.attachments]
+        if context_media_ids:
+            metadata_dict["selected_media_ids"] = context_media_ids
         item_metadata = json.dumps(metadata_dict)
 
     # Create chat item
@@ -1756,7 +1771,7 @@ async def create_chat_item(
         get_telemetry_client().track("chat_message_sent", {
             "chatHash": salted_hash(f"chat:{chat_id}"),
             "hasAttachments": bool(request.attachments),
-            "hasSelectedMedia": bool(request.media_ids),
+            "hasSelectedMedia": bool(context_media_ids),
             "messageCount": message_count,
         }, category="chat")
 
@@ -1777,7 +1792,7 @@ async def create_chat_item(
 
         # Auto-name on first 3 user messages (run in background, don't block)
         log.info(f"Chat {chat_id}: user_msg_count={user_msg_count}, message_text={bool(request.message_text)}")
-        has_naming_context = bool((request.message_text or "").strip()) or bool(request.selected_media_ids)
+        has_naming_context = bool((request.message_text or "").strip()) or bool(context_media_ids)
         if user_msg_count <= 3 and has_naming_context:
             log.info(f"Chat {chat_id}: Triggering auto-name for message #{user_msg_count}")
             from core.profile_context import get_current_profile
@@ -1788,7 +1803,7 @@ async def create_chat_item(
                     chat_id,
                     request.message_text or "",
                     get_current_profile(),
-                    request.selected_media_ids,
+                    context_media_ids,
                     user_messages=msg_texts if user_msg_count > 1 else None,
                     current_name=chat.name if user_msg_count > 1 else None,
                 )
@@ -1824,7 +1839,7 @@ async def create_chat_item(
                 chat_id=chat_id,
                 user_message=request.message_text,
                 profile_id=get_current_profile(),
-                selected_media_ids=request.selected_media_ids,
+                selected_media_ids=context_media_ids,
                 artifact_context=request.artifact_context,
             )
         )

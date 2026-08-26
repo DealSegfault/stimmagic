@@ -18,6 +18,7 @@ import ProjectsLandingView from '../views/ProjectsLandingView.vue'
 import ProjectLayoutView from '../views/ProjectLayoutView.vue'
 import ProjectOverviewView from '../views/ProjectOverviewView.vue'
 import ProjectAssetsView from '../views/ProjectAssetsView.vue'
+import Project3DAssetsView from '../views/Project3DAssetsView.vue'
 import ProjectChatsView from '../views/ProjectChatsView.vue'
 import ProjectBoardsView from '../views/ProjectBoardsView.vue'
 import ProjectFlowsView from '../views/ProjectFlowsView.vue'
@@ -28,6 +29,7 @@ import ProjectProductionView from '../views/ProjectProductionView.vue'
 import ProjectReferencesView from '../views/ProjectReferencesView.vue'
 import OnboardingView from '../views/OnboardingView.vue'
 import SearchResultsView from '../views/SearchResultsView.vue'
+import ModalUsageView from '../views/ModalUsageView.vue'
 import ForeachMockView from '../views/ForeachMockView.vue'
 import { useTelemetry } from '../composables/useTelemetry'
 
@@ -106,6 +108,11 @@ const routes = [
         component: ProjectAssetsView
       },
       {
+        path: 'assets-3d',
+        name: 'project-3d-assets',
+        component: Project3DAssetsView
+      },
+      {
         path: 'chats',
         name: 'project-chats',
         component: ProjectChatsView
@@ -178,6 +185,11 @@ const routes = [
     path: '/stimpacks',
     name: 'stimpacks',
     component: StimpacksView
+  },
+  {
+    path: '/modal-usage',
+    name: 'modal-usage',
+    component: ModalUsageView,
   },
   {
     // One stack document per Asset. Reopening the same Asset resumes the same

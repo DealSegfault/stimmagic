@@ -180,6 +180,23 @@ async def execute_workflow(
     if workflow.warnings:
         _raise_preflight_error(workflow)
 
+    # Route large, high-step jobs to the dedicated B300 worker. The automatic
+    # HD route deliberately uses H3's highest-quality official full BF16
+    # checkpoints. FP8 remains available as an explicit throughput option, but
+    # it must never silently replace the user's HD-quality request.
+    hd_request = provider.comfy_client.is_hd_request(parameters)
+    if hd_request and any(
+        node.get("name") == "model_precision" for node in workflow.param_nodes
+    ):
+        requested_precision = parameters.get("model_precision")
+        if requested_precision not in (None, "BF16 (Full)"):
+            logger.info(
+                "HD/B300 route overrides model_precision=%r with BF16 (Full)",
+                requested_precision,
+            )
+        parameters = dict(parameters)
+        parameters["model_precision"] = "BF16 (Full)"
+
     # Step 1: Deep-copy prompt and strip nodes unknown to this ComfyUI instance.
     # Unknown nodes that other nodes depend on (e.g. group/component nodes)
     # are also stripped, along with all their transitive dependents.
@@ -233,7 +250,7 @@ async def execute_workflow(
         # Acquire a ComfyUI instance for the full job lifecycle. The worker
         # holds the instance until output capture completes, so the next job
         # only lands here once the GPU is actually idle.
-        async with provider.comfy_client.acquire() as instance:
+        async with provider.comfy_client.acquire(parameters) as instance:
             logger.info(f"Acquired ComfyUI instance {instance.addr} for job")
 
             # Step 3: Inject media/prompt/seed/resolution values (uploads go to the acquired instance)
@@ -289,7 +306,7 @@ async def execute_workflow(
             # the bridge's /view proxy. Local ComfyUI instances still use the
             # private STP temp directory and avoid residue as before.
             instance_addr = str(getattr(instance, "addr", ""))
-            remote_bridge = instance_addr.rsplit(":", 1)[-1] == "8190"
+            remote_bridge = instance_addr.rsplit(":", 1)[-1] in {"8190", "8191"}
             if remote_bridge:
                 logger.info(
                     "Remote ComfyUI bridge detected (%s); using history /view capture",
@@ -462,12 +479,13 @@ async def _inject_fields(
             )
 
     logger.warning(
-        "Stimma input ingest: keys=%s input_images=%d input_media_ids=%d input_videos=%d input_video_media_ids=%d",
+        "Stimma input ingest: keys=%s input_images=%d input_media_ids=%d input_videos=%d input_video_media_ids=%d input_audios=%d",
         sorted(list(input_data.keys())),
         len(input_data.get("input_images") or []) if isinstance(input_data.get("input_images"), list) else (1 if input_data.get("input_images") else 0),
         len(input_data.get("input_media_ids") or []) if isinstance(input_data.get("input_media_ids"), list) else (1 if input_data.get("input_media_ids") else 0),
         len(input_data.get("input_videos") or []) if isinstance(input_data.get("input_videos"), list) else (1 if input_data.get("input_videos") else 0),
         len(input_data.get("input_video_media_ids") or []) if isinstance(input_data.get("input_video_media_ids"), list) else (1 if input_data.get("input_video_media_ids") else 0),
+        len(input_data.get("input_audios") or []) if isinstance(input_data.get("input_audios"), list) else (1 if input_data.get("input_audios") else 0),
     )
     logger.warning(
         "Stimma normalized media: image_values=%d video_values=%d audio_values=%d image_sample=%s",
@@ -901,14 +919,14 @@ async def _download_and_upload_image(
         asset_ref = str(candidate)
         tried.append(asset_ref)
         image_data = None
-        try:
-            image_data = await context.assets.download(asset_ref)
-        except FileNotFoundError as err:
-            last_err = err
-            local_path = Path(asset_ref).expanduser()
-            if local_path.exists() and local_path.is_file():
-                image_data = local_path.read_bytes()
-            else:
+        local_path = Path(asset_ref).expanduser()
+        if local_path.exists() and local_path.is_file():
+            image_data = local_path.read_bytes()
+        else:
+            try:
+                image_data = await context.assets.download(asset_ref)
+            except FileNotFoundError as err:
+                last_err = err
                 continue
 
         ext = Path(asset_ref).suffix
@@ -964,14 +982,14 @@ async def _download_and_upload_video(
         asset_ref = str(candidate)
         tried.append(asset_ref)
         video_data = None
-        try:
-            video_data = await context.assets.download(asset_ref)
-        except FileNotFoundError as err:
-            last_err = err
-            local_path = Path(asset_ref).expanduser()
-            if local_path.exists() and local_path.is_file():
-                video_data = local_path.read_bytes()
-            else:
+        local_path = Path(asset_ref).expanduser()
+        if local_path.exists() and local_path.is_file():
+            video_data = local_path.read_bytes()
+        else:
+            try:
+                video_data = await context.assets.download(asset_ref)
+            except FileNotFoundError as err:
+                last_err = err
                 continue
 
         ext = Path(asset_ref).suffix
@@ -1020,14 +1038,14 @@ async def _download_and_upload_audio(
         asset_ref = str(candidate)
         tried.append(asset_ref)
         audio_data = None
-        try:
-            audio_data = await context.assets.download(asset_ref)
-        except FileNotFoundError as err:
-            last_err = err
-            local_path = Path(asset_ref).expanduser()
-            if local_path.exists() and local_path.is_file():
-                audio_data = local_path.read_bytes()
-            else:
+        local_path = Path(asset_ref).expanduser()
+        if local_path.exists() and local_path.is_file():
+            audio_data = local_path.read_bytes()
+        else:
+            try:
+                audio_data = await context.assets.download(asset_ref)
+            except FileNotFoundError as err:
+                last_err = err
                 continue
 
         ext = Path(asset_ref).suffix or ".wav"

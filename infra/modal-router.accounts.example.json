@@ -1,0 +1,26 @@
+{
+  "accounts": [
+    {
+      "id": "boite-a",
+      "label": "Boîte A",
+      "workspace": "workspace-a",
+      "monthly_budget": 30,
+      "gpu_type": "Nvidia RTX PRO 6000",
+      "cpu_cores": 0.125,
+      "memory_gib": 32,
+      "max_concurrency": 1,
+      "enabled": true
+    },
+    {
+      "id": "boite-b",
+      "label": "Boîte B",
+      "workspace": "workspace-b",
+      "monthly_budget": 30,
+      "gpu_type": "Nvidia RTX PRO 6000",
+      "cpu_cores": 0.125,
+      "memory_gib": 32,
+      "max_concurrency": 1,
+      "enabled": true
+    }
+  ]
+}

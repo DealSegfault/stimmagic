@@ -54,7 +54,8 @@ ID_KEYED_CACHE_HEADERS = {
     'Access-Control-Allow-Origin': '*',
 }
 
-THEMED_FORMATS = {'md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'}
+THEMED_FORMATS = {'md', 'stimmaset.json', 'stimmagrid.json', 'stimmalayout', 'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg', 'glb', 'gltf', 'obj', 'fbx', 'stl'}
+MODEL_FORMATS = {'glb', 'gltf', 'obj', 'fbx', 'stl'}
 
 
 def _sharded_cache_path(cache_dir: Path, cache_key: str, ext: str) -> Path:
@@ -1448,6 +1449,60 @@ async def _normalized_thumbnail_content(session, item: MediaItem) -> dict | None
     )
 
 
+def _generate_model_preview(size: int, palette: dict | None = None) -> Image.Image:
+    """Create a lightweight, cacheable placeholder for binary 3D payloads."""
+    from PIL import ImageDraw, ImageFont
+
+    palette = palette or THEME_PALETTES['dark']
+    background = palette.get('placeholder_default_bg', '#1f2937')
+    image = Image.new('RGB', (size, size), background)
+    draw = ImageDraw.Draw(image)
+    center = size * 0.5
+    top = size * 0.2
+    bottom = size * 0.75
+    left = size * 0.25
+    right = size * 0.75
+    depth = size * 0.14
+    stroke = max(2, size // 80)
+    edge = '#38bdf8' if palette is THEME_PALETTES['dark'] else '#0e7490'
+    muted = '#64748b'
+
+    points = {
+        'front_top_left': (left, top + depth),
+        'front_top_right': (right, top + depth),
+        'front_bottom_left': (left, bottom),
+        'front_bottom_right': (right, bottom),
+        'back_top_left': (left + depth, top),
+        'back_top_right': (right + depth, top),
+        'back_bottom_left': (left + depth, bottom - depth),
+        'back_bottom_right': (right + depth, bottom - depth),
+    }
+    for start, end in (
+        ('front_top_left', 'front_top_right'),
+        ('front_top_right', 'front_bottom_right'),
+        ('front_bottom_right', 'front_bottom_left'),
+        ('front_bottom_left', 'front_top_left'),
+        ('back_top_left', 'back_top_right'),
+        ('back_top_right', 'back_bottom_right'),
+        ('back_bottom_right', 'back_bottom_left'),
+        ('back_bottom_left', 'back_top_left'),
+        ('front_top_left', 'back_top_left'),
+        ('front_top_right', 'back_top_right'),
+        ('front_bottom_right', 'back_bottom_right'),
+        ('front_bottom_left', 'back_bottom_left'),
+    ):
+        draw.line([points[start], points[end]], fill=edge, width=stroke, joint='curve')
+    draw.line([(size * 0.18, bottom + size * 0.08), (size * 0.82, bottom + size * 0.08)], fill=muted, width=stroke)
+    try:
+        font = ImageFont.load_default()
+        label = '3D  /  GLB'
+        bbox = draw.textbbox((0, 0), label, font=font)
+        draw.text(((size - (bbox[2] - bbox[0])) / 2, size * 0.84), label, fill='#cbd5e1', font=font)
+    except Exception:
+        pass
+    return image
+
+
 def _generate_thumbnail_sync(
     file_path: str,
     file_format: str,
@@ -1475,12 +1530,18 @@ def _generate_thumbnail_sync(
     try:
         video_formats = {'mp4', 'webm', 'mov', 'avi', 'mkv'}
         audio_formats = {'mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg'}
+        model_formats = MODEL_FORMATS
 
         format_lower = file_format.lower()
 
         # Handle audio files - generate waveform
         if format_lower in audio_formats:
             img = _generate_audio_waveform(file_path, size, palette=palette)
+            _atomic_save(img, cache_path, 'JPEG', quality=85, optimize=True)
+            return True
+
+        if format_lower in model_formats:
+            img = _generate_model_preview(size, palette=palette)
             _atomic_save(img, cache_path, 'JPEG', quality=85, optimize=True)
             return True
 
@@ -1755,6 +1816,11 @@ async def get_media_file(
             'webp': 'image/webp',
             'bmp': 'image/bmp',
             'svg': 'image/svg+xml',
+            'glb': 'model/gltf-binary',
+            'gltf': 'model/gltf+json',
+            'obj': 'text/plain',
+            'fbx': 'application/octet-stream',
+            'stl': 'model/stl',
         }
         media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 
@@ -1845,6 +1911,11 @@ async def get_file_by_media_id(
             'webp': 'image/webp',
             'bmp': 'image/bmp',
             'svg': 'image/svg+xml',
+            'glb': 'model/gltf-binary',
+            'gltf': 'model/gltf+json',
+            'obj': 'text/plain',
+            'fbx': 'application/octet-stream',
+            'stl': 'model/stl',
         }
         media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 
@@ -2175,7 +2246,7 @@ async def get_thumbnail(
 
     # Cache key based on file path, size, face count, and algorithm version
     # Increment THUMBNAIL_VERSION when the cropping/generation algorithm changes
-    THUMBNAIL_VERSION = 31  # v31: apply EXIF orientation when generating thumbnails
+    THUMBNAIL_VERSION = 32  # v32: add model thumbnails and theme-aware model cache keys
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
@@ -2779,7 +2850,7 @@ async def get_thumbnail_by_db_guid(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Cache key includes db_guid for profile isolation in cache
-    THUMBNAIL_VERSION = 31  # v31: apply EXIF orientation when generating thumbnails
+    THUMBNAIL_VERSION = 32  # v32: add model thumbnails and theme-aware model cache keys
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
@@ -2979,6 +3050,11 @@ async def get_media_file_by_db_guid(
             'webp': 'image/webp',
             'bmp': 'image/bmp',
             'svg': 'image/svg+xml',
+            'glb': 'model/gltf-binary',
+            'gltf': 'model/gltf+json',
+            'obj': 'text/plain',
+            'fbx': 'application/octet-stream',
+            'stl': 'model/stl',
         }
         media_type = format_map.get(fmt, 'application/octet-stream')
 
@@ -3051,6 +3127,11 @@ async def get_file_by_media_id_and_db_guid(
             'webp': 'image/webp',
             'bmp': 'image/bmp',
             'svg': 'image/svg+xml',
+            'glb': 'model/gltf-binary',
+            'gltf': 'model/gltf+json',
+            'obj': 'text/plain',
+            'fbx': 'application/octet-stream',
+            'stl': 'model/stl',
         }
         media_type = format_map.get(fmt, 'application/octet-stream')
 
@@ -3126,7 +3207,7 @@ async def get_thumbnail_path_by_media_id(
     cache_dir = settings.get_thumbnail_cache_dir()
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    THUMBNAIL_VERSION = 31  # v31: apply EXIF orientation when generating thumbnails
+    THUMBNAIL_VERSION = 32  # v32: add model thumbnails and theme-aware model cache keys
     # For text files and sets, include mtime so edits invalidate the thumbnail cache
     mtime_suffix = ""
     fmt_lower = file_format.lower()
@@ -3338,6 +3419,11 @@ async def bulk_download_media(
                 'webp': 'image/webp',
                 'bmp': 'image/bmp',
                 'svg': 'image/svg+xml',
+                'glb': 'model/gltf-binary',
+                'gltf': 'model/gltf+json',
+                'obj': 'text/plain',
+                'fbx': 'application/octet-stream',
+                'stl': 'model/stl',
             }
             media_type = format_map.get(item.file_format.lower(), 'application/octet-stream')
 

@@ -249,7 +249,12 @@ async def _run_provider(config: Config, transport, asset_server):
 
     # Set up ComfyUI client
     addresses = _get_comfyui_addresses(config)
-    comfy_client = Comfy(addresses)
+    comfy_client = Comfy(
+        addresses,
+        hd_address=config.comfyui.hd_address,
+        hd_min_megapixels=config.comfyui.hd_min_megapixels,
+        hd_min_steps=config.comfyui.hd_min_steps,
+    )
 
     provider = StimmaPluginProvider(
         config=config,

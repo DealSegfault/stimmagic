@@ -260,6 +260,27 @@ def test_project_context_read_tools_are_available_to_agent_chats():
     assert "get_project_direction" in names
 
 
+def test_project_context_read_tools_can_be_hidden_for_standalone_chats():
+    from agent.v2.tools_registry import get_tools_schema
+
+    names = {
+        item["function"]["name"]
+        for item in get_tools_schema(
+            "agent",
+            exclude_names={
+                "get_world_state",
+                "get_project_direction",
+                "list_shot_generations",
+                "accept_shot_generation",
+            },
+        )
+    }
+    assert "get_world_state" not in names
+    assert "get_project_direction" not in names
+    assert "list_shot_generations" not in names
+    assert "accept_shot_generation" not in names
+
+
 def test_shot_reference_manifest_does_not_match_generic_project_tokens():
     state = {
         "current_scene": {"title": "LE CALME"},

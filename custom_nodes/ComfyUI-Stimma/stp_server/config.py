@@ -19,6 +19,9 @@ class ProviderConfig:
 class ComfyUIConfig:
     """ComfyUI instance addresses for multi-GPU load balancing."""
     addresses: List[str] = field(default_factory=list)
+    hd_address: Optional[str] = None
+    hd_min_megapixels: float = 2.0
+    hd_min_steps: int = 20
 
 
 @dataclass
@@ -75,6 +78,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
     comfyui_data = data.get("comfyui", {})
     comfyui = ComfyUIConfig(
         addresses=comfyui_data.get("addresses", []),
+        hd_address=comfyui_data.get("hd_address"),
+        hd_min_megapixels=float(comfyui_data.get("hd_min_megapixels", 2.0)),
+        hd_min_steps=int(comfyui_data.get("hd_min_steps", 20)),
     )
 
     discovery_data = data.get("discovery", {})

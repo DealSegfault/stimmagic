@@ -1089,6 +1089,48 @@ class GenerationQueue:
                         parent_trace = await self._get_inherited_lineage(session, media_id)
                         lineage_trace = self._merge_lineage_traces(lineage_trace, parent_trace)
 
+            # --- input_audios handling (reference-to-video / audio-conditioned jobs) ---
+            # Audio references follow the same media-id convention as images and
+            # videos.  Keep them in lineage as well as resolving them for the
+            # provider; otherwise an agent-provided library id can be lost before
+            # STP uploads the reference audio.
+            input_audios = params.get('input_audios', [])
+            input_audio_media_ids = params.get('input_audio_media_ids', [])
+
+            if input_audios:
+                for i, path in enumerate(input_audios):
+                    media_id = (
+                        input_audio_media_ids[i]
+                        if i < len(input_audio_media_ids)
+                        else None
+                    )
+
+                    # Agents may pass library media ids directly as ints or
+                    # digit-only strings. Resolve those to their actual path.
+                    if media_id is None:
+                        if isinstance(path, int) and not isinstance(path, bool):
+                            media_id = path
+                        elif isinstance(path, str) and path.isdigit():
+                            media_id = int(path)
+                        if media_id is not None:
+                            resolved_path = await self._resolve_media_id_to_path(session, media_id)
+                            path = resolved_path or str(media_id)
+
+                    # Workspace paths can also be resolved back to their library
+                    # media item for stable lineage.
+                    if media_id is None and path:
+                        media_id = await self._resolve_path_to_media_id(session, path)
+
+                    source_inputs.append({
+                        "media_id": media_id,
+                        "file_path": path,
+                        "role": "reference_audio"
+                    })
+
+                    if media_id:
+                        parent_trace = await self._get_inherited_lineage(session, media_id)
+                        lineage_trace = self._merge_lineage_traces(lineage_trace, parent_trace)
+
         return {
             "source_inputs": source_inputs,
             "lineage_trace": lineage_trace
@@ -1153,12 +1195,12 @@ class GenerationQueue:
         This is needed for external providers that need file paths to upload,
         when the agent passes media IDs instead of paths.
 
-        Keys checked: input_images, input_videos (arrays), mask (single)
+        Keys checked: input_images, input_videos, input_audios (arrays), mask (single)
         """
         # Keys that contain single values (file path or media ID)
         single_keys = {'mask'}
         # Keys that contain arrays
-        array_keys = {'input_images', 'input_videos'}
+        array_keys = {'input_images', 'input_videos', 'input_audios'}
 
         def _coerce_media_id(value: Any) -> Optional[int]:
             """Return ``value`` as int media-id, or None if it isn't one."""

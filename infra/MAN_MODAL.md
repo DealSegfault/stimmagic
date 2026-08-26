@@ -158,6 +158,72 @@ modal run modal_latentsync.py::download_models
 
 ## 5. Configuration de l'Agent Stimma
 
+### Tableau de suivi multi-workspace
+
+Le backend Stimma expose un tableau de suivi sur `/modal-usage`. Il ne reçoit
+jamais les clés Modal dans le frontend. Configurez uniquement les métadonnées
+des workspaces dans un fichier local inspiré de
+`modal-router.accounts.example.json`, par défaut à :
+
+```text
+~/.config/adp-comfy/modal-router.accounts.json
+```
+
+Ou définissez explicitement :
+
+```sh
+export MODAL_ROUTER_ACCOUNTS_FILE="$HOME/.config/adp-comfy/modal-router.accounts.json"
+```
+
+Le dashboard suit les événements `GenerationJob`, affiche la consommation par
+compte et estime le coût avec les tarifs standards publiés par Modal : GPU,
+CPU et mémoire. Le GPU peut être sélectionné avec `gpu_type`. Un champ
+`gpu_hour_price` optionnel permet de remplacer le tarif public pour un compte
+ayant un tarif particulier. La source intégrée est
+`https://modal.com/pricing`.
+
+Les secrets de déploiement et les Proxy Tokens restent dans l'environnement du
+gateway ou dans le gestionnaire de secrets de la machine ; ils ne doivent pas
+être ajoutés à ce fichier ni au dépôt.
+
+### Génération d'assets 3D avec TRELLIS.2
+
+Le pipeline image-vers-GLB dédié est défini dans
+`/Users/mac/adp/comfy/modal_trellis2.py`. Il utilise CUDA 12.4, le modèle
+`microsoft/TRELLIS.2-4B`, une fonction GPU H100/H200 par image et une API
+asynchrone protégée par Proxy Token. Le batch Stimma limite le parallélisme et
+réutilise les Volumes Modal pour éviter de re-télécharger les poids.
+
+Déployer puis préchauffer le Volume :
+
+```bash
+cd /Users/mac/adp/comfy
+modal deploy modal_trellis2.py
+modal run modal_trellis2.py::download_models
+```
+
+TRELLIS.2 also loads the gated DINOv3 image encoder. Accept the model terms on
+Hugging Face, create the Modal secret, then deploy and warm the model with that
+secret enabled:
+
+```bash
+modal secret create huggingface HF_TOKEN="hf_..." --force
+modal deploy modal_trellis2.py
+modal run modal_trellis2.py::download_models
+```
+
+Without this secret, the health endpoint remains available but GPU generation
+stops when the gated DINOv3 checkpoint is requested.
+
+Le déploiement affiche l'URL de la fonction `api`. Définissez cette URL et les
+deux Proxy Tokens dans l'environnement du backend Stimma, en vous basant sur
+`stimma/infra/modal-trellis2.env.example`. La page `Projet → 3D assets` reste
+désactivée tant que `/api/trellis2/health` ne confirme pas la configuration.
+
+Chaque GLB terminé est ingéré comme Media, promu en Asset, rattaché au projet
+et disponible dans la bibliothèque. Le navigateur 3D intégré permet de le
+prévisualiser et le fichier original reste téléchargeable.
+
 Pour que l'agent Stimma communique avec le cluster Modal, assurez-vous que la configuration locale contient le provider websocket.
 
 Fichier de configuration de dev (`~/Library/Application Support/ai.stimma.stimma.debug/default/config.yaml` ou `stimma/config.default.yaml`) :

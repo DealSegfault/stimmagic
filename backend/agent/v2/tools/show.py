@@ -164,12 +164,15 @@ async def show(
     from database import MediaItem
     from sqlalchemy import select
     format_map: dict[int, str] = {}
+    generation_metadata_map: dict[int, str | None] = {}
     if normalized_media_ids:
         result = await session.execute(
-            select(MediaItem.id, MediaItem.file_format)
+            select(MediaItem.id, MediaItem.file_format, MediaItem.generation_metadata)
             .where(MediaItem.id.in_(normalized_media_ids))
         )
-        format_map = {row.id: row.file_format for row in result.all()}
+        rows_from_db = result.all()
+        format_map = {row.id: row.file_format for row in rows_from_db}
+        generation_metadata_map = {row.id: row.generation_metadata for row in rows_from_db}
 
     for item_media_id in normalized_media_ids:
         output: dict[str, Any] = {"status": "complete", "media_id": item_media_id}
@@ -177,7 +180,7 @@ async def show(
             output["file_format"] = format_map[item_media_id]
         rows.append({
             "id": f"show_{uuid.uuid4().hex[:8]}",
-            "input": {"type": "output_only"},
+            "input": _generation_input_for_display(generation_metadata_map.get(item_media_id)),
             "output": output,
         })
 
@@ -458,6 +461,41 @@ def _normalize_paths(path: str | None, paths: list[str] | None) -> list[str]:
         if isinstance(value, str) and value:
             values.append(value)
     return values
+
+
+def _generation_input_for_display(generation_metadata: str | dict | None) -> dict[str, Any]:
+    """Return the persisted generation prompt in the chat display shape."""
+    if not generation_metadata:
+        return {"type": "output_only"}
+
+    try:
+        metadata = (
+            json.loads(generation_metadata)
+            if isinstance(generation_metadata, str)
+            else generation_metadata
+        )
+    except (TypeError, json.JSONDecodeError):
+        return {"type": "output_only"}
+
+    if not isinstance(metadata, dict):
+        return {"type": "output_only"}
+
+    prompt = metadata.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        prompt_metadata = metadata.get("prompt_metadata")
+        if isinstance(prompt_metadata, dict):
+            prompt = prompt_metadata.get("original_prompt") or prompt_metadata.get("rendered_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return {"type": "output_only"}
+
+    result: dict[str, Any] = {
+        "type": "prompt_only",
+        "prompt": prompt,
+    }
+    negative_prompt = metadata.get("negative_prompt")
+    if isinstance(negative_prompt, str) and negative_prompt.strip():
+        result["negative_prompt"] = negative_prompt
+    return result
 
 
 async def _build_path_row(path: str, chat_id: int, workspace_dir: str | None) -> dict[str, Any] | str:

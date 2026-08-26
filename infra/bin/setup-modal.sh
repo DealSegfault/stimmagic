@@ -201,7 +201,7 @@ fi
 # 5. Déploiement des Applications Modal
 log_step "5/6 : Déploiement des conteneurs Modal (Scale-to-Zero)"
 
-log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000)..."
+log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000 + B300 HD)..."
 cd "$ROOT"
 modal deploy --strategy recreate modal_h3.py
 log_success "Application 'comfyui-minimax-h3' déployée."
@@ -224,6 +224,8 @@ if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
   log_info "Téléchargement des modèles MiniMax H3..."
   cd "$ROOT"
   modal run modal_h3.py::download_models
+  log_info "Téléchargement des modèles H3 full BF16 pour le worker B300 HD..."
+  modal run modal_h3.py::download_hd_models
   
   log_info "Téléchargement des modèles MiniMax Music 3..."
   modal run modal_h3.py::download_music_models

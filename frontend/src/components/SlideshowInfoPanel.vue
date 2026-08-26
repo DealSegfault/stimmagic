@@ -67,6 +67,18 @@
           @sent="$emit('menu-sent')"
           class="action-pair-wrap"
         />
+        <button
+          v-if="isVideoType(currentItem)"
+          type="button"
+          class="inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md bg-surface-raised px-2 py-2 text-xs font-medium text-content transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 disabled:cursor-wait disabled:opacity-60"
+          :disabled="extractingLastFrame"
+          :aria-busy="extractingLastFrame"
+          title="Extract the last frame and add it to Assets"
+          @click="extractLastFrame"
+        >
+          <PhotoIcon class="h-3.5 w-3.5 flex-shrink-0" />
+          <span>{{ extractingLastFrame ? 'Extracting…' : 'Last frame' }}</span>
+        </button>
       </div>
     </div>
 
@@ -737,7 +749,7 @@ import {
   ArchiveBoxIcon,
   TagIcon
 } from '@heroicons/vue/24/solid'
-import { ClipboardDocumentIcon, FolderOpenIcon, PencilSquareIcon, XMarkIcon } from '@heroicons/vue/24/outline'
+import { ClipboardDocumentIcon, FolderOpenIcon, PencilSquareIcon, PhotoIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import ActionMenu from './ActionMenu.vue'
 import TagEditor from './TagEditor.vue'
 import InlineTagEditor from './InlineTagEditor.vue'
@@ -761,11 +773,12 @@ import { copyToClipboard } from '../utils/clipboard'
 import { addToast } from '../composables/useToasts'
 import { getFilterDisplayLabel } from '../utils/filterDefs'
 import { toolDisplayName } from '../utils/toolDisplay'
-import { isImage as isImageType, hasVisualContent, getMediaType } from '../utils/mediaTypes'
+import { isImage as isImageType, isVideo as isVideoType, hasVisualContent, getMediaType } from '../utils/mediaTypes'
 import { sanitizeSvg } from '../utils/sanitizeHtml'
 import { useAssetApi } from '../composables/useAssetApi'
 import { hasAssetIdentity, mediaIdOf } from '../utils/assetIdentity'
 import { getVideoGenerationRows } from '../utils/videoGenerationMetadata'
+import { useVideoFrameExtraction } from '../composables/useVideoFrameExtraction'
 
 import IconButton from './ui/IconButton.vue'
 import Tooltip from './ui/Tooltip.vue'
@@ -887,6 +900,7 @@ const emit = defineEmits([
 const { cachedTools } = useProvidersApi()
 const contextMenu = useMediaContextMenu()
 const { getRevisions, restoreRevision, getContainers } = useAssetApi()
+const { extractLastFrameToAsset } = useVideoFrameExtraction()
 
 const editingTags = ref(false)
 const versions = ref([])
@@ -895,6 +909,24 @@ const VERSION_PREVIEW_COUNT = 5
 const showAllVersions = ref(false)
 const currentRevisionId = ref(null)
 const assetContainers = ref([])
+const extractingLastFrame = ref(false)
+
+async function extractLastFrame() {
+  const item = props.currentItem
+  if (!item?.file_path || extractingLastFrame.value) return
+
+  extractingLastFrame.value = true
+  try {
+    const result = await extractLastFrameToAsset(item.file_path, item.original_filename || item.file_path)
+    addToast(`Last frame added to Assets${result.assetId ? ` (#${result.assetId})` : ''}`, 'success')
+  } catch (error) {
+    console.error('Failed to extract last video frame:', error)
+    const message = error?.response?.data?.detail || error?.message || 'Failed to extract last frame'
+    addToast(message, 'warning')
+  } finally {
+    extractingLastFrame.value = false
+  }
+}
 
 // Guards against an older in-flight load landing after a newer one.
 let versionsLoadToken = 0

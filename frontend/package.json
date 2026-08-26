@@ -49,6 +49,7 @@
     "dompurify": "^3.4.11",
     "marked": "^17.0.1",
     "modern-screenshot": "^4.7.0",
+    "three": "^0.180.0",
     "vue": "^3.3.8",
     "vue-router": "^4.2.5",
     "vue-virtual-scroll-grid": "^1.11.0",

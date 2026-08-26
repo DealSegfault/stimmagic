@@ -31,6 +31,18 @@ export interface ExtractFrameRequest {
   timeSeconds?: number // for position === 'custom'
 }
 
+export interface ExtractedFrameAsset {
+  path: string
+  filename: string
+  mediaId: number
+  assetId: number | null
+  width: number
+  height: number
+  time: number
+  duration: number
+  fps: number
+}
+
 export function useVideoFrameExtraction() {
   async function extractFrame(req: ExtractFrameRequest): Promise<ExtractedFrame> {
     const fd = new FormData()
@@ -53,5 +65,26 @@ export function useVideoFrameExtraction() {
     }
   }
 
-  return { extractFrame }
+  async function extractLastFrameToAsset(sourcePath: string, sourceName?: string): Promise<ExtractedFrameAsset> {
+    const form = new FormData()
+    form.append('source_path', sourcePath)
+    if (sourceName) form.append('source_name', sourceName)
+
+    const { data } = await axios.post('/api/generate/extract-frame-to-asset', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    return {
+      path: data.path,
+      filename: data.filename,
+      mediaId: data.media_id,
+      assetId: data.asset_id ?? null,
+      width: data.width,
+      height: data.height,
+      time: data.time_seconds,
+      duration: data.duration,
+      fps: data.fps ?? 0,
+    }
+  }
+
+  return { extractFrame, extractLastFrameToAsset }
 }

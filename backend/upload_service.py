@@ -41,9 +41,14 @@ class UploadService:
     ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.flac', '.aac', '.m4a', '.ogg'}
     # Mirrors media_scanner.VECTOR_EXTENSIONS
     ALLOWED_VECTOR_EXTENSIONS = {'.svg'}
+    # Binary 3D assets. GLB is the first-class export format; the other
+    # formats keep the library ready for imported models without pretending
+    # that Stimma can generate them.
+    ALLOWED_MODEL_EXTENSIONS = {'.glb', '.gltf', '.obj', '.fbx', '.stl'}
     ALLOWED_EXTENSIONS = (
         ALLOWED_IMAGE_EXTENSIONS | ALLOWED_VIDEO_EXTENSIONS
         | ALLOWED_AUDIO_EXTENSIONS | ALLOWED_VECTOR_EXTENSIONS
+        | ALLOWED_MODEL_EXTENSIONS
     )
 
     def __init__(self, profile_id: str = None):
@@ -192,6 +197,7 @@ class UploadService:
             is_video = ext in self.ALLOWED_VIDEO_EXTENSIONS
             is_audio = ext in self.ALLOWED_AUDIO_EXTENSIONS
             is_vector = ext in self.ALLOWED_VECTOR_EXTENSIONS
+            is_model = ext in self.ALLOWED_MODEL_EXTENSIONS
             file_format = ext.lstrip('.')
 
             # Get dimensions (audio has none)
@@ -230,6 +236,9 @@ class UploadService:
                 # metadata_status='completed', so nothing backfills this later.
                 width, height = svg_size
                 has_alpha = True
+            elif is_model:
+                width, height = 0, 0
+                has_alpha = False
             else:
                 width, height, has_alpha = self._get_image_dimensions(dest_path)
 
@@ -239,7 +248,7 @@ class UploadService:
             raw_metadata = None
             extracted_prompt = None
             generation_metadata = None
-            if not is_video and not is_audio and not is_vector:
+            if not is_video and not is_audio and not is_vector and not is_model:
                 try:
                     from exif_extractor import extract_prompt_from_exif, parse_external_metadata
                     raw_metadata, extracted_prompt = extract_prompt_from_exif(dest_path)

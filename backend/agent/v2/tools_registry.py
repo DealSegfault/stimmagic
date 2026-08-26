@@ -150,7 +150,11 @@ def tool(
     return decorator
 
 
-def get_tools_schema(scope: str = "agent") -> List[dict]:
+def get_tools_schema(
+    scope: str = "agent",
+    *,
+    exclude_names: Optional[set[str]] = None,
+) -> List[dict]:
     """Return OpenAI-format tool schemas visible in the given chat scope.
 
     Defaults to the main-agent view so existing callers that don't yet pass
@@ -163,10 +167,15 @@ def get_tools_schema(scope: str = "agent") -> List[dict]:
             f"get_tools_schema: invalid scope {scope!r}; must be one of "
             f"{sorted(VALID_SCOPES)}"
         )
+    excluded = exclude_names or set()
     return [
         t.to_openai_schema(scope=scope)
         for t in _tools.values()
-        if t.visible_in(scope) and t.name not in RETIRED_TOOLS
+        if (
+            t.visible_in(scope)
+            and t.name not in RETIRED_TOOLS
+            and t.name not in excluded
+        )
     ]
 
 

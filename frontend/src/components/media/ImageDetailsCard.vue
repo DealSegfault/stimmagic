@@ -2,7 +2,13 @@
   <div class="w-full h-full flex">
     <!-- Left: Image (letterboxed, full resolution) -->
     <div class="w-2/3 bg-black flex-shrink-0">
+      <ModelViewer
+        v-if="isModelMedia"
+        :src="getMediaFileUrl(media.file_hash)"
+        class="h-full w-full"
+      />
       <MediaImage
+        v-else
         :media-id="mediaId"
         :file-hash="media.file_hash"
         :thumbnail="false"
@@ -272,6 +278,7 @@ import {
   CommandLineIcon
 } from '@heroicons/vue/24/outline'
 import { MediaImage } from './index'
+import ModelViewer from '../viewers/ModelViewer.vue'
 import KeyValueList from '../ui/KeyValueList.vue'
 import EditStackSummary from './EditStackSummary.vue'
 import InspireMenu from '../InspireMenu.vue'
@@ -287,6 +294,7 @@ import { getFilterDisplayLabel } from '../../utils/filterDefs'
 import { toolDisplayName } from '../../utils/toolDisplay'
 import { sanitizeSvg } from '../../utils/sanitizeHtml'
 import { getMediaType } from '../../utils/mediaTypes'
+import { useMediaApi } from '../../composables/useMediaApi'
 import { getVideoGenerationRows } from '../../utils/videoGenerationMetadata'
 
 const props = defineProps({
@@ -316,11 +324,13 @@ defineEmits(['navigate', 'open-flow'])
 
 const router = useRouter()
 const mediaDetails = useMediaDetailsModal()
+const { getMediaFileUrl } = useMediaApi()
 const { availableMarkers, hasMarker, toggleMarker: toggleMarkerFn, init: initMarkers, loadMarkersForMedia } = useMarkers()
 const { cachedTools, fetchProvidersAndTools } = useProvidersApi()
 
 const mediaId = computed(() => props.media.id)
 const isVideoMedia = computed(() => getMediaType(props.media) === 'video')
+const isModelMedia = computed(() => getMediaType(props.media) === 'model')
 const recreating = ref(false)
 const copiedPrompt = ref(false)
 const copiedNegativePrompt = ref(false)

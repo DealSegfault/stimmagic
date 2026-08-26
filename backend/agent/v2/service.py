@@ -672,6 +672,15 @@ async def _execute_tool_call(
     chat_project_id = getattr(chat, "project_id", None) if chat else None
     scope = "flow" if chat_flow_id is not None else "agent"
     tool = get_tool(fn_name, scope=scope)
+    standalone_project_tool = (
+        chat_project_id is None
+        and fn_name in {
+            "get_world_state",
+            "get_project_direction",
+            "list_shot_generations",
+            "accept_shot_generation",
+        }
+    )
     raw_code = trace_arguments.get("code") if isinstance(trace_arguments, dict) else None
     requires_shot_contract = (
         fn_name == "run_code"
@@ -680,7 +689,12 @@ async def _execute_tool_call(
         and any(token in raw_code.casefold() for token in ("minimax_h3", "reference_to_video", "image_to_video", "text_to_video"))
         and not (run_context and isinstance(run_context.get("shot_contract"), dict))
     )
-    if skip_reason:
+    if standalone_project_tool:
+        result_str = (
+            "Error: this standalone chat has no project World State or shot continuity context. "
+            "Use the current-turn prompt and attached assets directly; no generation job was queued."
+        )
+    elif skip_reason:
         log.warning(
             "Chat %s: %s tool call %s",
             chat_id,
@@ -1096,9 +1110,27 @@ async def _copy_media_to_workspace(
     result = await session.execute(
         select(MediaItem).where(MediaItem.id.in_(media_ids))
     )
-    from asset_association_service import asset_ids_for_media_ids
+    # Clipboard/context media are user-curated inputs, not disposable chat
+    # blobs. Promote them on first use so the same references remain available
+    # to generation, library search, lineage and future chat turns even when
+    # the frontend only supplied a Media id.
+    from asset_association_service import asset_for_media
 
-    asset_ids = await asset_ids_for_media_ids(session, media_ids)
+    asset_ids: dict[int, int] = {}
+    for media_id in dict.fromkeys(media_ids):
+        try:
+            asset = await asset_for_media(
+                session,
+                media_id,
+                promote=True,
+                origin_type="chat_context",
+            )
+            if asset is not None:
+                asset_ids[media_id] = asset.id
+        except Exception as exc:
+            # A stale/deleted clipboard reference must not prevent the rest of
+            # the user's prompt from reaching the agent.
+            log.warning("Could not promote chat context media %s to Asset: %s", media_id, exc)
     for item in result.scalars().all():
         file_path = item.file_path
         if file_path and os.path.exists(file_path):
@@ -1112,12 +1144,18 @@ async def _copy_media_to_workspace(
                     shutil.copytree(file_path, dest)
                 else:
                     shutil.copy2(file_path, dest)
-                entry: Dict[str, Any] = {"media_id": item.id, "filename": filename}
+                entry: Dict[str, Any] = {
+                    "media_id": item.id,
+                    "filename": filename,
+                    "path": dest,
+                }
                 file_format = (item.file_format or Path(filename).suffix.lstrip(".")).lower()
                 if file_format in {"mp4", "mov", "avi", "mkv", "webm", "m4v", "mpg", "mpeg"}:
                     entry["media_type"] = "video"
                 elif file_format in {"png", "jpg", "jpeg", "webp", "bmp"}:
                     entry["media_type"] = "image"
+                elif file_format in {"mp3", "wav", "flac", "aac", "m4a", "ogg"}:
+                    entry["media_type"] = "audio"
                 entry["file_format"] = file_format
                 if item.id in asset_ids:
                     entry["asset_id"] = asset_ids[item.id]
@@ -1636,11 +1674,17 @@ async def _run_agentic_loop_inner(
     # via `from stimma.tools.<task> import <tool>`. Single source of truth shared
     # with the run_code import namespace; idempotent + fingerprinted, so this is
     # a cheap no-op when the provider catalog hasn't changed.
+    h3_available = False
     try:
         from .tool_fs import ensure_task_tools, materialize_tool_fs
         from providers.registry import ProviderRegistry
         registry = ProviderRegistry.get_instance()
         await ensure_task_tools(registry, "reference-to-video")
+        h3_available = any(
+            "minimax-h3" in str(full_id).casefold()
+            or "minimax_h3" in str(full_id).casefold()
+            for full_id, _provider, _descriptor in registry.list_all_tools()
+        )
         materialize_tool_fs(registry, workspace_dir)
     except Exception as e:
         log.warning(f"Failed to materialize .stimma/ tool catalog: {e}")
@@ -1667,7 +1711,18 @@ async def _run_agentic_loop_inner(
     # flow program.py edits and writes code that can't run in the flow
     # sandbox.
     tool_scope = "flow" if chat.flow_id is not None else "agent"
-    tools_schema = get_tools_schema(tool_scope)
+    # World State and shot-continuity tools are meaningful only when this chat
+    # is attached to a project. Hiding them here prevents a model from burning
+    # a tool call on a guaranteed "not attached to a project" response before
+    # dispatching a direct generation from the current-turn references.
+    project_context_tools = {
+        "get_world_state",
+        "get_project_direction",
+        "list_shot_generations",
+        "accept_shot_generation",
+    }
+    excluded_tools = project_context_tools if chat_project_id is None else set()
+    tools_schema = get_tools_schema(tool_scope, exclude_names=excluded_tools)
     tools_enabled = bool(tools_schema)
 
     # Cumulative token usage for this agent session
@@ -1828,6 +1883,19 @@ async def _run_agentic_loop_inner(
             artifact_reminder = await build_artifact_context_reminder(session, artifact_context)
             if artifact_reminder:
                 system_reminders.append(artifact_reminder)
+        if chat_project_id is None:
+            system_reminders.append(
+                "STANDALONE CHAT MODE: this chat is not attached to a project. "
+                "Use the prompt and current-turn clipboard/context assets directly. "
+                "Do not call project World State, Project Direction, or shot-continuity tools; "
+                "for a video request, dispatch the matching generation tool immediately."
+            )
+        else:
+            system_reminders.append(
+                "PROJECT CHAT MODE: project World State is available for scene/shot continuity. "
+                "Use it only when the request needs project-scoped scene or continuity data; "
+                "current-turn attachments remain the authoritative references for a direct generation request."
+            )
 
         # The quick-video and image-backend switches are chat-level preferences. Keep them in the
         # model-visible dispatch context so every tool choice can honor them,
@@ -1849,13 +1917,20 @@ async def _run_agentic_loop_inner(
             except (json.JSONDecodeError, TypeError):
                 pass
         effective_video_steps = 8 if video_quick_mode else video_steps
-        system_reminders.append(
-            "VIDEO DISPATCH MODE (authoritative for this chat): "
-            + ("MiniMax H3 ⚡ fast (8 steps imposed); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
-               if video_quick_mode else
-               f"MiniMax H3 standard (full sampling, {video_steps} steps); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
-            + " Execute video generation immediately via `run_code` by importing the matching function (`from stimma.tools.reference_to_video import minimax_h3_r2v_turbo`, `from stimma.tools.image_to_video import minimax_h3_i2v_turbo`, or `from stimma.tools.text_to_video import minimax_h3_t2v_turbo`). Pass `input_images`, Context-IR formatted `prompt`, and render parameters (`width=1344, height=768, duration=4, steps=8, scheduler=\"simple\", spectrum=False, ref_image_size=\"max\", model_precision=\"INT8 ConvRot\"`). Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`. Never report video generation as unavailable!"
-        )
+        if h3_available:
+            system_reminders.append(
+                "VIDEO DISPATCH MODE (authoritative for this chat): "
+                + ("MiniMax H3 ⚡ fast (8 steps imposed); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
+                   if video_quick_mode else
+                   f"MiniMax H3 standard (full sampling, {video_steps} steps); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
+                + " Execute video generation immediately via `run_code`: browse `.stimma/tools/` for the exact function, import it from `stimma.tools.<category>`, and pass the current-turn `input_images` in reference order. Use R2V for 2+ references, I2V for exactly one starting frame, and T2V for text-only requests. Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`."
+            )
+        else:
+            system_reminders.append(
+                "VIDEO DISPATCH MODE: MiniMax H3 is not currently connected. Do not call project context tools, "
+                "do not invent an adapter import, and do not claim that a job was queued. Return the provider "
+                "availability error so the user can reconnect H3 and resend the same prompt."
+            )
         system_reminders.append(
             "CHAT VIDEO REFERENCE ROUTING (authoritative): if the user attaches a video, "
             "treat it as a whole-video semantic reference and use MiniMax H3 R2V directly. "
@@ -1863,10 +1938,11 @@ async def _run_agentic_loop_inner(
             "available), preserve `<Video N>` and matching `<Audio N>` tags, and never route "
             "that request through I2V or T2V."
         )
-        system_reminders.append(
-            "SHOT CONTRACT GATE: if get_world_state returns generation_contract, it overrides these chat defaults for this shot. "
-            "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. User-mentioned @references that are absent from the manifest are out of scope and must not be added to the prompt or input_images. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
-        )
+        if chat_project_id is not None:
+            system_reminders.append(
+                "SHOT CONTRACT GATE: if get_world_state returns generation_contract, it overrides these chat defaults for this shot. "
+                "Use the exact ordered reference_manifest and expected_duration/expected_dimensions. User-mentioned @references that are absent from the manifest are out of scope and must not be added to the prompt or input_images. Do not launch a video job until the previous accepted last frame is present and the prompt Picture labels match the actual input_images."
+            )
         active_contract = run_context.get("shot_contract") if isinstance(run_context, dict) else None
         if isinstance(active_contract, dict):
             manifest_ids = [

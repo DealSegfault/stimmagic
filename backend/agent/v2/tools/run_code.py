@@ -1,5 +1,7 @@
 """Execute sandboxed Python in the session workspace."""
 
+import re
+
 from ..code_runtime import ALLOWED_MODULES_PROMPT_DESCRIPTION, run_code_in_sandbox
 from ..tools_registry import tool, ToolParameter
 
@@ -43,6 +45,48 @@ async def run_code(code: str, **kwargs) -> str:
         return "Error: No database session available"
     if chat_id is None:
         return "Error: No chat available"
+
+    # The import namespace is derived from the live provider catalog. When the
+    # MiniMax H3 provider is disconnected, the old behavior leaked the internal
+    # sandbox allow-list error ("Import ... is not allowed") and made it look as
+    # if the requested adapter did not exist. Preflight the explicit H3 request
+    # and report the actionable provider state before entering the sandbox.
+    if "minimax_h3" in code.casefold():
+        from providers.registry import ProviderRegistry
+        from ..tool_fs import ensure_task_tools
+
+        registry = ProviderRegistry.get_instance()
+        await ensure_task_tools(registry, "reference-to-video")
+        all_tools = registry.list_all_tools()
+        h3_available = any(
+            "minimax-h3" in str(full_id).casefold()
+            or "minimax_h3" in str(full_id).casefold()
+            or "minimax h3" in str(getattr(descriptor, "name", "")).casefold()
+            for full_id, _provider, descriptor in all_tools
+        )
+        if not h3_available:
+            return (
+                "Error: MiniMax H3 provider is currently unavailable, so no video job was queued. "
+                "Reconnect the configured H3/ComfyUI provider, then resend the same prompt; "
+                "the attached clipboard assets are already materialized and will be reused."
+            )
+        requested_import = re.search(
+            r"from\s+stimma\.tools\.([A-Za-z0-9_]+)\s+import\s+([A-Za-z_][A-Za-z0-9_]*)",
+            code,
+        )
+        if requested_import:
+            from ..tool_fs import build_manifest
+
+            module_name, function_name = requested_import.groups()
+            manifest = build_manifest(registry)
+            available_functions = manifest.by_module.get(module_name, {})
+            if function_name not in available_functions:
+                available = ", ".join(sorted(available_functions)) or "none"
+                return (
+                    f"Error: the requested MiniMax H3 adapter "
+                    f"stimma.tools.{module_name}.{function_name} is not in the live catalog. "
+                    f"Available functions in that category: {available}. No video job was queued."
+                )
 
     shot_contract = kwargs.get("_shot_contract")
     if isinstance(shot_contract, dict) and shot_contract.get("workflow") == "compose_opening_keyframe_then_i2v":

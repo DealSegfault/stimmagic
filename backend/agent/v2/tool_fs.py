@@ -200,16 +200,22 @@ async def ensure_task_tools(
     registry,
     task_type: str,
     *,
-    attempts: int = 3,
-    retry_delay: float = 0.5,
+    # Modal-backed providers can take several seconds to complete a JSON-RPC
+    # reconnect.  The old 3 x 0.5s window was shorter than a normal restart,
+    # so a chat turn could permanently materialize a catalog without H3 even
+    # though the provider became healthy immediately afterwards.
+    attempts: int = 10,
+    retry_delay: float = 0.75,
 ) -> bool:
     """Refresh a task's live catalog when a provider is reconnecting.
 
     Provider reconnects intentionally remove stale tools before registering the
     fresh provider. A chat turn that snapshots the catalog in that window can
     incorrectly tell the model that a valid adapter does not exist. Refresh a
-    small number of times so the normal reconnect can complete before the
-    catalog is materialized or imported by ``run_code``.
+    bounded number of times so the normal reconnect can complete before the
+    catalog is materialized or imported by ``run_code``.  The total wait is
+    intentionally below ten seconds so this remains a normal preflight rather
+    than an unbounded provider wait.
     """
     if hasattr(registry, "list_tools_by_task_type"):
         if registry.list_tools_by_task_type(task_type):

@@ -1619,6 +1619,24 @@ async def save_workspace_file(
     # used to land with NULL metadata) so every library item has a uniform shape.
     if provenance:
         provenance_params = dict(provenance.get("parameters") or {})
+        # Generation prompts are canonical metadata, not generation knobs. A
+        # few agent producers (notably antigravity_image) pass the prompt in
+        # provenance.parameters, so extract it before build_parameters drops
+        # the internal input fields. Without this, the image remains usable
+        # but its exact prompt is lost as soon as it is saved to the library.
+        prompt = provenance.get("prompt")
+        if prompt is None:
+            prompt = provenance_params.pop("prompt", "")
+        else:
+            provenance_params.pop("prompt", None)
+        negative_prompt = provenance.get("negative_prompt")
+        if negative_prompt is None:
+            negative_prompt = provenance_params.pop("negative_prompt", "")
+        else:
+            provenance_params.pop("negative_prompt", None)
+        prompt_metadata = provenance.get("prompt_metadata")
+        if prompt_metadata is None:
+            prompt_metadata = provenance_params.get("prompt_metadata")
         seed = provenance_params.pop("seed", None)
         if seed is None:
             seed = provenance.get("seed")
@@ -1626,10 +1644,13 @@ async def save_workspace_file(
             task_type=provenance.get("task_type") or "code",
             source=metadata_source,
             tool_id=provenance.get("tool_id"),
+            prompt=prompt or "",
+            negative_prompt=negative_prompt or "",
             parameters=build_parameters(
                 provenance_params,
                 **({"seed": seed} if seed is not None else {}),
             ),
+            prompt_metadata=prompt_metadata,
             source_inputs=provenance.get("source_inputs") or [
                 {"media_id": mid, "role": "source_image"} for mid in (provenance.get("source_media_ids") or [])
             ],

@@ -91,10 +91,6 @@ class WebSocketManager:
                             for client-side filtering. Set to False for truly
                             global events (like processing_stats).
         """
-        if not self.active_connections:
-            log.debug(f"No active WebSocket connections to broadcast '{event}' to")
-            return
-
         # Automatically include profile_id for profile-specific events
         if include_profile and 'profile_id' not in data:
             try:
@@ -102,6 +98,20 @@ class WebSocketManager:
             except Exception:
                 # If we can't get profile, send without it (worker threads, etc.)
                 pass
+
+        # Keep the Modal cost dashboard in sync with the canonical generation
+        # lifecycle events already emitted by the queue. This is deliberately
+        # best-effort: usage telemetry must never make a generation fail.
+        if event.startswith("generation_job_"):
+            try:
+                from modal_usage_service import get_modal_usage_service
+                get_modal_usage_service().record_event(event, data)
+            except Exception as exc:
+                log.warning("modal usage tracking failed", event=event, error=str(exc))
+
+        if not self.active_connections:
+            log.debug(f"No active WebSocket connections to broadcast '{event}' to")
+            return
 
         message = json.dumps({"event": event, "data": data})
         # Log outgoing broadcast (truncate data for readability)

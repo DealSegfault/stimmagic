@@ -33,6 +33,18 @@ async def test_resolves_int_media_id_in_input_images(queue):
 
 
 @pytest.mark.asyncio
+async def test_resolves_int_media_id_in_input_audios(queue):
+    out = await _resolve(queue, {"input_audios": [7658]})
+    assert out["input_audios"] == ["/tmp/a.png"]
+
+
+@pytest.mark.asyncio
+async def test_resolves_digit_string_media_id_in_input_audios(queue):
+    out = await _resolve(queue, {"input_audios": ["7658"]})
+    assert out["input_audios"] == ["/tmp/a.png"]
+
+
+@pytest.mark.asyncio
 async def test_resolves_digit_string_media_id_in_input_images(queue):
     """The bug: agent passes ``["7658"]`` and the provider rejects it as
     "Asset not found: 7658". Strings of digits must resolve identically to ints."""

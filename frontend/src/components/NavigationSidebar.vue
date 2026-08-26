@@ -244,6 +244,19 @@
             <span>Stimpacks</span>
           </button>
 
+          <!-- Modal usage dashboard -->
+          <button
+            @click="handleNavClick('modal-usage')"
+            class="flex items-center gap-2.5 px-3 py-1.5 rounded text-content-secondary no-underline text-sm font-normal transition-all cursor-pointer whitespace-nowrap relative hover:bg-overlay-subtle hover:text-content border-none bg-transparent w-full text-left"
+            :class="activeTab === 'modal-usage' ? '!bg-overlay-hover !text-content' : ''"
+            title="Modal usage"
+          >
+            <svg class="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M4 19V5m0 14h16M8 16v-4m4 4V8m4 8v-7m4 7V4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+            <span>Modal usage</span>
+          </button>
+
           <!-- ==================== ZONE 2: Workspace Tabs ==================== -->
           <div v-if="pinnedTabs.length > 0 || openTabs.length > 0 || editorTabs.length > 0" class="mt-3">
             <div class="mx-3 mb-2 border-t border-edge-subtle"></div>

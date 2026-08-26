@@ -8,12 +8,13 @@ export const IMAGE_FORMATS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
 export const AUDIO_FORMATS = ['mp3', 'wav', 'flac', 'aac', 'm4a', 'ogg']
 export const TEXT_FORMATS = ['md']
 export const VECTOR_FORMATS = ['svg']
+export const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'fbx', 'stl']
 export const SET_FORMATS = ['stimmaset.json']
 export const GRID_FORMATS = ['stimmagrid.json']
 export const LAYOUT_FORMATS = ['stimmalayout']
 export const STRUCTURED_FORMATS = [...TEXT_FORMATS, ...VECTOR_FORMATS, ...SET_FORMATS, ...GRID_FORMATS, ...LAYOUT_FORMATS]
 
-export type MediaType = 'image' | 'video' | 'audio' | 'text' | 'vector' | 'set' | 'grid' | 'layout'
+export type MediaType = 'image' | 'video' | 'audio' | 'model' | 'text' | 'vector' | 'set' | 'grid' | 'layout'
 
 export interface MediaItem {
   file_format: string
@@ -31,6 +32,7 @@ export function getMediaType(item: MediaItem): MediaType {
   if (format === 'stimmaset.json') return 'set'
   if (format === 'stimmagrid.json') return 'grid'
   if (format === 'stimmalayout') return 'layout'
+  if (MODEL_FORMATS.includes(format)) return 'model'
   if (AUDIO_FORMATS.includes(format)) return 'audio'
   if (VIDEO_FORMATS.includes(format)) return 'video'
   return 'image'
@@ -57,6 +59,10 @@ export function isAudio(item: MediaItem): boolean {
   return AUDIO_FORMATS.includes(item.file_format?.toLowerCase())
 }
 
+export function isModel(item: MediaItem): boolean {
+  return MODEL_FORMATS.includes(item.file_format?.toLowerCase())
+}
+
 /**
  * Check if an item is a structured type (text, set, or grid).
  */
@@ -77,7 +83,7 @@ export function isStructured(item: MediaItem): boolean {
  */
 export function hasVisualContent(item: MediaItem): boolean {
   const type = getMediaType(item)
-  return type === 'image' || type === 'video' || type === 'layout' || type === 'vector'
+  return type === 'image' || type === 'video' || type === 'model' || type === 'layout' || type === 'vector'
 }
 
 /**
@@ -110,6 +116,14 @@ export function getBadgeConfig(item: MediaItem): BadgeConfig | null {
         bgColor: 'bg-purple-500/15',
         borderColor: 'border-purple-500/50',
         label: 'Audio'
+      }
+    case 'model':
+      return {
+        icon: 'box',
+        color: 'text-sky-300',
+        bgColor: 'bg-sky-500/15',
+        borderColor: 'border-sky-500/50',
+        label: '3D'
       }
     case 'text':
       return {
