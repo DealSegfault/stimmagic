@@ -53,7 +53,10 @@ When configuring or deploying Modal containers for an agent:
 2. **Interactive Wizard**: Run `python3 infra/bin/setup-interactive.py` or `infra/bin/setup-modal.sh -i`.
 3. **Non-interactive / Automated**:
    ```bash
-   HF_TOKEN="hf_..." MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." infra/bin/setup-modal.sh
+   MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." infra/bin/setup-modal.sh
    ```
-4. Full manual and troubleshooting: see [MAN_MODAL.md](MAN_MODAL.md).
-
+   `HF_TOKEN` is optional and only enables licensed Repaint/TRELLIS extras.
+4. On macOS, do not call the handoff complete until the setup has created
+   `~/Desktop/Lancer Stimma.command`, launched Stimma, verified a live H3 video
+   tool, and written the success memo on the Desktop.
+5. Full manual and troubleshooting: see [MAN_MODAL.md](MAN_MODAL.md).

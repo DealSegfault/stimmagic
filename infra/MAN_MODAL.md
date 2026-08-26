@@ -42,14 +42,19 @@ graph LR
 
 ## 2. Prérequis (Clés & Tokens GPU)
 
-Pour déployer les outils GPU, vous avez besoin de **deux comptes / tokens** :
+MiniMax H3 vidéo requiert uniquement les identifiants Modal. Un compte
+Hugging Face est optionnel pour les extras sous licence :
 
 ### A. Clé API Modal (`MODAL_TOKEN_ID` & `MODAL_TOKEN_SECRET`)
 1. Créez un compte sur [modal.com](https://modal.com).
 2. Rendez-vous dans **Settings > API Tokens** et créez un token.
 3. Vous obtenez un `Token ID` (`ak-...`) et un `Token Secret` (`as-...`).
 
-### B. Token Hugging Face (`HF_TOKEN`)
+### B. Token Hugging Face optionnel (`HF_TOKEN`)
+
+Ce token n'est pas requis pour MiniMax H3 vidéo. Il active uniquement les
+extras sous licence Repaint FLUX.1 Fill et TRELLIS.2.
+
 1. Créez un compte sur [huggingface.co](https://huggingface.co).
 2. Acceptez les conditions d'utilisation du modèle [black-forest-labs/FLUX.1-Fill-dev](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev).
 3. Générez un token en lecture dans **Settings > Access Tokens** (`hf_...`).
@@ -73,21 +78,25 @@ python3 infra/bin/setup-interactive.py
 L'assistant interactif :
 1. Détecte ou installe automatiquement `modal`.
 2. Vérifie la session active ou invite à saisir le `MODAL_TOKEN_ID` et `MODAL_TOKEN_SECRET` (avec masquage sécurisé des mots de passe).
-3. Demande votre token `HF_TOKEN` et configure le secret distant sur Modal.
+3. Réutilise ou demande le token `HF_TOKEN` optionnel pour les extras sous licence.
 4. Génère les clés de sécurisation locale pour la passerelle.
 5. Permet de choisir les conteneurs à déployer (H3, Repaint FLUX.1 Fill, LatentSync).
 6. Télécharge directement les poids dans les volumes cloud Modal.
+7. Crée `Lancer Stimma.command` sur le Bureau, lance Stimma, vérifie Codex et
+   H3, puis écrit le mémo de réussite sur le Bureau.
 
 ### Option B : 1-Ligne Non Interactive (pour Agents autonomes & Scripts)
 
 Si votre agent dispose déjà des variables d'environnement :
 
 ```bash
-HF_TOKEN="hf_votre_token" \
 MODAL_TOKEN_ID="ak_votre_token_id" \
 MODAL_TOKEN_SECRET="as_votre_token_secret" \
 ./infra/bin/setup-modal.sh
 ```
+
+Ajoutez `HF_TOKEN="hf_votre_token"` uniquement pour installer aussi Repaint et
+TRELLIS.2.
 
 ### Option C : Via Codex CLI / Antigravity CLI
 

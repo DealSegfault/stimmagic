@@ -167,14 +167,41 @@ def setup_modal_auth(modal_bin: str, token_id: Optional[str] = None, token_secre
     return token_id or "", token_secret or ""
 
 
-def setup_huggingface_secret(modal_bin: str, hf_token: Optional[str] = None) -> str:
-    """Create or update Hugging Face secret on Modal."""
+def modal_secret_exists(modal_bin: str, name: str) -> bool:
+    """Check a Modal secret name without reading any secret value."""
+    code, output = run_cmd([modal_bin, "secret", "list", "--json"], capture=True)
+    if code != 0:
+        return False
+    try:
+        rows = json.loads(output)
+    except json.JSONDecodeError:
+        return False
+    return any(row.get("name") == name for row in rows)
+
+
+def setup_huggingface_secret(
+    modal_bin: str,
+    hf_token: Optional[str] = None,
+    allow_prompt: bool = True,
+) -> bool:
+    """Create or reuse the optional Hugging Face secret on Modal."""
     if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN") or prompt_text("Hugging Face Read Token (hf_...)", is_secret=True)
+        hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token and allow_prompt:
+        hf_token = prompt_text(
+            "Hugging Face Read Token optionnel (hf_...)",
+            is_secret=True,
+        )
     
     if not hf_token:
-        log_warn("Aucun HF_TOKEN fourni. Le téléchargement de modèles comme FLUX.1 Fill pourrait échouer.")
-        return ""
+        if modal_secret_exists(modal_bin, "huggingface"):
+            log_success("Secret 'huggingface' existant réutilisé.")
+            return True
+        log_warn(
+            "Aucun HF_TOKEN fourni : H3 vidéo reste disponible ; "
+            "Repaint et TRELLIS.2 seront ignorés."
+        )
+        return False
 
     log_info("Création du secret 'huggingface' sur Modal...")
     code, out = run_cmd([modal_bin, "secret", "create", "huggingface", f"HF_TOKEN={hf_token}", "--force"], capture=True)
@@ -184,9 +211,10 @@ def setup_huggingface_secret(modal_bin: str, hf_token: Optional[str] = None) -> 
     
     if code == 0 or "already exists" in out.lower():
         log_success("Secret 'huggingface' configuré sur Modal.")
+        return True
     else:
-        log_warn(f"Note lors de la création du secret : {out.strip()}")
-    return hf_token
+        log_error(f"Échec de la création du secret Hugging Face : {out.strip()}")
+        sys.exit(1)
 
 
 def setup_local_proxy_keys(modal_bin: str) -> None:
@@ -235,37 +263,36 @@ def deploy_apps(
     deploy_trellis2: bool = True,
 ) -> None:
     """Deploy Modal serverless applications."""
+    def deploy(cmd: list[str], cwd: Path, label: str) -> None:
+        code, _ = run_cmd(cmd, cwd=cwd)
+        if code != 0:
+            log_error(f"Erreur lors du déploiement de {label}.")
+            sys.exit(1)
+        log_success(f"{label} déployé.")
+
     if deploy_h3:
         log_info("1. Déploiement ComfyUI + MiniMax H3 + Music 3 (RTX PRO 6000)...")
-        code, out = run_cmd([modal_bin, "deploy", "--strategy", "recreate", "modal_h3.py"], cwd=ROOT_DIR)
-        if code != 0:
-            log_error("Erreur lors du déploiement de comfyui-minimax-h3.")
-        else:
-            log_success("comfyui-minimax-h3 déployé.")
+        deploy(
+            [modal_bin, "deploy", "--strategy", "recreate", "modal_h3.py"],
+            ROOT_DIR,
+            "comfyui-minimax-h3",
+        )
 
     if deploy_repaint:
         log_info("2. Déploiement FLUX.1 Fill Repaint (NVIDIA L40S)...")
-        code, out = run_cmd([modal_bin, "deploy", "cloud_repaint/repaint_service.py"], cwd=REPO_ROOT)
-        if code != 0:
-            log_error("Erreur lors du déploiement de stimma-flux-fill.")
-        else:
-            log_success("stimma-flux-fill déployé.")
+        deploy(
+            [modal_bin, "deploy", "cloud_repaint/repaint_service.py"],
+            REPO_ROOT,
+            "stimma-flux-fill",
+        )
 
     if deploy_latentsync:
         log_info("3. Déploiement Maya LatentSync 1.6 LipSync (RTX PRO 6000)...")
-        code, out = run_cmd([modal_bin, "deploy", "modal_latentsync.py"], cwd=ROOT_DIR)
-        if code != 0:
-            log_error("Erreur lors du déploiement de maya-latentsync.")
-        else:
-            log_success("maya-latentsync déployé.")
+        deploy([modal_bin, "deploy", "modal_latentsync.py"], ROOT_DIR, "maya-latentsync")
 
     if deploy_trellis2:
         log_info("4. Déploiement TRELLIS.2 Image-to-3D (H100/H200)...")
-        code, out = run_cmd([modal_bin, "deploy", "modal_trellis2.py"], cwd=ROOT_DIR)
-        if code != 0:
-            log_error("Erreur lors du déploiement de stimma-trellis2.")
-        else:
-            log_success("stimma-trellis2 déployé.")
+        deploy([modal_bin, "deploy", "modal_trellis2.py"], ROOT_DIR, "stimma-trellis2")
 
 
 def populate_volumes(
@@ -277,30 +304,40 @@ def populate_volumes(
     download_trellis2: bool = True,
 ) -> None:
     """Pre-download weights directly into Modal cloud storage."""
+    def download(cmd: list[str], cwd: Path, label: str) -> None:
+        code, _ = run_cmd(cmd, cwd=cwd)
+        if code != 0:
+            log_error(f"Échec du téléchargement : {label}.")
+            sys.exit(1)
+
     log_info("Initialisation des poids distants (0 Go téléchargés en local)...")
 
     if download_h3:
         log_info("Téléchargement des poids MiniMax H3...")
-        run_cmd([modal_bin, "run", "modal_h3.py::download_models"], cwd=ROOT_DIR)
+        download([modal_bin, "run", "modal_h3.py::download_models"], ROOT_DIR, "MiniMax H3")
         log_info("Téléchargement des poids H3 full BF16 pour le worker B300 HD...")
-        run_cmd([modal_bin, "run", "modal_h3.py::download_hd_models"], cwd=ROOT_DIR)
+        download([modal_bin, "run", "modal_h3.py::download_hd_models"], ROOT_DIR, "MiniMax H3 HD")
         log_info("Téléchargement des poids MiniMax Music 3...")
-        run_cmd([modal_bin, "run", "modal_h3.py::download_music_models"], cwd=ROOT_DIR)
+        download([modal_bin, "run", "modal_h3.py::download_music_models"], ROOT_DIR, "MiniMax Music 3")
 
     if download_repaint and has_hf_token:
         log_info("Téléchargement des poids FLUX.1 Fill Dev...")
-        run_cmd([modal_bin, "run", "cloud_repaint/repaint_service.py::download_models"], cwd=REPO_ROOT)
+        download(
+            [modal_bin, "run", "cloud_repaint/repaint_service.py::download_models"],
+            REPO_ROOT,
+            "FLUX.1 Fill",
+        )
 
     if download_latentsync:
         log_info("Téléchargement des poids LatentSync...")
-        run_cmd([modal_bin, "run", "modal_latentsync.py::download_models"], cwd=ROOT_DIR)
+        download([modal_bin, "run", "modal_latentsync.py::download_models"], ROOT_DIR, "LatentSync")
 
     if download_trellis2:
         log_info("Téléchargement des poids TRELLIS.2...")
-        run_cmd([modal_bin, "run", "modal_trellis2.py::download_models"], cwd=ROOT_DIR)
+        download([modal_bin, "run", "modal_trellis2.py::download_models"], ROOT_DIR, "TRELLIS.2")
 
     log_info("Inventaire des modèles dans le volume Modal...")
-    run_cmd([modal_bin, "run", "modal_h3.py::model_inventory"], cwd=ROOT_DIR)
+    download([modal_bin, "run", "modal_h3.py::model_inventory"], ROOT_DIR, "inventaire H3")
 
 
 def main() -> None:
@@ -314,7 +351,7 @@ def main() -> None:
 
     print_banner()
 
-    TOTAL_STEPS = 6
+    TOTAL_STEPS = 7
 
     # 1. Verification Modal CLI
     log_step(1, TOTAL_STEPS, "Vérification de l'environnement CLI")
@@ -328,8 +365,12 @@ def main() -> None:
     setup_modal_auth(modal_bin, token_id, token_secret)
 
     # 3. Secret Hugging Face
-    log_step(3, TOTAL_STEPS, "Configuration Hugging Face (Secret Modal)")
-    hf_token = setup_huggingface_secret(modal_bin, args.hf_token)
+    log_step(3, TOTAL_STEPS, "Configuration Hugging Face (extras optionnels)")
+    has_hf_secret = setup_huggingface_secret(
+        modal_bin,
+        args.hf_token,
+        allow_prompt=not args.non_interactive,
+    )
 
     # 4. Clés Proxy Locales
     log_step(4, TOTAL_STEPS, "Sécurisation de la Passerelle Proxy")
@@ -338,44 +379,61 @@ def main() -> None:
     # 5. Déploiement Conteneurs
     log_step(5, TOTAL_STEPS, "Déploiement des Applications Modal (Scale-to-Zero)")
     deploy_h3 = True
-    deploy_repaint = True
+    deploy_repaint = has_hf_secret
     deploy_latentsync = True
-    deploy_trellis2 = True
+    deploy_trellis2 = has_hf_secret
 
     if not args.non_interactive and sys.stdin.isatty():
         deploy_h3 = prompt_bool("Déployer ComfyUI MiniMax H3 & Music 3 ?", True)
-        deploy_repaint = prompt_bool("Déployer FLUX.1 Fill Repaint ?", True)
+        if has_hf_secret:
+            deploy_repaint = prompt_bool("Déployer FLUX.1 Fill Repaint ?", True)
         deploy_latentsync = prompt_bool("Déployer Maya LatentSync 1.6 ?", True)
-        deploy_trellis2 = prompt_bool("Déployer TRELLIS.2 Image-to-3D ?", True)
+        if has_hf_secret:
+            deploy_trellis2 = prompt_bool("Déployer TRELLIS.2 Image-to-3D ?", True)
 
     deploy_apps(modal_bin, deploy_h3, deploy_repaint, deploy_latentsync, deploy_trellis2)
 
     # 6. Volumes
     log_step(6, TOTAL_STEPS, "Initialisation des Volumes Distants")
-    if args.skip_downloads:
+    do_download = not args.skip_downloads
+    if not do_download:
         log_info("Téléchargement ignoré (--skip-downloads).")
     else:
-        do_download = True
         if not args.non_interactive and sys.stdin.isatty():
             do_download = prompt_bool("Télécharger immédiatement les modèles dans les Volumes Modal ?", True)
         if do_download:
             populate_volumes(
                 modal_bin,
-                bool(hf_token),
+                has_hf_secret,
                 deploy_h3,
                 deploy_repaint,
                 deploy_latentsync,
                 deploy_trellis2,
             )
 
+    # 7. Raccourci macOS, lancement et mémo de réussite
+    log_step(7, TOTAL_STEPS, "Raccourci Bureau et lancement de Stimma")
+    launcher_cmd = [sys.executable, str(ROOT_DIR / "bin" / "install-desktop-launcher.py")]
+    handoff_ready = deploy_h3 and do_download
+    if not handoff_ready:
+        launcher_cmd.append("--no-launch")
+    code, _ = run_cmd(launcher_cmd, cwd=REPO_ROOT)
+    if code != 0:
+        log_error("Stimma n'a pas passé le contrôle final de disponibilité.")
+        sys.exit(code)
+    if not handoff_ready:
+        log_warn("Raccourci installé sans mémo de réussite : H3 n'a pas été entièrement préparé.")
+
     # Résumé
     print(f"\n{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}")
     print(f"{GREEN}{BOLD}             CONFIGURATION MODAL TERMINÉE AVEC SUCCÈS !          {RESET}")
     print(f"{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}\n")
-    print("Pour démarrer votre environnement de travail :")
-    print(f"  {CYAN}1. Démarrer la passerelle locale :{RESET}  infra/bin/start-gateway.sh")
-    print(f"  {CYAN}2. Démarrer l'interface Stimma    :{RESET}  infra/bin/start-stimma.sh")
-    print(f"  {CYAN}3. Vérifier l'état & les coûts    :{RESET}  infra/bin/status.sh\n")
+    if handoff_ready and sys.platform == "darwin":
+        print("Un raccourci 'Lancer Stimma.command' a été mis sur le Bureau.")
+        print("Stimma est lancé et prêt à générer votre première vidéo.")
+    else:
+        print("Le raccourci est installé, mais Stimma n'a pas été déclaré prêt.")
+    print(f"  {CYAN}Suivre l'état & les coûts :{RESET}  infra/bin/status.sh\n")
 
 
 if __name__ == "__main__":

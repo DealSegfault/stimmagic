@@ -50,7 +50,6 @@ MUSIC_FILES = (
 
 app = modal.App(APP_NAME)
 models = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True, version=2)
-HF_SECRET = modal.Secret.from_name("huggingface")
 
 download_image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -153,7 +152,6 @@ comfy_image = (
     cpu=4,
     memory=8192,
     timeout=2 * 60 * 60,
-    secrets=[HF_SECRET],
 )
 def download_models(include_reference: bool = True, include_turbo: bool = True) -> dict:
     """Download H3 weights directly into the persistent Modal Volume."""
@@ -203,7 +201,6 @@ def download_models(include_reference: bool = True, include_turbo: bool = True) 
     cpu=4,
     memory=8192,
     timeout=4 * 60 * 60,
-    secrets=[HF_SECRET],
 )
 def download_hd_models() -> dict:
     """Download the HD H3 weights used by the B300 worker."""
@@ -238,7 +235,6 @@ def download_hd_models() -> dict:
     cpu=4,
     memory=8192,
     timeout=2 * 60 * 60,
-    secrets=[HF_SECRET],
 )
 def download_music_models() -> dict:
     """Download MiniMax Music 3 weights into the shared Modal Volume."""

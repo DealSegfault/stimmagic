@@ -23,11 +23,16 @@ for cloud credits or hosted Stimma models.
 ## Modal setup
 
 Modal deployment can incur external cost. Confirm that the user wants the
-deployment before running it.
+deployment before running it. A direct request to clone this repository and
+finish the installation, made after the user supplied Modal credentials in the
+current agent context, is sufficient confirmation; do not ask for the same
+credentials again.
 
 - Interactive: `infra/bin/setup-modal.sh --interactive`
 - Non-interactive, only when the user has supplied the values in the current
-  environment: `HF_TOKEN=... MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... infra/bin/setup-modal.sh`
+  environment: `MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... infra/bin/setup-modal.sh`
+- `HF_TOKEN` is optional. Without it, install MiniMax H3 video and LatentSync,
+  and skip the licensed Repaint and TRELLIS.2 extras.
 
 Never echo, invent, commit, or paste secrets into tracked files. Modal stores
 its own credentials. The generated local proxy token stays at
@@ -35,14 +40,26 @@ its own credentials. The generated local proxy token stays at
 the real Modal `wk-/ws-` Proxy Token created by the setup script, not the
 `ak-/as-` account token.
 
-## Start and verify
+## Finish the macOS handoff
 
-1. Start the bridge with `infra/bin/start-gateway.sh`.
-2. Start Stimma with `infra/bin/start-stimma.sh`. For a browser-only app, use
-   `STIMMA_MODAL_GATEWAY_URL=ws://127.0.0.1:8188/stp-v1 tools/stimma dev web`.
-3. Verify Codex remains connected with `codex login status`.
-4. Verify the settings API reports `readiness.has_agent_llm: true` and that the
-   UI lists `Codex CLI · ChatGPT` without asking for a Stimma account or API
-   key.
-5. Verify the configured generation provider separately. Agent chat can be
-   ready through Codex even when no Modal generation service has been deployed.
+The Modal setup scripts perform this handoff automatically after H3 deployment
+and model download:
+
+1. Create the executable `~/Desktop/Lancer Stimma.command` shortcut.
+2. Start the local Modal bridge and the Stimma desktop development app.
+3. Wait until the settings API reports `readiness.has_agent_llm: true`, the
+   gateway is running, and at least one connected `minimax_h3_*` video tool is
+   available.
+4. Only after all checks pass, create
+   `~/Desktop/STIMMA - Installation terminée.txt` with the message that the
+   shortcut is on the Desktop and Stimma is ready for the first video.
+
+If the user explicitly skipped H3 downloads or a readiness check fails, leave
+the shortcut in place but do not create the success memo and do not claim the
+installation is ready. Report the relevant log paths under
+`~/Library/Logs/Stimma` instead. Never put a credential in the shortcut, memo,
+logs, or Git.
+
+For later launches, use the Desktop shortcut or run
+`infra/bin/launch-stimma.sh`. For a browser-only development app, use
+`STIMMA_MODAL_GATEWAY_URL=ws://127.0.0.1:8188/stp-v1 tools/stimma dev web`.

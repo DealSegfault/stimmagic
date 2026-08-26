@@ -37,17 +37,25 @@ automatically:
 
 ```bash
 infra/bin/bootstrap-local.sh
-infra/bin/setup-modal.sh --interactive  # only when Modal GPU tools are wanted
-infra/bin/start-gateway.sh
-infra/bin/start-stimma.sh
+infra/bin/setup-modal.sh --interactive  # deploys H3, installs the shortcut, launches Stimma
 ```
 
 Codex agents can perform and verify the handoff with the repo skill:
 `$stimma-local-setup`. Credentials remain in Codex, Modal, or
 `~/.config/adp-comfy`; they must never be committed.
+Hugging Face is optional: without it, the setup keeps MiniMax H3 video and
+skips the licensed Repaint/TRELLIS extras. On macOS a successful setup creates
+`~/Desktop/Lancer Stimma.command`, launches Stimma, verifies Codex + H3, and
+then writes `~/Desktop/STIMMA - Installation terminée.txt`.
 The infra launcher also registers the local STP gateway at
 `ws://127.0.0.1:8188/stp-v1`, so a fresh profile sees the Modal tools without
 manual YAML edits.
+
+For a new machine, the handoff prompt can be as short as:
+
+```text
+Clone ce dépôt et termine l'installation avec $stimma-local-setup. Les identifiants Modal sont déjà dans le contexte ; ne les écris dans aucun fichier.
+```
 
 ```bash
 tools/stimma dev all        # backend + frontend + Tauri shell, merged logs

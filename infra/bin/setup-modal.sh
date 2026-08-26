@@ -49,6 +49,7 @@ CLI_MODAL_TOKEN_SECRET="${MODAL_TOKEN_SECRET:-}"
 SKIP_DOWNLOADS=0
 SKIP_LIPSYNC=0
 SKIP_TRELLIS2=0
+HAS_HF_SECRET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -84,7 +85,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  -i, --interactive             Launch interactive setup wizard (recommandé pour CLI/Codex)"
-      echo "  --hf-token <TOKEN>            Hugging Face Read Token (for FLUX Fill / H3)"
+      echo "  --hf-token <TOKEN>            Hugging Face Read Token (optional FLUX/TRELLIS extras)"
       echo "  --modal-token-id <ID>         Modal Token ID (ak-...)"
       echo "  --modal-token-secret <SECRET> Modal Token Secret (as-...)"
       echo "  --skip-downloads              Skip pre-populating Modal volumes"
@@ -109,7 +110,7 @@ EOF
 printf "${COLOR_RESET}"
 
 # 1. Verification des prérequis (Python, Modal CLI, jq)
-log_step "1/6 : Vérification des dépendances locales"
+log_step "1/7 : Vérification des dépendances locales"
 
 if ! command -v python3 >/dev/null 2>&1; then
   log_error "Python 3 est requis mais introuvable."
@@ -136,7 +137,7 @@ fi
 log_success "Modal CLI opérationnel : $(modal --version 2>/dev/null || echo 'modal')"
 
 # 2. Authentification Modal
-log_step "2/6 : Configuration de l'authentification Modal"
+log_step "2/7 : Configuration de l'authentification Modal"
 
 if [ -n "$CLI_MODAL_TOKEN_ID" ] && [ -n "$CLI_MODAL_TOKEN_SECRET" ]; then
   log_info "Enregistrement des clés Modal fournies..."
@@ -148,6 +149,10 @@ else
     log_success "Session Modal déjà active ($(modal profile current | head -n1))."
   else
     log_warn "Aucun token Modal actif."
+    if [ ! -t 0 ]; then
+      log_error "Fournissez MODAL_TOKEN_ID et MODAL_TOKEN_SECRET à l'agent dans son environnement."
+      exit 1
+    fi
     echo -n "Entrez votre Modal Token ID (ak-...) : "
     read -r CLI_MODAL_TOKEN_ID
     echo -n "Entrez votre Modal Token Secret (as-...) : "
@@ -163,31 +168,37 @@ else
 fi
 
 # 3. Configuration du Token Hugging Face
-log_step "3/6 : Configuration du Secret Hugging Face sur Modal"
+log_step "3/7 : Configuration Hugging Face (extras optionnels)"
 
 if [ -z "$CLI_HF_TOKEN" ]; then
   if [ -n "${HF_TOKEN:-}" ]; then
     CLI_HF_TOKEN="$HF_TOKEN"
-  else
-    echo -n "Entrez votre Hugging Face Token (hf_...) : "
+  elif [ -t 0 ]; then
+    echo -n "Token Hugging Face optionnel (hf_..., Entrée pour ignorer) : "
     read -r -s CLI_HF_TOKEN
     echo ""
   fi
 fi
 
-if [ -z "$CLI_HF_TOKEN" ]; then
-  log_warn "Aucun HF_TOKEN fourni. Le téléchargement de modèles sous licence (FLUX.1-Fill-dev) risque d'échouer."
-else
+if [ -n "$CLI_HF_TOKEN" ]; then
   log_info "Création du secret Modal 'huggingface'..."
-  modal secret create huggingface HF_TOKEN="$CLI_HF_TOKEN" --force >/dev/null 2>&1 || {
-    # Si --force non supporté par la version installée
-    modal secret create huggingface HF_TOKEN="$CLI_HF_TOKEN" || true
-  }
-  log_success "Secret Modal 'huggingface' configuré."
+  if modal secret create huggingface HF_TOKEN="$CLI_HF_TOKEN" --force >/dev/null 2>&1 || \
+    modal secret create huggingface HF_TOKEN="$CLI_HF_TOKEN" >/dev/null; then
+    HAS_HF_SECRET=1
+    log_success "Secret Modal 'huggingface' configuré."
+  else
+    log_error "Impossible de configurer le secret Hugging Face sur Modal."
+    exit 1
+  fi
+elif modal secret list --json | python3 -c 'import json,sys; raise SystemExit(not any(row.get("name") == "huggingface" for row in json.load(sys.stdin)))' 2>/dev/null; then
+  HAS_HF_SECRET=1
+  log_success "Secret Modal 'huggingface' existant réutilisé."
+else
+  log_warn "Aucun HF_TOKEN fourni : H3 vidéo reste disponible ; Repaint et TRELLIS.2 seront ignorés."
 fi
 
 # 4. Configuration du Token Proxy Local (Sécurisation ComfyUI & Repaint)
-log_step "4/6 : Configuration des Tokens Proxy de sécurité"
+log_step "4/7 : Configuration des Tokens Proxy de sécurité"
 
 mkdir -p "$CONFIG_DIR"
 if [ -f "$PROXY_TOKEN_FILE" ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["Modal-Key"].startswith("wk-") and d["Modal-Secret"].startswith("ws-")' "$PROXY_TOKEN_FILE" 2>/dev/null; then
@@ -212,17 +223,21 @@ else
 fi
 
 # 5. Déploiement des Applications Modal
-log_step "5/6 : Déploiement des conteneurs Modal (Scale-to-Zero)"
+log_step "5/7 : Déploiement des conteneurs Modal (Scale-to-Zero)"
 
 log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000 + B300 HD)..."
 cd "$INFRA_ROOT"
 modal deploy --strategy recreate modal_h3.py
 log_success "Application 'comfyui-minimax-h3' déployée."
 
-log_info "2. Déploiement FLUX.1 Fill Repaint Service (NVIDIA L40S)..."
-cd "$REPO_ROOT"
-modal deploy cloud_repaint/repaint_service.py
-log_success "Application 'stimma-flux-fill' déployée."
+if [ "$HAS_HF_SECRET" -eq 1 ]; then
+  log_info "2. Déploiement FLUX.1 Fill Repaint Service (NVIDIA L40S)..."
+  cd "$REPO_ROOT"
+  modal deploy cloud_repaint/repaint_service.py
+  log_success "Application 'stimma-flux-fill' déployée."
+else
+  log_info "2. Repaint ignoré (secret Hugging Face absent)."
+fi
 
 if [ "$SKIP_LIPSYNC" -eq 0 ]; then
   log_info "3. Déploiement Maya LatentSync 1.6 LipSync (RTX PRO 6000)..."
@@ -231,7 +246,7 @@ if [ "$SKIP_LIPSYNC" -eq 0 ]; then
   log_success "Application 'maya-latentsync' déployée."
 fi
 
-if [ "$SKIP_TRELLIS2" -eq 0 ]; then
+if [ "$SKIP_TRELLIS2" -eq 0 ] && [ "$HAS_HF_SECRET" -eq 1 ]; then
   log_info "4. Déploiement TRELLIS.2 Image-to-3D (H100/H200)..."
   cd "$INFRA_ROOT"
   modal deploy modal_trellis2.py
@@ -239,8 +254,8 @@ if [ "$SKIP_TRELLIS2" -eq 0 ]; then
 fi
 
 # 6. Téléchargement des Poids dans les Volumes Modal
+log_step "6/7 : Initialisation des Volumes Modal (Téléchargement direct dans le Cloud)"
 if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
-  log_step "6/6 : Initialisation des Volumes Modal (Téléchargement direct dans le Cloud)"
   log_info "Téléchargement des modèles MiniMax H3..."
   cd "$INFRA_ROOT"
   modal run modal_h3.py::download_models
@@ -250,7 +265,7 @@ if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
   log_info "Téléchargement des modèles MiniMax Music 3..."
   modal run modal_h3.py::download_music_models
 
-  if [ -n "$CLI_HF_TOKEN" ]; then
+  if [ "$HAS_HF_SECRET" -eq 1 ]; then
     log_info "Téléchargement des modèles FLUX.1 Fill..."
     cd "$REPO_ROOT"
     modal run cloud_repaint/repaint_service.py::download_models
@@ -262,7 +277,7 @@ if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
     modal run modal_latentsync.py::download_models
   fi
 
-  if [ "$SKIP_TRELLIS2" -eq 0 ]; then
+  if [ "$SKIP_TRELLIS2" -eq 0 ] && [ "$HAS_HF_SECRET" -eq 1 ]; then
     log_info "Téléchargement des modèles TRELLIS.2..."
     cd "$INFRA_ROOT"
     modal run modal_trellis2.py::download_models
@@ -275,6 +290,15 @@ else
   log_info "Téléchargement des poids ignoré (--skip-downloads)."
 fi
 
+# 7. Handoff macOS : raccourci, lancement, contrôle de disponibilité, mémo.
+log_step "7/7 : Installation du raccourci et lancement de Stimma"
+if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
+  python3 "$INFRA_ROOT/bin/install-desktop-launcher.py"
+else
+  python3 "$INFRA_ROOT/bin/install-desktop-launcher.py" --no-launch
+  log_warn "Le mémo de réussite n'a pas été créé car les poids H3 ont été ignorés."
+fi
+
 printf "${COLOR_GREEN}"
 cat << "EOF"
 ===================================================================
@@ -284,8 +308,11 @@ EOF
 printf "${COLOR_RESET}"
 
 echo ""
-echo "Prochaines étapes pour démarrer :"
-echo "  1. Lancer la passerelle locale : infra/bin/start-gateway.sh"
-echo "  2. Lancer l'interface Stimma    : infra/bin/start-stimma.sh"
-echo "  3. Suivre l'état et les coûts   : infra/bin/status.sh"
+if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
+  echo "Un raccourci 'Lancer Stimma.command' a été mis sur le Bureau."
+  echo "Stimma est lancé et prêt à générer votre première vidéo."
+else
+  echo "Le raccourci est installé, mais Stimma n'a pas été déclaré prêt (--skip-downloads)."
+fi
+echo "Suivre l'état et les coûts : infra/bin/status.sh"
 echo ""
