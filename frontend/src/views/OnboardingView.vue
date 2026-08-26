@@ -66,14 +66,14 @@
         <span class="text-[15px] opacity-85 flex-shrink-0">→</span>
       </button>
 
-      <!-- Returning users -->
+      <!-- Optional cloud account -->
       <p class="mt-4 text-content-tertiary" style="font-size: 12.5px;">
-        Have a Stimma account?
+        No Stimma account required.
         <a
           href="#"
           @click.prevent="handleSignIn"
           class="text-content-secondary font-medium no-underline hover:text-content transition-colors"
-        >Sign in</a>
+        >Sign in</a> only for Stimma Cloud.
       </p>
 
       <!-- Codes are redeemed on the website; the app reacts to the balance push -->

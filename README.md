@@ -31,6 +31,24 @@ No account is required. Source builds send no telemetry and do not check for upd
 
 You need **Node.js 20+**, **Python 3.11+** with [uv](https://docs.astral.sh/uv/), **Rust** (for the desktop shell), and **FFmpeg** on `PATH`. Everything goes through the dev CLI at `tools/stimma` (it self-installs Deno on first run; run it with no args for full help):
 
+For this fork's Codex + Modal environment, a Stimma account and LLM API key are
+not required. An installed, ChatGPT-authenticated Codex CLI is detected
+automatically:
+
+```bash
+infra/bin/bootstrap-local.sh
+infra/bin/setup-modal.sh --interactive  # only when Modal GPU tools are wanted
+infra/bin/start-gateway.sh
+infra/bin/start-stimma.sh
+```
+
+Codex agents can perform and verify the handoff with the repo skill:
+`$stimma-local-setup`. Credentials remain in Codex, Modal, or
+`~/.config/adp-comfy`; they must never be committed.
+The infra launcher also registers the local STP gateway at
+`ws://127.0.0.1:8188/stp-v1`, so a fresh profile sees the Modal tools without
+manual YAML edits.
+
 ```bash
 tools/stimma dev all        # backend + frontend + Tauri shell, merged logs
 ```

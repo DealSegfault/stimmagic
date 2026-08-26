@@ -3,14 +3,15 @@
 # setup-modal.sh - Automated Modal & Containers Setup for ComfyUI / Stimma Agent
 # ==============================================================================
 # Usage:
-#   ./bin/setup-modal.sh
-#   HF_TOKEN="hf_..." MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." ./bin/setup-modal.sh
-#   ./bin/setup-modal.sh --hf-token "hf_..." --modal-token-id "ak-..." --modal-token-secret "as-..."
+#   ./infra/bin/setup-modal.sh
+#   HF_TOKEN="hf_..." MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." ./infra/bin/setup-modal.sh
+#   ./infra/bin/setup-modal.sh --hf-token "hf_..." --modal-token-id "ak-..." --modal-token-secret "as-..."
 # ==============================================================================
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$INFRA_ROOT/.." && pwd)"
 CONFIG_DIR="$HOME/.config/adp-comfy"
 PROXY_TOKEN_FILE="$CONFIG_DIR/modal-proxy-token.json"
 
@@ -47,11 +48,12 @@ CLI_MODAL_TOKEN_ID="${MODAL_TOKEN_ID:-}"
 CLI_MODAL_TOKEN_SECRET="${MODAL_TOKEN_SECRET:-}"
 SKIP_DOWNLOADS=0
 SKIP_LIPSYNC=0
+SKIP_TRELLIS2=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -i|--interactive)
-      exec python3 "$ROOT/bin/setup-interactive.py"
+      exec python3 "$INFRA_ROOT/bin/setup-interactive.py"
       ;;
     --hf-token)
       CLI_HF_TOKEN="$2"
@@ -73,8 +75,12 @@ while [[ $# -gt 0 ]]; do
       SKIP_LIPSYNC=1
       shift
       ;;
+    --skip-trellis2)
+      SKIP_TRELLIS2=1
+      shift
+      ;;
     -h|--help)
-      echo "Usage: ./bin/setup-modal.sh [OPTIONS]"
+      echo "Usage: ./infra/bin/setup-modal.sh [OPTIONS]"
       echo ""
       echo "Options:"
       echo "  -i, --interactive             Launch interactive setup wizard (recommandé pour CLI/Codex)"
@@ -83,6 +89,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --modal-token-secret <SECRET> Modal Token Secret (as-...)"
       echo "  --skip-downloads              Skip pre-populating Modal volumes"
       echo "  --skip-lipsync                Skip deploying Maya LatentSync"
+      echo "  --skip-trellis2               Skip deploying TRELLIS.2 image-to-3D"
       echo "  -h, --help                    Show this help message"
       exit 0
       ;;
@@ -163,7 +170,8 @@ if [ -z "$CLI_HF_TOKEN" ]; then
     CLI_HF_TOKEN="$HF_TOKEN"
   else
     echo -n "Entrez votre Hugging Face Token (hf_...) : "
-    read -r CLI_HF_TOKEN
+    read -r -s CLI_HF_TOKEN
+    echo ""
   fi
 fi
 
@@ -182,47 +190,59 @@ fi
 log_step "4/6 : Configuration des Tokens Proxy de sécurité"
 
 mkdir -p "$CONFIG_DIR"
-if [ ! -f "$PROXY_TOKEN_FILE" ]; then
-  log_info "Génération des clés d'accès proxy sécurisées..."
-  GEN_KEY=$(python3 -c "import secrets; print('key_' + secrets.token_hex(16))")
-  GEN_SECRET=$(python3 -c "import secrets; print('sec_' + secrets.token_hex(24))")
-  cat <<EOF > "$PROXY_TOKEN_FILE"
-{
-  "Modal-Key": "$GEN_KEY",
-  "Modal-Secret": "$GEN_SECRET"
-}
-EOF
-  chmod 600 "$PROXY_TOKEN_FILE"
-  log_success "Fichier généré : $PROXY_TOKEN_FILE"
+if [ -f "$PROXY_TOKEN_FILE" ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["Modal-Key"].startswith("wk-") and d["Modal-Secret"].startswith("ws-")' "$PROXY_TOKEN_FILE" 2>/dev/null; then
+  log_success "Proxy Token Modal existant : $PROXY_TOKEN_FILE"
 else
-  log_success "Fichier de token proxy existant : $PROXY_TOKEN_FILE"
+  if [ -f "$PROXY_TOKEN_FILE" ]; then
+    log_warn "Le fichier proxy existant n'est pas un Token Modal wk-/ws- valide ; il sera remplacé."
+  fi
+  log_info "Création d'un Proxy Token dans le workspace Modal..."
+  PROXY_JSON=$(modal workspace proxy-tokens create --json) || {
+    log_error "Impossible de créer le Proxy Token Modal."
+    exit 1
+  }
+  umask 077
+  printf '%s' "$PROXY_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); token={"Modal-Key":d["Modal-Key"],"Modal-Secret":d["Modal-Secret"]}; assert token["Modal-Key"].startswith("wk-") and token["Modal-Secret"].startswith("ws-"); open(sys.argv[1], "w").write(json.dumps(token, indent=2)+"\n")' "$PROXY_TOKEN_FILE" || {
+    log_error "Modal a renvoyé un Proxy Token dans un format inattendu."
+    exit 1
+  }
+  unset PROXY_JSON
+  chmod 600 "$PROXY_TOKEN_FILE"
+  log_success "Proxy Token Modal enregistré localement : $PROXY_TOKEN_FILE"
 fi
 
 # 5. Déploiement des Applications Modal
 log_step "5/6 : Déploiement des conteneurs Modal (Scale-to-Zero)"
 
 log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000 + B300 HD)..."
-cd "$ROOT"
+cd "$INFRA_ROOT"
 modal deploy --strategy recreate modal_h3.py
 log_success "Application 'comfyui-minimax-h3' déployée."
 
 log_info "2. Déploiement FLUX.1 Fill Repaint Service (NVIDIA L40S)..."
-cd "$ROOT/stimma"
+cd "$REPO_ROOT"
 modal deploy cloud_repaint/repaint_service.py
 log_success "Application 'stimma-flux-fill' déployée."
 
 if [ "$SKIP_LIPSYNC" -eq 0 ]; then
   log_info "3. Déploiement Maya LatentSync 1.6 LipSync (RTX PRO 6000)..."
-  cd "$ROOT"
+  cd "$INFRA_ROOT"
   modal deploy modal_latentsync.py
   log_success "Application 'maya-latentsync' déployée."
+fi
+
+if [ "$SKIP_TRELLIS2" -eq 0 ]; then
+  log_info "4. Déploiement TRELLIS.2 Image-to-3D (H100/H200)..."
+  cd "$INFRA_ROOT"
+  modal deploy modal_trellis2.py
+  log_success "Application 'stimma-trellis2' déployée."
 fi
 
 # 6. Téléchargement des Poids dans les Volumes Modal
 if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
   log_step "6/6 : Initialisation des Volumes Modal (Téléchargement direct dans le Cloud)"
   log_info "Téléchargement des modèles MiniMax H3..."
-  cd "$ROOT"
+  cd "$INFRA_ROOT"
   modal run modal_h3.py::download_models
   log_info "Téléchargement des modèles H3 full BF16 pour le worker B300 HD..."
   modal run modal_h3.py::download_hd_models
@@ -232,18 +252,24 @@ if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
 
   if [ -n "$CLI_HF_TOKEN" ]; then
     log_info "Téléchargement des modèles FLUX.1 Fill..."
-    cd "$ROOT/stimma"
+    cd "$REPO_ROOT"
     modal run cloud_repaint/repaint_service.py::download_models
   fi
 
   if [ "$SKIP_LIPSYNC" -eq 0 ]; then
     log_info "Téléchargement des modèles LatentSync..."
-    cd "$ROOT"
+    cd "$INFRA_ROOT"
     modal run modal_latentsync.py::download_models
   fi
 
+  if [ "$SKIP_TRELLIS2" -eq 0 ]; then
+    log_info "Téléchargement des modèles TRELLIS.2..."
+    cd "$INFRA_ROOT"
+    modal run modal_trellis2.py::download_models
+  fi
+
   log_info "Vérification de l'inventaire distant..."
-  cd "$ROOT"
+  cd "$INFRA_ROOT"
   modal run modal_h3.py::model_inventory
 else
   log_info "Téléchargement des poids ignoré (--skip-downloads)."
@@ -259,7 +285,7 @@ printf "${COLOR_RESET}"
 
 echo ""
 echo "Prochaines étapes pour démarrer :"
-echo "  1. Lancer la passerelle locale : bin/start-gateway.sh"
-echo "  2. Lancer l'interface Stimma    : bin/start-stimma.sh"
-echo "  3. Suivre l'état et les coûts   : bin/status.sh"
+echo "  1. Lancer la passerelle locale : infra/bin/start-gateway.sh"
+echo "  2. Lancer l'interface Stimma    : infra/bin/start-stimma.sh"
+echo "  3. Suivre l'état et les coûts   : infra/bin/status.sh"
 echo ""

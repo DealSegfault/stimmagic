@@ -50,7 +50,8 @@ CODEX_IMAGE_MAX_SIDE = 1024
 CODEX_IMAGE_JPEG_QUALITY = 85
 
 
-def _codex_executable() -> str:
+def find_codex_executable() -> Optional[str]:
+    """Return the installed Codex CLI without touching its credentials."""
     configured = os.environ.get("STIMMA_CODEX_CLI", "").strip()
     candidates = [
         configured,
@@ -62,6 +63,13 @@ def _codex_executable() -> str:
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return candidate
+    return None
+
+
+def _codex_executable() -> str:
+    executable = find_codex_executable()
+    if executable:
+        return executable
     raise CodexCLIError(
         "Codex CLI was not found. Install it or set STIMMA_CODEX_CLI to its executable path."
     )

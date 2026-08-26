@@ -52,6 +52,74 @@ def expand_env_vars(value: Any) -> Any:
     return value
 
 
+def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> None:
+    """Expose an installed Codex CLI as a built-in, keyless LLM provider.
+
+    The provider is runtime-only: Codex owns the ChatGPT login and Stimma never
+    reads or persists its credentials. An existing entry, including a deleted
+    one, is respected so disconnecting the provider remains sticky.
+    """
+    if not executable:
+        return
+
+    providers = config_data.setdefault('llm_providers', [])
+    if any(provider.get('kind') == 'codex_cli' for provider in providers):
+        return
+
+    model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-5.6-luna').strip()
+    if not model_id:
+        model_id = 'gpt-5.6-luna'
+    providers.append({
+        'id': 'codex-cli',
+        'kind': 'codex_cli',
+        'name': 'Codex CLI · ChatGPT',
+        'base_url': 'codex-cli://local',
+        'enabled': True,
+        'models': [{
+            'id': f'codex-cli:{model_id}',
+            'model_id': model_id,
+            'name': 'GPT-5.6 Luna · ChatGPT' if model_id == 'gpt-5.6-luna' else model_id,
+            'model_vendor': 'openai',
+            'enabled': True,
+            'max_context_tokens': 256_000,
+            'input_modalities': ['text', 'image'],
+            'supports_tools': True,
+            'reasoning': {
+                'mode': 'optional',
+                'levels': ['low', 'medium', 'high'],
+                'default': 'low',
+                'quick_task': 'low',
+                'control': 'none',
+                'wire_levels': {},
+            },
+            'content_policy_enabled': True,
+            'reasoning_control_source': 'manual',
+        }],
+    })
+
+
+def _inject_modal_gateway_provider(config_data: dict, gateway_url: str) -> None:
+    """Register this fork's local STP gateway when its launcher enables it."""
+    gateway_url = gateway_url.strip()
+    if not gateway_url:
+        return
+
+    providers = config_data.setdefault('tool_providers', [])
+    if any(
+        provider.get('id') == 'comfyui-modal-h3'
+        or provider.get('url') == gateway_url
+        for provider in providers
+    ):
+        return
+    providers.append({
+        'id': 'comfyui-modal-h3',
+        'name': 'ComfyUI · Modal H3',
+        'type': 'websocket',
+        'url': gateway_url,
+        'enabled': True,
+    })
+
+
 def _get_builtin_default_config() -> dict:
     """Return minimal default config structure for first-run initialization."""
     return {
@@ -1007,6 +1075,16 @@ class Settings(BaseSettings):
 
         # Expand environment variables in all string values
         config_data = expand_env_vars(config_data)
+
+        # Codex CLI is a local authenticated transport. Register it when the
+        # executable exists; the CLI continues to own ChatGPT OAuth and no API
+        # key is copied into Stimma's configuration.
+        from codex_cli import find_codex_executable
+        _inject_codex_cli_provider(config_data, find_codex_executable())
+        _inject_modal_gateway_provider(
+            config_data,
+            os.environ.get('STIMMA_MODAL_GATEWAY_URL', ''),
+        )
 
         # Retired global model choices. Deliberately NOT migrated into the
         # per-profile settings: they were a chat model and a background model,

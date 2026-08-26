@@ -1,6 +1,10 @@
 # Manuel d'Installation et Déploiement Modal (MAN_MODAL)
 
-Guide complet pour configurer automatiquement l'infrastructure GPU **Modal** (ComfyUI MiniMax H3, FLUX.1 Fill Repaint, LatentSync LipSync) pour votre agent **Stimma / Antigravity**.
+Guide complet pour configurer automatiquement l'infrastructure GPU **Modal** (ComfyUI MiniMax H3, FLUX.1 Fill Repaint, LatentSync LipSync et TRELLIS.2) pour votre agent **Stimma / Codex**.
+
+Stimma fonctionne sans compte Stimma. Le chat utilise la session ChatGPT déjà
+gérée par Codex CLI ; aucune clé API LLM n'est nécessaire. Modal et Hugging
+Face restent des services séparés, utilisés uniquement pour les outils GPU.
 
 ---
 
@@ -36,9 +40,9 @@ graph LR
 
 ---
 
-## 2. Prérequis (Clés & Tokens)
+## 2. Prérequis (Clés & Tokens GPU)
 
-Vous n'avez besoin que de **deux comptes / tokens** :
+Pour déployer les outils GPU, vous avez besoin de **deux comptes / tokens** :
 
 ### A. Clé API Modal (`MODAL_TOKEN_ID` & `MODAL_TOKEN_SECRET`)
 1. Créez un compte sur [modal.com](https://modal.com).
@@ -60,9 +64,10 @@ Idéal pour être guidé étape par étape directement dans votre CLI de code ou
 
 ```bash
 # Lancer l'assistant interactif pas-à-pas
-python3 bin/setup-interactive.py
+infra/bin/bootstrap-local.sh
+python3 infra/bin/setup-interactive.py
 # ou
-./bin/setup-modal.sh --interactive
+./infra/bin/setup-modal.sh --interactive
 ```
 
 L'assistant interactif :
@@ -81,7 +86,7 @@ Si votre agent dispose déjà des variables d'environnement :
 HF_TOKEN="hf_votre_token" \
 MODAL_TOKEN_ID="ak_votre_token_id" \
 MODAL_TOKEN_SECRET="as_votre_token_secret" \
-./bin/setup-modal.sh
+./infra/bin/setup-modal.sh
 ```
 
 ### Option C : Via Codex CLI / Antigravity CLI
@@ -90,7 +95,7 @@ Si vous pilotez l'installation via Codex CLI ou un agent autonome :
 
 ```bash
 # Exécution directe via Codex CLI
-codex exec "python3 bin/setup-interactive.py --non-interactive --hf-token 'hf_...' --modal-token-id 'ak-...' --modal-token-secret 'as-...'"
+codex exec "Configure ce dépôt avec le skill \$stimma-local-setup. Demande-moi les secrets au moment nécessaire et ne les écris jamais dans Git."
 ```
 
 ---
@@ -116,12 +121,21 @@ modal token set --token-id <VOTRE_TOKEN_ID> --token-secret <VOTRE_TOKEN_SECRET>
 modal secret create huggingface HF_TOKEN="<VOTRE_HF_TOKEN>" --force
 ```
 
-### Étape 4 : Configurer le token proxy local
-Créez le fichier `~/.config/adp-comfy/modal-proxy-token.json` avec des identifiants de protection :
+### Étape 4 : Configurer le Proxy Token Modal
+Créez un vrai Proxy Token Modal. Un Token API `ak-/as-` ou une chaîne aléatoire
+ne peut pas authentifier un endpoint `requires_proxy_auth` :
+
+```bash
+modal workspace proxy-tokens create --json
+```
+
+Enregistrez la paire affichée dans
+`~/.config/adp-comfy/modal-proxy-token.json` (le script automatisé le fait sans
+l'afficher de nouveau) :
 ```json
 {
-  "Modal-Key": "key_secret_local",
-  "Modal-Secret": "sec_secret_local"
+  "Modal-Key": "wk-...",
+  "Modal-Secret": "ws-..."
 }
 ```
 Puis protégez les droits :
@@ -132,26 +146,33 @@ chmod 600 ~/.config/adp-comfy/modal-proxy-token.json
 ### Étape 5 : Déployer les conteneurs Modal
 ```bash
 # 1. ComfyUI + MiniMax H3 + Music 3
-modal deploy --strategy recreate modal_h3.py
+modal deploy --strategy recreate infra/modal_h3.py
 
 # 2. FLUX.1 Fill Repaint
-modal deploy stimma/cloud_repaint/repaint_service.py
+modal deploy cloud_repaint/repaint_service.py
 
 # 3. Maya LatentSync 1.6
-modal deploy modal_latentsync.py
+modal deploy infra/modal_latentsync.py
+
+# 4. TRELLIS.2 Image-to-3D
+modal deploy infra/modal_trellis2.py
 ```
 
 ### Étape 6 : Télécharger les modèles dans les Volumes Modal
 ```bash
 # Modèles MiniMax H3 & Music 3
-modal run modal_h3.py::download_models
-modal run modal_h3.py::download_music_models
+modal run infra/modal_h3.py::download_models
+modal run infra/modal_h3.py::download_hd_models
+modal run infra/modal_h3.py::download_music_models
 
 # Modèle FLUX.1 Fill
-modal run stimma/cloud_repaint/repaint_service.py::download_models
+modal run cloud_repaint/repaint_service.py::download_models
 
 # Modèle LatentSync
-modal run modal_latentsync.py::download_models
+modal run infra/modal_latentsync.py::download_models
+
+# Modèles TRELLIS.2
+modal run infra/modal_trellis2.py::download_models
 ```
 
 ---
@@ -189,7 +210,7 @@ gateway ou dans le gestionnaire de secrets de la machine ; ils ne doivent pas
 ### Génération d'assets 3D avec TRELLIS.2
 
 Le pipeline image-vers-GLB dédié est défini dans
-`/Users/mac/adp/comfy/modal_trellis2.py`. Il utilise CUDA 12.4, le modèle
+`infra/modal_trellis2.py`. Il utilise CUDA 12.4, le modèle
 `microsoft/TRELLIS.2-4B`, une fonction GPU H100/H200 par image et une API
 asynchrone protégée par Proxy Token. Le batch Stimma limite le parallélisme et
 réutilise les Volumes Modal pour éviter de re-télécharger les poids.
@@ -197,9 +218,8 @@ réutilise les Volumes Modal pour éviter de re-télécharger les poids.
 Déployer puis préchauffer le Volume :
 
 ```bash
-cd /Users/mac/adp/comfy
-modal deploy modal_trellis2.py
-modal run modal_trellis2.py::download_models
+modal deploy infra/modal_trellis2.py
+modal run infra/modal_trellis2.py::download_models
 ```
 
 TRELLIS.2 also loads the gated DINOv3 image encoder. Accept the model terms on
@@ -208,8 +228,8 @@ secret enabled:
 
 ```bash
 modal secret create huggingface HF_TOKEN="hf_..." --force
-modal deploy modal_trellis2.py
-modal run modal_trellis2.py::download_models
+modal deploy infra/modal_trellis2.py
+modal run infra/modal_trellis2.py::download_models
 ```
 
 Without this secret, the health endpoint remains available but GPU generation
@@ -217,7 +237,7 @@ stops when the gated DINOv3 checkpoint is requested.
 
 Le déploiement affiche l'URL de la fonction `api`. Définissez cette URL et les
 deux Proxy Tokens dans l'environnement du backend Stimma, en vous basant sur
-`stimma/infra/modal-trellis2.env.example`. La page `Projet → 3D assets` reste
+`infra/modal-trellis2.env.example`. La page `Projet → 3D assets` reste
 désactivée tant que `/api/trellis2/health` ne confirme pas la configuration.
 
 Chaque GLB terminé est ingéré comme Media, promu en Asset, rattaché au projet
@@ -226,7 +246,7 @@ prévisualiser et le fichier original reste téléchargeable.
 
 Pour que l'agent Stimma communique avec le cluster Modal, assurez-vous que la configuration locale contient le provider websocket.
 
-Fichier de configuration de dev (`~/Library/Application Support/ai.stimma.stimma.debug/default/config.yaml` ou `stimma/config.default.yaml`) :
+Fichier de configuration de dev (`~/Library/Application Support/ai.stimma.stimma.debug/default/config.yaml` ou `config.default.yaml`) :
 
 ```yaml
 tool_providers:
@@ -249,10 +269,10 @@ Les workflows exposés à l'agent incluent :
 
 | Action | Commande | Description |
 | :--- | :--- | :--- |
-| **Démarrer la passerelle** | `bin/start-gateway.sh` | Lance le proxy bridge (`:8190`) et le serveur STP ComfyUI (`:8188`) avec auto-restart. |
-| **Démarrer Stimma** | `bin/start-stimma.sh` | Lance l'interface utilisateur Stimma en mode développement. |
-| **Statut & Facturation** | `bin/status.sh` | Affiche les conteneurs actifs et la consommation GPU du jour en dollars. |
-| **Arrêt d'urgence** | `bin/emergency-stop.sh` | Coupe immédiatement tous les conteneurs Modal distants actifs. |
+| **Démarrer la passerelle** | `infra/bin/start-gateway.sh` | Lance le proxy bridge (`:8190`) et le serveur STP ComfyUI (`:8188`) avec auto-restart. |
+| **Démarrer Stimma** | `infra/bin/start-stimma.sh` | Lance l'interface utilisateur Stimma en mode développement. |
+| **Statut & Facturation** | `infra/bin/status.sh` | Affiche les conteneurs actifs et la consommation GPU du jour en dollars. |
+| **Arrêt d'urgence** | `infra/bin/emergency-stop.sh` | Coupe immédiatement tous les conteneurs Modal distants actifs. |
 
 ---
 
@@ -265,7 +285,7 @@ Les poids restent stockés sur les disques persistants Modal (Volumes) :
 
 ### Vérifier l'inventaire distant sans démarrer de GPU :
 ```bash
-modal run modal_h3.py::model_inventory
+modal run infra/modal_h3.py::model_inventory
 ```
 
 ---
@@ -273,7 +293,9 @@ modal run modal_h3.py::model_inventory
 ## 8. Résolution des Problèmes (Troubleshooting)
 
 ### A. Erreur `Modal proxy token is missing`
-Exécutez `bin/setup-modal.sh` ou créez le fichier `~/.config/adp-comfy/modal-proxy-token.json`.
+Exécutez `infra/bin/setup-modal.sh` pour créer un vrai Proxy Token Modal
+`wk-/ws-`, ou créez-le avec `modal workspace proxy-tokens create --json` puis
+enregistrez-le dans `~/.config/adp-comfy/modal-proxy-token.json`.
 
 ### B. Erreur 403 / 401 sur le téléchargement de FLUX Fill
 Vérifiez que votre `HF_TOKEN` est valide et que vous avez accepté la licence sur [black-forest-labs/FLUX.1-Fill-dev](https://huggingface.co/black-forest-labs/FLUX.1-Fill-dev).
@@ -286,6 +308,6 @@ modal secret create huggingface HF_TOKEN="hf_..." --force
 Au premier appel après une période d'inactivité, Modal provisionne l'instance GPU et charge les modèles (~15 à 30 secondes). Les générations suivantes sur le conteneur chaud sont quasi-instantanées.
 
 ### D. Redémarrage propre en cas de blocage
-1. Arrêtez `bin/start-gateway.sh` avec `Ctrl+C`.
-2. Lancez `bin/emergency-stop.sh` pour stopper les conteneurs distants.
-3. Relancez `bin/start-gateway.sh`.
+1. Arrêtez `infra/bin/start-gateway.sh` avec `Ctrl+C`.
+2. Lancez `infra/bin/emergency-stop.sh` pour stopper les conteneurs distants.
+3. Relancez `infra/bin/start-gateway.sh`.

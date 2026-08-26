@@ -9,8 +9,8 @@ from database import Chat, ChatItem
 
 @pytest.mark.asyncio
 async def test_generation_detection_for_both_agy_and_codex():
-    assert _is_generation_tool_call("bash", json.dumps({"command": "/Users/mac/.local/bin/agy --print 'cat'"})) is True
-    assert _is_generation_tool_call("bash", json.dumps({"command": "/Users/mac/.local/bin/codex exec 'dog'"})) is True
+    assert _is_generation_tool_call("bash", json.dumps({"command": "agy --print 'cat'"})) is True
+    assert _is_generation_tool_call("bash", json.dumps({"command": "codex exec 'dog'"})) is True
     assert _is_generation_tool_call("bash", json.dumps({"command": "ls -la"})) is False
 
 

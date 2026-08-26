@@ -1,14 +1,23 @@
 # Guide de Setup Modal (Interactif & Automatisé)
 
-Consultez le manuel complet et détaillé : **[MAN_MODAL.md](file:///Users/mac/adp/comfy/MAN_MODAL.md)**
+Consultez le manuel complet et détaillé : **[MAN_MODAL.md](MAN_MODAL.md)**
+
+Depuis la racine du dépôt, préparez d'abord le runtime local (Codex CLI doit
+déjà être connecté à ChatGPT) :
+
+```bash
+infra/bin/bootstrap-local.sh
+```
+
+Aucun compte Stimma ni clé API LLM n'est requis.
 
 ## 1. Démarrage Interactif (CLI / Codex / Terminal)
 
 ```bash
 # Assistant interactif étape par étape
-python3 bin/setup-interactive.py
+python3 infra/bin/setup-interactive.py
 # ou
-./bin/setup-modal.sh -i
+./infra/bin/setup-modal.sh -i
 ```
 
 ## 2. Démarrage Rapide 1-Ligne (Variables d'environnement)
@@ -19,13 +28,13 @@ export MODAL_TOKEN_ID="ak-..."
 export MODAL_TOKEN_SECRET="as-..."
 
 # Installation automatique de tous les conteneurs Modal
-./bin/setup-modal.sh
+./infra/bin/setup-modal.sh
 ```
 
 ## 3. Via Codex CLI / Agent Autonome
 
 ```bash
-codex exec "python3 bin/setup-interactive.py --non-interactive --hf-token 'hf_...' --modal-token-id 'ak-...' --modal-token-secret 'as-...'"
+codex exec "Configure ce dépôt avec le skill \$stimma-local-setup. Demande-moi les secrets au moment nécessaire et ne les écris jamais dans Git."
 ```
 
-Consultez [MAN_MODAL.md](file:///Users/mac/adp/comfy/MAN_MODAL.md) pour les détails d'architecture, les options manuelles et le troubleshooting.
+Consultez [MAN_MODAL.md](MAN_MODAL.md) pour les détails d'architecture, les options manuelles et le troubleshooting.

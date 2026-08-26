@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stimma Local Setup"
+  short_description: "Set up Codex, Modal, and local Stimma"
+  default_prompt: "Use $stimma-local-setup to configure this checkout without a Stimma account."

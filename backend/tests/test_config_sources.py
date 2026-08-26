@@ -5,12 +5,54 @@ import pytest
 import yaml
 from sqlalchemy import func, select
 
-from config import Settings, ensure_config_exists, reload_settings
+from config import (
+    Settings,
+    _inject_codex_cli_provider,
+    _inject_modal_gateway_provider,
+    ensure_config_exists,
+    reload_settings,
+)
 from config_writer import remove_profile_section
 from background_work_filters import media_eligible_for_background_work
 from database import MediaItem
 from storage_service import register_external_asset
 from tests.helpers.media import create_media_item, generate_test_image
+
+
+def test_installed_codex_cli_is_registered_without_api_key():
+    config_data = {}
+
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+
+    provider = config_data["llm_providers"][0]
+    assert provider["kind"] == "codex_cli"
+    assert provider["base_url"] == "codex-cli://local"
+    assert "api_key" not in provider
+    assert provider["models"][0]["model_id"] == "gpt-5.6-luna"
+
+
+def test_codex_cli_registration_respects_existing_provider():
+    existing = {"kind": "codex_cli", "deleted_at": "2026-08-26T00:00:00Z"}
+    config_data = {"llm_providers": [existing]}
+
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+
+    assert config_data["llm_providers"] == [existing]
+
+
+def test_modal_gateway_registration_is_runtime_only_and_idempotent():
+    config_data = {}
+
+    _inject_modal_gateway_provider(config_data, "ws://127.0.0.1:8188/stp-v1")
+    _inject_modal_gateway_provider(config_data, "ws://127.0.0.1:8188/stp-v1")
+
+    assert config_data["tool_providers"] == [{
+        "id": "comfyui-modal-h3",
+        "name": "ComfyUI · Modal H3",
+        "type": "websocket",
+        "url": "ws://127.0.0.1:8188/stp-v1",
+        "enabled": True,
+    }]
 
 
 def test_legacy_destination_roles_become_hidden_migration_roots(tmp_path, monkeypatch):

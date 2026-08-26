@@ -7,4 +7,6 @@ if [ "${1-}" = "tauri" ]; then
   shift
 fi
 
-exec /Users/mac/adp/comfy/stimma/frontend/node_modules/.bin/tauri "$@"
+INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$INFRA_ROOT/.." && pwd)"
+exec "$REPO_ROOT/frontend/node_modules/.bin/tauri" "$@"

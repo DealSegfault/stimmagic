@@ -777,11 +777,17 @@ def _has_cloud_balance() -> bool:
 
 
 def _has_local_agent_llm_configured(settings) -> bool:
-    """Config presence for the 'agent' role's custom endpoint, regardless of
-    which source ('auto'/'stimma_cloud'/'endpoint') is currently selected —
-    a filled-in endpoint is a real fallback either way (see llm_resolver's
-    'auto' handling).
-    """
+    """Whether an enabled non-cloud LLM is available to the agent."""
+    for provider in getattr(settings, 'llm_providers', []):
+        if (
+            getattr(provider, 'enabled', False)
+            and not getattr(provider, 'deleted_at', None)
+            and getattr(provider, 'last_test_passed', None) is not False
+            and any(model.enabled for model in getattr(provider, 'models', []))
+        ):
+            return True
+
+    # Legacy custom endpoint fallback.
     role_config = settings.llms.get('agent')
     if not role_config or not role_config.endpoint:
         return False

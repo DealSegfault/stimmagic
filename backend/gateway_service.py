@@ -17,8 +17,8 @@ from utils.websocket import ws_manager
 
 log = get_logger(__name__)
 
-ROOT_DIR = Path("/Users/mac/adp/comfy")
-GATEWAY_SCRIPT = ROOT_DIR / "bin" / "start-gateway.sh"
+REPO_ROOT = Path(__file__).resolve().parent.parent
+GATEWAY_SCRIPT = REPO_ROOT / "infra" / "bin" / "start-gateway.sh"
 
 
 def is_port_listening(port: int, host: str = "127.0.0.1") -> bool:
@@ -90,7 +90,7 @@ class GatewayService:
             log.info("Starting gateway supervisor", script=str(GATEWAY_SCRIPT))
             self._process = await asyncio.create_subprocess_exec(
                 str(GATEWAY_SCRIPT),
-                cwd=str(ROOT_DIR),
+                cwd=str(REPO_ROOT),
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
                 start_new_session=True,

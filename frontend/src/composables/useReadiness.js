@@ -7,8 +7,8 @@
  *  - the cached readiness value + a refresh helper
  *  - the setup-wizard show/seen logic. The wizard is VERSIONED on the
  *    backend (SETUP_WIZARD_VERSION in routes/settings.py, persisted as
- *    config `setup_wizard_seen_version`): it auto-shows whenever the
- *    persisted seen version is behind the current version, and any
+ *    config `setup_wizard_seen_version`): incomplete installs see it whenever
+ *    the persisted seen version is behind the current version, and any
  *    dismissal marks the current version seen via
  *    POST /api/settings/setup-wizard-seen. Bumping the backend constant
  *    re-runs the wizard for every install that hasn't seen the new one.
@@ -89,6 +89,7 @@ const shouldShowPanel = computed(() => {
   if (dismissedForSession.value) return false
   const r = readiness.value
   if (!r) return false
+  if (r.ready) return false
   return (r.wizard_seen_version ?? 0) < (r.wizard_version ?? 0)
 })
 

@@ -1,15 +1,17 @@
 #!/bin/sh
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUNTIME_ROOT="${STIMMA_RUNTIME_DIR:-$INFRA_ROOT/.runtime}"
+COMFY_ROOT="$RUNTIME_ROOT/ComfyUI"
 TOKEN_FILE="${MODAL_PROXY_TOKEN_FILE:-$HOME/.config/adp-comfy/modal-proxy-token.json}"
 
 # Resolve Python environment that has modal installed
 MODAL_PY=""
 if [ -x "$HOME/.local/share/uv/tools/modal/bin/python" ]; then
   MODAL_PY="$HOME/.local/share/uv/tools/modal/bin/python"
-elif [ -x "$ROOT/ComfyUI/.venv/bin/python" ]; then
-  MODAL_PY="$ROOT/ComfyUI/.venv/bin/python"
+elif [ -x "$COMFY_ROOT/.venv/bin/python" ]; then
+  MODAL_PY="$COMFY_ROOT/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
   MODAL_PY="python3"
 else
@@ -19,7 +21,12 @@ fi
 
 if [ ! -r "$TOKEN_FILE" ]; then
   echo "Modal proxy token is missing: $TOKEN_FILE" >&2
-  echo "Exécutez 'bin/setup-modal.sh' pour configurer automatiquement votre environnement." >&2
+  echo "Exécutez 'infra/bin/setup-modal.sh' pour configurer automatiquement votre environnement." >&2
+  exit 1
+fi
+
+if [ ! -f "$COMFY_ROOT/main.py" ] || [ ! -x "$COMFY_ROOT/.venv/bin/python" ]; then
+  echo "Runtime ComfyUI absent : exécutez 'infra/bin/bootstrap-local.sh'." >&2
   exit 1
 fi
 
@@ -38,11 +45,11 @@ TRELLIS2_MODAL_URL=$(
   "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("stimma-trellis2", "api").get_web_url())' \
   2>/dev/null || true
 )
-MODAL_PROXY_TOKEN_ID=$(jq -r '."Modal-Key"' "$TOKEN_FILE")
-MODAL_PROXY_TOKEN_SECRET=$(jq -r '."Modal-Secret"' "$TOKEN_FILE")
+MODAL_PROXY_TOKEN_ID=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Key"])' "$TOKEN_FILE")
+MODAL_PROXY_TOKEN_SECRET=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Secret"])' "$TOKEN_FILE")
 export COMFY_MODAL_URL COMFY_MODAL_HD_URL MODAL_PROXY_TOKEN_ID MODAL_PROXY_TOKEN_SECRET REPAINT_MODAL_URL TRELLIS2_MODAL_URL
 
-mkdir -p "$ROOT/logs"
+mkdir -p "$INFRA_ROOT/logs"
 
 BRIDGE_PID=""
 HD_BRIDGE_PID=""
@@ -69,12 +76,12 @@ trap cleanup INT TERM HUP EXIT
 
 start_bridge() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage modal_bridge.py..."
-  PYTHON_EXE="$ROOT/ComfyUI/.venv/bin/python"
+  PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
   if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi
-  "$PYTHON_EXE" "$ROOT/modal_bridge.py" \
-    >>"$ROOT/logs/modal-bridge.log" 2>&1 &
+  "$PYTHON_EXE" "$INFRA_ROOT/modal_bridge.py" \
+    >>"$INFRA_ROOT/logs/modal-bridge.log" 2>&1 &
   BRIDGE_PID=$!
 }
 
@@ -84,32 +91,32 @@ start_hd_bridge() {
     return
   fi
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage du proxy HD B300 (port 8191)..."
-  PYTHON_EXE="$ROOT/ComfyUI/.venv/bin/python"
+  PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
   if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi
   (
     COMFY_MODAL_URL="$COMFY_MODAL_HD_URL" MODAL_BRIDGE_PORT=8191 \
-      "$PYTHON_EXE" "$ROOT/modal_bridge.py" \
-      >>"$ROOT/logs/modal-bridge-hd.log" 2>&1
+      "$PYTHON_EXE" "$INFRA_ROOT/modal_bridge.py" \
+      >>"$INFRA_ROOT/logs/modal-bridge-hd.log" 2>&1
   ) &
   HD_BRIDGE_PID=$!
 }
 
 start_comfy() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage ComfyUI local STP (port 8188)..."
-  PYTHON_EXE="$ROOT/ComfyUI/.venv/bin/python"
+  PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
   if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi
   (
-    cd "$ROOT/ComfyUI"
+    cd "$COMFY_ROOT"
     exec "$PYTHON_EXE" main.py \
       --cpu \
       --listen 127.0.0.1 \
       --port 8188 \
       --disable-auto-launch \
-      --preview-method none >>"$ROOT/logs/comfyui.log" 2>&1
+      --preview-method none >>"$INFRA_ROOT/logs/comfyui.log" 2>&1
   ) &
   COMFY_PID=$!
 }
@@ -119,7 +126,7 @@ echo "Passerelle locale prête sur http://127.0.0.1:8188"
 if [ -n "$REPAINT_MODAL_URL" ]; then
   echo "Route Repaint Modal active via /repaint (GPU NVIDIA L40S 48 GB)."
 else
-  echo "Route Repaint Modal indisponible : déployez stimma/cloud_repaint/repaint_service.py." >&2
+  echo "Route Repaint Modal indisponible : déployez cloud_repaint/repaint_service.py." >&2
 fi
 echo "Ctrl-C arrête proprement la passerelle locale; le GPU Modal scale à zéro automatiquement."
 

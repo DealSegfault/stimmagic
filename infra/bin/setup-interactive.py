@@ -12,7 +12,6 @@ import argparse
 import getpass
 import json
 import os
-import secrets
 import shutil
 import subprocess
 import sys
@@ -30,6 +29,7 @@ DIM = "\033[2m"
 RESET = "\033[0m"
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+REPO_ROOT = ROOT_DIR.parent
 CONFIG_DIR = Path.home() / ".config" / "adp-comfy"
 PROXY_TOKEN_FILE = CONFIG_DIR / "modal-proxy-token.json"
 
@@ -144,7 +144,7 @@ def setup_modal_auth(modal_bin: str, token_id: Optional[str] = None, token_secre
     """Check or configure Modal credentials."""
     # Check if already authenticated
     code, out = run_cmd([modal_bin, "profile", "current"], capture=True)
-    is_active = (code == 0 and "profile" in out.lower() and not "no profile" in out.lower())
+    is_active = code == 0 and bool(out.strip()) and "no profile" not in out.lower()
 
     if is_active and not (token_id and token_secret):
         log_success(f"Session Modal déjà active ({out.strip()}).")
@@ -189,24 +189,51 @@ def setup_huggingface_secret(modal_bin: str, hf_token: Optional[str] = None) -> 
     return hf_token
 
 
-def setup_local_proxy_keys() -> None:
-    """Ensure ~/.config/adp-comfy/modal-proxy-token.json is valid."""
+def setup_local_proxy_keys(modal_bin: str) -> None:
+    """Create a real Modal Proxy Token and keep it outside the repository."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    if not PROXY_TOKEN_FILE.exists():
-        log_info("Génération de clés proxy locales sécurisées...")
-        key = f"key_{secrets.token_hex(16)}"
-        secret = f"sec_{secrets.token_hex(24)}"
-        PROXY_TOKEN_FILE.write_text(
-            json.dumps({"Modal-Key": key, "Modal-Secret": secret}, indent=2),
-            encoding="utf-8",
-        )
-        PROXY_TOKEN_FILE.chmod(0o600)
-        log_success(f"Fichier de clés proxy généré : {PROXY_TOKEN_FILE}")
-    else:
-        log_success(f"Fichier de clés proxy existant : {PROXY_TOKEN_FILE}")
+    if PROXY_TOKEN_FILE.exists():
+        try:
+            existing = json.loads(PROXY_TOKEN_FILE.read_text(encoding="utf-8"))
+            if existing["Modal-Key"].startswith("wk-") and existing["Modal-Secret"].startswith("ws-"):
+                log_success(f"Proxy Token Modal existant : {PROXY_TOKEN_FILE}")
+                return
+        except (KeyError, OSError, TypeError, ValueError):
+            pass
+        log_warn("Le fichier proxy existant n'est pas un Token Modal wk-/ws- valide ; il sera remplacé.")
+
+    log_info("Création d'un Proxy Token dans le workspace Modal...")
+    code, output = run_cmd(
+        [modal_bin, "workspace", "proxy-tokens", "create", "--json"],
+        capture=True,
+    )
+    if code != 0:
+        log_error("Impossible de créer le Proxy Token Modal.")
+        sys.exit(1)
+    try:
+        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        token = {
+            "Modal-Key": payload["Modal-Key"],
+            "Modal-Secret": payload["Modal-Secret"],
+        }
+        if not token["Modal-Key"].startswith("wk-") or not token["Modal-Secret"].startswith("ws-"):
+            raise ValueError("unexpected Modal token prefixes")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        log_error("Modal a renvoyé un Proxy Token dans un format inattendu.")
+        sys.exit(1)
+
+    PROXY_TOKEN_FILE.write_text(json.dumps(token, indent=2), encoding="utf-8")
+    PROXY_TOKEN_FILE.chmod(0o600)
+    log_success(f"Proxy Token Modal enregistré localement : {PROXY_TOKEN_FILE}")
 
 
-def deploy_apps(modal_bin: str, deploy_h3: bool = True, deploy_repaint: bool = True, deploy_latentsync: bool = True) -> None:
+def deploy_apps(
+    modal_bin: str,
+    deploy_h3: bool = True,
+    deploy_repaint: bool = True,
+    deploy_latentsync: bool = True,
+    deploy_trellis2: bool = True,
+) -> None:
     """Deploy Modal serverless applications."""
     if deploy_h3:
         log_info("1. Déploiement ComfyUI + MiniMax H3 + Music 3 (RTX PRO 6000)...")
@@ -218,7 +245,7 @@ def deploy_apps(modal_bin: str, deploy_h3: bool = True, deploy_repaint: bool = T
 
     if deploy_repaint:
         log_info("2. Déploiement FLUX.1 Fill Repaint (NVIDIA L40S)...")
-        code, out = run_cmd([modal_bin, "deploy", "cloud_repaint/repaint_service.py"], cwd=ROOT_DIR / "stimma")
+        code, out = run_cmd([modal_bin, "deploy", "cloud_repaint/repaint_service.py"], cwd=REPO_ROOT)
         if code != 0:
             log_error("Erreur lors du déploiement de stimma-flux-fill.")
         else:
@@ -232,8 +259,23 @@ def deploy_apps(modal_bin: str, deploy_h3: bool = True, deploy_repaint: bool = T
         else:
             log_success("maya-latentsync déployé.")
 
+    if deploy_trellis2:
+        log_info("4. Déploiement TRELLIS.2 Image-to-3D (H100/H200)...")
+        code, out = run_cmd([modal_bin, "deploy", "modal_trellis2.py"], cwd=ROOT_DIR)
+        if code != 0:
+            log_error("Erreur lors du déploiement de stimma-trellis2.")
+        else:
+            log_success("stimma-trellis2 déployé.")
 
-def populate_volumes(modal_bin: str, has_hf_token: bool, download_h3: bool = True, download_repaint: bool = True, download_latentsync: bool = True) -> None:
+
+def populate_volumes(
+    modal_bin: str,
+    has_hf_token: bool,
+    download_h3: bool = True,
+    download_repaint: bool = True,
+    download_latentsync: bool = True,
+    download_trellis2: bool = True,
+) -> None:
     """Pre-download weights directly into Modal cloud storage."""
     log_info("Initialisation des poids distants (0 Go téléchargés en local)...")
 
@@ -247,11 +289,15 @@ def populate_volumes(modal_bin: str, has_hf_token: bool, download_h3: bool = Tru
 
     if download_repaint and has_hf_token:
         log_info("Téléchargement des poids FLUX.1 Fill Dev...")
-        run_cmd([modal_bin, "run", "cloud_repaint/repaint_service.py::download_models"], cwd=ROOT_DIR / "stimma")
+        run_cmd([modal_bin, "run", "cloud_repaint/repaint_service.py::download_models"], cwd=REPO_ROOT)
 
     if download_latentsync:
         log_info("Téléchargement des poids LatentSync...")
         run_cmd([modal_bin, "run", "modal_latentsync.py::download_models"], cwd=ROOT_DIR)
+
+    if download_trellis2:
+        log_info("Téléchargement des poids TRELLIS.2...")
+        run_cmd([modal_bin, "run", "modal_trellis2.py::download_models"], cwd=ROOT_DIR)
 
     log_info("Inventaire des modèles dans le volume Modal...")
     run_cmd([modal_bin, "run", "modal_h3.py::model_inventory"], cwd=ROOT_DIR)
@@ -287,20 +333,22 @@ def main() -> None:
 
     # 4. Clés Proxy Locales
     log_step(4, TOTAL_STEPS, "Sécurisation de la Passerelle Proxy")
-    setup_local_proxy_keys()
+    setup_local_proxy_keys(modal_bin)
 
     # 5. Déploiement Conteneurs
     log_step(5, TOTAL_STEPS, "Déploiement des Applications Modal (Scale-to-Zero)")
     deploy_h3 = True
     deploy_repaint = True
     deploy_latentsync = True
+    deploy_trellis2 = True
 
     if not args.non_interactive and sys.stdin.isatty():
         deploy_h3 = prompt_bool("Déployer ComfyUI MiniMax H3 & Music 3 ?", True)
         deploy_repaint = prompt_bool("Déployer FLUX.1 Fill Repaint ?", True)
         deploy_latentsync = prompt_bool("Déployer Maya LatentSync 1.6 ?", True)
+        deploy_trellis2 = prompt_bool("Déployer TRELLIS.2 Image-to-3D ?", True)
 
-    deploy_apps(modal_bin, deploy_h3, deploy_repaint, deploy_latentsync)
+    deploy_apps(modal_bin, deploy_h3, deploy_repaint, deploy_latentsync, deploy_trellis2)
 
     # 6. Volumes
     log_step(6, TOTAL_STEPS, "Initialisation des Volumes Distants")
@@ -311,16 +359,23 @@ def main() -> None:
         if not args.non_interactive and sys.stdin.isatty():
             do_download = prompt_bool("Télécharger immédiatement les modèles dans les Volumes Modal ?", True)
         if do_download:
-            populate_volumes(modal_bin, bool(hf_token), deploy_h3, deploy_repaint, deploy_latentsync)
+            populate_volumes(
+                modal_bin,
+                bool(hf_token),
+                deploy_h3,
+                deploy_repaint,
+                deploy_latentsync,
+                deploy_trellis2,
+            )
 
     # Résumé
     print(f"\n{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}")
     print(f"{GREEN}{BOLD}             CONFIGURATION MODAL TERMINÉE AVEC SUCCÈS !          {RESET}")
     print(f"{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}\n")
-    print(f"Pour démarrer votre environnement de travail :")
-    print(f"  {CYAN}1. Démarrer la passerelle locale :{RESET}  bin/start-gateway.sh")
-    print(f"  {CYAN}2. Démarrer l'interface Stimma    :{RESET}  bin/start-stimma.sh")
-    print(f"  {CYAN}3. Vérifier l'état & les coûts    :{RESET}  bin/status.sh\n")
+    print("Pour démarrer votre environnement de travail :")
+    print(f"  {CYAN}1. Démarrer la passerelle locale :{RESET}  infra/bin/start-gateway.sh")
+    print(f"  {CYAN}2. Démarrer l'interface Stimma    :{RESET}  infra/bin/start-stimma.sh")
+    print(f"  {CYAN}3. Vérifier l'état & les coûts    :{RESET}  infra/bin/status.sh\n")
 
 
 if __name__ == "__main__":

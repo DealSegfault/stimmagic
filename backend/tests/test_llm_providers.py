@@ -81,6 +81,34 @@ def test_generation_readiness_accepts_configured_external_provider():
     assert settings_route._has_local_generation_provider_configured(settings) is True
 
 
+def test_agent_readiness_accepts_keyless_codex_cli_provider():
+    settings = SimpleNamespace(
+        llm_providers=[SimpleNamespace(
+            enabled=True,
+            deleted_at=None,
+            last_test_passed=None,
+            models=[SimpleNamespace(enabled=True)],
+        )],
+        llms={},
+    )
+
+    assert settings_route._has_local_agent_llm_configured(settings) is True
+
+
+def test_agent_readiness_rejects_failed_cli_provider():
+    settings = SimpleNamespace(
+        llm_providers=[SimpleNamespace(
+            enabled=True,
+            deleted_at=None,
+            last_test_passed=False,
+            models=[SimpleNamespace(enabled=True)],
+        )],
+        llms={},
+    )
+
+    assert settings_route._has_local_agent_llm_configured(settings) is False
+
+
 def test_readiness_carries_setup_wizard_versions(monkeypatch):
     settings = SimpleNamespace(
         tool_providers=[],

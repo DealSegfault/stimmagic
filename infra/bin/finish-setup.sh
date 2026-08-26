@@ -13,4 +13,4 @@ echo "Inventaire distant..."
 cd "$ROOT"
 modal run modal_h3.py::model_inventory
 
-echo "Configuration terminée. Lancez bin/start-gateway.sh puis bin/start-stimma.sh."
+echo "Configuration terminée. Lancez infra/bin/start-gateway.sh puis infra/bin/start-stimma.sh."

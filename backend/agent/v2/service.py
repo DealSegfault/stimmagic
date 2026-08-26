@@ -458,7 +458,7 @@ def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool
     if fn_name == "bash":
         cmd = _parse_tool_args(raw_arguments).get("command", "")
         return isinstance(cmd, str) and (
-            "/Users/mac/.local/bin/agy" in cmd or "/Users/mac/.local/bin/codex" in cmd or "agy " in cmd or "codex exec" in cmd
+            "agy " in cmd or "codex exec" in cmd
         )
     if fn_name == "antigravity_image":
         return True
@@ -1978,8 +1978,8 @@ async def _run_agentic_loop_inner(
                 "IMAGE DISPATCH MODE (authoritative for this chat): Routed via BOTH Antigravity (`agy`) and ChatGPT / Codex ImageGen (`codex`) in parallel. "
                 "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
                 "When requested to generate an image or scene, execute BOTH backends concurrently by emitting two `bash` tool calls in parallel within the same turn: "
-                "1) Antigravity: `/Users/mac/.local/bin/agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1`\n"
-                "2) Codex: `/Users/mac/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1`\n"
+                "1) Antigravity: `agy --dangerously-skip-permissions --add-dir \"$PWD\" --print-timeout 5m --print 'Generate <brief prompt>, save as <name>_antigravity.png' </dev/null >\"$PWD/.agy-last.log\" 2>&1`\n"
+                "2) Codex: `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1`\n"
                 "Both tool calls will execute simultaneously in parallel. Once both complete, show both resulting images using `show(path=\"<name>_antigravity.png\", title=\"<Title> · Antigravity\", role=\"final\")` and `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")`."
             )
         elif effective_image_backend == "codex_imagegen":
@@ -1987,7 +1987,7 @@ async def _run_agentic_loop_inner(
                 "IMAGE DISPATCH MODE (authoritative for this chat): Routed via ChatGPT / Codex ImageGen (`codex`). "
                 "The local Stimma ComfyUI store and cloud balance are bypassed for still images. "
                 "To generate the first image, run via `bash` (timeout=600): "
-                "/Users/mac/.local/bin/codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1. "
+                "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1. "
                 "For follow-up edits or scene continuations in the same chat, use `codex exec resume --last` to reuse local session memory with only the prompt delta. "
                 "Then immediately call `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")` and stop."
             )

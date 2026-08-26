@@ -113,6 +113,7 @@ frontend/node_modules/
 # Logs
 *.log
 logs/
+infra/.runtime/
 
 # Models & Cache (ML models, not Python models)
 /models/

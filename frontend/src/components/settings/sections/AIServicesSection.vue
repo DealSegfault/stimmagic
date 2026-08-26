@@ -6,7 +6,7 @@
         <div class="flex items-center gap-3">
           <h3 class="text-xs font-semibold text-content-secondary">Chat Models</h3>
         </div>
-        <p class="mt-1 text-xs text-content-tertiary">Choose models from your Stimma account, API providers, or your own endpoints.</p>
+        <p class="mt-1 text-xs text-content-tertiary">Use Codex CLI, API providers, your own endpoints, or optional Stimma Cloud.</p>
       </div>
 
       <div
@@ -18,12 +18,30 @@
       </div>
 
       <div class="divide-y divide-edge-subtle">
+        <div
+          v-for="provider in cliProviders"
+          :key="provider.id"
+          class="flex w-full items-center gap-4 px-1 py-3"
+        >
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center text-content-secondary">
+            <ProviderBrandIcon provider="openai" size="md" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="truncate text-[13px] text-content">{{ provider.name }}</div>
+            <div class="mt-0.5 truncate text-xs text-content-tertiary">Uses your local Codex sign-in. No Stimma account or API key.</div>
+          </div>
+          <div class="min-w-20 shrink-0 flex items-center justify-end gap-1.5 text-xs text-content-tertiary">
+            <span class="h-2 w-2 shrink-0 rounded-full" :class="provider.last_test_passed === false ? 'bg-red-500' : 'bg-green-500'"></span>
+            {{ provider.last_test_passed === false ? 'Check failed' : 'Detected' }}
+          </div>
+        </div>
+
         <button type="button" class="group flex w-full items-center gap-4 px-1 py-3 text-left hover:bg-overlay-subtle" @click="cloudStatus === 'not_logged_in' ? handleCloudConnect() : cloudNeedsCredits ? openAddCredits() : openStimmaAccount()">
           <div class="flex h-9 w-9 shrink-0 items-center justify-center text-content-secondary" aria-hidden="true">
             <div class="h-7 w-7 bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
           </div>
           <div class="min-w-0 flex-1">
-            <div class="text-[13px] text-content">Stimma</div>
+            <div class="text-[13px] text-content">Stimma Cloud · optional</div>
             <div v-if="cloudStatus === 'available' || cloudStatus === 'not_logged_in'" class="mt-0.5 truncate text-xs text-content-tertiary">Use a variety of models with one pool of credits.</div>
             <div v-else-if="cloudMessage" class="mt-1 truncate text-xs text-red-400">{{ cloudMessage }}</div>
             <div v-else-if="cloudConnectError" class="mt-1 truncate text-xs text-red-400">{{ cloudConnectError }}</div>
@@ -609,6 +627,7 @@ const visibleRemoteProviderRows = computed(() => {
 })
 const hiddenRemoteProviderCount = computed(() => remoteProviderRows.value.length - visibleRemoteProviderRows.value.length)
 const localProviders = computed(() => providers.value.filter(provider => provider.kind === 'local'))
+const cliProviders = computed(() => providers.value.filter(provider => provider.kind === 'codex_cli'))
 
 const legacyOverride = ref(undefined)
 const legacyEndpoint = computed(() => {

@@ -7,10 +7,10 @@ l'inférence.
 ```sh
 # Bootstrap unique (HF_TOKEN sert uniquement à ce téléchargement)
 modal secret create huggingface HF_TOKEN=...
-/Users/mac/adp/comfy/bin/download-repaint-models.sh
+infra/bin/download-repaint-models.sh
 
 # Déploiement de l'endpoint (aucun secret HF au runtime)
-/Users/mac/adp/comfy/bin/deploy-repaint.sh
+infra/bin/deploy-repaint.sh
 ```
 
 Configure ensuite le bridge H3 avec `REPAINT_MODAL_URL`. Il réutilise

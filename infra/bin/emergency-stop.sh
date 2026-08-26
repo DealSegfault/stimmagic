@@ -1,5 +1,7 @@
 #!/bin/sh
 set -eu
 
-modal app stop comfyui-minimax-h3 --yes
-echo "App Modal arrêtée. Relancer bin/deploy.sh avant la prochaine session."
+for app_name in comfyui-minimax-h3 stimma-flux-fill maya-latentsync stimma-trellis2; do
+  modal app stop "$app_name" --yes 2>/dev/null || true
+done
+echo "Applications Modal arrêtées. Relancez le setup ou le déploiement voulu avant la prochaine session."

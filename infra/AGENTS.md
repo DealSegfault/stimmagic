@@ -49,11 +49,11 @@ When instructed to use OpenCode, chat via OpenCode, or perform actions with Open
 ## Modal Infrastructure & Setup for Agents
 
 When configuring or deploying Modal containers for an agent:
-1. **Interactive Wizard**: Run `python3 bin/setup-interactive.py` or `bin/setup-modal.sh -i`.
-2. **Non-interactive / Automated**:
+1. **Local bootstrap**: Run `infra/bin/bootstrap-local.sh` from the repository root.
+2. **Interactive Wizard**: Run `python3 infra/bin/setup-interactive.py` or `infra/bin/setup-modal.sh -i`.
+3. **Non-interactive / Automated**:
    ```bash
-   HF_TOKEN="hf_..." MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." bin/setup-modal.sh
+   HF_TOKEN="hf_..." MODAL_TOKEN_ID="ak-..." MODAL_TOKEN_SECRET="as-..." infra/bin/setup-modal.sh
    ```
-3. Full manual and troubleshooting: see [MAN_MODAL.md](file:///Users/mac/adp/comfy/MAN_MODAL.md).
-
+4. Full manual and troubleshooting: see [MAN_MODAL.md](MAN_MODAL.md).
 

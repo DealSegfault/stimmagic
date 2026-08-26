@@ -26,7 +26,9 @@ MUSIC_REVISION = "6332b49584554162b85fd71f2a4cdd8eeb1fc42d"
 
 H3_FILES = (
     "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+    "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
     "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
     "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
     "vae/minimax_h3_audio_vae_fp32.safetensors",
     "vae/minimax_h3_video_vae_fp16.safetensors",
@@ -56,7 +58,8 @@ download_image = (
     .env({"HF_XET_HIGH_PERFORMANCE": "1"})
 )
 
-ROOT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PLUGIN_ROOT = REPO_ROOT / "custom_nodes" / "ComfyUI-Stimma"
 
 comfy_image = (
     modal.Image.from_registry(
@@ -99,6 +102,10 @@ comfy_image = (
         # Blackwell families used by this app: B300 (SM 10.3) and RTX PRO
         # 6000 (SM 12.0).
         "TORCH_CUDA_ARCH_LIST='10.3;12.0' MAX_JOBS=4 CC=gcc CXX=g++ python -m pip install --no-build-isolation /tmp/SageAttention",
+        # FlashAttention-4 is the Blackwell-native CuTeDSL path used by the
+        # workflow-scoped H3 B300 adapter below.
+        "git clone --depth 1 https://github.com/Dao-AILab/flash-attention.git /tmp/flash-attention",
+        "python -m pip install --no-build-isolation '/tmp/flash-attention/flash_attn/cute[cu13]'",
         # Modal Volumes may only mount over an absent or empty image path.
         # ComfyUI ships placeholder files under models/, so remove that copy;
         # the persistent Volume becomes the complete models directory at run time.
@@ -108,32 +115,32 @@ comfy_image = (
     # workflow. Keep the remote image pinned for H3, but overlay these small
     # integration files so both tools use the same authenticated bridge.
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/outputs.py"),
+        str(PLUGIN_ROOT / "nodes/outputs.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/outputs.py",
         copy=True,
     )
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/__init__.py"),
+        str(PLUGIN_ROOT / "nodes/__init__.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/__init__.py",
         copy=True,
     )
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/minimax_h3_sage.py"),
+        str(PLUGIN_ROOT / "nodes/minimax_h3_sage.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/minimax_h3_sage.py",
         copy=True,
     )
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/stp_server/discovery.py"),
+        str(PLUGIN_ROOT / "stp_server/discovery.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/stp_server/discovery.py",
         copy=True,
     )
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/fields.py"),
+        str(PLUGIN_ROOT / "nodes/fields.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/fields.py",
         copy=True,
     )
     .add_local_file(
-        str(ROOT_DIR / "ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json"),
+        str(PLUGIN_ROOT / "workflows/Stimma-MiniMax-Music3-T2A.json"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/Stimma-MiniMax-Music3-T2A.json",
         copy=True,
     )
@@ -199,11 +206,20 @@ def download_models(include_reference: bool = True, include_turbo: bool = True) 
     secrets=[HF_SECRET],
 )
 def download_hd_models() -> dict:
-    """Download the full BF16 H3 weights used by the B300 HD worker."""
+    """Download the HD H3 weights used by the B300 worker."""
     from huggingface_hub import hf_hub_download
 
     downloaded = []
-    for filename in H3_FULL_BF16_FILES:
+    # Keep both choices on the HD volume: FP8 is the practical automatic
+    # route, while BF16 (Full) remains available for explicit quality runs.
+    selected = list(H3_FULL_BF16_FILES) + [
+        "diffusion_models/minimax_h3_fl2va_pruned_fp8_scaled.safetensors",
+        "diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+        "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ]
+    for filename in selected:
         hf_hub_download(
             repo_id="Comfy-Org/MiniMax-H3",
             filename=filename,

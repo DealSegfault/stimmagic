@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$INFRA_ROOT/.." && pwd)"
 MODAL_BIN="$(command -v modal || echo "modal")"
 
-cd "$ROOT/stimma"
+cd "$REPO_ROOT"
 exec "$MODAL_BIN" run cloud_repaint/repaint_service.py::download_models
