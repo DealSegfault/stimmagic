@@ -69,10 +69,13 @@ cleanup() {
     kill "$HD_BRIDGE_PID" 2>/dev/null || true
   fi
   wait 2>/dev/null || true
-  exit 0
 }
 
-trap cleanup INT TERM HUP EXIT
+# Preserve the real exit status so the API can report a failed launcher.  The
+# previous EXIT trap always called `exit 0`, turning missing credentials and
+# other startup errors into a false success.
+trap 'status=$?; cleanup; exit "$status"' EXIT
+trap 'exit 143' INT TERM HUP
 
 start_bridge() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage modal_bridge.py..."

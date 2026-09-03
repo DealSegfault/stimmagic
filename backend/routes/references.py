@@ -11,6 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.dependencies import get_db_session
 from database import ProjectReferenceView
+from inpaint_service import (
+    InpaintServiceError,
+    compile_inpaint_prompt,
+    execute_inpaint,
+    execute_reference_generation,
+    save_mask_image,
+)
 from project_service import get_project_or_404
 from reference_generation_service import (
     approve_composition_candidate,
@@ -42,6 +49,38 @@ router = APIRouter(
     prefix="/api/projects/{project_id}/references",
     tags=["project-references"],
 )
+
+global_router = APIRouter(
+    prefix="/api/references",
+    tags=["references"],
+)
+
+
+class InpaintZoneRequest(BaseModel):
+    color_name: str
+    color_hex: str | None = None
+    target: str = "@image1"
+    operation: str = "replace"
+    instruction: str = ""
+    reference_media_ids: list[int] = Field(default_factory=list)
+
+
+class InpaintRequest(BaseModel):
+    source_media_id: int = Field(gt=0)
+    mask_media_id: int | None = None
+    mask_image_base64: str | None = None
+    zones: list[InpaintZoneRequest] = Field(default_factory=list)
+    prompt_override: str | None = None
+    reference_media_ids: list[int] = Field(default_factory=list)
+    dimensions: list[int] | None = None
+
+
+class ReferenceGenRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    reference_media_ids: list[int] = Field(default_factory=list)
+    negative_prompt: str | None = None
+    dimensions: list[int] | None = None
+
 
 
 class PackUpdateRequest(BaseModel):
@@ -354,3 +393,106 @@ async def delete_composition(
     except ReferenceServiceError as exc:
         await session.rollback()
         raise _http_error(exc) from exc
+
+
+async def _handle_inpaint(
+    request: InpaintRequest,
+    project_id: int | None,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    try:
+        mask_id = request.mask_media_id
+        if not mask_id and request.mask_image_base64:
+            mask_media = await save_mask_image(
+                session,
+                request.mask_image_base64,
+                project_id=project_id,
+                source_media_id=request.source_media_id,
+            )
+            mask_id = mask_media.id
+
+        if not mask_id:
+            raise HTTPException(status_code=400, detail="Either mask_media_id or mask_image_base64 is required.")
+
+        compiled_prompt = compile_inpaint_prompt(
+            [z.model_dump() for z in request.zones],
+            prompt_override=request.prompt_override,
+        )
+
+        all_reference_ids = list(request.reference_media_ids or [])
+        for z in request.zones:
+            for rid in z.reference_media_ids:
+                if rid not in all_reference_ids:
+                    all_reference_ids.append(rid)
+
+        result = await execute_inpaint(
+            session,
+            source_media_id=request.source_media_id,
+            mask_media_id=mask_id,
+            prompt=compiled_prompt,
+            reference_media_ids=all_reference_ids,
+            project_id=project_id,
+            expected_dimensions=request.dimensions,
+        )
+        if project_id:
+            await _broadcast(project_id, action="inpaint_candidate_ready", media_id=result.get("result_media_id"))
+        return result
+    except InpaintServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _handle_reference_generation(
+    request: ReferenceGenRequest,
+    project_id: int | None,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    try:
+        result = await execute_reference_generation(
+            session,
+            prompt=request.prompt,
+            reference_media_ids=request.reference_media_ids,
+            negative_prompt=request.negative_prompt,
+            dimensions=request.dimensions,
+            project_id=project_id,
+        )
+        if project_id:
+            await _broadcast(project_id, action="reference_candidate_ready", media_id=result.get("result_media_id"))
+        return result
+    except InpaintServiceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/inpaint")
+async def inpaint_project_image(
+    project_id: int,
+    request: InpaintRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    await get_project_or_404(session, project_id)
+    return await _handle_inpaint(request, project_id, session)
+
+
+@router.post("/generate-with-reference")
+async def generate_project_with_reference(
+    project_id: int,
+    request: ReferenceGenRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    await get_project_or_404(session, project_id)
+    return await _handle_reference_generation(request, project_id, session)
+
+
+@global_router.post("/inpaint")
+async def inpaint_global_image(
+    request: InpaintRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await _handle_inpaint(request, None, session)
+
+
+@global_router.post("/generate-with-reference")
+async def generate_global_with_reference(
+    request: ReferenceGenRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await _handle_reference_generation(request, None, session)

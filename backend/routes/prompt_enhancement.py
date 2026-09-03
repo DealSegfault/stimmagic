@@ -149,13 +149,14 @@ def _h3_task_guidance(
         mapping = "\n".join(entries) or "- No references were supplied (invalid request)."
         return (
             "This is REF2VA. Do not write first-frame, last-frame, or timeline-alignment instructions. "
-            "Begin directly with integrated_multimodal_description. The model receives references in "
-            "the exact presentation order below; these tags are positional and must not be renamed, "
-            "renumbered, swapped, or described as keyframes:\n"
+            "Begin directly with integrated_multimodal_description. Below are available reference labels "
+            "for this request; use only tags already present in the source prompt and never invent, infer, "
+            "rename, renumber, swap, or reorder <Picture N>, <Video N>, or <Audio N>.\n"
             f"{mapping}\n"
-            "Use every listed tag at least once in integrated_multimodal_description. State concretely "
-            "what identity, appearance, style, motion, camera behavior, or voice each reference controls. "
-            "A paired <Audio N> appears immediately before its matching <Video N> in the model input, "
+            "If <Picture N>, <Video N>, and <Audio N> tags are not present in the source prompt, do not add them. "
+            "Do not infer reference tags from plain words like video, audio, soundtrack, speaking, singing, etc. "
+            "If tags are present, state concretely what identity, appearance, style, motion, camera behavior, or voice each "
+            "reference controls. A paired <Audio N> appears immediately before its matching <Video N> in the model input, "
             "but they remain distinct tags and should be assigned distinct audio/video roles."
         )
     if task == "i2va":

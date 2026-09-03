@@ -439,9 +439,20 @@ const hasUnavailableTools = computed(() => (
 ))
 
 const availableProviders = computed(() => {
-  // Get unique providers from tools, with counts
+  // Start with provider status entries so a configured provider remains
+  // selectable while it is reconnecting or has not discovered tools yet.
   const providerCounts = {}
   const providerInfo = {}
+  for (const provider of providers.value) {
+    providerCounts[provider.provider_id] = 0
+    providerInfo[provider.provider_id] = {
+      provider_id: provider.provider_id,
+      provider_name: provider.provider_name,
+      status: provider.status,
+    }
+  }
+
+  // Merge tool-derived names/counts on top of the provider status list.
   for (const tool of visibleTools.value) {
     providerCounts[tool.provider_id] = (providerCounts[tool.provider_id] || 0) + 1
     if (!providerInfo[tool.provider_id]) {

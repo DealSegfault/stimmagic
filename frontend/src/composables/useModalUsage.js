@@ -5,6 +5,8 @@ import { useWebSocket } from './useWebSocket'
 const snapshot = ref(null)
 const loading = ref(false)
 const error = ref('')
+const routingSaving = ref(false)
+const routingError = ref('')
 let refreshPromise = null
 let realtimeStarted = false
 
@@ -41,6 +43,25 @@ async function refreshUsage() {
   return refreshPromise
 }
 
+async function updateRouting(mode, accountId = null) {
+  routingSaving.value = true
+  routingError.value = ''
+  try {
+    const { data } = await axios.patch('/api/modal/routing', {
+      mode,
+      account_id: mode === 'fixed' ? accountId : null,
+    })
+    if (snapshot.value) snapshot.value = { ...snapshot.value, routing: data }
+    await refreshUsage()
+    return data
+  } catch (err) {
+    routingError.value = err?.response?.data?.detail || err?.message || 'Impossible de modifier le routage Modal.'
+    throw err
+  } finally {
+    routingSaving.value = false
+  }
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat('fr-FR', {
     style: 'currency',
@@ -68,14 +89,25 @@ export function useModalUsage() {
     active_jobs: 0,
     generation_count: 0,
   })
+  const routing = computed(() => snapshot.value?.routing || {
+    mode: 'auto',
+    account_id: null,
+    effective_account_id: null,
+    fixed_account_valid: null,
+    route_accounts_configured: [],
+  })
   return {
     snapshot,
     accounts,
     generations,
     summary,
+    routing,
     loading,
     error,
+    routingSaving,
+    routingError,
     refreshUsage,
+    updateRouting,
     formatCurrency,
     formatDuration,
   }

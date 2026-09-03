@@ -197,6 +197,10 @@ def _r2v_variant_tool_id(tool_id: str) -> str | None:
     return re.sub(r"(?:i2v|t2v)", "r2v", str(tool_id), count=1, flags=re.IGNORECASE)
 
 
+def _has_explicit_video_reference(prompt: Any) -> bool:
+    return bool(re.search(r"<\s*Video\s+\d+\s*>", str(prompt or ""), re.IGNORECASE))
+
+
 async def _chat_reference_videos(
     chat_id: int,
     session: AsyncSession,
@@ -498,6 +502,9 @@ async def execute_call_tool(
     # width/height, seed, loras and every tool-specific knob live together in one
     # dict keyed by name (matching the tool's parameter_schema).
     params: Dict[str, Any] = _json_safe_pathlikes(dict(parameters or {}))
+    # This is an explicit one-shot escape hatch used only after the user has
+    # confirmed a reference warning. It must never reach a provider or flow.
+    confirm_reference_mismatch = bool(params.pop("confirm_reference_mismatch", False))
 
     # Extract controlnet config if the agent passed it inline
     cn_preprocessor, cn_params = _extract_controlnet_config(params)
@@ -518,7 +525,8 @@ async def execute_call_tool(
     # reminder, transparently switch to the matching R2V variant before schema
     # validation. This keeps the user-facing chat mode automatic and safe.
     r2v_tool_id = _r2v_variant_tool_id(str(tool_id))
-    if chat_id is not None and r2v_tool_id:
+    prompt_has_video_tag = _has_explicit_video_reference(params.get("prompt"))
+    if chat_id is not None and r2v_tool_id and prompt_has_video_tag:
         attached_videos = await _chat_reference_videos(chat_id, session, workspace_dir)
         if attached_videos:
             if registry.get_tool(r2v_tool_id):
@@ -577,9 +585,14 @@ async def execute_call_tool(
             final_params["prompt"] = selected_prompt
 
     # A video attached to a chat is a semantic reference. Once the agent has
-    # selected Ref2VA, make that video an implicit typed input so the mode and
-    # the media payload cannot drift apart.
-    if task_type == "reference-to-video" and "input_videos" in param_schema.get("properties", {}):
+    # selected Ref2VA and the source prompt explicitly references video tags, make
+    # that video an implicit typed input so the mode and the media payload cannot
+    # drift apart.
+    if (
+        task_type == "reference-to-video"
+        and "input_videos" in param_schema.get("properties", {})
+        and _has_explicit_video_reference(final_params.get("prompt"))
+    ):
         await _inject_chat_reference_videos(
             final_params,
             kwargs.get("chat_id"),
@@ -872,6 +885,31 @@ async def execute_call_tool(
         if val is not None:
             job_params[meta_key] = val
 
+    # Ref2VA labels are conditioning protocol, not free-form prose. Refuse a
+    # phantom/missing H3 reference before any paid work is queued. The error
+    # text tells the agent how to retry, but the flag is intentionally not part
+    # of the public provider schema so it can only be used explicitly.
+    if task_type == "reference-to-video":
+        from model_family import model_family
+        from reference_prompt_validation import (
+            ReferencePromptMismatchError,
+            reference_prompt_mismatches,
+        )
+
+        descriptor_model = (
+            getattr(tool_descriptor, "model", None)
+            or (getattr(tool_descriptor, "metadata", None) or {}).get("model_name")
+            or (getattr(tool_descriptor, "metadata", None) or {}).get("model")
+            or getattr(tool_descriptor, "name", None)
+            or str(tool_id)
+        )
+        if model_family(descriptor_model) == "minimax-h3":
+            mismatches = reference_prompt_mismatches(
+                final_params.get("prompt"), final_params
+            )
+            if mismatches and not confirm_reference_mismatch:
+                raise ReferencePromptMismatchError(mismatches)
+
     _check_failure_block(kwargs.get("workspace_dir"), tool_id, task_type)
 
     queue = get_generation_queue()
@@ -1012,6 +1050,7 @@ async def execute_call_tool(
         generator_instance_id=kwargs.get("generator_instance_id") or "agent",
         project_id=kwargs.get("project_id"),
         auto_delete_duration=auto_delete_duration,
+        allow_reference_mismatch=confirm_reference_mismatch,
         **disposition_kwargs,
     )
 

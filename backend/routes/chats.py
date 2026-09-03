@@ -2899,3 +2899,65 @@ async def invoke_skill_in_chat(
     })
 
     return {"status": "loaded", "skill_name": qualified, "item_id": inj_item.id}
+
+
+@router.post("/{chat_id}/disable-skill")
+async def disable_skill_in_chat(
+    chat_id: int,
+    body: InvokeSkillRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Remove a previously injected skill from a chat's active context.
+
+    Skill injections are regular conversation items, so deleting them makes
+    the skill stop being included in subsequent turns while leaving all other
+    chat history intact. The operation is idempotent when the skill is not
+    currently active.
+    """
+    chat = await session.get(Chat, chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # The menu sends a qualified name, while older injection rows may store a
+    # bare slug or pack name. Resolve the aliases for the current skill so
+    # those legacy rows can be disabled too.
+    requested_names = {body.name}
+    from agent.v2.stimpacks import find_skill
+    found = find_skill(body.name)
+    if found:
+        pack, skill = found
+        requested_names.update((skill.qualified_name, skill.slug, pack.name))
+
+    result = await session.execute(
+        select(ChatItem)
+        .where(ChatItem.chat_id == chat_id, ChatItem.item_type == "stimpack_injection")
+        .order_by(ChatItem.id.asc())
+    )
+    deleted_ids = []
+    for item in result.scalars():
+        if not item.item_metadata:
+            continue
+        try:
+            meta = json.loads(item.item_metadata) if isinstance(item.item_metadata, str) else item.item_metadata
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        stored_names = (meta.get("skill_name"), meta.get("stimpack_name"))
+        if not any(
+            isinstance(stored_name, str) and stored_name in requested_names
+            for stored_name in stored_names
+        ):
+            continue
+        deleted_ids.append(item.id)
+        await session.delete(item)
+
+    await session.commit()
+
+    for item_id in deleted_ids:
+        await ws_manager.broadcast("chat_item_deleted", {
+            "chat_id": chat_id,
+            "item_id": item_id,
+        })
+
+    return {"status": "disabled" if deleted_ids else "not_loaded", "skill_name": body.name, "deleted_ids": deleted_ids}

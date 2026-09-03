@@ -22,8 +22,10 @@ def _user_turn():
     return ChatItem(item_type="user_message", message_text="go")
 
 
-def _view_image_result(tool_call_id: str):
+def _view_image_result(tool_call_id: str, *, view_kind: str | None = None):
     marker = {"__view_image__": True, "path": "/tmp/whatever.png", "detail": "low"}
+    if view_kind:
+        marker["view_kind"] = view_kind
     return ChatItem(
         item_type="tool_result",
         tool_call_id=tool_call_id,
@@ -80,6 +82,18 @@ async def test_only_view_image_results_older_than_the_threshold_are_compressed()
     )
     parsed = json.loads(recent_view_image.tool_result)
     assert parsed["__view_image__"] is True
+
+
+@pytest.mark.asyncio
+async def test_stale_video_storyboard_points_back_to_view_video():
+    storyboard = _view_image_result("video", view_kind="video_storyboard")
+    items = [storyboard, *[_user_turn() for _ in range(STALE_TURN_THRESHOLD + 1)]]
+
+    await _compress_stale_items(items, _NoopSession())
+
+    assert storyboard.tool_result == (
+        "[Video storyboard shown earlier in this conversation — call view_video again if you need to inspect it]"
+    )
 
 
 @pytest.mark.asyncio

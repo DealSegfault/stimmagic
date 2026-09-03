@@ -67,6 +67,112 @@ _SINK_SAVE_TYPES = {
     "SaveAudioOpus",
 }
 
+# Editor-only annotations have no execution semantics and are not guaranteed
+# to be installed on a remote ComfyUI worker. Strip them even when object_info
+# was unavailable during a cold start; otherwise they can survive preflight
+# and make /prompt fail with missing_node_type.
+_UI_ONLY_NODE_TYPES = {"MarkdownNote"}
+
+
+def _strip_ui_only_nodes(prompt: Dict[str, Any]) -> None:
+    """Remove editor annotations that must never be submitted to /prompt."""
+    for node_id in list(prompt):
+        class_type = prompt[node_id].get("class_type")
+        if class_type in _UI_ONLY_NODE_TYPES:
+            logger.info(
+                "Stripping UI-only node '%s' (#%s) from prompt",
+                class_type,
+                node_id,
+            )
+            del prompt[node_id]
+
+
+def _strip_unknown_nodes(
+    prompt: Dict[str, Any], object_info: Dict[str, Any]
+) -> None:
+    """Remove nodes unavailable on the execution instance and dependents."""
+    if not object_info:
+        return
+
+    unknown = {
+        node_id
+        for node_id, node in prompt.items()
+        if node.get("class_type") not in object_info
+    }
+    if not unknown:
+        return
+
+    unknown_types = sorted(
+        {prompt[node_id].get("class_type", "?") for node_id in unknown}
+    )
+    to_remove = set(unknown)
+    changed = True
+    while changed:
+        changed = False
+        for node_id, node in list(prompt.items()):
+            if node_id in to_remove:
+                continue
+            for input_value in node.get("inputs", {}).values():
+                if (
+                    isinstance(input_value, list)
+                    and len(input_value) == 2
+                    and isinstance(input_value[0], str)
+                    and input_value[0] in to_remove
+                ):
+                    to_remove.add(node_id)
+                    changed = True
+                    break
+
+    for node_id in sorted(to_remove):
+        class_type = prompt[node_id].get("class_type", "?")
+        if node_id in unknown:
+            logger.info(
+                "Stripping unknown node '%s' (#%s) from prompt",
+                class_type,
+                node_id,
+            )
+        else:
+            logger.info(
+                "Stripping dependent node '%s' (#%s) — depends on missing node",
+                class_type,
+                node_id,
+            )
+        del prompt[node_id]
+
+    if not prompt:
+        raise RuntimeError(
+            "Workflow cannot execute: all nodes depend on missing types: "
+            f"{unknown_types}. These may be ComfyUI component/group nodes "
+            "that need to be expanded. Try re-saving the workflow without group nodes."
+        )
+
+
+def _reload_prompt_with_object_info(
+    workflow: "DiscoveredWorkflow", object_info: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Reconvert the saved UI workflow after a cold-start catalog arrives.
+
+    UI workflows store widget values positionally. A catalog-free discovery
+    can advertise their tools, but its provisional API prompt cannot preserve
+    names such as ``expression``, ``vae_name`` or ``denoise``. Re-reading the
+    source with the execution instance's object_info restores the authored
+    values instead of hydrating unrelated ComfyUI defaults.
+    """
+    from .discovery import _convert_ui_to_api, _is_api_format, _is_ui_format
+
+    with open(workflow.file_path, "r", encoding="utf-8") as workflow_file:
+        workflow_data = json.load(workflow_file)
+
+    if _is_api_format(workflow_data):
+        return copy.deepcopy(workflow_data)
+    if _is_ui_format(workflow_data):
+        converted = _convert_ui_to_api(workflow_data, object_info)
+        if converted:
+            return converted
+    raise RuntimeError(
+        f"Could not reconstruct executable workflow from {workflow.file_path}"
+    )
+
 
 def _raise_preflight_error(workflow: "DiscoveredWorkflow") -> None:
     """Raise a clear, actionable error when a workflow has missing dependencies.
@@ -137,9 +243,9 @@ def _summarize_queue_node_errors(
                 first = errs[0]
                 if isinstance(first, dict):
                     msg = first.get("message") or str(first)
-                    details = first.get("details")
-                    if details and details != msg:
-                        msg = f"{msg}: {details}"
+                    error_details = first.get("details")
+                    if error_details and error_details != msg:
+                        msg = f"{msg}: {error_details}"
                 else:
                     msg = str(first)
             else:
@@ -201,42 +307,9 @@ async def execute_workflow(
     # Unknown nodes that other nodes depend on (e.g. group/component nodes)
     # are also stripped, along with all their transitive dependents.
     prompt = copy.deepcopy(workflow.api_prompt)
+    _strip_ui_only_nodes(prompt)
     object_info = provider.object_info or {}
-    if object_info:
-        unknown = {nid for nid, nd in prompt.items()
-                   if nd.get("class_type") not in object_info}
-        if unknown:
-            unknown_types = sorted({prompt[nid].get("class_type", "?") for nid in unknown})
-
-            # Find nodes that transitively depend on unknown nodes
-            to_remove = set(unknown)
-            changed = True
-            while changed:
-                changed = False
-                for nid, nd in list(prompt.items()):
-                    if nid in to_remove:
-                        continue
-                    for inp_val in nd.get("inputs", {}).values():
-                        if isinstance(inp_val, list) and len(inp_val) == 2 and isinstance(inp_val[0], str):
-                            if inp_val[0] in to_remove:
-                                to_remove.add(nid)
-                                changed = True
-                                break
-
-            for nid in sorted(to_remove):
-                ct = prompt[nid].get("class_type", "?")
-                if nid in unknown:
-                    logger.info(f"Stripping unknown node '{ct}' (#{nid}) from prompt")
-                else:
-                    logger.info(f"Stripping dependent node '{ct}' (#{nid}) — depends on missing node")
-                del prompt[nid]
-
-            if not prompt:
-                raise RuntimeError(
-                    f"Workflow cannot execute: all nodes depend on missing types: "
-                    f"{unknown_types}. These may be ComfyUI component/group nodes "
-                    f"that need to be expanded. Try re-saving the workflow without group nodes."
-                )
+    _strip_unknown_nodes(prompt, object_info)
 
     # Step 2: Create temp output directory
     output_dir = tempfile.mkdtemp(prefix="stimma_output_")
@@ -252,6 +325,28 @@ async def execute_workflow(
         # only lands here once the GPU is actually idle.
         async with provider.comfy_client.acquire(parameters) as instance:
             logger.info(f"Acquired ComfyUI instance {instance.addr} for job")
+
+            # Tool discovery is allowed to advertise bundled workflows while a
+            # Modal GPU is cold, so provider.object_info can legitimately be
+            # empty here. Execution cannot skip it: remote defaults hydrate
+            # required widget values and its node catalog strips editor-only or
+            # unavailable nodes before /prompt validation.
+            if not object_info:
+                try:
+                    object_info = await instance.get_object_info()
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Could not load ComfyUI object_info from the execution "
+                        "instance before preparing the workflow"
+                    ) from exc
+                if not object_info:
+                    raise RuntimeError(
+                        "ComfyUI returned an empty object_info catalog for the "
+                        "execution instance"
+                    )
+                prompt = _reload_prompt_with_object_info(workflow, object_info)
+                _strip_ui_only_nodes(prompt)
+                _strip_unknown_nodes(prompt, object_info)
 
             # Step 3: Inject media/prompt/seed/resolution values (uploads go to the acquired instance)
             unprovided = await _inject_fields(
@@ -306,7 +401,7 @@ async def execute_workflow(
             # the bridge's /view proxy. Local ComfyUI instances still use the
             # private STP temp directory and avoid residue as before.
             instance_addr = str(getattr(instance, "addr", ""))
-            remote_bridge = instance_addr.rsplit(":", 1)[-1] in {"8190", "8191"}
+            remote_bridge = bool(getattr(instance, "is_modal_bridge", False)) or instance_addr.rsplit(":", 1)[-1] in {"8190", "8191"}
             if remote_bridge:
                 logger.info(
                     "Remote ComfyUI bridge detected (%s); using history /view capture",
@@ -1668,10 +1763,21 @@ async def _monitor_execution(ws, prompt_id: str, context: "ExecutionContext"):
                         _last_progress_value, preview=(mime, image_bytes)
                     )
 
-        elif message.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+        elif message.type in (
+            aiohttp.WSMsgType.CLOSING,
+            aiohttp.WSMsgType.CLOSED,
+            aiohttp.WSMsgType.ERROR,
+        ):
             raise RuntimeError(
                 f"ComfyUI websocket closed unexpectedly while monitoring prompt {prompt_id}"
             )
+
+    # aiohttp normally ends iteration without yielding the terminal CLOSE
+    # frame.  Reaching EOF is not successful execution: only the explicit
+    # execution_success / queue-idle events above are completion signals.
+    raise RuntimeError(
+        f"ComfyUI websocket closed unexpectedly while monitoring prompt {prompt_id}"
+    )
 
 
 async def _capture_output(

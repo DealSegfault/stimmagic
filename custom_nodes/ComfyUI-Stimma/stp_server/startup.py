@@ -6,6 +6,7 @@ The provider itself runs as a background asyncio task on ComfyUI's event loop.
 
 import asyncio
 import glob
+import json
 import logging
 import os
 import shutil
@@ -55,6 +56,30 @@ def _get_comfyui_addresses(config: Config) -> list:
     addr = _detect_comfyui_address()
     logger.info(f"Auto-detected ComfyUI address: {addr}")
     return [addr]
+
+
+def _get_modal_bridge_maps(config: Config) -> tuple[dict[str, str], dict[str, str]]:
+    """Load the non-secret account → local bridge map emitted by the gateway."""
+    normal = dict(config.comfyui.account_addresses or {})
+    hd = dict(config.comfyui.account_hd_addresses or {})
+    manifest_path = os.environ.get(
+        "MODAL_ROUTER_BRIDGES_FILE",
+        os.path.expanduser("~/.config/adp-comfy/modal-router.bridges.json"),
+    )
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+            payload = json.load(manifest_file)
+        for item in payload.get("accounts", []) if isinstance(payload, dict) else []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            account_id = str(item["id"])
+            if item.get("port"):
+                normal.setdefault(account_id, f"127.0.0.1:{int(item['port'])}")
+            if item.get("hd_port"):
+                hd.setdefault(account_id, f"127.0.0.1:{int(item['hd_port'])}")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return normal, hd
 
 
 _STP_CORS_HEADERS = {
@@ -249,11 +274,14 @@ async def _run_provider(config: Config, transport, asset_server):
 
     # Set up ComfyUI client
     addresses = _get_comfyui_addresses(config)
+    account_addresses, account_hd_addresses = _get_modal_bridge_maps(config)
     comfy_client = Comfy(
         addresses,
         hd_address=config.comfyui.hd_address,
         hd_min_megapixels=config.comfyui.hd_min_megapixels,
         hd_min_steps=config.comfyui.hd_min_steps,
+        account_addresses=account_addresses,
+        account_hd_addresses=account_hd_addresses,
     )
 
     provider = StimmaPluginProvider(

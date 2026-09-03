@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -29,7 +30,12 @@ from stp_server.executor import (
     _inject_params,
     _inject_fields,
     _is_input_required,
+    _monitor_execution,
+    _reload_prompt_with_object_info,
+    _summarize_queue_node_errors,
     _strip_unprovided_input_chains,
+    _strip_ui_only_nodes,
+    _strip_unknown_nodes,
     _expand_stimma_images_reference_chains,
 )
 
@@ -570,6 +576,99 @@ class TestReferenceChainExpansion(unittest.TestCase):
         ]
         self.assertIn("second.png", source_images)
         self.assertIn("third.png", source_images)
+
+
+class TestMonitorExecution(unittest.TestCase):
+    def test_websocket_eof_is_not_treated_as_success(self):
+        import asyncio
+
+        class ClosedWebSocket:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        context = MagicMock()
+        context.preview_frames = False
+        context.report_progress = AsyncMock()
+
+        with self.assertRaisesRegex(RuntimeError, "websocket closed unexpectedly"):
+            asyncio.get_event_loop().run_until_complete(
+                _monitor_execution(ClosedWebSocket(), "prompt-123", context)
+            )
+
+
+class TestUiOnlyNodes(unittest.TestCase):
+    def test_markdown_notes_are_stripped_without_object_info(self):
+        prompt = {
+            "116": {"class_type": "MarkdownNote", "inputs": {}},
+            "1": {"class_type": "VAELoader", "inputs": {}},
+        }
+
+        _strip_ui_only_nodes(prompt)
+
+        self.assertNotIn("116", prompt)
+        self.assertIn("1", prompt)
+
+
+class TestQueueErrorSummary(unittest.TestCase):
+    def test_error_details_do_not_replace_summary_list(self):
+        node_errors = {
+            "7": {
+                "errors": [
+                    {"message": "Invalid input", "details": "model_name: missing"}
+                ]
+            }
+        }
+        prompt = {"7": {"class_type": "ModelLoader", "inputs": {}}}
+
+        summary = _summarize_queue_node_errors(node_errors, prompt)
+
+        self.assertEqual(
+            summary,
+            "#7 (ModelLoader): Invalid input: model_name: missing",
+        )
+
+
+class TestUnknownNodeStripping(unittest.TestCase):
+    def test_unknown_nodes_and_required_dependents_are_removed(self):
+        prompt = {
+            "1": {"class_type": "MissingNode", "inputs": {}},
+            "2": {"class_type": "KnownNode", "inputs": {"source": ["1", 0]}},
+            "3": {"class_type": "KnownNode", "inputs": {}},
+        }
+
+        _strip_unknown_nodes(prompt, {"KnownNode": {}})
+
+        self.assertEqual(set(prompt), {"3"})
+
+
+class TestColdStartPromptReload(unittest.TestCase):
+    def test_api_workflow_is_reloaded_without_mutating_source(self):
+        workflow_data = {
+            "1": {
+                "class_type": "ComfyMathExpression",
+                "inputs": {"expression": "max(5, round(a * 24))"},
+            }
+        }
+        handle = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        try:
+            json.dump(workflow_data, handle)
+            handle.close()
+            workflow = MagicMock(file_path=handle.name)
+
+            prompt = _reload_prompt_with_object_info(workflow, {})
+            prompt["1"]["inputs"]["expression"] = "changed"
+
+            self.assertEqual(
+                workflow_data["1"]["inputs"]["expression"],
+                "max(5, round(a * 24))",
+            )
+        finally:
+            if not handle.closed:
+                handle.close()
+            os.unlink(handle.name)
 
 
 if __name__ == "__main__":

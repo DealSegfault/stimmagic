@@ -158,8 +158,41 @@ const TABS: Array<{ key: TabKey; label: string; emptyHint: string }> = [
 
 const PAGE_SIZE = 30
 
-const { getMarkers } = useMediaApi()
+const { getMarkers, getMediaItem } = useMediaApi()
 const { fetchAssets } = useAssetApi()
+
+// Local recent-input stores intentionally avoid a request on every picker
+// open, but an asset can be moved to Trash from another surface. Keep those
+// cached entries from resurrecting in the picker after that happens. Results
+// are cached for this popover instance so the Recents and All tabs share the
+// same validation work.
+const recentAvailability = new Map<number, boolean>()
+
+async function filterAvailableRecentEntries<T extends { mediaId: number }>(
+  entries: T[],
+  knownActiveIds: Set<number> = new Set(),
+): Promise<T[]> {
+  const uniqueIds = [...new Set(entries.map(entry => entry.mediaId))]
+  const unknownIds = uniqueIds.filter(id => !knownActiveIds.has(id) && !recentAvailability.has(id))
+
+  await Promise.all(unknownIds.map(async mediaId => {
+    try {
+      const item = await getMediaItem(mediaId)
+      recentAvailability.set(mediaId, item?.asset_state == null || item.asset_state === 'active')
+    } catch (error: any) {
+      // A trashed/deleted media item returns 404. Network/auth failures are
+      // kept visible so a transient outage does not erase a user's recents.
+      const unavailable = error?.response?.status === 404
+      recentAvailability.set(mediaId, !unavailable)
+      if (unavailable) {
+        removeRecentMediaInput(mediaId)
+        removeRecentMediaPick(mediaId)
+      }
+    }
+  }))
+
+  return entries.filter(entry => recentAvailability.get(entry.mediaId) !== false)
+}
 
 // Recents is scoped to the surrounding project (same convention as ToolView's
 // projectScopeId) — tool id and instance deliberately don't factor in.
@@ -231,13 +264,17 @@ async function loadTab(tab: TabKey) {
   try {
     switch (tab) {
       case 'recents': {
-        // Picks made through this popover, straight from the local store — no
-        // fetch. Marker badges ride along only when a cached feed already
-        // holds the same item.
+        // Picks made through this popover come from the local store. Validate
+        // cached IDs once so items moved to Trash elsewhere cannot reappear.
+        // Marker badges ride along only when a cached feed already holds the
+        // same item.
         const markersById = new Map(
           [...(tiles.value.generated ?? []), ...(tiles.value.added ?? [])].map(t => [t.mediaId, t.markers])
         )
-        tiles.value.recents = recentMediaPicks(acceptedKinds.value, projectId.value, PAGE_SIZE).map(e => ({
+        const picks = await filterAvailableRecentEntries(
+          recentMediaPicks(acceptedKinds.value, projectId.value, PAGE_SIZE),
+        )
+        tiles.value.recents = picks.map(e => ({
           mediaId: e.mediaId,
           fileHash: e.fileHash,
           fileFormat: e.fileFormat,
@@ -271,7 +308,12 @@ async function loadTab(tab: TabKey) {
         // The local store carries no marker info — borrow it from the fetched
         // feeds where the same item appears.
         const markersById = new Map([...generated, ...added].map(t => [t.mediaId, t.markers]))
-        const used: Tile[] = recentMediaInputs(acceptedKinds.value, PAGE_SIZE).map(e => ({
+        const knownActiveIds = new Set([...generated, ...added].map(tile => tile.mediaId))
+        const availableInputs = await filterAvailableRecentEntries(
+          recentMediaInputs(acceptedKinds.value, PAGE_SIZE),
+          knownActiveIds,
+        )
+        const used: Tile[] = availableInputs.map(e => ({
           mediaId: e.mediaId,
           fileHash: e.fileHash,
           fileFormat: e.fileFormat,

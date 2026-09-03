@@ -1932,11 +1932,13 @@ async def _run_agentic_loop_inner(
                 "availability error so the user can reconnect H3 and resend the same prompt."
             )
         system_reminders.append(
-            "CHAT VIDEO REFERENCE ROUTING (authoritative): if the user attaches a video, "
-            "treat it as a whole-video semantic reference and use MiniMax H3 R2V directly. "
-            "Pass the attached file through `input_videos` (it is injected automatically when "
-            "available), preserve `<Video N>` and matching `<Audio N>` tags, and never route "
-            "that request through I2V or T2V."
+            "CHAT VIDEO REFERENCE ROUTING (authoritative): only use attached videos or audios as "
+            "hard references when the user prompt already contains explicit `<Video N>` and `<Audio N>` tags. "
+            "Do not infer tags from ordinary words like video, audio, soundtrack, and do not add missing tags. "
+            "If no explicit video/audio tags are present, do not route to Ref2VA from attachments alone. "
+            "If an explicit reference tag points to a missing reference, generation is blocked with a "
+            "`generation_reference_mismatch` warning. Ask the user to confirm before retrying; "
+            "only after an explicit yes may you retry with `confirm_reference_mismatch=True`."
         )
         if chat_project_id is not None:
             system_reminders.append(

@@ -49,6 +49,11 @@ class StimmaPluginProvider(Provider):
         # scanning the model dirs on every request, so we only refetch when this
         # fingerprint actually changes (a model/LoRA/custom-node added/removed).
         self._object_info_fingerprint: Optional[str] = None
+        # Remote Modal /object_info can take longer than the STP client's
+        # handshake timeout during a cold start.  Fetch it independently so
+        # locally saved workflows can be advertised immediately, then rebuild
+        # their dynamic enums once the remote catalog arrives.
+        self._object_info_task: Optional[asyncio.Task] = None
         # (deps_fingerprint, workflow_snapshot) captured at the last successful
         # tool build — lets a tools.list short-circuit when nothing changed.
         self._last_build_wf_snapshot: Optional[Dict[str, float]] = None
@@ -91,6 +96,12 @@ class StimmaPluginProvider(Provider):
                 await self._watcher_task
             except asyncio.CancelledError:
                 pass
+        if self._object_info_task and not self._object_info_task.done():
+            self._object_info_task.cancel()
+            try:
+                await self._object_info_task
+            except asyncio.CancelledError:
+                pass
         await super().stop()
 
     async def discover_and_register_tools(self, force: bool = False):
@@ -98,11 +109,11 @@ class StimmaPluginProvider(Provider):
 
         Hot-path cost control: ComfyUI's /object_info is tens of MB and is
         rebuilt server-side (by scanning every model directory) on each request,
-        so fetching it on every tools.list is the single largest source of
+        so waiting for it on every tools.list is the single largest source of
         latency. We avoid it in two ways:
 
-        * Refetch /object_info only when the on-disk model/custom-node
-          fingerprint changes (a model, LoRA, or custom node added/removed).
+        * Refetch /object_info in the background only when the on-disk
+          model/custom-node fingerprint changes (or no catalog exists yet).
         * Skip the whole rebuild when neither the workflow files nor that
           fingerprint changed since the last successful build — a steady-state
           tools.list then costs only two cheap local directory walks.
@@ -113,6 +124,7 @@ class StimmaPluginProvider(Provider):
         """
         deps_fingerprint = self._snapshot_comfyui_deps()
         wf_snapshot = self._snapshot_workflow_files()
+        self._ensure_object_info_refresh(deps_fingerprint)
 
         async with self._discovery_lock:
             nothing_changed = (
@@ -128,23 +140,9 @@ class StimmaPluginProvider(Provider):
             return await self._rebuild_tools(deps_fingerprint, wf_snapshot, force=force)
 
     async def _rebuild_tools(self, deps_fingerprint, wf_snapshot, force: bool = False):
-        """Refetch object_info if stale, then re-scan and rebuild the registry."""
+        """Re-scan workflows using the latest available object_info catalog."""
         from .discovery import discover_workflows
         from .tool_builder import build_tools_from_workflows
-
-        # Refresh object_info for dynamic enums (samplers, schedulers, LoRAs)
-        # only when models/custom_nodes changed (or we've never fetched it, or
-        # an explicit refresh was requested).
-        if force or self._object_info is None or deps_fingerprint != self._object_info_fingerprint:
-            try:
-                self._object_info = await self._comfy_client.get_object_info()
-                self._object_info_fingerprint = deps_fingerprint
-            except Exception as e:
-                logger.error(
-                    f"\033[31m\u2718 Failed to fetch ComfyUI object_info: {e}\033[0m"
-                )
-                if self._object_info is None:
-                    self._object_info = {}
 
         # Discover workflows
         workflows = discover_workflows(self._plugin_config, object_info=self._object_info)
@@ -176,22 +174,72 @@ class StimmaPluginProvider(Provider):
             return True  # Tools changed
         return False
 
+    def _ensure_object_info_refresh(self, deps_fingerprint: str) -> None:
+        """Fetch remote object_info without blocking STP tool discovery.
+
+        Modal cold starts and a large node catalog can exceed the JSON-RPC
+        client's 30-second connection timeout.  The workflow-local metadata is
+        sufficient to list tools immediately; this task later rebuilds their
+        dynamic dropdowns/model validation from the authoritative catalog.
+        """
+        catalog_is_current = (
+            self._object_info is not None
+            and deps_fingerprint == self._object_info_fingerprint
+        )
+        if catalog_is_current:
+            return
+        if self._object_info_task and not self._object_info_task.done():
+            return
+        self._object_info_task = asyncio.create_task(
+            self._refresh_object_info_in_background()
+        )
+
+    async def _refresh_object_info_in_background(self) -> None:
+        """Retry object_info until available, then rebuild and notify Stimma."""
+        retry_delay = max(5.0, self._plugin_config.discovery.watch_interval)
+        try:
+            while True:
+                try:
+                    object_info = await self._comfy_client.get_object_info()
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(
+                        "\033[31m\u2718 Failed to fetch ComfyUI object_info: "
+                        f"{e}; retrying in {retry_delay:g}s\033[0m"
+                    )
+                    await asyncio.sleep(retry_delay)
+
+            deps_fingerprint = self._snapshot_comfyui_deps()
+            wf_snapshot = self._snapshot_workflow_files()
+            async with self._discovery_lock:
+                self._object_info = object_info
+                self._object_info_fingerprint = deps_fingerprint
+                await self._rebuild_tools(
+                    deps_fingerprint,
+                    wf_snapshot,
+                    force=True,
+                )
+
+            # Dynamic enums and validation may change even when the slug set
+            # does not, so always refresh the connected Stimma registry.
+            await self.notify_tools_changed()
+            logger.info(
+                "\033[1m\033[35m[STP]\033[0m Remote object_info loaded; "
+                f"refreshed \033[1m{len(self._tool_registry.list())}\033[0m tool(s)"
+            )
+        finally:
+            self._object_info_task = None
+
     async def _handle_tools_list(self, request):
         """Re-enumerate tools, LoRAs, and property values on every tools.list.
 
-        Stimma sends exactly one tools.list immediately after each
-        (re)connection handshake, so re-running discovery here guarantees a
-        freshly-connected client always sees the *current* LoRA list and
-        dynamic property enums (samplers, schedulers, dropdowns) — never a
-        stale catalog cached from an earlier session. This is what makes a
-        LoRA copied onto the box after ComfyUI started show up on reconnect
-        without needing a ComfyUI restart.
-
-        discover_and_register_tools() refetches /object_info but preserves the
-        previous value if the ComfyUI fetch fails, and only clears+re-registers
-        the tool registry once a build succeeds — so a transient hiccup rebuilds
-        the same catalog rather than wiping it, and the next connection
-        self-heals.
+        Stimma sends exactly one tools.list immediately after each connection.
+        Re-run local workflow discovery here so the tool catalog is available
+        without waiting for a Modal cold start.  Dynamic property enums
+        (samplers, schedulers, LoRAs, dropdowns) are refreshed asynchronously
+        from /object_info and announced through tools.changed when ready.
         """
         first = not self._initial_discovery_done
         try:

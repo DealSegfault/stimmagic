@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+import aiohttp
+from aiohttp import ClientSession, ClientTimeout, WSMsgType, client_exceptions, web
 
 
 HOP_BY_HOP = {
@@ -35,6 +36,8 @@ AUTH_HEADERS = {
     "Modal-Secret": require_env("MODAL_PROXY_TOKEN_SECRET"),
 }
 TIMEOUT = ClientTimeout(total=None, sock_connect=20 * 60, sock_read=None)
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+MAX_UPSTREAM_REDIRECTS = 5
 
 
 def target_url(request: web.Request, websocket: bool = False, base_target: str = TARGET, path_override: str | None = None) -> str:
@@ -58,6 +61,79 @@ def request_headers(request: web.Request) -> dict[str, str]:
     return headers
 
 
+def _redirect_url(current_url: str, location: str, base_target: str) -> str:
+    """Resolve a Modal redirect without allowing proxy credentials to escape."""
+    destination = urljoin(current_url, location)
+    destination_parts = urlsplit(destination)
+    base_parts = urlsplit(base_target)
+    if (
+        destination_parts.scheme not in {"http", "https"}
+        or destination_parts.hostname != base_parts.hostname
+    ):
+        raise web.HTTPBadGateway(
+            text="Modal bridge refused an upstream redirect outside its authenticated endpoint"
+        )
+    return destination
+
+
+async def authenticated_request(
+    session: ClientSession,
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    base_target: str,
+) -> aiohttp.ClientResponse:
+    """Follow Modal redirects while reapplying proxy-auth headers each time.
+
+    Relaying a redirect to the local ComfyUI client is unsafe: it follows the
+    absolute Modal URL itself and has no proxy token, turning a valid cold-start
+    request into ``modal-http: missing credentials``.  The bridge owns those
+    credentials, so it must also own the redirect chain.
+    """
+    current_method = method
+    current_url = url
+    current_body = body
+    current_headers = dict(headers)
+
+    for redirect_count in range(MAX_UPSTREAM_REDIRECTS + 1):
+        upstream = await session.request(
+            current_method,
+            current_url,
+            headers=current_headers,
+            data=current_body,
+            allow_redirects=False,
+        )
+        location = upstream.headers.get("Location")
+        if upstream.status not in REDIRECT_STATUSES or not location:
+            return upstream
+
+        if redirect_count >= MAX_UPSTREAM_REDIRECTS:
+            await upstream.read()
+            upstream.release()
+            raise web.HTTPBadGateway(text="Modal bridge received too many redirects")
+
+        next_url = _redirect_url(current_url, location, base_target)
+        status = upstream.status
+        await upstream.read()
+        upstream.release()
+
+        # Match normal HTTP redirect semantics.  Modal's server handoff uses a
+        # body-preserving redirect, but handling the other standard statuses
+        # keeps GET routes and future endpoint changes correct.
+        if status == 303 or (
+            status in {301, 302} and current_method.upper() not in {"GET", "HEAD"}
+        ):
+            current_method = "GET"
+            current_body = None
+            current_headers.pop("Content-Length", None)
+            current_headers.pop("Content-Type", None)
+
+        current_url = next_url
+
+    raise web.HTTPBadGateway(text="Modal bridge redirect handling failed")
+
+
 async def relay_ws(source, destination) -> None:
     async for message in source:
         if message.type == WSMsgType.TEXT:
@@ -72,19 +148,36 @@ async def relay_ws(source, destination) -> None:
             break
 
 
-async def websocket_proxy(request: web.Request) -> web.WebSocketResponse:
-    local_ws = web.WebSocketResponse(compress=False, heartbeat=30, max_msg_size=0)
-    await local_ws.prepare(request)
-
+async def websocket_proxy(request: web.Request) -> web.StreamResponse:
     session: ClientSession = request.app["session"]
     try:
-        async with session.ws_connect(
+        # Establish the Modal-side socket before accepting the local one.  A
+        # cold GPU can take minutes to start.  If we return the local 101 first,
+        # its heartbeat expires while this coroutine is still waiting for
+        # Modal, and the monitoring socket is already dead by the time ComfyUI
+        # accepts the prompt.
+        remote_ws = await session.ws_connect(
             target_url(request, websocket=True),
             headers=request_headers(request),
             compress=0,
             heartbeat=30,
             max_msg_size=0,
-        ) as remote_ws:
+        )
+    except client_exceptions.WSServerHandshakeError as exc:
+        return web.Response(
+            status=exc.status,
+            text=f"Upstream WebSocket handshake failed ({exc.status}): {exc.message}",
+        )
+    except client_exceptions.ClientError as exc:
+        return web.Response(
+            status=502,
+            text=f"Upstream WebSocket connection failed: {exc}",
+        )
+
+    local_ws = web.WebSocketResponse(compress=False, heartbeat=30, max_msg_size=0)
+    try:
+        await local_ws.prepare(request)
+        try:
             local_to_remote = asyncio.create_task(relay_ws(local_ws, remote_ws))
             remote_to_local = asyncio.create_task(relay_ws(remote_ws, local_ws))
             done, pending = await asyncio.wait(
@@ -94,6 +187,8 @@ async def websocket_proxy(request: web.Request) -> web.WebSocketResponse:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*done, *pending, return_exceptions=True)
+        finally:
+            await remote_ws.close()
     finally:
         await local_ws.close()
     return local_ws
@@ -120,24 +215,31 @@ async def http_proxy(request: web.Request) -> web.StreamResponse:
     if body is not None:
         upstream_headers["Content-Length"] = str(len(body))
 
-    async with session.request(
+    upstream = await authenticated_request(
+        session,
         request.method,
         target_url(request, base_target=base_target, path_override=path_override),
-        headers=upstream_headers,
-        data=body,
-        allow_redirects=False,
-    ) as upstream:
+        upstream_headers,
+        body,
+        base_target,
+    )
+    try:
         headers = {
             name: value
             for name, value in upstream.headers.items()
             if name.lower() not in HOP_BY_HOP and name.lower() != "content-length"
         }
         response = web.StreamResponse(status=upstream.status, headers=headers)
-        await response.prepare(request)
-        async for chunk in upstream.content.iter_chunked(1024 * 1024):
-            await response.write(chunk)
-        await response.write_eof()
+        try:
+            await response.prepare(request)
+            async for chunk in upstream.content.iter_chunked(1024 * 1024):
+                await response.write(chunk)
+            await response.write_eof()
+        except (client_exceptions.ClientConnectionResetError, ConnectionResetError, asyncio.CancelledError):
+            pass
         return response
+    finally:
+        upstream.release()
 
 
 async def session_context(app: web.Application):

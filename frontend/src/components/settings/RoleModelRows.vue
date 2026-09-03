@@ -76,7 +76,7 @@ function optionFor(model: any) {
 }
 
 const modelOptions = computed(() => selectableModels.value
-  .filter(model => model.source !== 'auto' && !model.collapsed)
+  .filter(model => model.source !== 'auto' && model.source !== 'stimma_cloud' && !model.collapsed)
   .map(optionFor))
 
 /** Whether this row is running on something the user actually chose. */

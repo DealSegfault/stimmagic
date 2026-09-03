@@ -237,7 +237,8 @@ def test_h3_reference_guidance_preserves_exact_model_order_and_roles():
     assert "soundtrack extracted from the same-numbered reference video" in guidance
     assert "standalone reference audio" in guidance
     assert "Do not write first-frame, last-frame, or timeline-alignment" in guidance
-    assert "Use every listed tag at least once" in guidance
+    assert "use only tags already present in the source prompt" in guidance
+    assert "Do not infer reference tags from plain words" in guidance
 
 
 def test_h3_audio_disabled_keeps_schema_but_forces_na():

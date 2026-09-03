@@ -22,7 +22,6 @@ export interface ReferenceView {
   source_signature: string | null
   sort_order: number
 }
-
 export interface ElementState {
   id: number
   project_id: number
@@ -100,6 +99,32 @@ export interface ReferenceWorkspace {
   project_id: number
   packs: ReferencePack[]
   stats: Record<string, number>
+}
+
+export interface InpaintZoneInput {
+  color_name: string
+  color_hex?: string
+  target: string
+  operation: string
+  instruction: string
+  reference_media_ids?: number[]
+}
+
+export interface InpaintInput {
+  source_media_id: number
+  mask_media_id?: number | null
+  mask_image_base64?: string | null
+  zones: InpaintZoneInput[]
+  prompt_override?: string | null
+  reference_media_ids?: number[]
+  dimensions?: [number, number] | null
+}
+
+export interface ReferenceGenInput {
+  prompt: string
+  reference_media_ids: number[]
+  negative_prompt?: string | null
+  dimensions?: [number, number] | null
 }
 
 const api = () => getApiBase()
@@ -189,6 +214,20 @@ export function useProjectReferencesApi() {
     await axios.delete(`${api()}/projects/${projectId}/references/compositions/${compositionId}`)
   }
 
+  async function inpaintImage(input: InpaintInput, projectId?: number) {
+    const url = projectId
+      ? `${api()}/projects/${projectId}/references/inpaint`
+      : `${api()}/references/inpaint`
+    return (await axios.post(url, input, generationConfig)).data
+  }
+
+  async function generateWithReference(input: ReferenceGenInput, projectId?: number) {
+    const url = projectId
+      ? `${api()}/projects/${projectId}/references/generate-with-reference`
+      : `${api()}/references/generate-with-reference`
+    return (await axios.post(url, input, generationConfig)).data
+  }
+
   return {
     getWorkspace,
     updatePack,
@@ -204,5 +243,7 @@ export function useProjectReferencesApi() {
     approveComposition,
     rejectComposition,
     deleteComposition,
+    inpaintImage,
+    generateWithReference,
   }
 }

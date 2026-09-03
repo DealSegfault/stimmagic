@@ -29,9 +29,33 @@ def test_installed_codex_cli_is_registered_without_api_key():
     assert provider["base_url"] == "codex-cli://local"
     assert "api_key" not in provider
     assert provider["models"][0]["model_id"] == "gpt-5.6-luna"
+    assert {
+        model["model_id"] for model in provider["models"]
+    } == {"gpt-5.6-sol", "gpt-5.6-luna"}
+    sol = next(model for model in provider["models"] if model["model_id"] == "gpt-5.6-sol")
+    assert sol["name"] == "GPT-5.6 Sol · ChatGPT"
 
 
 def test_codex_cli_registration_respects_existing_provider():
+    existing = {
+        "id": "codex-cli",
+        "kind": "codex_cli",
+        "models": [{
+            "id": "codex-cli:gpt-5.6-luna",
+            "model_id": "gpt-5.6-luna",
+            "name": "GPT-5.6 Luna · ChatGPT",
+        }],
+    }
+    config_data = {"llm_providers": [existing]}
+
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+
+    assert [model["model_id"] for model in existing["models"]] == [
+        "gpt-5.6-luna", "gpt-5.6-sol",
+    ]
+
+
+def test_codex_cli_registration_respects_deleted_provider():
     existing = {"kind": "codex_cli", "deleted_at": "2026-08-26T00:00:00Z"}
     config_data = {"llm_providers": [existing]}
 
@@ -53,6 +77,21 @@ def test_modal_gateway_registration_is_runtime_only_and_idempotent():
         "url": "ws://127.0.0.1:8188/stp-v1",
         "enabled": True,
     }]
+
+
+def test_modal_gateway_registration_repairs_legacy_missing_name():
+    config_data = {
+        "tool_providers": [{
+            "id": "comfyui-modal-h3",
+            "type": "websocket",
+            "url": "ws://127.0.0.1:8188/stp-v1",
+            "enabled": True,
+        }],
+    }
+
+    _inject_modal_gateway_provider(config_data, "ws://127.0.0.1:8188/stp-v1")
+
+    assert config_data["tool_providers"][0]["name"] == "ComfyUI · Modal H3"
 
 
 def test_legacy_destination_roles_become_hidden_migration_roots(tmp_path, monkeypatch):

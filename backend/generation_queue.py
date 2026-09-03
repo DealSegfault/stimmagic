@@ -1504,6 +1504,7 @@ class GenerationQueue:
         output_disposition: str = 'asset',
         output_context_kind: Optional[str] = None,
         output_context_id: Optional[str] = None,
+        allow_reference_mismatch: bool = False,
         consume_pending_request: bool = True,
     ) -> int:
         """Shared implementation for creating and submitting a generation job.
@@ -1514,6 +1515,24 @@ class GenerationQueue:
         Returns:
             Job ID
         """
+        # Defense in depth for non-REST callers. The REST route performs the
+        # same check before retaining inputs, while the agent SDK checks before
+        # entering the queue; keeping this final gate here prevents a future
+        # internal caller from silently reintroducing phantom H3 references.
+        if not allow_reference_mismatch and task_type == "reference-to-video":
+            from model_family import model_family
+            from reference_prompt_validation import (
+                ReferencePromptMismatchError,
+                reference_prompt_mismatches,
+            )
+
+            if model_family(model_name) == "minimax-h3":
+                mismatches = reference_prompt_mismatches(
+                    parameters.get("prompt"), parameters
+                )
+                if mismatches:
+                    raise ReferencePromptMismatchError(mismatches)
+
         if not generator_instance_id:
             generator_instance_id = "legacy-generate-tab"
 
@@ -1650,6 +1669,7 @@ class GenerationQueue:
         output_disposition: str = 'asset',
         output_context_kind: Optional[str] = None,
         output_context_id: Optional[str] = None,
+        allow_reference_mismatch: bool = False,
         consume_pending_request: bool = True,
     ) -> int:
         """Submit a new generation job to the queue.
@@ -1671,6 +1691,7 @@ class GenerationQueue:
             output_disposition=output_disposition,
             output_context_kind=output_context_kind,
             output_context_id=output_context_id,
+            allow_reference_mismatch=allow_reference_mismatch,
             consume_pending_request=consume_pending_request,
         )
 
@@ -1694,6 +1715,7 @@ class GenerationQueue:
         output_disposition: str = 'asset',
         output_context_kind: Optional[str] = None,
         output_context_id: Optional[str] = None,
+        allow_reference_mismatch: bool = False,
         consume_pending_request: bool = True,
     ) -> int:
         """Submit a generation job that is part of a batch.
@@ -1715,6 +1737,7 @@ class GenerationQueue:
             output_disposition=output_disposition,
             output_context_kind=output_context_kind,
             output_context_id=output_context_id,
+            allow_reference_mismatch=allow_reference_mismatch,
             consume_pending_request=consume_pending_request,
         )
 
@@ -2957,6 +2980,27 @@ class GenerationQueue:
             # should never be sent to providers.
             internal_params = {'inspired_by_media_id', 'prompt_metadata'}
             exec_params = {k: v for k, v in params.items() if k not in internal_params}
+
+            # Carry a fixed Modal account into the STP execution without
+            # exposing a routing control in every tool's public schema. Auto
+            # mode is resolved by the account-aware ComfyUI client at acquire().
+            if str(getattr(provider, "provider_id", "")).startswith("comfyui-modal-h3"):
+                try:
+                    from modal_usage_service import get_modal_usage_service
+                    modal_usage = get_modal_usage_service()
+                    assigned_account = modal_usage.account_for_job(profile_id, job.id)
+                    modal_routing = modal_usage.get_routing()
+                    if assigned_account:
+                        exec_params["_modal_account_id"] = assigned_account
+                    elif modal_routing.get("mode") == "fixed":
+                        if not modal_routing.get("effective_account_id"):
+                            raise ValueError(
+                                "Modal routing is fixed to an account without a configured gateway route"
+                            )
+                        exec_params["_modal_account_id"] = modal_routing["effective_account_id"]
+                except ImportError:
+                    # Modal tracking is optional for non-Modal providers.
+                    pass
 
             # Add tool_id for metadata embedding
             if job.tool_id:

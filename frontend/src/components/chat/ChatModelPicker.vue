@@ -105,7 +105,7 @@
                   <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
                 </svg>
               </button>
-              <div v-if="recentModels.length > 0 || displayPickerModels.length > 0 || displayCollapsedCloudModels.length > 0" class="my-1 border-t border-edge" />
+              <div v-if="recentModels.length > 0 || displayPickerModels.length > 0" class="my-1 border-t border-edge" />
             </template>
 
           <template v-if="recentModels.length">
@@ -120,21 +120,21 @@
               :key="`recent-${model.slug}`"
               @click="selectModel(model)"
               class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
-              :class="modelButtonClass(model, model.source === 'stimma_cloud' ? 'bg-cyan-500/10' : 'bg-blue-500/10')"
+              :class="modelButtonClass(model, 'bg-blue-500/10')"
             >
               <ModelVendorIcon :model="model" size="sm" />
               <div class="min-w-0 flex-1">
                 <div class="truncate text-sm text-content">{{ model.name }}</div>
                 <div class="truncate text-[11px] text-content-muted">{{ modelSubtitle(model) }}</div>
               </div>
-              <svg v-if="isSelectedModel(model)" class="h-4 w-4 flex-shrink-0" :class="model.source === 'stimma_cloud' ? 'text-cyan-400' : 'text-blue-400'" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+              <svg v-if="isSelectedModel(model)" class="h-4 w-4 flex-shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
               </svg>
             </button>
-            <div v-if="displayPickerModels.length > 0 || displayCollapsedCloudModels.length > 0" class="my-1 border-t border-edge" />
+            <div v-if="displayPickerModels.length > 0" class="my-1 border-t border-edge" />
           </template>
 
-          <!-- Models (cloud + local, one flat list; provenance lives in the subtitle) -->
+          <!-- Models from local providers (provenance lives in the subtitle) -->
           <div v-if="displayPickerModels.length > 0" class="px-3 pb-1 pt-1.5 text-xs font-semibold text-content-secondary">
             {{ hasSearch ? 'Matching models' : 'Models' }}
           </div>
@@ -143,59 +143,22 @@
             :key="model.slug"
             @click="selectModel(model)"
             class="w-full px-3 py-2 text-left flex items-center gap-2 transition-colors"
-            :class="modelButtonClass(model, model.source === 'stimma_cloud' ? 'bg-cyan-500/10' : 'bg-blue-500/10')"
+            :class="modelButtonClass(model, 'bg-blue-500/10')"
           >
             <ModelVendorIcon :model="model" size="sm" />
             <div class="flex-1 min-w-0">
               <div class="text-sm text-content">{{ model.name }}</div>
-              <div v-if="model.source === 'stimma_cloud'" class="truncate text-[11px] leading-snug">
-                <span class="text-content-muted"><span v-if="modelVendorLabel(model)">{{ modelVendorLabel(model) }} · </span>{{ modelSourceLine(model) }}<span v-if="model.cost_tier"> · {{ model.cost_tier }}</span></span>
-              </div>
               <div
-                v-else-if="model.endpoint_model"
+                v-if="model.endpoint_model"
                 class="text-[11px] leading-snug font-mono text-content-muted truncate"
                 :title="model.endpoint_url ? `${model.endpoint_url} (${model.endpoint_model})` : model.endpoint_model"
               >{{ model.endpoint_model }}</div>
               <div v-else-if="model.description" class="text-[11px] leading-snug text-content-muted whitespace-normal break-words"><template v-if="modelVendorLabel(model)">{{ modelVendorLabel(model) }} · </template>{{ model.description }}</div>
             </div>
-            <svg v-if="isSelectedModel(model)" class="w-4 h-4 flex-shrink-0" :class="model.source === 'stimma_cloud' ? 'text-cyan-400' : 'text-blue-400'" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <svg v-if="isSelectedModel(model)" class="w-4 h-4 flex-shrink-0 text-blue-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
             </svg>
           </button>
-
-          <template v-if="displayCollapsedCloudModels.length">
-            <button
-              v-if="!hasSearch"
-              type="button"
-              @click="showCollapsedCloud = !showCollapsedCloud"
-              class="flex w-full items-center justify-between border-t border-edge px-3 py-2 text-left text-[11px] text-content-muted hover:text-content-secondary"
-            >
-              <span>Also on your Stimma Account ({{ displayCollapsedCloudModels.length }})</span>
-              <svg class="h-3 w-3 transition-transform" :class="showCollapsedCloud ? 'rotate-180' : ''" viewBox="0 0 12 12" fill="currentColor">
-                <path d="M3 4.5L6 8l3-3.5H3z" />
-              </svg>
-            </button>
-            <div v-else class="border-t border-edge px-3 pb-1 pt-2 text-xs font-semibold text-content-secondary">
-              Also on your Stimma Account
-            </div>
-            <button
-              v-if="showCollapsedCloud || hasSearch"
-              v-for="model in displayCollapsedCloudModels"
-              :key="model.slug"
-              @click="selectModel(model)"
-              class="w-full px-3 py-2 text-left flex items-center gap-2 transition-colors"
-              :class="modelButtonClass(model, 'bg-cyan-500/10')"
-            >
-              <ModelVendorIcon :model="model" size="sm" />
-              <div class="min-w-0 flex-1">
-                <div class="text-sm text-content">{{ model.name }}</div>
-                <div class="text-[11px] text-content-muted">{{ modelVendorLabel(model) }} · {{ modelSourceLine(model) }}<span v-if="model.cost_tier"> · {{ model.cost_tier }}</span><span v-if="model.shadowed_by_provider"> · also on {{ model.shadowed_by_provider }}</span></div>
-              </div>
-              <svg v-if="isSelectedModel(model)" class="h-4 w-4 flex-shrink-0 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5" />
-              </svg>
-            </button>
-          </template>
 
           <!-- Empty state -->
           <div v-if="!hasModelResults" class="px-3 py-8 text-center text-xs text-content-muted">
@@ -251,7 +214,6 @@ const container = ref(null)
 const dropdown = ref(null)
 const searchInput = ref(null)
 const isOpen = ref(false)
-const showCollapsedCloud = ref(false)
 const searchQuery = ref('')
 const recentModelSlugs = ref(loadRecentModelSlugs())
 const dropdownStyle = ref({})
@@ -323,30 +285,25 @@ const currentTitle = computed(() => {
 
 const autoModels = computed(() => selectableModels.value.filter(m => m.source === 'auto'))
 const visibleAutoModels = computed(() => autoModels.value.filter(m => !m.resolved_slug))
-const cloudModels = computed(() => selectableModels.value.filter(m => m.source === 'stimma_cloud' && !m.collapsed))
-const collapsedCloudModels = computed(() => selectableModels.value.filter(m => m.source === 'stimma_cloud' && m.collapsed))
 const providerModels = computed(() => selectableModels.value.filter(m => m.source === 'provider'))
 const localModels = computed(() => selectableModels.value.filter(m => m.source === 'endpoint'))
-const pickerModels = computed(() => sortModelsByBrand([...providerModels.value, ...cloudModels.value, ...localModels.value]))
+const pickerModels = computed(() => sortModelsByBrand([...providerModels.value, ...localModels.value]))
 const searchTokens = computed(() => searchQuery.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean))
 const hasSearch = computed(() => searchTokens.value.length > 0)
 const filteredAutoModels = computed(() => visibleAutoModels.value.filter(modelMatchesSearch))
 const filteredPickerModels = computed(() => pickerModels.value.filter(modelMatchesSearch))
-const filteredCollapsedCloudModels = computed(() => collapsedCloudModels.value.filter(modelMatchesSearch))
 const recentModels = computed(() => {
   if (hasSearch.value) return []
   return recentModelSlugs.value
     .map(slug => selectableModels.value.find(model => model.slug === slug))
-    .filter(model => model && model.source !== 'auto')
+    .filter(model => model && model.source !== 'auto' && model.source !== 'stimma_cloud')
 })
 const recentSlugSet = computed(() => new Set(recentModels.value.map(model => model.slug)))
 const displayPickerModels = computed(() => filteredPickerModels.value.filter(model => !recentSlugSet.value.has(model.slug)))
-const displayCollapsedCloudModels = computed(() => filteredCollapsedCloudModels.value.filter(model => !recentSlugSet.value.has(model.slug)))
 const hasModelResults = computed(() => (
   filteredAutoModels.value.length > 0
   || recentModels.value.length > 0
   || displayPickerModels.value.length > 0
-  || displayCollapsedCloudModels.value.length > 0
 ))
 
 onMounted(() => {
@@ -380,7 +337,6 @@ function open() {
 function close() {
   isOpen.value = false
   searchQuery.value = ''
-  showCollapsedCloud.value = false
 }
 
 async function selectModel(model) {
@@ -441,9 +397,6 @@ function modelVendorLabel(model) {
 }
 
 function modelSubtitle(model) {
-  if (model.source === 'stimma_cloud') {
-    return [modelVendorLabel(model), modelSourceLine(model), model.cost_tier].filter(Boolean).join(' · ')
-  }
   if (model.endpoint_model) return model.endpoint_model
   return [modelVendorLabel(model), model.description].filter(Boolean).join(' · ')
 }

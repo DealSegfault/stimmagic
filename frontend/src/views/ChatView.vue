@@ -1408,7 +1408,9 @@
             :skills="eligibleSkills"
             :active-keys="invokedSkillKeySet"
             :invoking="invokingSkillName"
+            :deactivating="deactivatingSkillName"
             @activate="activateSkill"
+            @deactivate="disableSkill"
           />
         </template>
         <template #model-picker>
@@ -2335,6 +2337,7 @@ const invokedSkillKeySet = computed(() => {
 
 const eligibleSkills = ref([])
 const invokingSkillName = ref(null)
+const deactivatingSkillName = ref(null)
 
 async function loadEligibleSkills() {
   try {
@@ -2363,6 +2366,36 @@ async function activateSkill(name) {
     console.error('Failed to activate skill:', err)
   } finally {
     invokingSkillName.value = null
+  }
+}
+
+async function disableSkill(name) {
+  deactivatingSkillName.value = name
+  try {
+    const response = await fetch(`/api/chats/${chatId.value}/disable-skill`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Profile-ID': getCurrentProfileId(),
+      },
+      body: JSON.stringify({ name }),
+    })
+    if (!response.ok) {
+      throw new Error(await response.text())
+    }
+
+    // The backend also broadcasts these deletions for other open chat views.
+    // Remove them locally as soon as the request succeeds so this view does
+    // not wait on the websocket round trip to show the skill as disabled.
+    const result = await response.json()
+    const deletedIds = new Set(result.deleted_ids || [])
+    if (deletedIds.size > 0) {
+      items.value = items.value.filter(item => !deletedIds.has(item.id))
+    }
+  } catch (err) {
+    console.error('Failed to disable skill:', err)
+  } finally {
+    deactivatingSkillName.value = null
   }
 }
 

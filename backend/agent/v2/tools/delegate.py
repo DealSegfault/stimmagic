@@ -206,7 +206,10 @@ async def _get_workspace_context(
                 f'{f["filename"]} (media_id={f["media_id"]})'
                 for f in workspace_files
             )
-            parts.append(f"User attached files: {file_list}. Use view_image to see them, or media_id for call_tool input_images.")
+            parts.append(
+                f"User attached files: {file_list}. Use view_image for stills, "
+                "view_video for videos, or media_id for generation inputs."
+            )
 
     # 2. List actual files in the workspace directory
     try:

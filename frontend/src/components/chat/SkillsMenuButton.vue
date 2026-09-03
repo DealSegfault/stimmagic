@@ -51,13 +51,25 @@
             <div v-if="mode === 'activate'" class="flex items-center flex-shrink-0">
               <button
                 v-if="!isActive(skill)"
+                type="button"
                 @click="$emit('activate', skill.qualified_name)"
-                :disabled="invoking === skill.qualified_name"
-                class="text-[10px] px-2 py-0.5 rounded text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
+                :aria-pressed="false"
+                :disabled="isBusy(skill)"
+                class="text-[10px] px-2 py-0.5 rounded text-accent hover:text-accent-hi hover:bg-accent/10 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
               >
                 {{ invoking === skill.qualified_name ? 'Activating...' : 'Activate' }}
               </button>
-              <span v-else class="text-[10px] text-content-muted px-2">Active</span>
+              <button
+                v-else
+                type="button"
+                @click="$emit('deactivate', skill.qualified_name)"
+                :aria-pressed="true"
+                title="Disable this skill"
+                :disabled="isBusy(skill)"
+                class="text-[10px] px-2 py-0.5 rounded text-accent-hi bg-accent/10 hover:bg-red-500/10 hover:text-red-400 transition-colors disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                {{ deactivating === skill.qualified_name ? 'Disabling...' : 'Active' }}
+              </button>
             </div>
           </div>
         </div>
@@ -91,13 +103,19 @@ const props = withDefaults(defineProps<{
   mode?: 'activate' | 'view'
   /** Qualified name of the skill currently being activated, if any. */
   invoking?: string | null
+  /** Qualified name of the skill currently being disabled, if any. */
+  deactivating?: string | null
 }>(), {
   activeKeys: () => [],
   mode: 'activate',
   invoking: null,
+  deactivating: null,
 })
 
-defineEmits<{ (e: 'activate', qualifiedName: string): void }>()
+defineEmits<{
+  (e: 'activate', qualifiedName: string): void
+  (e: 'deactivate', qualifiedName: string): void
+}>()
 
 const open = ref(false)
 const buttonRef = ref<HTMLElement | null>(null)
@@ -129,6 +147,10 @@ function isActive(skill: SkillEntry): boolean {
   return keySet.value.has(skill.qualified_name)
     || (!!skill.slug && keySet.value.has(skill.slug))
     || (!!skill.pack_name && keySet.value.has(skill.pack_name))
+}
+
+function isBusy(skill: SkillEntry): boolean {
+  return props.invoking === skill.qualified_name || props.deactivating === skill.qualified_name
 }
 
 const activeCount = computed(() =>

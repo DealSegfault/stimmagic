@@ -26,6 +26,7 @@ from utils.background_tasks import generation_input_media_ids
 from project_service import get_project_or_404
 from llm import EntitlementError
 from asset_association_service import asset_for_media
+from reference_prompt_validation import ReferencePromptMismatchError
 
 router = APIRouter(prefix="/api/generate", tags=["generation"])
 log = get_logger(__name__)
@@ -308,6 +309,53 @@ def _prompt_h3_context(
                 "index": index,
             })
     return task, duration, media_ids, generate_audio, manifest
+
+
+def _h3_reference_prompt_mismatches(
+    parameters: Dict[str, Any],
+    *,
+    tool_id: str,
+    task_type: Optional[str],
+    prompt_options: Optional[Dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Validate model-visible H3 reference labels before queueing a job.
+
+    The check is intentionally limited to MiniMax H3 Ref2VA. Other providers
+    may use ``<Video N>`` as ordinary prompt prose, while H3 treats these
+    labels as conditioning protocol. Prompt enhancement has already run by the
+    time this helper is called, so it validates the exact text sent to ComfyUI.
+    """
+    if task_type != "reference-to-video":
+        return []
+
+    model, _, _, _ = _prompt_pipeline_context(tool_id, task_type, prompt_options)
+    from model_family import model_family
+
+    if model_family(model) != "minimax-h3":
+        return []
+
+    from reference_prompt_validation import reference_prompt_mismatches
+
+    return reference_prompt_mismatches(
+        parameters.get("prompt"),
+        parameters,
+    )
+
+
+def _reference_prompt_confirmation_error(
+    mismatches: list[dict[str, Any]],
+) -> HTTPException:
+    """Return the typed 409 used by the UI confirmation flow."""
+    from reference_prompt_validation import format_reference_prompt_warning
+
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "generation_reference_mismatch",
+            "message": format_reference_prompt_warning(mismatches),
+            "mismatches": mismatches,
+        },
+    )
 
 
 async def _retain_generation_inputs(
@@ -1833,6 +1881,15 @@ async def submit_generation_job(
         if request.auto_marker_ids:
             parameters["auto_marker_ids"] = request.auto_marker_ids
 
+        reference_mismatches = _h3_reference_prompt_mismatches(
+            parameters,
+            tool_id=request.tool_id,
+            task_type=request.task_type,
+            prompt_options=request.prompt_options,
+        )
+        if reference_mismatches and not request.confirm_reference_mismatch:
+            raise _reference_prompt_confirmation_error(reference_mismatches)
+
         if request.auto_delete_duration is not None:
             from generation_queue import parse_duration
             from telemetry import get_telemetry_client
@@ -1862,6 +1919,7 @@ async def submit_generation_job(
             output_disposition=disposition,
             output_context_kind=context_kind,
             output_context_id=context_id,
+            allow_reference_mismatch=request.confirm_reference_mismatch,
             consume_pending_request=_should_consume_forever_reservation(request),
         )
 
@@ -1869,6 +1927,9 @@ async def submit_generation_job(
     except HTTPException:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise
+    except ReferencePromptMismatchError as e:
+        await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
+        raise _reference_prompt_confirmation_error(e.mismatches)
     except ValueError as e:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise HTTPException(status_code=400, detail=str(e))
@@ -2026,6 +2087,15 @@ async def submit_batch_jobs(
                 project_id=request.project_id,
             )
 
+            reference_mismatches = _h3_reference_prompt_mismatches(
+                parameters,
+                tool_id=request.tool_id,
+                task_type=request.task_type,
+                prompt_options=request.prompt_options,
+            )
+            if reference_mismatches and not request.confirm_reference_mismatch:
+                raise _reference_prompt_confirmation_error(reference_mismatches)
+
             # Add prompt metadata if provided
             if request.prompt_metadata:
                 parameters["prompt_metadata"] = request.prompt_metadata.model_dump()
@@ -2066,6 +2136,7 @@ async def submit_batch_jobs(
                 output_disposition="container_member",
                 output_context_kind="batch",
                 output_context_id=batch_id,
+                allow_reference_mismatch=request.confirm_reference_mismatch,
                 consume_pending_request=consume_reserved_work and idx == 0,
             )
             job_ids.append(job_id)
@@ -2089,6 +2160,9 @@ async def submit_batch_jobs(
     except HTTPException:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise
+    except ReferencePromptMismatchError as e:
+        await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
+        raise _reference_prompt_confirmation_error(e.mismatches)
     except ValueError as e:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise HTTPException(status_code=400, detail=str(e))
@@ -2336,6 +2410,15 @@ async def submit_media_batch_jobs(
                 project_id=request.project_id,
             )
 
+            reference_mismatches = _h3_reference_prompt_mismatches(
+                parameters,
+                tool_id=request.tool_id,
+                task_type=request.task_type,
+                prompt_options=request.prompt_options,
+            )
+            if reference_mismatches and not request.confirm_reference_mismatch:
+                raise _reference_prompt_confirmation_error(reference_mismatches)
+
             if request.prompt_metadata:
                 parameters["prompt_metadata"] = request.prompt_metadata.model_dump()
             if request.auto_marker_ids:
@@ -2371,6 +2454,7 @@ async def submit_media_batch_jobs(
                 batch_total=total_jobs if idx == 0 else None,  # Only first job stores total
                 batch_output_title=None,
                 batch_input_set_ids=None,
+                allow_reference_mismatch=request.confirm_reference_mismatch,
                 consume_pending_request=consume_reserved_work and idx == 0,
             )
             job_ids.append(job_id)
@@ -2394,6 +2478,9 @@ async def submit_media_batch_jobs(
     except HTTPException:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise
+    except ReferencePromptMismatchError as e:
+        await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
+        raise _reference_prompt_confirmation_error(e.mismatches)
     except ValueError as e:
         await _decline_unqueued_reserved_work(generation_queue, request, provider_id, reservation_handed_to_queue)
         raise HTTPException(status_code=400, detail=str(e))

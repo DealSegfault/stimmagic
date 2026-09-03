@@ -59,6 +59,10 @@ export function useGateway() {
       bridgeListening.value = Boolean(data.bridge_listening)
       if (data.running) {
         addToast('Passerelle Modal H3 démarrée !', 'success', 3000)
+      } else {
+        const msg = data.error || 'La passerelle Modal H3 n’est pas prête.'
+        gatewayError.value = msg
+        addToast(msg, 'error', 5000)
       }
       return Boolean(gatewayRunning.value)
     } catch (err: any) {
@@ -75,6 +79,7 @@ export function useGateway() {
 
   async function stopGateway(): Promise<boolean> {
     gatewayStarting.value = false
+    gatewayError.value = null
     try {
       const res = await axios.post('/api/gateway/stop')
       const data = res.data
@@ -88,6 +93,7 @@ export function useGateway() {
       return true
     } catch (err: any) {
       const msg = err.response?.data?.detail || err.message || 'Erreur lors de l’arrêt de la passerelle'
+      gatewayError.value = msg
       addToast(msg, 'error', 3500)
       return false
     }

@@ -1,11 +1,17 @@
 """Modal account usage and generation tracking API."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from modal_usage_service import get_modal_usage_service
 
 router = APIRouter(prefix="/api/modal", tags=["modal-usage"])
+
+
+class ModalRoutingUpdate(BaseModel):
+    mode: str = Field(pattern="^(auto|fixed)$")
+    account_id: str | None = None
 
 
 @router.get("/usage")
@@ -18,6 +24,21 @@ async def get_modal_usage(limit: int = Query(default=50, ge=1, le=200)):
 async def get_modal_accounts():
     """Return account health/budget metadata without credentials."""
     return get_modal_usage_service().snapshot(limit=1)["accounts"]
+
+
+@router.get("/routing")
+async def get_modal_routing():
+    """Return the live account-routing preference without credentials."""
+    return get_modal_usage_service().get_routing()
+
+
+@router.patch("/routing")
+async def update_modal_routing(payload: ModalRoutingUpdate):
+    """Set automatic or fixed-account routing for future generations."""
+    try:
+        return get_modal_usage_service().update_routing(payload.mode, payload.account_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/pricing")

@@ -431,7 +431,7 @@ prompt_enhancement:
 
     H3 CONTRACT — PRESERVE EXACTLY:
     - Keep these schema keys in English, in the same order, with the same spelling: integrated_multimodal_description:, overall_soundscape:, non_diegetic_music:. Also preserve any subject_definitions:, summary:, retention_analysis:, or detailed_description: keys if they are present in the input.
-    - Keep every reference tag byte-for-byte and in the same order: <Picture N>, <Video N>, and <Audio N>. The expected reference tags are {h3_reference_labels}. Never rename, renumber, swap, omit, or turn them into keyframes. In REF2VA/R2V, do not add first-frame, last-frame, or timeline-alignment instructions.
+    - Preserve existing reference tags byte-for-byte and in their present order: <Picture N>, <Video N>, and <Audio N>. Never rename, renumber, swap, add, or turn them into keyframes. In REF2VA/R2V, do not add first-frame, last-frame, or timeline-alignment instructions.
     - Preserve every number and numeric value exactly: durations, timecodes, shot numbers, focal lengths, frame rates, aspect ratios, counts, and measurements. Do not add, remove, round, convert, or replace a number. The configured generation duration is {h3_duration} seconds; it is metadata, not permission to add a duration that is absent from the source.
     - Preserve H3 control syntax and alignment lines exactly, including [Shot N], <d>...</d>, <scenetrans>, <cutoff>, placeholders, wildcard syntax, and comment lines. Keep spoken dialogue, lyrics, and visible text verbatim.
     - Output only the translated prompt. Do not add headings, explanations, markdown, quotes, or a second version.

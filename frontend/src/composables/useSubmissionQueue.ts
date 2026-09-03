@@ -5,6 +5,44 @@ function getAPIBase() {
   return getApiBase()
 }
 
+const REFERENCE_MISMATCH_CODE = 'generation_reference_mismatch'
+
+/**
+ * Retry once after the server detects an H3 prompt/reference mismatch.
+ *
+ * The first request is deliberately not queued. For foreground submissions,
+ * the native confirmation gives the user an explicit choice; generate-forever
+ * submissions stay non-interactive and remain blocked until their prompt or
+ * references are corrected.
+ */
+async function postWithReferenceConfirmation<T = any>(
+  url: string,
+  payload: Record<string, any>,
+): Promise<{ data: T }> {
+  try {
+    return await axios.post<T>(url, payload)
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail
+    const isMismatch = (
+      error?.response?.status === 409 &&
+      detail?.code === REFERENCE_MISMATCH_CODE &&
+      payload.confirm_reference_mismatch !== true &&
+      payload.forever_work_reserved !== true
+    )
+    if (!isMismatch || typeof window === 'undefined') throw error
+
+    const message = typeof detail.message === 'string'
+      ? detail.message
+      : 'Attention : les références du prompt ne correspondent pas aux médias attachés. Êtes-vous sûr de vouloir démarrer la génération ?'
+    if (!window.confirm(message)) throw error
+
+    return await axios.post<T>(url, {
+      ...payload,
+      confirm_reference_mismatch: true,
+    })
+  }
+}
+
 function handleReservedSubmitFailure(
   error: any,
   payload: Record<string, any> | null,
@@ -148,7 +186,7 @@ export async function submitJobAsync(params: {
 
     // Submit to backend
     backendSubmitStarted = true
-    await axios.post(`${getAPIBase()}/generate/submit`, payload)
+    await postWithReferenceConfirmation(`${getAPIBase()}/generate/submit`, payload)
 
     onSubmitted?.()
   } catch (error) {
@@ -213,7 +251,7 @@ export async function submitBatchJobAsync(params: {
 
     // Submit to batch endpoint
     backendSubmitStarted = true
-    const response = await axios.post<BatchJobResponse>(`${getAPIBase()}/generate/submit-batch`, payload)
+    const response = await postWithReferenceConfirmation<BatchJobResponse>(`${getAPIBase()}/generate/submit-batch`, payload)
 
     onSubmitted?.(response.data)
   } catch (error) {
@@ -265,7 +303,7 @@ export async function submitMediaBatchJobAsync(params: {
     }
 
     backendSubmitStarted = true
-    const response = await axios.post<BatchJobResponse>(`${getAPIBase()}/generate/submit-media-batch`, payload)
+    const response = await postWithReferenceConfirmation<BatchJobResponse>(`${getAPIBase()}/generate/submit-media-batch`, payload)
 
     onSubmitted?.(response.data)
   } catch (error) {

@@ -148,8 +148,16 @@ function prefixOutput(label: string, stream: ReadableStream<Uint8Array> | null):
 }
 
 function spawnDevProcess(label: string, cmd: string, args: string[], opts: RunOptions = {}): DevProcess {
-  const command = new Deno.Command(cmd, {
-    args,
+  // Keep every dev component in its own process group and supervise the
+  // group from a tiny stdlib-only Python helper.  npm/npx tools can spawn
+  // several generations of children; a plain ChildProcess.kill() only
+  // reaches the first one and leaves those grandchildren behind when the
+  // terminal or the Tauri shell is closed abruptly.
+  const supervisor = Deno.build.os === "windows" ? null : join(scriptDir, "process-supervisor.py");
+  const launchCmd = supervisor ? "python3" : cmd;
+  const launchArgs = supervisor ? [supervisor, cmd, ...args] : args;
+  const command = new Deno.Command(launchCmd, {
+    args: launchArgs,
     cwd: opts.cwd,
     env: { ...Deno.env.toObject(), ...(opts.env || {}) },
     stdin: "null",
@@ -1819,9 +1827,20 @@ async function commandDevStack(
       component.process = undefined;
       const runtimeMs = Date.now() - component.startedAt;
       if (runtimeMs >= COMPONENT_STABILITY_WINDOW_MS) component.restartCount = 0;
-      component.restartCount += 1;
       const reason = status.success ? "clean-exit" : (status.signal ? `signal-${status.signal}` : `exit-${status.code}`);
       console.warn(`${logPrefix} component=${component.label} stopped pid=${process.child.pid} reason=${reason} runtime_ms=${runtimeMs} restart=${component.restartCount}/${MAX_COMPONENT_RESTARTS}`);
+
+      // In desktop mode the Tauri window is the user's stop action.  Do not
+      // resurrect it (or leave the web stack running) after the window closes.
+      // Backend/frontend components remain restartable for their normal dev
+      // workflow, but an app exit shuts down the whole supervised stack.
+      if (component.label === "app") {
+        console.log(`${logPrefix} app exited; stopping the full dev stack.`);
+        void shutdown();
+        return;
+      }
+
+      component.restartCount += 1;
       if (component.restartCount > MAX_COMPONENT_RESTARTS) {
         console.error(`${logPrefix} component=${component.label} restart budget exhausted; other components remain available. Fix the component, then restart only this dev stack.`);
         return;
@@ -1868,9 +1887,14 @@ async function commandDevStack(
     console.log(`\n${logPrefix} Received SIGTERM; stopping dev stack...`);
     void shutdown(143);
   };
+  const handleSighup = () => {
+    console.log(`\n${logPrefix} Received SIGHUP; stopping dev stack...`);
+    void shutdown(129);
+  };
 
   Deno.addSignalListener("SIGINT", handleSigint);
   Deno.addSignalListener("SIGTERM", handleSigterm);
+  if (Deno.build.os !== "windows") Deno.addSignalListener("SIGHUP", handleSighup);
 
   console.log(`Starting Stimma ${mode} stack (bundle=${bundleId}, sandbox=${sandbox}, backend=:${ports.server}, frontend=:${ports.frontend})`);
   if (runtimeEnv.STIMMA_DISTRIBUTION === "official") {
@@ -1927,6 +1951,7 @@ async function commandDevStack(
     try {
       Deno.removeSignalListener("SIGINT", handleSigint);
       Deno.removeSignalListener("SIGTERM", handleSigterm);
+      if (Deno.build.os !== "windows") Deno.removeSignalListener("SIGHUP", handleSighup);
     } catch {
       // Ignore cleanup failures while exiting.
     }

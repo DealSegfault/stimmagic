@@ -243,7 +243,13 @@ def _strip_undeclared_parameters(
     if not isinstance(props, dict):
         return dict(parameters)
     declared = set(props.keys())
-    return {k: v for k, v in parameters.items() if k in declared}
+    # Private host controls are intentionally forwarded even though they are
+    # not part of the public tool schema. The ComfyUI plugin consumes these
+    # before workflow injection (currently `_modal_account_id`).
+    return {
+        k: v for k, v in parameters.items()
+        if k in declared or k.startswith("_modal_")
+    }
 
 
 # --- Configuration ---

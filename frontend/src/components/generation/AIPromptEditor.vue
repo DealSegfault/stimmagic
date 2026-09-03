@@ -112,6 +112,7 @@
         <div class="flex items-center gap-1.5">
           <!-- Vim/Reg toggle -->
           <button
+            v-if="!vimDisabled"
             @click="toggleVim"
             :class="[
               'text-[10px] font-mono font-medium px-1.5 py-0.5 rounded-md transition-colors',
@@ -295,6 +296,9 @@ interface Props {
   // inline panel). The embedder (ToolView) owns a page-level PromptAgentChat and
   // drives this editor through the exposed handle.
   externalChat?: boolean
+  // Generation-tool prompts are always regular text inputs. This can also be
+  // set explicitly by other embedders that must not inherit Vim state.
+  disableVim?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -308,6 +312,7 @@ const props = withDefaults(defineProps<Props>(), {
   }),
   hideAutoImprove: false,
   externalChat: false,
+  disableVim: false,
 })
 
 const emit = defineEmits<{
@@ -326,6 +331,7 @@ const translateMenuEl = ref<HTMLElement | null>(null)
 const showTranslateMenu = ref(false)
 // Fixed coords for the teleported menu, anchored above the chip (opens upward).
 const translateMenuPos = ref({ left: 0, bottom: 0 })
+const vimDisabled = computed(() => props.disableVim || props.externalChat)
 
 // No LLM configured at all (deliberate opt-out) → the generate-time pipeline
 // chips gray out and the inline chat affordance hides. A configured-but-broken
@@ -375,6 +381,7 @@ const { vimEnabled, monospaceEnabled, toggleVim, toggleMonospace, setContent, ap
     },
     // Blur intentionally does nothing — suggestion refresh is debounce-driven.
     onBlur: () => {},
+    disableVim: vimDisabled.value,
   })
 
 // Diff segment type (used by computeWordDiff)

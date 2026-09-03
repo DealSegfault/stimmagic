@@ -7,11 +7,31 @@ import os
 import asyncio
 import tempfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List, Dict, Any, Optional, AsyncIterator
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+
+def _routing_state_path() -> Path:
+    configured = os.environ.get("MODAL_ROUTER_STATE_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "adp-comfy" / "modal-router.state.json"
+
+
+def _read_routing_state() -> dict:
+    try:
+        payload = json.loads(_routing_state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {"mode": "auto", "account_id": None}
+    mode = payload.get("mode") if isinstance(payload, dict) else "auto"
+    return {
+        "mode": mode if mode in {"auto", "fixed"} else "auto",
+        "account_id": payload.get("account_id") if isinstance(payload, dict) else None,
+    }
 
 
 def _uploaded_reference_name(
@@ -70,8 +90,10 @@ def parse_addresses(addresses) -> List[str]:
 class SingleComfy:
     """Client for a single ComfyUI instance."""
 
-    def __init__(self, addr: str):
+    def __init__(self, addr: str, account_id: Optional[str] = None, is_modal_bridge: bool = False):
         self.addr = addr
+        self.account_id = account_id
+        self.is_modal_bridge = is_modal_bridge or addr.rsplit(":", 1)[-1] in {"8190", "8191"}
         self.client_id = str(uuid.uuid4())
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -91,6 +113,10 @@ class SingleComfy:
         """Make an HTTP request to the ComfyUI server."""
         session = await self._get_session()
         url = f"http://{self.addr}{path}"
+        # The local Modal bridge owns proxy authentication and follows any
+        # authenticated upstream redirect. Never let this client follow an
+        # absolute Modal redirect itself, because it has no proxy credentials.
+        kwargs.setdefault("allow_redirects", False)
         async with session.request(method, url, **kwargs) as resp:
             if resp.status != 200:
                 error_text = await resp.text()
@@ -200,7 +226,9 @@ class SingleComfy:
             form_data.add_field("overwrite", str(overwrite).lower())
 
             async with session.post(
-                f"http://{self.addr}/upload/image", data=form_data
+                f"http://{self.addr}/upload/image",
+                data=form_data,
+                allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
@@ -232,7 +260,9 @@ class SingleComfy:
             form_data.add_field("overwrite", str(overwrite).lower())
 
             async with session.post(
-                f"http://{self.addr}/upload/image", data=form_data
+                f"http://{self.addr}/upload/image",
+                data=form_data,
+                allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
@@ -265,7 +295,9 @@ class SingleComfy:
             form_data.add_field("overwrite", str(overwrite).lower())
 
             async with session.post(
-                f"http://{self.addr}/upload/image", data=form_data
+                f"http://{self.addr}/upload/image",
+                data=form_data,
+                allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
@@ -278,7 +310,9 @@ class SingleComfy:
         """Interrupt current execution."""
         try:
             session = await self._get_session()
-            async with session.post(f"http://{self.addr}/interrupt") as resp:
+            async with session.post(
+                f"http://{self.addr}/interrupt", allow_redirects=False
+            ) as resp:
                 return resp.status == 200
         except aiohttp.ClientError:
             return False
@@ -288,7 +322,9 @@ class SingleComfy:
         try:
             session = await self._get_session()
             async with session.post(
-                f"http://{self.addr}/queue", json={"clear": True}
+                f"http://{self.addr}/queue",
+                json={"clear": True},
+                allow_redirects=False,
             ) as resp:
                 return resp.status == 200
         except aiohttp.ClientError:
@@ -337,33 +373,79 @@ class Comfy:
         hd_address: Optional[str] = None,
         hd_min_megapixels: float = 2.0,
         hd_min_steps: int = 20,
+        account_addresses: Optional[Dict[str, str]] = None,
+        account_hd_addresses: Optional[Dict[str, str]] = None,
     ):
         self.addresses = parse_addresses(addresses)
-        self.normal_instances = [SingleComfy(addr) for addr in self.addresses]
+        self.account_addresses = {
+            str(account_id): addr
+            for account_id, addr in (account_addresses or {}).items()
+            if addr
+        }
+        self.account_hd_addresses = {
+            str(account_id): addr
+            for account_id, addr in (account_hd_addresses or {}).items()
+            if addr
+        }
+        if self.account_addresses:
+            self.normal_instances = [
+                SingleComfy(addr, account_id=account_id, is_modal_bridge=True)
+                for account_id, addr in self.account_addresses.items()
+            ]
+            self.addresses = [instance.addr for instance in self.normal_instances]
+        else:
+            self.normal_instances = [SingleComfy(addr) for addr in self.addresses]
         self.hd_min_megapixels = float(hd_min_megapixels)
         self.hd_min_steps = int(hd_min_steps)
 
-        hd_addresses = parse_addresses(hd_address) if hd_address else []
-        hd_addr = next(
-            (addr for addr in hd_addresses if addr not in self.addresses),
-            None,
-        )
-        self.hd_instance = SingleComfy(hd_addr) if hd_addr else None
+        if self.account_hd_addresses:
+            self.hd_instances_by_account = {
+                account_id: SingleComfy(addr, account_id=account_id, is_modal_bridge=True)
+                for account_id, addr in self.account_hd_addresses.items()
+            }
+            self.hd_instance = next(iter(self.hd_instances_by_account.values()), None)
+        else:
+            self.hd_instances_by_account = {}
+            hd_addresses = parse_addresses(hd_address) if hd_address else []
+            hd_addr = next(
+                (addr for addr in hd_addresses if addr not in self.addresses),
+                None,
+            )
+            self.hd_instance = SingleComfy(hd_addr, is_modal_bridge=True) if hd_addr else None
         self.instances = list(self.normal_instances)
-        if self.hd_instance is not None:
+        for instance in self.hd_instances_by_account.values():
+            if instance not in self.instances:
+                self.instances.append(instance)
+        if not self.hd_instances_by_account and self.hd_instance is not None:
             self.instances.append(self.hd_instance)
 
         self._available: asyncio.Queue = asyncio.Queue()
         for inst in self.normal_instances:
             self._available.put_nowait(inst)
+        self._available_by_account = {}
+        self._available_instances_seeded = set()
+        if self.account_addresses:
+            for inst in self.normal_instances:
+                queue = asyncio.Queue()
+                queue.put_nowait(inst)
+                self._available_by_account[inst.account_id] = queue
+                self._available_instances_seeded.add(inst)
         self._hd_available: asyncio.Queue = asyncio.Queue()
-        if self.hd_instance is not None:
-            self._hd_available.put_nowait(self.hd_instance)
+        if self.hd_instances_by_account:
+            self._hd_available_by_account = {}
+            for account_id, instance in self.hd_instances_by_account.items():
+                queue = asyncio.Queue()
+                queue.put_nowait(instance)
+                self._hd_available_by_account[account_id] = queue
+        else:
+            self._hd_available_by_account = {}
+            if self.hd_instance is not None:
+                self._hd_available.put_nowait(self.hd_instance)
         logger.info(
             "ComfyUI client initialized with normal instance(s)=%s, hd_instance=%s "
             "(threshold %.2f MP / %d steps)",
             self.addresses,
-            hd_addr or "disabled",
+            (self.hd_instance.addr if self.hd_instance is not None else "disabled"),
             self.hd_min_megapixels,
             self.hd_min_steps,
         )
@@ -401,24 +483,93 @@ class Comfy:
             raise RuntimeError("No ComfyUI instances configured")
 
         use_hd = self.is_hd_request(parameters)
+        routing = _read_routing_state()
+        requested_account = (parameters or {}).get("_modal_account_id") or routing.get("account_id")
+        if routing.get("mode") != "fixed" and not (parameters or {}).get("_modal_account_id"):
+            requested_account = None
+        instance = None
         if use_hd:
-            if self.hd_instance is None:
+            if requested_account and requested_account in self._hd_available_by_account:
+                queue = self._hd_available_by_account[requested_account]
+                instance = await queue.get()
+            elif requested_account:
+                # Backward-compatible single-bridge mode: an existing gateway
+                # started before account-aware manifests still points at the
+                # currently active Modal account.
+                if not self.hd_instances_by_account and self.hd_instance is not None:
+                    instance = await self._hd_available.get()
+                else:
+                    raise RuntimeError(
+                        f"Modal account '{requested_account}' has no HD bridge configured."
+                    )
+            elif self.hd_instances_by_account:
+                # Auto mode: wait for the first available configured HD account.
+                instance = await self._get_first_available(self._hd_available_by_account)
+            elif self.hd_instance is None:
                 raise RuntimeError(
                     "An HD generation requires the B300 ComfyUI endpoint, "
                     "but no hd_address is configured."
                 )
-            instance = await self._hd_available.get()
+            else:
+                instance = await self._hd_available.get()
         else:
             if not self.normal_instances:
                 raise RuntimeError("No normal ComfyUI instance configured")
-            instance = await self._available.get()
+            if requested_account:
+                selected = next(
+                    (item for item in self.normal_instances if item.account_id == requested_account),
+                    None,
+                )
+                if selected is None:
+                    # Backward-compatible single-bridge mode (see the HD
+                    # branch above). The gateway's one bridge is the active
+                    # account until it is restarted with an account manifest.
+                    if len(self.normal_instances) == 1 and self.normal_instances[0].account_id is None:
+                        instance = await self._available.get()
+                        selected = instance
+                    else:
+                        raise RuntimeError(
+                            f"Modal account '{requested_account}' has no normal bridge configured."
+                        )
+                # The regular queue is shared for legacy instances. Account-aware
+                # bridges get their own queue so fixed routing cannot leak jobs.
+                if instance is None:
+                    if not hasattr(self, "_available_by_account"):
+                        self._available_by_account = {}
+                    queue = self._available_by_account.setdefault(selected.account_id, asyncio.Queue())
+                    if queue.empty() and selected not in self._available_instances_seeded:
+                        queue.put_nowait(selected)
+                        self._available_instances_seeded.add(selected)
+                    instance = await queue.get()
+            elif self.account_addresses:
+                instance = await self._get_first_available(self._available_by_account)
+            else:
+                instance = await self._available.get()
         try:
             yield instance
         finally:
             if use_hd:
-                self._hd_available.put_nowait(instance)
+                if self.hd_instances_by_account:
+                    self._hd_available_by_account[instance.account_id].put_nowait(instance)
+                else:
+                    self._hd_available.put_nowait(instance)
             else:
-                self._available.put_nowait(instance)
+                if self.account_addresses:
+                    self._available_by_account[instance.account_id].put_nowait(instance)
+                else:
+                    self._available.put_nowait(instance)
+
+    @staticmethod
+    async def _get_first_available(queues: Dict[str, asyncio.Queue]) -> SingleComfy:
+        """Wait for any account queue without busy polling."""
+        if not queues:
+            raise RuntimeError("No account-aware ComfyUI instances configured")
+        tasks = [asyncio.create_task(queue.get()) for queue in queues.values()]
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        return next(iter(done)).result()
 
     async def get_object_info(self) -> Dict[str, Any]:
         """Get object info (samplers/schedulers/models). Uses the first instance.

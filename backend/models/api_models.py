@@ -159,6 +159,9 @@ class GenerationJobRequest(BaseModel):
     auto_marker_ids: Optional[List[int]] = None
     project_id: Optional[int] = None  # Project to associate generated media with
     forever_work_reserved: Optional[bool] = None
+    # Set only after the UI has shown the typed reference-mismatch warning and
+    # the user explicitly chose to continue. This is never inferred server-side.
+    confirm_reference_mismatch: bool = False
 
     # Where the generated Media lands. Defaults to a library Asset. The editor
     # submits candidates with 'context' rooted at its working document so they
@@ -199,6 +202,7 @@ class BatchJobRequest(BaseModel):
     auto_marker_ids: Optional[List[int]] = None
     project_id: Optional[int] = None  # Project to associate generated media with
     forever_work_reserved: Optional[bool] = None
+    confirm_reference_mismatch: bool = False
 
     # Batch-specific options
     output_set_title: Optional[str] = None  # Title for the output set
@@ -261,6 +265,7 @@ class MediaBatchJobRequest(BaseModel):
     auto_marker_ids: Optional[List[int]] = None
     project_id: Optional[int] = None
     forever_work_reserved: Optional[bool] = None
+    confirm_reference_mismatch: bool = False
 
 
 class GenerationJobResponse(BaseModel):

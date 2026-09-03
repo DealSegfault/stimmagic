@@ -63,12 +63,45 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
         return
 
     providers = config_data.setdefault('llm_providers', [])
-    if any(provider.get('kind') == 'codex_cli' for provider in providers):
+    existing = next(
+        (provider for provider in providers if provider.get('kind') == 'codex_cli'),
+        None,
+    )
+    if existing:
+        if existing.get('deleted_at'):
+            return
+        models = existing.setdefault('models', [])
+        if not any(model.get('model_id') == 'gpt-5.6-sol' for model in models):
+            template = next(
+                (model for model in models if model.get('model_id')),
+                {},
+            )
+            sol_model = dict(template)
+            sol_model.update({
+                'id': f"{existing.get('id', 'codex-cli')}:gpt-5.6-sol",
+                'model_id': 'gpt-5.6-sol',
+                'name': 'GPT-5.6 Sol · ChatGPT',
+                'model_vendor': 'openai',
+                'enabled': True,
+            })
+            models.append(sol_model)
         return
 
     model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-5.6-luna').strip()
     if not model_id:
         model_id = 'gpt-5.6-luna'
+
+    # Keep the environment override first for installations that use it as
+    # their default, while making the two ChatGPT-backed models selectable
+    # from the shared chat model picker.
+    supported_models = {
+        'gpt-5.6-sol': 'GPT-5.6 Sol · ChatGPT',
+        'gpt-5.6-luna': 'GPT-5.6 Luna · ChatGPT',
+    }
+    model_ids = [model_id, *(
+        supported_id for supported_id in supported_models
+        if supported_id != model_id
+    )]
     providers.append({
         'id': 'codex-cli',
         'kind': 'codex_cli',
@@ -76,9 +109,9 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
         'base_url': 'codex-cli://local',
         'enabled': True,
         'models': [{
-            'id': f'codex-cli:{model_id}',
-            'model_id': model_id,
-            'name': 'GPT-5.6 Luna · ChatGPT' if model_id == 'gpt-5.6-luna' else model_id,
+            'id': f'codex-cli:{candidate_id}',
+            'model_id': candidate_id,
+            'name': supported_models.get(candidate_id, candidate_id),
             'model_vendor': 'openai',
             'enabled': True,
             'max_context_tokens': 256_000,
@@ -94,7 +127,7 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
             },
             'content_policy_enabled': True,
             'reasoning_control_source': 'manual',
-        }],
+        } for candidate_id in model_ids],
     })
 
 
@@ -105,12 +138,15 @@ def _inject_modal_gateway_provider(config_data: dict, gateway_url: str) -> None:
         return
 
     providers = config_data.setdefault('tool_providers', [])
-    if any(
-        provider.get('id') == 'comfyui-modal-h3'
-        or provider.get('url') == gateway_url
-        for provider in providers
-    ):
-        return
+    for provider in providers:
+        if provider.get('id') == 'comfyui-modal-h3':
+            # Older persisted configs predate the display name.  Fill only a
+            # missing name; an explicit user label remains untouched.
+            if not provider.get('name'):
+                provider['name'] = 'ComfyUI · Modal H3'
+            return
+        if provider.get('url') == gateway_url:
+            return
     providers.append({
         'id': 'comfyui-modal-h3',
         'name': 'ComfyUI · Modal H3',

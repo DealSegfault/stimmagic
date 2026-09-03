@@ -112,6 +112,9 @@
                   <p class="text-[11px] text-content-muted">
                     {{ gatewayRunning ? 'Connecté (STP 8188 & Bridge 8190)' : (gatewayStarting ? 'Démarrage du superviseur…' : 'Arrêté — Génération H3 hors ligne') }}
                   </p>
+                  <p v-if="gatewayError" class="mt-1 break-words text-[10px] leading-tight text-rose-300" role="alert">
+                    {{ gatewayError }}
+                  </p>
                 </div>
 
                 <!-- Action Button -->
@@ -261,6 +264,7 @@ const {
   gatewayRunning,
   gatewayPartial,
   gatewayStarting,
+  gatewayError,
   fetchStatus: fetchGatewayStatus,
   startGateway,
   stopGateway

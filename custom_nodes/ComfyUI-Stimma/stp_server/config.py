@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Any
+from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,9 @@ class ComfyUIConfig:
     hd_address: Optional[str] = None
     hd_min_megapixels: float = 2.0
     hd_min_steps: int = 20
+    # Optional account-aware bridge maps written by the Modal gateway.
+    account_addresses: Dict[str, str] = field(default_factory=dict)
+    account_hd_addresses: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -81,6 +84,8 @@ def load_config(config_path: Optional[str] = None) -> Config:
         hd_address=comfyui_data.get("hd_address"),
         hd_min_megapixels=float(comfyui_data.get("hd_min_megapixels", 2.0)),
         hd_min_steps=int(comfyui_data.get("hd_min_steps", 20)),
+        account_addresses={str(k): str(v) for k, v in (comfyui_data.get("account_addresses") or {}).items()},
+        account_hd_addresses={str(k): str(v) for k, v in (comfyui_data.get("account_hd_addresses") or {}).items()},
     )
 
     discovery_data = data.get("discovery", {})

@@ -195,11 +195,19 @@ async def list_task_types():
 
 @router.get("/providers", response_model=List[ProviderStatusResponse])
 async def list_providers():
-    """List all registered tool providers and their status."""
+    """List registered providers and enabled configured providers.
+
+    A configured provider that is still reconnecting (or whose gateway is
+    temporarily down) must remain visible so the Tools screen can explain its
+    state and offer a retry.  Previously only live registry entries were
+    returned, making the Modal H3 provider disappear entirely during startup.
+    """
     from providers import ProviderRegistry
+    from config import get_settings
 
     registry = ProviderRegistry.get_instance()
     providers = []
+    seen_provider_ids = set()
 
     for provider_id, provider in registry._providers.items():
         tools = await provider.list_tools()
@@ -218,6 +226,29 @@ async def list_providers():
             max_concurrent=provider.max_concurrent,
             queue_status=queue_status,
             **_provider_presentation_fields(provider),
+        ))
+        seen_provider_ids.add(provider_id)
+
+    # Include enabled config entries which have not connected yet.  This is
+    # intentionally additive: connected providers above remain the source of
+    # truth for negotiated names/capabilities and tool counts.
+    for configured in get_settings().tool_providers:
+        if not configured.enabled or configured.id in seen_provider_ids:
+            continue
+        providers.append(ProviderStatusResponse(
+            provider_id=configured.id,
+            provider_name=(
+                configured.name
+                or (
+                    "ComfyUI · Modal H3"
+                    if configured.id == "comfyui-modal-h3"
+                    else configured.id
+                )
+            ),
+            provider_type=configured.type,
+            status="disconnected",
+            tool_count=0,
+            max_concurrent=1,
         ))
 
     return providers
@@ -281,10 +312,14 @@ async def list_provider_tools(
     When include_unavailable=True, also includes cached tools from disconnected providers.
     """
     from providers import ProviderRegistry
+    from providers.base import ProviderStatus
     from database import CachedProviderTool
 
     registry = ProviderRegistry.get_instance()
-    connected_provider_ids = registry.get_provider_ids()
+    connected_provider_ids = {
+        pid for pid, provider in registry._providers.items()
+        if provider.status == ProviderStatus.CONNECTED
+    }
     enabled_provider_ids = registry.get_enabled_provider_ids()
 
     tools = []
@@ -294,6 +329,13 @@ async def list_provider_tools(
     # Only include tools from providers that are enabled
     for pid, provider in registry._providers.items():
         if provider_id and pid != provider_id:
+            continue
+
+        # A registry entry can briefly outlive its transport while the JSON-RPC
+        # manager is handling a disconnect.  Do not expose its stale list as
+        # executable/available; the cached phase below will mark it
+        # disconnected instead.
+        if provider.status != ProviderStatus.CONNECTED:
             continue
 
         # Skip if provider is disabled (shouldn't happen normally, but safety check)

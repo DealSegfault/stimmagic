@@ -50,6 +50,64 @@
           </article>
         </section>
 
+        <section class="mt-8 rounded-lg border border-edge-subtle bg-surface p-5" aria-labelledby="modal-routing-title">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 id="modal-routing-title" class="text-sm font-semibold text-content">Routage des générations</h2>
+              <p class="mt-1 max-w-2xl text-xs leading-5 text-content-muted">
+                Choisis le compte pour les prochains jobs. Les jobs déjà lancés restent sur leur GPU.
+                Les credentials restent uniquement côté gateway.
+              </p>
+            </div>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-edge-subtle px-2.5 py-1 text-[11px] text-content-secondary">
+              <span class="h-1.5 w-1.5 rounded-full" :class="routingStatusDot" />
+              {{ routingStatusLabel }}
+            </span>
+          </div>
+
+          <div class="mt-5 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <label class="flex cursor-pointer items-start gap-3 rounded-md border px-3.5 py-3 transition-colors" :class="selectedRoutingMode === 'auto' ? 'border-accent/60 bg-accent/5' : 'border-edge-subtle hover:border-edge'">
+              <input v-model="selectedRoutingMode" type="radio" value="auto" class="mt-0.5 accent-accent" />
+              <span>
+                <span class="block text-xs font-medium text-content">Automatique</span>
+                <span class="mt-1 block text-[11px] leading-4 text-content-muted">Répartit les jobs sur les comptes disponibles, selon la charge et le budget.</span>
+              </span>
+            </label>
+            <label class="flex cursor-pointer items-start gap-3 rounded-md border px-3.5 py-3 transition-colors" :class="selectedRoutingMode === 'fixed' ? 'border-accent/60 bg-accent/5' : 'border-edge-subtle hover:border-edge'">
+              <input v-model="selectedRoutingMode" type="radio" value="fixed" class="mt-0.5 accent-accent" />
+              <span class="min-w-0 flex-1">
+                <span class="block text-xs font-medium text-content">Compte fixe</span>
+                <select
+                  v-model="selectedAccountId"
+                  :disabled="selectedRoutingMode !== 'fixed'"
+                  class="mt-2 w-full rounded border border-edge-subtle bg-base px-2.5 py-1.5 text-xs text-content disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label="Compte Modal fixe"
+                >
+                  <option v-for="account in accounts" :key="account.id" :value="account.id" :disabled="!account.route_configured">
+                    {{ account.label }}{{ account.route_configured ? '' : ' — route non configurée' }}
+                  </option>
+                </select>
+              </span>
+            </label>
+          </div>
+
+          <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <p v-if="routingError" class="text-xs text-red-300" role="alert">{{ routingError }}</p>
+            <p v-else class="text-[11px] text-content-muted">
+              Compte effectif : <span class="text-content-secondary">{{ effectiveRoutingLabel }}</span>
+            </p>
+            <button
+              type="button"
+              class="inline-flex items-center gap-2 rounded-md bg-accent px-3 py-2 text-xs font-medium text-base transition-colors hover:bg-accent-hi disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="routingSaving || (selectedRoutingMode === 'fixed' && !selectedAccountId)"
+              @click="saveRouting"
+            >
+              <span v-if="routingSaving" class="h-3 w-3 animate-spin rounded-full border-2 border-base/40 border-t-base" />
+              {{ routingSaving ? 'Enregistrement…' : 'Appliquer au prochain job' }}
+            </button>
+          </div>
+        </section>
+
         <section class="mt-8">
           <div class="mb-3 flex items-baseline justify-between gap-3">
             <div>
@@ -79,6 +137,9 @@
                 <p class="text-right text-xs text-content-secondary">{{ account.active_jobs }} actif{{ account.active_jobs > 1 ? 's' : '' }}<br><span class="text-content-muted">{{ account.max_concurrency }} simultané{{ account.max_concurrency > 1 ? 's' : '' }}</span></p>
               </div>
               <p class="mt-3 text-[11px] text-content-muted">{{ account.gpu_type }} · {{ formatCurrency(account.gpu_hour_price) }}/h · {{ account.memory_gib }} GiB</p>
+              <p class="mt-2 text-[11px]" :class="account.route_configured ? 'text-emerald-300' : 'text-amber-300'">
+                {{ account.route_configured ? 'Route gateway configurée' : 'Route gateway non configurée' }}
+              </p>
               <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-overlay-subtle" role="progressbar" :aria-valuenow="budgetPercent(account)" aria-valuemin="0" aria-valuemax="100" :aria-label="`Budget de ${account.label}`">
                 <div class="h-full rounded-full bg-accent transition-all" :style="{ width: `${budgetPercent(account)}%` }" />
               </div>
@@ -140,10 +201,39 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useModalUsage } from '../composables/useModalUsage'
 
-const { snapshot, accounts, generations, summary, loading, error, refreshUsage, formatCurrency, formatDuration } = useModalUsage()
+const {
+  snapshot,
+  accounts,
+  generations,
+  summary,
+  routing,
+  loading,
+  error,
+  routingSaving,
+  routingError,
+  refreshUsage,
+  updateRouting,
+  formatCurrency,
+  formatDuration,
+} = useModalUsage()
+
+const selectedRoutingMode = ref('auto')
+const selectedAccountId = ref(null)
+const routingDirty = ref(false)
+const routingHydrated = ref(false)
+
+watch([selectedRoutingMode, selectedAccountId], () => {
+  if (routingHydrated.value) routingDirty.value = true
+})
+watch(routing, (value) => {
+  if (routingDirty.value) return
+  selectedRoutingMode.value = value.mode || 'auto'
+  selectedAccountId.value = value.account_id || value.route_accounts_configured?.[0] || accounts.value[0]?.id || null
+  routingHydrated.value = true
+}, { immediate: true })
 
 onMounted(() => {
   refreshUsage().catch(() => {})
@@ -155,6 +245,31 @@ const summaryCards = computed(() => [
   { label: 'Générations actives', value: String(summary.value.active_jobs), detail: 'tous workspaces confondus', icon: '◌' },
   { label: 'Dernière synchro', value: snapshot.value ? 'À jour' : '—', detail: snapshot.value ? new Date(snapshot.value.updated_at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) : '', icon: '↻' },
 ])
+
+const routingStatusLabel = computed(() => {
+  if (routing.value.mode === 'fixed' && routing.value.fixed_account_valid === false) return 'Route fixe indisponible'
+  if (routing.value.mode === 'fixed') return `Fixe · ${accountLabel(routing.value.account_id)}`
+  return 'Auto'
+})
+
+const routingStatusDot = computed(() => {
+  if (routing.value.mode === 'fixed' && routing.value.fixed_account_valid === false) return 'bg-red-400'
+  return routing.value.mode === 'fixed' ? 'bg-accent' : 'bg-emerald-400'
+})
+
+const effectiveRoutingLabel = computed(() => {
+  if (routing.value.effective_account_id) return accountLabel(routing.value.effective_account_id)
+  return routing.value.mode === 'auto' ? 'déterminé au lancement' : '—'
+})
+
+async function saveRouting() {
+  try {
+    await updateRouting(selectedRoutingMode.value, selectedAccountId.value)
+    routingDirty.value = false
+  } catch {
+    // The composable exposes the actionable API error beside the button.
+  }
+}
 
 function budgetPercent(account) {
   if (!account.monthly_budget) return 0

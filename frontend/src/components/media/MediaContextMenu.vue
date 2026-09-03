@@ -771,7 +771,20 @@
 
         <div class="border-t border-edge-subtle my-1"></div>
 
-        <!-- Share (single item only) -->
+        <!-- Native share / AirDrop (single item only) -->
+        <button
+          v-if="!isMultiple"
+          @click="handleShareViaAirDrop"
+          :disabled="sharingMedia"
+          class="w-full px-3 py-2 text-left text-xs text-content hover:bg-overlay-subtle flex items-center gap-2 disabled:cursor-wait disabled:opacity-60"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 flex-shrink-0 text-content-tertiary">
+            <path d="M13 4.5a2.5 2.5 0 1 1 .702 1.737L6.97 9.604a2.518 2.518 0 0 1 0 .792l6.733 3.367a2.5 2.5 0 1 1-.671 1.341l-6.733-3.367a2.5 2.5 0 1 1 0-3.475l6.733-3.366A2.52 2.52 0 0 1 13 4.5Z" />
+          </svg>
+          <span>{{ sharingMedia ? 'Preparing…' : 'Share via AirDrop' }}</span>
+        </button>
+
+        <!-- Stimma Cloud share (single item only) -->
         <button
           v-if="!isMultiple"
           @click="handleShareToCloud"
@@ -780,7 +793,7 @@
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 flex-shrink-0 text-content-tertiary">
             <path d="M13 4.5a2.5 2.5 0 1 1 .702 1.737L6.97 9.604a2.518 2.518 0 0 1 0 .792l6.733 3.367a2.5 2.5 0 1 1-.671 1.341l-6.733-3.367a2.5 2.5 0 1 1 0-3.475l6.733-3.366A2.52 2.52 0 0 1 13 4.5Z" />
           </svg>
-          <span>Share</span>
+          <span>Share to Cloud</span>
         </button>
 
         <!-- Print -->
@@ -1028,6 +1041,7 @@ const loadingItem = ref(false)
 const mediaItem = ref<any>(null)
 const mediaFaces = ref<any[]>([])
 const copyingImage = ref(false)
+const sharingMedia = ref(false)
 
 // Tools data
 const loadingTools = ref(false)
@@ -2065,6 +2079,65 @@ async function handleShareToCloud() {
     showShareDialog.value = true
   } catch (err) {
     console.error('Failed to load media for sharing:', err)
+  }
+}
+
+/**
+ * Share the original media file through the platform share sheet. On macOS,
+ * AirDrop is one of the destinations exposed by the native share sheet. Web
+ * runtimes without file sharing fall back to the normal Stimma download so
+ * the file can still be sent from Finder.
+ */
+async function handleShareViaAirDrop() {
+  const mediaId = targetMediaIds.value[0] ?? mediaIdOf(mediaItem.value)
+  if (!mediaId || sharingMedia.value) return
+
+  sharingMedia.value = true
+  contextMenu.hide()
+
+  const downloadFallback = async (message: string) => {
+    await downloadMedia([mediaId])
+    addToast(message, 'info')
+  }
+
+  try {
+    const item = mediaItem.value || await getMediaItem(mediaId)
+    const filename = item?.file_path?.split('/').pop() || `stimma-media-${mediaId}`
+
+    if (typeof navigator.share !== 'function') {
+      await downloadFallback('Native sharing is unavailable here. The file was downloaded; AirDrop it from Finder.')
+      return
+    }
+
+    const response = await fetch(getMediaFileUrl(mediaId))
+    if (!response.ok) throw new Error(`Media download failed (${response.status})`)
+    const blob = await response.blob()
+    const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' })
+
+    if (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] })) {
+      await downloadFallback('This runtime cannot share files directly. The file was downloaded; AirDrop it from Finder.')
+      return
+    }
+
+    try {
+      await navigator.share({ files: [file], title: item?.asset_title || filename })
+      addToast('Share sheet opened — choose AirDrop to send the file.', 'success')
+    } catch (error: any) {
+      // Closing the native sheet is an intentional cancellation, not a failed
+      // share and should not trigger an unexpected download.
+      if (error?.name === 'AbortError') return
+      throw error
+    }
+  } catch (error) {
+    console.error('[MediaContextMenu] Native share failed:', error)
+    try {
+      await downloadFallback('Sharing failed, so the file was downloaded. AirDrop it from Finder.')
+    } catch (fallbackError) {
+      console.error('[MediaContextMenu] Share download fallback failed:', fallbackError)
+      addToast('Could not share this media file', 'error')
+    }
+  } finally {
+    sharingMedia.value = false
   }
 }
 

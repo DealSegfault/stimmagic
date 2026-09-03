@@ -454,6 +454,25 @@ def _convert_inner_node_widgets(
         return dict(widget_values)
 
     if not object_info or class_type not in object_info:
+        # Stimma nodes persist their input names in the workflow itself.  The
+        # remote ComfyUI object_info endpoint is dynamic (and can be
+        # temporarily unavailable while the Modal bridge is starting), but we
+        # can still recover the metadata needed to advertise the tool.  Keep
+        # this fallback limited to Stimma nodes: arbitrary ComfyUI nodes still
+        # need object_info because their widget order is not part of the STP
+        # contract.
+        if class_type in ALL_STIMMA_TYPES:
+            saved_widget_names = [
+                inp.get("name")
+                for inp in inner_node.get("inputs", [])
+                if inp.get("name") and inp.get("widget")
+            ]
+            if saved_widget_names:
+                return {
+                    name: widget_values[index]
+                    for index, name in enumerate(saved_widget_names)
+                    if index < len(widget_values)
+                }
         return {}
 
     result = {}

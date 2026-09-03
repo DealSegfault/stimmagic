@@ -48,6 +48,21 @@ GPU_ALIASES = {
 CPU_PRICE_PER_CORE_SECOND = 0.0000131
 MEMORY_PRICE_PER_GIB_SECOND = 0.00000222
 VOLUME_PRICE_PER_GIB_MONTH = 0.09
+ROUTING_MODES = {"auto", "fixed"}
+
+
+def _routing_state_path() -> Path:
+    configured = os.environ.get("MODAL_ROUTER_STATE_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "adp-comfy" / "modal-router.state.json"
+
+
+def _bridge_manifest_path() -> Path:
+    configured = os.environ.get("MODAL_ROUTER_BRIDGES_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "adp-comfy" / "modal-router.bridges.json"
 
 
 @dataclass(frozen=True)
@@ -62,6 +77,11 @@ class ModalAccount:
     memory_gib: float = 32.0
     max_concurrency: int = 1
     enabled: bool = True
+    endpoint_url: str | None = None
+    hd_endpoint_url: str | None = None
+    proxy_token_file: str | None = None
+    local_port: int | None = None
+    local_hd_port: int | None = None
 
 
 def _utc_now() -> datetime:
@@ -170,6 +190,11 @@ class ModalUsageService:
                         memory_gib=max(0.0, float(item.get("memory_gib", 32.0))),
                         max_concurrency=max(1, int(item.get("max_concurrency", 1))),
                         enabled=bool(item.get("enabled", True)),
+                        endpoint_url=str(item["endpoint_url"]).rstrip("/") if item.get("endpoint_url") else None,
+                        hd_endpoint_url=str(item["hd_endpoint_url"]).rstrip("/") if item.get("hd_endpoint_url") else None,
+                        proxy_token_file=str(item["proxy_token_file"]) if item.get("proxy_token_file") else None,
+                        local_port=(max(1, int(item["local_port"])) if item.get("local_port") is not None else None),
+                        local_hd_port=(max(1, int(item["local_hd_port"])) if item.get("local_hd_port") is not None else None),
                     )
                 )
             self._accounts = accounts
@@ -177,6 +202,102 @@ class ModalUsageService:
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             self._accounts = []
             self._config_mtime = mtime
+
+    def _bridge_accounts(self) -> dict[str, dict[str, Any]]:
+        """Read the non-secret bridge manifest written by the gateway."""
+        try:
+            payload = json.loads(_bridge_manifest_path().read_text(encoding="utf-8"))
+            rows = payload.get("accounts", []) if isinstance(payload, dict) else []
+            return {
+                str(row["id"]): row
+                for row in rows
+                if isinstance(row, dict) and row.get("id")
+            }
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    def _has_route_metadata(self) -> bool:
+        self._load_accounts()
+        return bool(self._bridge_accounts()) or any(
+            account.endpoint_url or account.proxy_token_file for account in self._accounts
+        )
+
+    def _account_route_configured(self, account: ModalAccount) -> bool:
+        manifest = self._bridge_accounts().get(account.id)
+        if manifest:
+            return bool(manifest.get("port"))
+        if not account.endpoint_url or not account.proxy_token_file:
+            return False
+        token_path = Path(account.proxy_token_file).expanduser()
+        return token_path.is_file() and os.access(token_path, os.R_OK)
+
+    def _read_routing_state(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(_routing_state_path().read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        mode = payload.get("mode", "auto") if isinstance(payload, dict) else "auto"
+        if mode not in ROUTING_MODES:
+            mode = "auto"
+        account_id = payload.get("account_id") if isinstance(payload, dict) else None
+        return {
+            "mode": mode,
+            "account_id": str(account_id) if account_id else None,
+            "updated_at": payload.get("updated_at") if isinstance(payload, dict) else None,
+        }
+
+    def get_routing(self) -> dict[str, Any]:
+        """Return the live routing preference and its effective account."""
+        self._load_accounts()
+        state = self._read_routing_state()
+        fixed = next(
+            (account for account in self._accounts if account.id == state["account_id"]),
+            None,
+        )
+        fixed_valid = bool(
+            state["mode"] == "fixed"
+            and fixed
+            and fixed.enabled
+            and (not self._has_route_metadata() or self._account_route_configured(fixed))
+        )
+        return {
+            **state,
+            "effective_account_id": state["account_id"] if fixed_valid else None,
+            "fixed_account_valid": fixed_valid if state["mode"] == "fixed" else None,
+            "route_accounts_configured": [
+                account.id for account in self._accounts if self._account_route_configured(account)
+            ],
+        }
+
+    def update_routing(self, mode: str, account_id: str | None = None) -> dict[str, Any]:
+        """Persist a routing mode without ever persisting credentials."""
+        self._load_accounts()
+        mode = str(mode or "").strip().lower()
+        if mode not in ROUTING_MODES:
+            raise ValueError("mode must be 'auto' or 'fixed'")
+        account_id = str(account_id).strip() if account_id else None
+        if mode == "auto":
+            account_id = None
+        else:
+            account = next((item for item in self._accounts if item.id == account_id), None)
+            if not account:
+                raise ValueError("Unknown Modal account")
+            if not account.enabled:
+                raise ValueError("This Modal account is disabled")
+            if self._has_route_metadata() and not self._account_route_configured(account):
+                raise ValueError("This Modal account has no configured gateway route")
+
+        path = _routing_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "mode": mode,
+            "account_id": account_id,
+            "updated_at": _utc_now().isoformat(),
+        }
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
+        return self.get_routing()
 
     @staticmethod
     def _canonical_gpu_type(value: str) -> str:
@@ -229,10 +350,16 @@ class ModalUsageService:
         if not self._accounts:
             return "unassigned"
 
+        routing = self.get_routing()
+        if routing["effective_account_id"]:
+            return routing["effective_account_id"]
+
         with self._lock, self._connect() as conn:
             candidates = []
             for account in self._accounts:
                 if not account.enabled:
+                    continue
+                if self._has_route_metadata() and not self._account_route_configured(account):
                     continue
                 active = self._active_count(conn, account.id)
                 spend = self._account_spend(conn, account.id)
@@ -245,6 +372,16 @@ class ModalUsageService:
                 return "unassigned"
             candidates.sort()
             return candidates[0][2]
+
+    def account_for_job(self, profile_id: str, job_id: Any) -> str | None:
+        """Return the account already reserved for a queued generation."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT account_id FROM modal_generation_usage WHERE profile_id = ? AND job_id = ?",
+                (str(profile_id or "default"), str(job_id)),
+            ).fetchone()
+        account_id = row["account_id"] if row else None
+        return account_id if account_id and account_id != "unassigned" else None
 
     def record_event(self, event: str, data: dict[str, Any]) -> None:
         """Record a generation lifecycle event emitted by the existing queue."""
@@ -400,6 +537,8 @@ class ModalUsageService:
             "gpu_hour_price": round(self._gpu_price_per_second(account) * 3600, 6),
             "cpu_cores": account.cpu_cores,
             "memory_gib": account.memory_gib,
+            "route_configured": self._account_route_configured(account),
+            "route_status": "configured" if self._account_route_configured(account) else "not_configured",
         }
 
     def snapshot(self, limit: int = 50) -> dict[str, Any]:
@@ -438,6 +577,7 @@ class ModalUsageService:
                 },
                 "accounts": accounts,
                 "generations": generations,
+                "routing": self.get_routing(),
             }
 
     def _generation_count(self, conn: sqlite3.Connection) -> int:

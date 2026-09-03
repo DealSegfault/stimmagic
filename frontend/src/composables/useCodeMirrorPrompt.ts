@@ -319,15 +319,19 @@ interface UseCodeMirrorPromptOptions {
   placeholder?: string
   onChange: (value: string) => void
   onBlur: () => void
+  /** Generation prompts must stay directly editable, even if Vim was enabled elsewhere. */
+  disableVim?: boolean
 }
 
 export function useCodeMirrorPrompt(options: UseCodeMirrorPromptOptions) {
-  const { mountRef, modelValue, placeholder, onChange, onBlur } = options
+  const { mountRef, modelValue, placeholder, onChange, onBlur, disableVim = false } = options
 
   let view: EditorView | null = null
   let ignoreNextChange = false
 
-  const { vimEnabled, vimCompartment, getVimExtension, toggleVim: baseToggleVim, bindView } = useVimToggle()
+  const { vimEnabled, vimCompartment, getVimExtension, toggleVim: baseToggleVim, bindView } = useVimToggle({
+    disabled: disableVim,
+  })
   const fontCompartment = new Compartment()
 
   // drawSelection is enabled only alongside vim — vim's block cursor and visual

@@ -39,6 +39,7 @@ from .user_tools import (
     get_user_tools_provider,
 )
 from .modal_repaint import ModalRepaintProvider
+from .antigravity_provider import AntigravityImageProvider
 
 __all__ = [
     "ProviderStatus",
@@ -60,4 +61,5 @@ __all__ = [
     "UserToolsProvider",
     "get_user_tools_provider",
     "ModalRepaintProvider",
+    "AntigravityImageProvider",
 ]

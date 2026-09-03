@@ -155,9 +155,13 @@ export interface VimToggle {
 // Composable: shared vim toggle state + persistence wiring for any CM6 editor.
 // Both the prompt editor and the read-only code viewer use this so the toggle
 // preference and saved mappings stay in sync via localStorage.
-export function useVimToggle(): VimToggle {
+export function useVimToggle(options: { disabled?: boolean } = {}): VimToggle {
+  const disabled = options.disabled === true
   const vimCompartment = new Compartment()
-  const vimEnabled = ref(localStorage.getItem(VIM_MODE_KEY) === 'true')
+  // Tool prompt editors are ordinary text inputs. Keep the user's Vim
+  // preference for code/flow editors, but never let a persisted Vim mode turn
+  // a remounted generation prompt into a command/selection-only surface.
+  const vimEnabled = ref(!disabled && localStorage.getItem(VIM_MODE_KEY) === 'true')
   let view: EditorView | null = null
 
   function getVimExtension() {
@@ -170,6 +174,7 @@ export function useVimToggle(): VimToggle {
   }
 
   function toggleVim() {
+    if (disabled) return
     vimEnabled.value = !vimEnabled.value
     localStorage.setItem(VIM_MODE_KEY, String(vimEnabled.value))
     if (view) {

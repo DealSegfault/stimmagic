@@ -212,6 +212,15 @@ CPU et mémoire. Le GPU peut être sélectionné avec `gpu_type`. Un champ
 ayant un tarif particulier. La source intégrée est
 `https://modal.com/pricing`.
 
+Le bloc **Routage des générations** de cette page permet de choisir `Auto` ou
+un compte fixe pour les prochains jobs. Pour activer un compte dans le
+routeur, ajoutez `endpoint_url`, `hd_endpoint_url` (optionnel),
+`proxy_token_file`, `local_port` et `local_hd_port` à son entrée. Le gateway
+lance alors un bridge local par compte et écrit le manifeste
+`~/.config/adp-comfy/modal-router.bridges.json`. Les nouveaux réglages
+s’appliquent aux jobs suivants ; un redémarrage du gateway est nécessaire après
+l’ajout d’un nouveau compte ou d’un nouvel endpoint.
+
 Les secrets de déploiement et les Proxy Tokens restent dans l'environnement du
 gateway ou dans le gestionnaire de secrets de la machine ; ils ne doivent pas
 être ajoutés à ce fichier ni au dépôt.

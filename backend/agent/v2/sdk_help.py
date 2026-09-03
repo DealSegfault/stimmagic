@@ -346,4 +346,4 @@ stimma quick reference (inside run_code / run_file):
   stimma.show(r, role="final") commits+displays produced results ("intermediate" = display only); asyncio.gather() for parallel batches.
   stimma.* also has: .library (search/get/save), .llm(), .show(), .detect_faces(),
     await stimma.ffmpeg(...) / stimma.ffprobe(...) for workspace-jailed video/audio processing.
-NOT available in run_code (use as agent tools outside run_code): create_layout, bash, view_image, ask_user, browse_web, skill"""
+NOT available in run_code (use as agent tools outside run_code): create_layout, bash, view_image, view_video, ask_user, browse_web, skill"""

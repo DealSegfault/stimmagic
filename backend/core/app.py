@@ -836,6 +836,14 @@ async def lifespan(app: FastAPI):
             await backend_registry.register_backend(repaint_provider.provider_id, repaint_provider.max_concurrent)
             log.info("modal repaint provider registered", gpu="L40S", gpu_memory_gb=48, routing="local-modal-bridge", configured=True)
 
+            # Antigravity Nano Banana Pro provider (source-locked inpaint and reference generation via AGY CLI)
+            from providers import AntigravityImageProvider
+            antigravity_provider = AntigravityImageProvider()
+            await antigravity_provider.connect()
+            await provider_registry.register(antigravity_provider)
+            await backend_registry.register_backend(antigravity_provider.provider_id, antigravity_provider.max_concurrent)
+            log.info("antigravity image provider registered", model="Nano Banana Pro", cli="agy")
+
             # Initialize user-tools provider (flows frozen into first-class tools)
             from providers import get_user_tools_provider
             user_tools_provider = get_user_tools_provider()

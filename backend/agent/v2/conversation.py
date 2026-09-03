@@ -447,15 +447,15 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
 
         if image_notes:
             file_list = ", ".join(image_notes)
-            text += f"\n\n[Attached reference images: {file_list}. Visual pixels are loaded in this message. Use <Picture 1>, <Picture 2>, etc. directly for prompt generation, scene breakdown, and visual grounding.]"
+            text += f"\n\n[Attached reference images: {file_list}. Visual pixels are loaded in this message. Use <Picture N> only when the source prompt already contains that tag; otherwise keep the user prompt unchanged.]"
 
         if video_notes:
             file_list = ", ".join(video_notes)
-            text += f"\n\n[Attached reference videos: {file_list}. These are whole-video references, not first frames. Use the matching <Video N> tokens and route video generation through MiniMax H3 R2V.]"
+            text += f"\n\n[Attached reference videos: {file_list}. These are whole-video references. Use them only if the source prompt already uses matching `<Video N>` tags. Do not add `<Video N>` or `<Audio N>` tags.]"
 
         if audio_notes:
             file_list = ", ".join(audio_notes)
-            text += f"\n\n[Attached reference audio: {file_list}. Use the matching <Audio N> token for MiniMax H3 Ref2VA when the audio is paired with a visual reference.]"
+            text += f"\n\n[Attached reference audio: {file_list}. Use only if the source prompt already contains matching `<Audio N>` tags. Do not add or invent tags.]"
 
         if image_blocks:
             return {"role": "user", "content": [{"type": "text", "text": text}] + image_blocks}
@@ -552,7 +552,7 @@ def _item_to_message(item: ChatItem, include_images: bool = True) -> Dict[str, A
 
 
 def _build_view_image_result(tool_call_id: str, marker: dict) -> dict:
-    """Build a multimodal tool result for view_image, reading pixels from disk."""
+    """Build a multimodal image/storyboard tool result, reading pixels from disk."""
     from PIL import Image
 
     file_path = marker.get("path", "")
@@ -603,7 +603,21 @@ def _build_view_image_result(tool_call_id: str, marker: dict) -> dict:
             "content": f"Error loading image {file_path}: {e}",
         }
 
-    if (native_w, native_h) != (w, h):
+    if marker.get("view_kind") == "video_storyboard":
+        video_info = marker.get("video_info") or {}
+        duration = float(video_info.get("duration") or 0.0)
+        fps = float(video_info.get("fps") or 0.0)
+        source_name = Path(marker.get("source_path") or file_path).name
+        frame_times = marker.get("frame_times") or []
+        timestamps = ", ".join(f"{float(value):.2f}s" for value in frame_times)
+        text = (
+            f"Video storyboard loaded for {source_name}: {duration:.2f}s, {fps:.2f} fps, "
+            f"{video_info.get('width') or '?'}x{video_info.get('height') or '?'}. "
+            f"It contains {len(frame_times)} frames sampled at {timestamps}. "
+            "Read tiles left-to-right, top-to-bottom and use their timestamp labels "
+            "to ground the visual review. Audio was not analyzed."
+        )
+    elif (native_w, native_h) != (w, h):
         text = (
             f"Image loaded: native size {native_w}x{native_h}px, displayed downscaled "
             f"at {w}x{h}px. Express pixel coordinates in the native {native_w}x{native_h} "
@@ -763,7 +777,10 @@ async def _compress_stale_items(
                     and (i < cutoff_idx or i not in retained_image_indices)
                 ):
                     if item.tool_result:
-                        item.tool_result = "[Image shown earlier in this conversation — call view_image again if you need to see it]"
+                        if parsed.get("view_kind") == "video_storyboard":
+                            item.tool_result = "[Video storyboard shown earlier in this conversation — call view_video again if you need to inspect it]"
+                        else:
+                            item.tool_result = "[Image shown earlier in this conversation — call view_image again if you need to see it]"
                         dirty = True
                     continue
 

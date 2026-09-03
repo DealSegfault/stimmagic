@@ -92,6 +92,40 @@ class TestReferenceToVideoDescriptor(unittest.TestCase):
 
 
 class TestSavedStimmaWidgetCompatibility(unittest.TestCase):
+    def test_all_minimax_h3_workflows_advertise_without_object_info(self):
+        expected_slugs = {
+            "minimax-h3-i2v",
+            "minimax-h3-i2v-turbo",
+            "minimax-h3-r2v",
+            "minimax-h3-r2v-turbo",
+            "minimax-h3-t2v",
+            "minimax-h3-t2v-turbo",
+        }
+        discovered_slugs = set()
+
+        for workflow_path in (Path(ROOT) / "workflows").glob("Stimma-MiniMax-H3-*.json"):
+            workflow = json.loads(workflow_path.read_text())
+            api_prompt = _convert_ui_to_api(workflow, object_info=None)
+            extracted = _extract_stimma_nodes(api_prompt)
+            self.assertIsNotNone(extracted, workflow_path.name)
+            discovered_slugs.add(extracted["tool_info"]["slug"])
+
+        self.assertEqual(discovered_slugs, expected_slugs)
+
+    def test_tool_metadata_survives_missing_comfy_object_info(self):
+        workflow_path = Path(ROOT) / "workflows" / "Stimma-MiniMax-H3-T2V-Turbo.json"
+        workflow = json.loads(workflow_path.read_text())
+
+        api_prompt = _convert_ui_to_api(workflow, object_info=None)
+        extracted = _extract_stimma_nodes(api_prompt)
+
+        self.assertIsNotNone(extracted)
+        self.assertEqual(extracted["tool_info"]["slug"], "minimax-h3-t2v-turbo")
+        self.assertEqual(
+            extracted["tool_info"]["display_name"],
+            "MiniMax H3 Text to Video ⚡",
+        )
+
     def test_new_widget_does_not_shift_legacy_image_param_values(self):
         workflow = {
             "nodes": [
