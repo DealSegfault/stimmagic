@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from config import (
     Settings,
+    _inject_agy_cli_model,
     _inject_codex_cli_provider,
     _inject_modal_gateway_provider,
     ensure_config_exists,
@@ -62,6 +63,27 @@ def test_codex_cli_registration_respects_deleted_provider():
     _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
 
     assert config_data["llm_providers"] == [existing]
+
+
+def test_agy_cli_registration_adds_gemini_38_flash():
+    existing = {
+        "id": "agy-cli",
+        "kind": "agy_cli",
+        "models": [{
+            "id": "agy-cli:gemini-3.7-flash",
+            "model_id": "Gemini 3.7 Flash (High)",
+            "name": "Gemini 3.7 Flash · Antigravity",
+        }],
+    }
+    config_data = {"llm_providers": [existing]}
+
+    _inject_agy_cli_model(config_data)
+    _inject_agy_cli_model(config_data)
+
+    flash = next(model for model in existing["models"] if model["id"] == "agy-cli:gemini-3.8-flash")
+    assert flash["model_id"] == "Gemini 3.8 Flash (High)"
+    assert flash["name"] == "Gemini 3.8 Flash · Antigravity"
+    assert flash["model_vendor"] == "gemini"
 
 
 def test_modal_gateway_registration_is_runtime_only_and_idempotent():

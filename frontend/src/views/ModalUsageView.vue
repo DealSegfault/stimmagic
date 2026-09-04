@@ -133,10 +133,16 @@
                 <div>
                   <p class="text-xl font-semibold text-content">{{ formatCurrency(account.spent) }}</p>
                   <p class="mt-0.5 text-[11px] text-content-muted">sur {{ formatCurrency(account.monthly_budget) }} ce mois</p>
+                  <p class="mt-1 text-[10px]" :class="account.spend_source === 'modal_billing' ? 'text-emerald-300' : 'text-content-muted'">
+                    {{ account.spend_source === 'modal_billing' ? 'Facturation Modal synchronisée' : 'Estimation locale' }}
+                  </p>
                 </div>
                 <p class="text-right text-xs text-content-secondary">{{ account.active_jobs }} actif{{ account.active_jobs > 1 ? 's' : '' }}<br><span class="text-content-muted">{{ account.max_concurrency }} simultané{{ account.max_concurrency > 1 ? 's' : '' }}</span></p>
               </div>
               <p class="mt-3 text-[11px] text-content-muted">{{ account.gpu_type }} · {{ formatCurrency(account.gpu_hour_price) }}/h · {{ account.memory_gib }} GiB</p>
+              <p v-if="account.actual_spent != null" class="mt-1 text-[10px] text-content-muted">
+                Générations suivies : {{ formatCurrency(account.estimated_spent) }} · total workspace : {{ formatCurrency(account.actual_spent) }}
+              </p>
               <p class="mt-2 text-[11px]" :class="account.route_configured ? 'text-emerald-300' : 'text-amber-300'">
                 {{ account.route_configured ? 'Route gateway configurée' : 'Route gateway non configurée' }}
               </p>
@@ -159,7 +165,7 @@
           <div class="mb-3 flex items-baseline justify-between gap-3">
             <div>
               <h2 class="text-sm font-semibold text-content">Générations récentes</h2>
-              <p class="mt-1 text-xs text-content-muted">Le coût est estimé à partir de la durée GPU configurée.</p>
+              <p class="mt-1 text-xs text-content-muted">Les lignes sont estimées à partir de la durée et des ressources ; le total du workspace est synchronisé avec Modal lorsque le CLI est disponible.</p>
             </div>
             <span class="text-xs text-content-muted">{{ generations.length }} affichée{{ generations.length > 1 ? 's' : '' }}</span>
           </div>

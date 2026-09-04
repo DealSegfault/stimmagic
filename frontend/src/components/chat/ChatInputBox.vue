@@ -1,6 +1,6 @@
 <template>
   <div
-    class="relative"
+    class="relative min-w-0"
     @dragover.prevent="onDragOver"
     @dragenter.prevent="onDragOver"
     @dragleave="onDragLeave"
@@ -54,19 +54,21 @@
 
       <!-- Action bar -->
       <div
-        class="flex items-center justify-between px-3 pb-2 pt-2"
+        class="flex min-w-0 items-center justify-between gap-2 px-3 pb-2 pt-2"
         :class="agentUnavailable ? 'border-t border-edge-subtle' : ''"
       >
         <!-- Left: model picker + upload button -->
-        <div class="flex items-center gap-1">
-          <div v-if="agentUnavailable" class="pointer-events-none opacity-50">
+        <div class="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overscroll-x-contain">
+          <div v-if="agentUnavailable" class="flex-shrink-0 pointer-events-none opacity-50">
             <slot name="model-picker" />
           </div>
-          <slot v-else name="model-picker" />
+          <div v-else class="flex-shrink-0">
+            <slot name="model-picker" />
+          </div>
           <button
             :disabled="agentUnavailable"
             @click="openAssetPicker"
-            class="w-8 h-8 flex items-center justify-center rounded-full text-content-muted hover:text-content-secondary hover:bg-overlay-subtle transition-colors disabled:pointer-events-none disabled:opacity-50"
+            class="w-8 h-8 flex flex-shrink-0 items-center justify-center rounded-full text-content-muted hover:text-content-secondary hover:bg-overlay-subtle transition-colors disabled:pointer-events-none disabled:opacity-50"
             title="Add asset"
             aria-label="Add asset"
           >
@@ -75,7 +77,9 @@
             </svg>
           </button>
           <!-- Extra toolbar controls (e.g. the skills menu) between plus and mic -->
-          <slot v-if="!agentUnavailable" name="toolbar-extra" />
+          <div v-if="!agentUnavailable" class="contents [&>*]:flex-shrink-0">
+            <slot name="toolbar-extra" />
+          </div>
           <button
             v-if="agentUnavailable"
             type="button"
@@ -96,7 +100,7 @@
           v-if="agentUnavailable"
           type="button"
           disabled
-          class="w-8 h-8 flex items-center justify-center rounded-full bg-content text-surface opacity-20"
+          class="w-8 h-8 flex flex-shrink-0 items-center justify-center rounded-full bg-content text-surface opacity-20"
           title="Send unavailable"
         >
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-4 h-4">

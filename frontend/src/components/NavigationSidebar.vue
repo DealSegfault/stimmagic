@@ -13,20 +13,25 @@
 
     <!-- Mobile overlay backdrop -->
     <Transition name="fade">
-      <div
+      <button
         v-if="isOpen && isMobile"
+        type="button"
+        aria-label="Close navigation"
         class="fixed inset-0 bg-overlay-backdrop z-modal"
         @click="$emit('close')"
-      ></div>
+      />
     </Transition>
 
     <!-- Sidebar -->
     <Transition :name="isMobile ? 'slide' : ''">
       <div
         v-if="!isMobile || isOpen"
-        class="navigation-sidebar h-screen bg-surface border-r border-edge-subtle flex flex-col flex-shrink-0"
-        :class="isMobile ? 'fixed top-0 left-0 z-modal shadow-[2px_0_10px_rgba(0,0,0,0.3)] w-[276px]' : 'relative'"
+        class="navigation-sidebar h-screen h-[100dvh] bg-surface border-r border-edge-subtle flex flex-col flex-shrink-0"
+        :class="isMobile ? 'fixed top-0 left-0 z-modal shadow-2xl w-[min(276px,calc(100vw-3rem))]' : 'relative'"
         :style="!isMobile ? { width: `${sidebarWidth}px` } : undefined"
+        :role="isMobile ? 'dialog' : undefined"
+        :aria-modal="isMobile ? 'true' : undefined"
+        aria-label="Navigation"
       >
         <!-- Draggable region + fade overlay for traffic light area -->
         <div v-if="isTauriMac" class="absolute top-0 left-0 right-3 h-9 z-10 pointer-events-none">
@@ -34,8 +39,25 @@
           <div class="absolute bottom-0 left-0 right-0 h-2 bg-gradient-to-b from-surface to-transparent" />
         </div>
 
+        <IconButton
+          v-if="isMobile"
+          ref="mobileCloseButton"
+          class="absolute right-3 top-3 z-chrome bg-surface/90"
+          aria-label="Close navigation"
+          title="Close navigation"
+          @click="$emit('close')"
+        >
+          <XMarkIcon class="h-5 w-5" />
+        </IconButton>
+
         <!-- Nav Menu - only show when we have data -->
-        <nav v-if="hasLoadedData" ref="navEl" @scroll.passive="updateNavEdge" class="p-3 flex flex-col gap-1 flex-1 overflow-y-auto custom-scrollbar" :class="isTauriMac ? 'pt-10' : 'pt-3'">
+        <nav
+          v-if="hasLoadedData"
+          ref="navEl"
+          class="p-3 flex flex-col gap-1 flex-1 overflow-y-auto custom-scrollbar"
+          :class="isMobile ? 'pt-12' : isTauriMac ? 'pt-10' : 'pt-3'"
+          @scroll.passive="updateNavEdge"
+        >
 
           <!-- ==================== ZONE 1: Library Links ==================== -->
 
@@ -1032,7 +1054,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onUpdated, watch, h, nextTick } from 'vue'
-import { ArchiveBoxIcon } from '@heroicons/vue/24/outline'
+import { ArchiveBoxIcon, XMarkIcon } from '@heroicons/vue/24/outline'
 import { useRouter, useRoute } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useAuth } from '../composables/useAuth'
@@ -1068,6 +1090,7 @@ import EntityIcon from './EntityIcon.vue'
 import StatusDot from './ui/StatusDot.vue'
 import Spinner from './ui/Spinner.vue'
 import Tooltip from './ui/Tooltip.vue'
+import IconButton from './ui/IconButton.vue'
 import WorkspaceTabsContextMenu from './WorkspaceTabsContextMenu.vue'
 import EditorShelf from './EditorShelf.vue'
 import TunnelIndicator from './TunnelIndicator.vue'
@@ -1086,6 +1109,12 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'open-settings', 'media-dropped-on-tool', 'media-dropped-on-chat'])
+const mobileCloseButton = ref<InstanceType<typeof IconButton> | null>(null)
+
+watch(() => props.isOpen, (open) => {
+  if (!open || !props.isMobile) return
+  nextTick(() => mobileCloseButton.value?.$el?.focus())
+})
 
 // Platform detection
 const isTauriMac = isTauri() && navigator.platform.toLowerCase().includes('mac')

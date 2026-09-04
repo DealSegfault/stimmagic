@@ -1,9 +1,17 @@
 <template>
-  <div class="relative flex items-center justify-between px-4 h-14 bg-surface border-b border-edge-subtle flex-shrink-0" data-tauri-drag-region>
+  <div class="relative flex items-center justify-between px-2 md:px-4 h-14 bg-surface border-b border-edge-subtle flex-shrink-0" data-tauri-drag-region>
     <!-- Left side: navigation buttons -->
     <div class="flex items-center gap-0.5">
+      <IconButton
+        class="md:hidden"
+        aria-label="Open navigation"
+        title="Open navigation"
+        @click="$emit('open-sidebar')"
+      >
+        <Bars3Icon class="h-5 w-5" />
+      </IconButton>
       <button
-        class="w-7 h-7 flex items-center justify-center rounded transition-colors"
+        class="hidden sm:flex w-7 h-7 items-center justify-center rounded transition-colors"
         :class="canGoBack ? 'text-content-secondary hover:bg-overlay-subtle hover:text-content cursor-pointer' : 'text-content-muted/30 cursor-default'"
         :disabled="!canGoBack"
         @click="goBack"
@@ -14,7 +22,7 @@
         </svg>
       </button>
       <button
-        class="w-7 h-7 flex items-center justify-center rounded transition-colors"
+        class="hidden sm:flex w-7 h-7 items-center justify-center rounded transition-colors"
         :class="canGoForward ? 'text-content-secondary hover:bg-overlay-subtle hover:text-content cursor-pointer' : 'text-content-muted/30 cursor-default'"
         :disabled="!canGoForward"
         @click="goForward"
@@ -34,7 +42,7 @@
     </div>
 
     <!-- Right side: controls and progress -->
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-0.5 sm:gap-2">
       <!-- Processing indicator (only shows when there's activity or errors) -->
       <div
         v-if="hasActiveWork"
@@ -64,10 +72,10 @@
         <Spinner v-else hue="border-t-amber-500" />
 
         <transition name="expand">
-          <div v-if="isExpanded && statsLoading" class="absolute top-[calc(100%+0.5rem)] right-0 bg-surface border border-edge rounded-lg p-4 min-w-[400px] shadow-[0_8px_16px_rgba(0,0,0,0.5)] z-menu">
+          <div v-if="isExpanded && statsLoading" class="absolute top-[calc(100%+0.5rem)] right-0 bg-surface border border-edge rounded-lg p-4 w-[min(400px,calc(100vw-1rem))] shadow-lg z-menu">
             <div class="p-8 text-center text-content-muted text-sm">Loading progress data...</div>
           </div>
-          <div v-else-if="isExpanded" class="absolute top-[calc(100%+0.5rem)] right-0 bg-surface border border-edge rounded-lg p-4 min-w-[400px] shadow-[0_8px_16px_rgba(0,0,0,0.5)] z-menu">
+          <div v-else-if="isExpanded" class="absolute top-[calc(100%+0.5rem)] right-0 bg-surface border border-edge rounded-lg p-4 w-[min(400px,calc(100vw-1rem))] shadow-lg z-menu">
             <div v-if="deleteSummary" class="mb-4 pb-4 border-b border-surface-raised">
               <div class="flex justify-between items-center mb-2">
                 <span class="flex items-center gap-2 text-sm font-semibold text-content">
@@ -277,7 +285,7 @@
         @click="onUpdatePillClick"
         @mouseenter="updatePillHover = true"
         @mouseleave="updatePillHover = false"
-        class="flex items-center h-7 rounded-full border overflow-hidden whitespace-nowrap text-xs font-medium transition-[width,background-color] duration-200 ease-out select-none"
+        class="flex max-w-7 items-center h-7 rounded-full border overflow-hidden whitespace-nowrap text-xs font-medium transition-[width,background-color] duration-200 ease-out select-none md:max-w-none"
         :class="[
           updateState === 'restart'
             ? 'bg-green-500/15 border-green-500/50 text-green-400 hover:bg-green-500/25'
@@ -309,10 +317,12 @@
 
       <!-- Tool-provider managers (e.g. ComfyUI): one icon per provider that
            advertises a management UI over STP. -->
-      <ProviderManagerButton :show-separator="profiles.length > 1" />
+      <div class="hidden md:block">
+        <ProviderManagerButton :show-separator="profiles.length > 1" />
+      </div>
 
       <!-- Profile picker: exists only when a second profile does -->
-      <div v-if="profiles.length > 1" class="relative profile-menu">
+      <div v-if="profiles.length > 1" class="relative profile-menu hidden md:block">
         <!-- Ghost trigger, not a pill — bordered+filled chips aren't Atelier
              chrome; the menu carries the affordance. -->
         <button
@@ -497,12 +507,14 @@ import GlobalSearchBox from './search/GlobalSearchBox.vue'
 import ProviderManagerButton from './ProviderManagerButton.vue'
 import Spinner from './ui/Spinner.vue'
 import Modal from './ui/Modal.vue'
+import IconButton from './ui/IconButton.vue'
+import { Bars3Icon } from '@heroicons/vue/24/outline'
 import { formatEta } from '../utils/timeFormat'
 
 const router = useRouter()
 const route = useRoute()
 
-const emit = defineEmits(['open-settings'])
+const emit = defineEmits(['open-settings', 'open-sidebar'])
 
 // Navigation history tracking
 const navHistory = ref([])

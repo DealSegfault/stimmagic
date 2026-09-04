@@ -131,6 +131,44 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
     })
 
 
+def _inject_agy_cli_model(config_data: dict) -> None:
+    """Add Gemini 3.8 Flash to an existing Antigravity CLI provider.
+
+    AGY CLI providers are configured by the user, so this is a runtime-only
+    compatibility addition for installs that already have an AGY provider.
+    The CLI owns its authentication and model selection; Stimma only exposes
+    the model in the local picker.
+    """
+    providers = config_data.get('llm_providers', [])
+    existing = next(
+        (provider for provider in providers if provider.get('kind') == 'agy_cli'),
+        None,
+    )
+    if not existing or existing.get('deleted_at'):
+        return
+
+    models = existing.setdefault('models', [])
+    provider_id = existing.get('id', 'agy-cli')
+    model_slug = f"{provider_id}:gemini-3.8-flash"
+    model_id = 'Gemini 3.8 Flash (High)'
+    if any(model.get('id') == model_slug or model.get('model_id') == model_id for model in models):
+        return
+
+    template = next(
+        (model for model in models if model.get('model_id')),
+        {},
+    )
+    flash_model = dict(template)
+    flash_model.update({
+        'id': model_slug,
+        'model_id': model_id,
+        'name': 'Gemini 3.8 Flash · Antigravity',
+        'model_vendor': 'gemini',
+        'enabled': True,
+    })
+    models.append(flash_model)
+
+
 def _inject_modal_gateway_provider(config_data: dict, gateway_url: str) -> None:
     """Register this fork's local STP gateway when its launcher enables it."""
     gateway_url = gateway_url.strip()
@@ -1117,6 +1155,7 @@ class Settings(BaseSettings):
         # key is copied into Stimma's configuration.
         from codex_cli import find_codex_executable
         _inject_codex_cli_provider(config_data, find_codex_executable())
+        _inject_agy_cli_model(config_data)
         _inject_modal_gateway_provider(
             config_data,
             os.environ.get('STIMMA_MODAL_GATEWAY_URL', ''),

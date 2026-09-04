@@ -3606,6 +3606,20 @@ class GenerationQueue:
         _t0 = _time.time()
         if media_ready and not ephemeral_run_id:
             job_dict = await self.get_job(job.id, profile_id=profile_id)
+            # Modal route/resource metadata is supplied by the provider result
+            # and is used by the local billing tracker.  Keep it out of the
+            # persisted GenerationJob payload, but include it on the lifecycle
+            # event so the tracker can correct an auto-route estimate.
+            if isinstance(getattr(exec_result, "metadata", None), dict):
+                for key in (
+                    "modal_account_id",
+                    "modal_gpu_type",
+                    "modal_memory_gib",
+                    "modal_gpu_seconds",
+                    "modal_runtime_seconds",
+                ):
+                    if exec_result.metadata.get(key) is not None:
+                        job_dict[key] = exec_result.metadata[key]
             if self._websocket_manager:
                 await self._websocket_manager.broadcast('generation_job_completed', {
                     'job': job_dict,

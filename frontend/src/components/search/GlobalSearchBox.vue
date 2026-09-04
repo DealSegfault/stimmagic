@@ -2,7 +2,7 @@
   <div class="relative global-search-box">
     <!-- Search field -->
     <div
-      class="flex items-center gap-1.5 h-[34px] w-[420px] rounded-lg border pl-2.5 pr-1 transition-colors"
+      class="flex items-center gap-1.5 h-[34px] w-[calc(100vw-9rem)] min-w-[8rem] sm:w-[min(420px,calc(100vw-14rem))] lg:w-[420px] rounded-lg border pl-2.5 pr-1 transition-colors"
       :class="isOpen
         ? 'bg-surface border-accent/50 ring-2 ring-accent/40'
         : 'bg-overlay-subtle border-edge-subtle hover:border-edge'"
@@ -13,7 +13,7 @@
       <!-- Project scope chip (seeded from the current project; ✕ or Backspace-on-empty removes) -->
       <button
         v-if="scopeProject"
-        class="flex-shrink-0 flex items-center gap-1 max-w-[150px] pl-1.5 pr-1 py-[3px] rounded-md bg-accent/15 border border-accent/50 text-accent text-[11px] leading-none cursor-pointer hover:bg-accent/25 transition-colors"
+        class="flex-shrink-0 flex items-center gap-1 max-w-[70px] sm:max-w-[150px] pl-1.5 pr-1 py-[3px] rounded-md bg-accent/15 border border-accent/50 text-accent text-[11px] leading-none cursor-pointer hover:bg-accent/25 transition-colors"
         title="Remove project scope (Backspace)"
         @click="clearScope"
       >
@@ -38,7 +38,7 @@
       />
       <span
         v-if="!isOpen"
-        class="flex-shrink-0 text-[10.5px] text-content-muted border border-edge bg-overlay-faint rounded px-1.5 py-px select-none"
+        class="hidden lg:inline flex-shrink-0 text-[10.5px] text-content-muted border border-edge bg-overlay-faint rounded px-1.5 py-px select-none"
       >{{ isMac ? '⌘K' : 'Ctrl K' }}</span>
       <VoiceInputButton
         ref="voiceBtn"
@@ -54,7 +54,7 @@
     <div
       v-if="isOpen && (sections.length > 0 || query.trim() || loading)"
       ref="dropdownRef"
-      class="absolute top-[calc(100%+0.5rem)] left-1/2 -translate-x-1/2 w-[560px] max-h-[70vh] overflow-y-auto custom-scrollbar bg-surface border border-edge-subtle rounded-lg shadow-lg z-menu"
+      class="absolute top-[calc(100%+0.5rem)] left-1/2 -translate-x-1/2 w-[calc(100vw-1rem)] sm:w-[min(560px,calc(100vw-2rem))] max-h-[70dvh] overflow-y-auto custom-scrollbar bg-surface border border-edge-subtle rounded-lg shadow-lg z-menu"
     >
       <template v-for="(section, sIdx) in sections" :key="section.title">
         <div v-if="sIdx > 0" class="border-t border-edge-subtle"></div>

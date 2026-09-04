@@ -13,7 +13,7 @@
       class="flex gap-1 mt-1"
       :class="[
         align === 'left' ? 'justify-start' : 'justify-end',
-        hovered ? 'visible' : 'invisible'
+        hovered ? 'visible' : 'visible md:invisible'
       ]"
     >
       <!-- Edit (user messages only) -->

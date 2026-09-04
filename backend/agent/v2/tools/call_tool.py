@@ -206,29 +206,91 @@ async def _chat_reference_videos(
     session: AsyncSession,
     workspace_dir: Optional[str],
 ) -> list[dict[str, Any]]:
-    """Return whole-video references attached to the current chat turn.
+    """Return whole-video references attached to the current chat.
 
     Chat attachments are copied into the turn workspace before the agent starts.
     Resolve those workspace files here so an R2V call can consume them even when
     the model only selects the R2V tool and omits the repetitive file plumbing.
+
+    Keep this chat-wide, not "current turn only", so references added earlier
+    in the same chat are still available when the user asks to reuse them.
     """
+    def _coerce_media_id(value: Any) -> Optional[int]:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
     result = await session.execute(
         select(ChatItem.item_metadata)
         .where(ChatItem.chat_id == chat_id, ChatItem.item_type == "user_message")
-        .order_by(ChatItem.created_at.desc())
-        .limit(1)
+        .order_by(ChatItem.created_at.asc())
     )
-    raw_metadata = result.scalar_one_or_none()
-    if not raw_metadata:
-        return []
-    try:
-        metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else raw_metadata
-    except (json.JSONDecodeError, TypeError):
-        return []
-    if not isinstance(metadata, dict):
+    raw_rows = result.scalars().all()
+    if not raw_rows:
         return []
 
-    refs = list(metadata.get("workspace_files") or []) + list(metadata.get("attachments") or [])
+    refs: list[dict[str, Any]] = []
+    selected_media_ids: list[int] = []
+
+    for raw_metadata in raw_rows:
+        try:
+            metadata = json.loads(raw_metadata) if isinstance(raw_metadata, str) else raw_metadata
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+
+        refs.extend([
+            item
+            for item in (metadata.get("workspace_files") or [])
+            if isinstance(item, dict)
+        ])
+        refs.extend([
+            item
+            for item in (metadata.get("attachments") or [])
+            if isinstance(item, dict)
+        ])
+
+        raw_selected = metadata.get("selected_media_ids")
+        if isinstance(raw_selected, list):
+            for selected in raw_selected:
+                media_id = _coerce_media_id(selected)
+                if media_id is not None and media_id not in selected_media_ids:
+                    selected_media_ids.append(media_id)
+
+    if selected_media_ids:
+        result = await session.execute(
+            select(MediaItem)
+            .where(MediaItem.id.in_(selected_media_ids))
+        )
+        media_items = result.scalars().all()
+        media_by_id = {media.id: media for media in media_items}
+
+        existing_media_ids = {
+            _coerce_media_id(item.get("media_id"))
+            for item in refs
+            if isinstance(item, dict)
+        }
+        for media_id in selected_media_ids:
+            if media_id in existing_media_ids:
+                continue
+            media = media_by_id.get(media_id)
+            if not media:
+                continue
+            file_path = str(media.file_path) if media.file_path else ""
+            entry: dict[str, Any] = {"media_id": media_id}
+            if file_path:
+                entry["path"] = file_path
+                entry["filename"] = Path(file_path).name
+            file_format = media.file_format or Path(file_path).suffix.lstrip(".")
+            if file_format:
+                entry["file_format"] = str(file_format)
+            media_type = str(media.file_format).lower() if media.file_format else ""
+            if media_type in {"mp4", "mov", "avi", "mkv", "webm", "m4v", "mpg", "mpeg"}:
+                entry["media_type"] = "video"
+            refs.append(entry)
+
     seen_media_ids: set[int] = set()
     seen_paths: set[str] = set()
     videos: list[dict[str, Any]] = []

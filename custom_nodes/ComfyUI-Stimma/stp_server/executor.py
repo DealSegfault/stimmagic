@@ -324,6 +324,7 @@ async def execute_workflow(
         # holds the instance until output capture completes, so the next job
         # only lands here once the GPU is actually idle.
         async with provider.comfy_client.acquire(parameters) as instance:
+            route_started = time.perf_counter()
             logger.info(f"Acquired ComfyUI instance {instance.addr} for job")
 
             # Tool discovery is allowed to advertise bundled workflows while a
@@ -498,6 +499,23 @@ async def execute_workflow(
             )
 
             result["generation_time"] = generation_time
+            # Preserve the concrete Modal route in the STP result.  The host
+            # uses this to reconcile spend with the workspace that actually
+            # served the request (auto-routing can differ from the queue's
+            # initial estimate).
+            if remote_bridge:
+                hd_route = hd_request or instance_addr.rsplit(":", 1)[-1] == "8191"
+                result["modal_account_id"] = getattr(instance, "account_id", None)
+                result["modal_gpu_type"] = (
+                    "Nvidia B300"
+                    if hd_route
+                    else "Nvidia RTX PRO 6000"
+                )
+                result["modal_memory_gib"] = 128.0 if hd_route else 32.0
+                result["modal_runtime_seconds"] = round(
+                    max(0.0, time.perf_counter() - route_started),
+                    3,
+                )
             return result
 
     finally:

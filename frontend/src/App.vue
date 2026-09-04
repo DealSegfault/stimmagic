@@ -113,14 +113,14 @@
   </div>
 
   <!-- No-chrome mode for standalone pages like LLM trace viewer -->
-  <div v-else-if="noChrome" class="w-full h-screen overflow-auto bg-base">
+  <div v-else-if="noChrome" class="w-full h-screen h-[100dvh] overflow-auto bg-base">
     <!-- Draggable title bar region -->
     <div class="sticky top-0 left-0 right-0 h-8 z-50" data-tauri-drag-region />
     <router-view />
   </div>
 
   <!-- Normal app with sidebar and topbar -->
-  <div v-else v-scroll-guard class="w-full h-screen flex overflow-hidden bg-base">
+  <div v-else v-scroll-guard class="w-full h-screen h-[100dvh] flex overflow-hidden bg-base">
     <!-- Sidebar - fixed on wide screens, overlay on narrow -->
     <NavigationSidebar
       :is-open="sidebarOpen"
@@ -141,6 +141,7 @@
       <!-- Static top bar -->
       <TopBar
         class="top-bar"
+        @open-sidebar="openSidebar"
         @open-settings="openSettings($event)"
       />
 
@@ -469,8 +470,9 @@ async function resolveProjectChrome() {
   }
 }
 
-// Sidebar is always visible (no collapsing)
-const isMobile = computed(() => false)
+// Below the md breakpoint the navigation becomes an off-canvas drawer. Keep
+// this breakpoint aligned with Tailwind's `md:` variants used by TopBar.
+const isMobile = computed(() => windowWidth.value < 768)
 
 function openSidebar() {
   sidebarOpen.value = true
@@ -481,12 +483,17 @@ function closeSidebar() {
 }
 
 function handleResize() {
+  const wasMobile = isMobile.value
   windowWidth.value = window.innerWidth
   // Auto-close sidebar when switching to desktop
-  if (!isMobile.value) {
+  if (wasMobile && !isMobile.value) {
     sidebarOpen.value = false
   }
 }
+
+watch(() => route.fullPath, () => {
+  if (isMobile.value) closeSidebar()
+})
 
 // Re-sync cloud state whenever the app regains focus. This is the general case
 // of returning from an external browser flow — most importantly completing a
@@ -551,6 +558,12 @@ async function toggleDeveloperMode() {
 }
 
 function handleKeydown(e) {
+  if (e.key === 'Escape' && isMobile.value && sidebarOpen.value) {
+    e.preventDefault()
+    closeSidebar()
+    return
+  }
+
   // Cmd/Ctrl+K: focus the global search omnibox
   if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
     e.preventDefault()

@@ -207,10 +207,14 @@ export MODAL_ROUTER_ACCOUNTS_FILE="$HOME/.config/adp-comfy/modal-router.accounts
 
 Le dashboard suit les événements `GenerationJob`, affiche la consommation par
 compte et estime le coût avec les tarifs standards publiés par Modal : GPU,
-CPU et mémoire. Le GPU peut être sélectionné avec `gpu_type`. Un champ
-`gpu_hour_price` optionnel permet de remplacer le tarif public pour un compte
-ayant un tarif particulier. La source intégrée est
-`https://modal.com/pricing`.
+CPU et mémoire. Quand le CLI Modal est connecté, le total mensuel affiché est
+remplacé par le rapport de facturation officiel du workspace actif ; les lignes
+individuelles restent des estimations locales (le rapport Modal n'est pas
+ventilé par `GenerationJob`). Le GPU peut être sélectionné avec `gpu_type`.
+Un champ `gpu_hour_price` optionnel permet de remplacer le tarif public pour un
+compte ayant un tarif particulier. Pour l'endpoint H3 HD, utilisez
+`hd_gpu_type`, `hd_gpu_hour_price` et `hd_memory_gib` (le défaut est B300,
+128 GiB). La source intégrée est `https://modal.com/pricing`.
 
 Le bloc **Routage des générations** de cette page permet de choisir `Auto` ou
 un compte fixe pour les prochains jobs. Pour activer un compte dans le
@@ -289,7 +293,7 @@ Les workflows exposés à l'agent incluent :
 | :--- | :--- | :--- |
 | **Démarrer la passerelle** | `infra/bin/start-gateway.sh` | Lance le proxy bridge (`:8190`) et le serveur STP ComfyUI (`:8188`) avec auto-restart. |
 | **Démarrer Stimma** | `infra/bin/start-stimma.sh` | Lance l'interface utilisateur Stimma en mode développement. |
-| **Statut & Facturation** | `infra/bin/status.sh` | Affiche les conteneurs actifs et la consommation GPU du jour en dollars. |
+| **Statut & Facturation** | `infra/bin/status.sh` | Affiche les conteneurs actifs et le coût Modal réel du workspace (GPU, CPU et mémoire) pour la journée. |
 | **Arrêt d'urgence** | `infra/bin/emergency-stop.sh` | Coupe immédiatement tous les conteneurs Modal distants actifs. |
 
 ---

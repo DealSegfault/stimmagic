@@ -1726,6 +1726,20 @@ class JsonRpcProvider(ToolProvider):
                                 additional_outputs.append(blob)
 
                     metadata = dict(data.get("metadata", {}) or {})
+                    # Account/resource facts are returned by the Modal STP
+                    # executor in its output envelope.  Keep them in metadata
+                    # so the generation queue can attribute spend to the
+                    # workspace and GPU that actually served the request.
+                    if isinstance(output, dict):
+                        for key in (
+                            "modal_account_id",
+                            "modal_gpu_type",
+                            "modal_memory_gib",
+                            "modal_gpu_seconds",
+                            "modal_runtime_seconds",
+                        ):
+                            if output.get(key) is not None:
+                                metadata[key] = output[key]
                     if data.get("success") and assets:
                         primary_asset_id = assets[0].get("asset_id") if isinstance(assets[0], dict) else None
                         if primary_asset_id:

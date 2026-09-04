@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col h-full bg-base relative">
+  <div class="relative flex h-full min-w-0 flex-col bg-base">
     <!-- Control Strip (top bar) - suppressed when embedded -->
     <ChatControlStrip
       v-if="!embedded && chatId !== null"
@@ -32,7 +32,7 @@
     />
 
     <!-- Content area: artifact stage (standalone only) + chat column -->
-    <div class="flex flex-1 min-h-0">
+    <div class="flex flex-1 min-h-0 flex-col md:flex-row">
       <template v-if="!embedded">
         <ArtifactStage
           v-if="artifactStage.stageOpen.value"
@@ -52,18 +52,22 @@
         />
         <div
           v-if="artifactStage.stageOpen.value"
-          class="w-1 flex-shrink-0 cursor-col-resize select-none hover:bg-accent/40 active:bg-accent/60 transition-colors"
+          class="hidden w-1 flex-shrink-0 cursor-col-resize select-none transition-colors hover:bg-accent/40 active:bg-accent/60 md:block"
           @mousedown="artifactStage.startResize"
         />
       </template>
 
-    <div class="flex flex-1 flex-col min-h-0 min-w-0" :style="!embedded && artifactStage.stageOpen.value ? { flex: `0 0 ${artifactStage.width.value}px` } : {}">
+    <div
+      class="flex flex-1 flex-col min-h-0 min-w-0"
+      :class="!embedded && artifactStage.stageOpen.value ? 'md:[flex:0_0_var(--chat-column-width)]' : ''"
+      :style="!embedded && artifactStage.stageOpen.value ? { '--chat-column-width': `${artifactStage.width.value}px` } : {}"
+    >
       <!-- Chat + Settings horizontal row -->
-      <div class="flex flex-1 min-h-0">
+      <div class="flex flex-1 min-h-0 min-w-0">
         <!-- Main chat area -->
         <div class="flex-1 flex flex-col min-w-0">
     <!-- Chat Messages Area -->
-    <div class="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 custom-scrollbar" ref="messagesContainer">
+    <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-4 custom-scrollbar sm:p-4" ref="messagesContainer">
       <!-- Connection Error -->
       <ConnectionError
         v-if="loadError"
@@ -488,7 +492,7 @@
             <ChatItemWrapper
               :item-id="item.id"
               align="right"
-              :class="editingItemId === item.id ? 'max-w-[80%]' : 'max-w-[50%]'"
+              :class="editingItemId === item.id ? 'max-w-[95%] sm:max-w-[80%]' : 'max-w-[88%] sm:max-w-[70%] lg:max-w-[50%]'"
               :show-actions="editingItemId !== item.id"
               :show-edit="!!item.message_text"
               :show-replay="!!item.message_text"
@@ -686,7 +690,7 @@
                         :media-id="seg.mediaId"
                         :thumbnail="true"
                         :thumbnail-size="512"
-                        container-class="w-[320px] h-[200px] rounded-lg overflow-hidden cursor-pointer my-2"
+                        container-class="w-full max-w-[320px] h-[200px] rounded-lg overflow-hidden cursor-pointer my-2"
                         img-class="w-full h-full object-cover"
                         @click="openSlideshow(seg.mediaId, 0)"
                       />
@@ -915,7 +919,7 @@
               <div
                 v-if="hasPlanData(item)"
                 class="bg-surface/80 rounded-lg border border-edge-subtle overflow-hidden transition-all duration-200"
-                :class="isPlanExpanded(item.id) ? 'min-w-[520px]' : ''"
+                :class="isPlanExpanded(item.id) ? 'w-full min-w-0 sm:min-w-[520px]' : ''"
               >
                 <!-- Plan header -->
                 <div
@@ -1048,7 +1052,7 @@
           </div>
 
           <!-- Progress Display: progress bar + thumbnail previews -->
-          <div v-else-if="item.item_type === 'progress_display'" class="flex justify-start w-1/2 min-w-[280px]">
+          <div v-else-if="item.item_type === 'progress_display'" class="flex w-full justify-start sm:w-1/2 sm:min-w-[280px]">
             <ChatItemWrapper
               :item-id="item.id"
               align="left"
@@ -1212,13 +1216,13 @@
     </div>
 
     <!-- Queued Messages (when agent is busy) -->
-    <div v-if="messageQueue.length > 0" class="border-t border-edge/50 px-4 py-2 flex flex-col gap-2">
+    <div v-if="messageQueue.length > 0" class="border-t border-edge/50 px-3 py-2 flex flex-col gap-2 sm:px-4">
       <div
         v-for="(queuedMsg, index) in messageQueue"
         :key="index"
         class="flex justify-end"
       >
-        <div class="flex items-start gap-2 max-w-[60%]">
+        <div class="flex max-w-[90%] items-start gap-2 sm:max-w-[60%]">
           <div class="bg-surface-raised/50 text-content-tertiary rounded-lg px-3 py-2 text-sm">
             <!-- Queued attachments preview -->
             <div v-if="queuedMsg.attachments.length > 0" class="flex gap-1 mb-1">
@@ -1297,7 +1301,7 @@
     </div>
 
     <!-- Session token usage & Context memory bar -->
-    <div v-if="sessionTokenTotals.total_tokens > 0 || currentContextTokens > 0" class="px-4 py-1.5 flex-shrink-0 flex items-center gap-3 text-[11px] font-mono text-content-muted border-t border-edge bg-surface/50">
+    <div v-if="sessionTokenTotals.total_tokens > 0 || currentContextTokens > 0" class="flex flex-shrink-0 items-center gap-3 overflow-x-auto whitespace-nowrap border-t border-edge bg-surface/50 px-3 py-1.5 font-mono text-[11px] text-content-muted sm:px-4">
       <span v-if="sessionTokenTotals.model" class="text-content-secondary font-medium">{{ sessionTokenTotals.model }}</span>
       <span>{{ formatTokenCount(sessionTokenTotals.prompt_tokens) }} in / {{ formatTokenCount(sessionTokenTotals.completion_tokens) }} out<template v-if="sessionTokenTotals.reasoning_tokens"> / {{ formatTokenCount(sessionTokenTotals.reasoning_tokens) }} reasoning</template></span>
       <span v-if="sessionTokenTotals.cache_read_input_tokens" class="text-teal-500">cache {{ formatTokenCount(sessionTokenTotals.cache_read_input_tokens) }} hit</span>
@@ -1316,7 +1320,7 @@
     </div>
 
     <!-- Input Area -->
-    <div class="px-4 pb-4 pt-2 flex-shrink-0">
+    <div class="flex-shrink-0 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 sm:px-4 sm:pb-4">
       <div
         v-if="chatInterrupted"
         class="mb-2 flex items-center justify-between gap-3 px-3 py-2 rounded-md border border-amber-500/40 bg-amber-500/[0.08]"
@@ -1524,6 +1528,7 @@
           v-if="chat && !embedded"
           :chat-id="chat.id"
           :visible="settingsPanelVisible"
+          @close="closeSettingsPanel"
         />
       </div>
 
@@ -5293,6 +5298,11 @@ function toggleView() {
 function toggleSettingsPanel() {
   settingsPanelVisible.value = !settingsPanelVisible.value
   localStorage.setItem(_chatSettingsKey, String(settingsPanelVisible.value))
+}
+
+function closeSettingsPanel() {
+  settingsPanelVisible.value = false
+  localStorage.setItem(_chatSettingsKey, 'false')
 }
 
 async function openCloudDashboard() {

@@ -1,7 +1,7 @@
 <template>
-  <div class="flex items-center gap-2 px-4 py-2 bg-base border-b border-edge">
+  <div class="flex min-w-0 items-center gap-2 px-3 py-2 bg-base border-b border-edge sm:px-4">
     <!-- Chat Name (Left) -->
-    <div class="flex items-center gap-2 flex-shrink-0">
+    <div class="flex min-w-0 flex-1 items-center gap-2">
       <input v-no-autocorrect
         v-if="editingName"
         ref="nameInputRef"
@@ -9,12 +9,12 @@
         @blur="saveName"
         @keydown.enter="saveName"
         @keydown.escape="cancelEditName"
-        class="text-sm font-medium bg-surface text-content px-2 py-1 rounded border border-edge focus:outline-none focus:border-accent"
+        class="w-full min-w-0 text-sm font-medium bg-surface text-content px-2 py-1 rounded border border-edge focus:outline-none focus:border-accent"
       />
       <span
         v-else-if="chatName"
         @dblclick="startEditName"
-        class="text-sm font-medium text-content cursor-pointer hover:text-content-secondary"
+        class="truncate text-sm font-medium text-content cursor-pointer hover:text-content-secondary"
         title="Double-click to rename"
       >
         {{ chatName }}
@@ -22,43 +22,42 @@
       <span
         v-else
         @click="startEditName"
-        class="text-sm font-medium text-content-muted italic cursor-pointer hover:text-content-secondary"
+        class="truncate text-sm font-medium text-content-muted italic cursor-pointer hover:text-content-secondary"
       >
         Name this chat...
       </span>
     </div>
 
-    <!-- Spacer -->
-    <div class="flex-1"></div>
-
     <!-- Right side controls -->
-    <div class="flex items-center gap-1.5">
+    <div class="flex flex-shrink-0 items-center gap-1">
       <!-- Requirements & Assets Drawer Toggle -->
       <button
         @click="$emit('toggle-requirements-drawer')"
-        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-semibold transition-colors border"
+        class="flex h-7 w-7 items-center justify-center gap-1.5 rounded border text-xs font-semibold transition-colors sm:w-auto sm:px-2.5"
         :class="requirementsDrawerVisible
           ? 'text-accent bg-accent/15 border-accent/30 hover:bg-accent/20'
           : 'text-content-secondary bg-surface border-edge hover:text-content hover:bg-surface-raised'"
         title="Ouvrir le panneau des Requirements et Assets du projet actif"
+        aria-label="Ouvrir le panneau des Requirements et Assets"
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5 text-accent">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z" />
         </svg>
-        <span>Requirements</span>
+        <span class="hidden sm:inline">Requirements</span>
       </button>
 
       <!-- Persisted agent execution trace -->
       <button
         @click="$emit('open-agent-trace')"
-        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-semibold text-content-secondary bg-surface border border-edge transition-colors hover:text-content hover:bg-surface-raised"
+        class="flex h-7 w-7 items-center justify-center gap-1.5 rounded border border-edge bg-surface text-xs font-semibold text-content-secondary transition-colors hover:bg-surface-raised hover:text-content sm:w-auto sm:px-2.5"
         title="Inspecter la trace opérationnelle de la boucle agentique"
+        aria-label="Inspecter la trace de l’agent"
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5 text-accent">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75h16.5v16.5H3.75z" />
           <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 15.75v-3m4.5 3V8.25m4.5 7.5v-5.25" />
         </svg>
-        <span>Agent trace</span>
+        <span class="hidden sm:inline">Agent trace</span>
       </button>
 
       <!-- Settings Panel Toggle -->
@@ -80,7 +79,7 @@
       <button
         v-if="devModeRef"
         @click="openWorkspace"
-        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium text-purple-500 hover:bg-purple-500/10 transition-colors"
+        class="hidden md:flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium text-purple-500 hover:bg-purple-500/10 transition-colors"
         title="Open workspace folder in Finder"
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
@@ -93,7 +92,7 @@
       <button
         v-if="viewMode === 'chat' && devModeRef"
         @click="$emit('toggle-view')"
-        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium text-purple-500 hover:bg-purple-500/10 transition-colors"
+        class="hidden md:flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium text-purple-500 hover:bg-purple-500/10 transition-colors"
         title="Debug view"
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
@@ -106,7 +105,7 @@
       <button
         v-if="viewMode === 'raw'"
         @click="$emit('toggle-view')"
-        class="flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium bg-purple-500/20 text-purple-500 hover:bg-purple-500/30 transition-colors"
+        class="hidden md:flex items-center gap-1.5 px-2.5 h-7 rounded text-xs font-medium bg-purple-500/20 text-purple-500 hover:bg-purple-500/30 transition-colors"
       >
         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-3.5 h-3.5">
           <path stroke-linecap="round" stroke-linejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />

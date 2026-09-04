@@ -1,14 +1,25 @@
+import json
+from pathlib import Path
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from database import ChatItem, MediaItem
+
 from agent.v2.tools.call_tool import (
     _r2v_variant_tool_id,
+    _chat_reference_videos,
     _resolve_effective_task_type,
     _select_h3_generation_prompt,
     call_tool,
     execute_call_tool,
 )
 from h3_prompt_pair import format_h3_prompt_pair
+
+
+def _write_video(path: Path, content: bytes = b"fake") -> str:
+    path.write_bytes(content)
+    return str(path)
 
 
 class _FakeToolDescriptor:
@@ -183,3 +194,64 @@ async def test_explicit_reference_task_does_not_fall_back_to_i2v(
             task_type_override="reference-to-video",
             session=session,
         )
+
+
+@pytest.mark.asyncio
+async def test_chat_reference_videos_includes_all_user_messages_and_selected_media_ids(
+    session,
+    test_chat,
+    tmp_path,
+):
+    old_video = _write_video(tmp_path / "old.mp4")
+    latest_video = _write_video(tmp_path / "latest.mp4")
+    selected_video = _write_video(tmp_path / "selected.mp4")
+
+    media_item = MediaItem(
+        file_path=selected_video,
+        file_hash="hash",
+        file_size=4,
+        file_format="mp4",
+        width=16,
+        height=16,
+        megapixels=0.000256,
+    )
+    session.add(media_item)
+    await session.flush()
+
+    session.add(ChatItem(
+        chat_id=test_chat.id,
+        item_type="user_message",
+        message_text="old reference",
+        item_metadata=json.dumps({
+            "workspace_files": [
+                {
+                    "media_type": "video",
+                    "media_id": 111,
+                    "path": old_video,
+                    "filename": "old.mp4",
+                }
+            ],
+        }),
+    ))
+    session.add(ChatItem(
+        chat_id=test_chat.id,
+        item_type="user_message",
+        message_text="latest reference",
+        item_metadata=json.dumps({
+            "attachments": [
+                {
+                    "media_type": "video",
+                    "media_id": 222,
+                    "path": latest_video,
+                    "filename": "latest.mp4",
+                }
+            ],
+            "selected_media_ids": [media_item.id],
+        }),
+    ))
+    await session.commit()
+
+    refs = await _chat_reference_videos(test_chat.id, session, str(tmp_path))
+    paths = [item["path"] for item in refs]
+
+    assert paths == [old_video, latest_video, selected_video]

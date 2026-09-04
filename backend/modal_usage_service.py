@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
+import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,13 +45,30 @@ GPU_ALIASES = {
     "RTX-PRO-6000": "Nvidia RTX PRO 6000",
     "RTX PRO 6000": "Nvidia RTX PRO 6000",
     "RTX_PRO_6000": "Nvidia RTX PRO 6000",
+    "B300": "Nvidia B300",
+    "NVIDIA B300": "Nvidia B300",
+    "B200": "Nvidia B200",
+    "NVIDIA B200": "Nvidia B200",
+    "H100": "Nvidia H100 SXM5",
+    "NVIDIA H100": "Nvidia H100 SXM5",
+    "NVIDIA H100 SXM5": "Nvidia H100 SXM5",
+    "H200": "Nvidia H200 SXM",
+    "NVIDIA H200": "Nvidia H200 SXM",
+    "NVIDIA H200 SXM": "Nvidia H200 SXM",
     "L40S": "Nvidia L40S",
+    "NVIDIA L40S": "Nvidia L40S",
     "A100": "Nvidia A100, 80 GB",
 }
 CPU_PRICE_PER_CORE_SECOND = 0.0000131
 MEMORY_PRICE_PER_GIB_SECOND = 0.00000222
 VOLUME_PRICE_PER_GIB_MONTH = 0.09
 ROUTING_MODES = {"auto", "fixed"}
+
+# A crashed desktop process can leave a generation row in ``processing``
+# forever.  Such a row must not reserve a Modal account indefinitely.  Modal
+# jobs in this project have a maximum timeout of two hours, so six hours is a
+# conservative recovery window that still protects genuinely long jobs.
+ACTIVE_RESERVATION_TTL_SECONDS = 6 * 60 * 60
 
 
 def _routing_state_path() -> Path:
@@ -73,8 +93,11 @@ class ModalAccount:
     monthly_budget: float = 30.0
     gpu_type: str = "Nvidia RTX PRO 6000"
     gpu_hour_price: float | None = None
+    hd_gpu_type: str | None = None
+    hd_gpu_hour_price: float | None = None
     cpu_cores: float = 0.125
     memory_gib: float = 32.0
+    hd_memory_gib: float | None = None
     max_concurrency: int = 1
     enabled: bool = True
     endpoint_url: str | None = None
@@ -99,6 +122,16 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
+def _utc_timestamp(value: Any) -> float | None:
+    """Parse a stored timestamp, treating legacy naive values as UTC."""
+    parsed = _parse_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 class ModalUsageService:
     """Persist generation telemetry and select an eligible Modal account."""
 
@@ -106,6 +139,7 @@ class ModalUsageService:
         self._lock = threading.RLock()
         self._config_mtime: float | None = None
         self._accounts: list[ModalAccount] = []
+        self._billing_cache: dict[str, dict[str, Any]] = {}
         self._db_path = app_dirs.get_data_dir() / "modal_usage.sqlite3"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
@@ -150,6 +184,23 @@ class ModalUsageService:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_modal_usage_account ON modal_generation_usage(account_id)"
             )
+            # These columns were added after the first version of the tracker.
+            # Keep existing installations upgradeable without requiring a
+            # destructive database reset.
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(modal_generation_usage)")
+            }
+            for name, declaration in (
+                ("gpu_type", "TEXT"),
+                ("cpu_cores", "REAL"),
+                ("memory_gib", "REAL"),
+                ("billing_source", "TEXT"),
+                ("parameters", "TEXT"),
+            ):
+                if name not in existing_columns:
+                    conn.execute(
+                        f"ALTER TABLE modal_generation_usage ADD COLUMN {name} {declaration}"
+                    )
 
     def _load_accounts(self) -> None:
         config_path_value = os.environ.get("MODAL_ROUTER_ACCOUNTS_FILE", "")
@@ -186,8 +237,19 @@ class ModalUsageService:
                             if item.get("gpu_hour_price") is not None
                             else None
                         ),
+                        hd_gpu_type=(str(item["hd_gpu_type"]) if item.get("hd_gpu_type") else None),
+                        hd_gpu_hour_price=(
+                            max(0.0, float(item["hd_gpu_hour_price"]))
+                            if item.get("hd_gpu_hour_price") is not None
+                            else None
+                        ),
                         cpu_cores=max(0.0, float(item.get("cpu_cores", 0.125))),
                         memory_gib=max(0.0, float(item.get("memory_gib", 32.0))),
+                        hd_memory_gib=(
+                            max(0.0, float(item["hd_memory_gib"]))
+                            if item.get("hd_memory_gib") is not None
+                            else None
+                        ),
                         max_concurrency=max(1, int(item.get("max_concurrency", 1))),
                         enabled=bool(item.get("enabled", True)),
                         endpoint_url=str(item["endpoint_url"]).rstrip("/") if item.get("endpoint_url") else None,
@@ -314,35 +376,223 @@ class ModalUsageService:
         )
 
     @classmethod
-    def _cost_for_duration(cls, account: ModalAccount, duration_seconds: float) -> float:
+    def _cost_for_duration(
+        cls,
+        account: ModalAccount,
+        duration_seconds: float,
+        *,
+        gpu_type: str | None = None,
+        gpu_hour_price: float | None = None,
+        memory_gib: float | None = None,
+    ) -> float:
+        """Estimate Modal resource cost for one execution.
+
+        ``duration_seconds`` is deliberately an estimate: Modal bills the
+        resources used by the container, while the local queue only knows the
+        job lifecycle.  The resource overrides let us distinguish the H3 HD
+        B300/128-GiB endpoint from the normal RTX PRO 6000 endpoint.
+        """
+        if gpu_hour_price is not None:
+            gpu_rate = max(0.0, float(gpu_hour_price)) / 3600
+        elif gpu_type:
+            gpu_rate = GPU_PRICES_PER_SECOND.get(
+                cls._canonical_gpu_type(gpu_type),
+                0.0,
+            )
+        else:
+            gpu_rate = cls._gpu_price_per_second(account)
         resource_rate = (
-            cls._gpu_price_per_second(account)
+            gpu_rate
             + CPU_PRICE_PER_CORE_SECOND * account.cpu_cores
-            + MEMORY_PRICE_PER_GIB_SECOND * account.memory_gib
+            + MEMORY_PRICE_PER_GIB_SECOND * (
+                account.memory_gib if memory_gib is None else max(0.0, float(memory_gib))
+            )
         )
         return max(0.0, duration_seconds * resource_rate)
+
+    @staticmethod
+    def _job_parameters(job: dict[str, Any]) -> dict[str, Any]:
+        raw = job.get("parameters") if isinstance(job, dict) else None
+        if isinstance(raw, dict):
+            return raw
+        if not raw:
+            return {}
+        try:
+            value = json.loads(raw)
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+
+    @staticmethod
+    def _serialize_parameters(value: Any) -> str | None:
+        """Keep only routing dimensions; never persist prompts or media IDs."""
+        if value is None:
+            return None
+        try:
+            source = json.loads(value) if isinstance(value, str) else value
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(source, dict):
+            return None
+        dimensions = {
+            key: source[key]
+            for key in ("width", "height", "steps")
+            if source.get(key) is not None
+        }
+        return json.dumps(dimensions, separators=(",", ":")) if dimensions else None
+
+    @staticmethod
+    def _is_h3_hd_job(job: dict[str, Any]) -> bool:
+        """Match the routing predicate used by ComfyUI-Stimma's client."""
+        if str(job.get("backend_name") or "").lower() != "comfyui-modal-h3":
+            return False
+        params = ModalUsageService._job_parameters(job)
+        try:
+            width = float(params.get("width"))
+            height = float(params.get("height"))
+            steps = float(params.get("steps"))
+        except (TypeError, ValueError):
+            return False
+        return width * height / 1_000_000 >= 2.0 and steps >= 20
+
+    @classmethod
+    def _resource_for_job(cls, account: ModalAccount, job: dict[str, Any]) -> dict[str, Any]:
+        """Return the resource configuration used by a Modal-backed job."""
+        backend = str(job.get("backend_name") or "").lower()
+        if cls._is_h3_hd_job(job):
+            # The deployed HD endpoint is explicitly a full-BF16 B300 with
+            # 128 GiB.  Account fields can override this for negotiated rates
+            # or a future deployment change.
+            gpu_type = account.hd_gpu_type or (
+                "Nvidia B300" if account.hd_endpoint_url else account.gpu_type
+            )
+            gpu_hour_price = account.hd_gpu_hour_price
+            memory_gib = account.hd_memory_gib or (
+                128.0 if account.hd_endpoint_url else account.memory_gib
+            )
+        elif backend == "modal-trellis2":
+            gpu_type = (
+                account.gpu_type
+                if account.gpu_type != "Nvidia RTX PRO 6000"
+                else "Nvidia H100 SXM5"
+            )
+            gpu_hour_price = (
+                account.gpu_hour_price
+                if account.gpu_hour_price is not None
+                and account.gpu_type != "Nvidia RTX PRO 6000"
+                else None
+            )
+            memory_gib = account.memory_gib if account.memory_gib != 32.0 else 64.0
+        elif backend in {"modal-repaint", "stimma-flux-fill"}:
+            gpu_type = "Nvidia L40S"
+            gpu_hour_price = None
+            memory_gib = 48.0
+        else:
+            gpu_type = account.gpu_type
+            gpu_hour_price = account.gpu_hour_price
+            memory_gib = account.memory_gib
+        return {
+            "gpu_type": gpu_type,
+            "gpu_hour_price": gpu_hour_price,
+            "memory_gib": memory_gib,
+        }
 
     def _month_start(self) -> str:
         now = _utc_now()
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
 
     def _account_spend(self, conn: sqlite3.Connection, account_id: str) -> float:
-        row = conn.execute(
+        # Timestamps written by older queue versions are naive UTC strings,
+        # while newer ones may include an offset.  Comparing those strings in
+        # SQLite is not chronological (and silently drops some rows), so parse
+        # them before applying the month boundary.
+        month_start = _utc_timestamp(self._month_start()) or 0.0
+        rows = conn.execute(
             """
-            SELECT COALESCE(SUM(COALESCE(actual_cost, estimated_cost, 0)), 0) AS spend
+            SELECT COALESCE(actual_cost, estimated_cost, 0) AS cost,
+                   COALESCE(started_at, created_at) AS occurred_at
             FROM modal_generation_usage
-            WHERE account_id = ? AND COALESCE(started_at, created_at) >= ?
+            WHERE account_id = ?
             """,
-            (account_id, self._month_start()),
-        ).fetchone()
-        return float(row["spend"] or 0.0)
+            (account_id,),
+        ).fetchall()
+        return sum(
+            float(row["cost"] or 0.0)
+            for row in rows
+            if (_utc_timestamp(row["occurred_at"]) or 0.0) >= month_start
+        )
+
+    def _modal_billing_totals(self) -> dict[str, float]:
+        """Read the authoritative current-workspace Modal billing report.
+
+        The Modal CLI uses the user's already configured local profile; no API
+        token is read or sent to the browser.  If the CLI is unavailable or a
+        workspace is offline, callers transparently fall back to the local
+        lifecycle estimate.
+        """
+        if not any(account.workspace for account in self._accounts):
+            return {}
+        modal_bin = shutil.which("modal")
+        if not modal_bin:
+            return {}
+        cache_key = "__current__"
+        cached = self._billing_cache.get(cache_key)
+        if cached and time.monotonic() - cached["fetched_at"] < 60:
+            return dict(cached["totals"])
+        try:
+            profile = subprocess.run(
+                [modal_bin, "profile", "current"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            workspace = ""
+            if profile.returncode == 0:
+                lines = [line.strip() for line in profile.stdout.splitlines() if line.strip()]
+                if lines:
+                    workspace = lines[-1]
+            report = subprocess.run(
+                [modal_bin, "billing", "report", "--for", "this month", "--json"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if report.returncode != 0:
+                return {}
+            payload = json.loads(report.stdout)
+            if not isinstance(payload, list):
+                return {}
+            rows = payload
+            total = sum(float(row.get("cost") or 0.0) for row in rows if isinstance(row, dict))
+            totals = {workspace: total} if workspace else {}
+            self._billing_cache[cache_key] = {
+                "fetched_at": time.monotonic(),
+                "totals": totals,
+            }
+            return totals
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+            # Billing is an enhancement to the local estimate; it must never
+            # make the usage endpoint fail or block a generation.
+            return {}
 
     def _active_count(self, conn: sqlite3.Connection, account_id: str) -> int:
-        row = conn.execute(
-            "SELECT COUNT(*) AS count FROM modal_generation_usage WHERE account_id = ? AND status IN (?, ?, ?)",
+        rows = conn.execute(
+            """
+            SELECT status, COALESCE(started_at, created_at) AS occurred_at
+            FROM modal_generation_usage
+            WHERE account_id = ? AND status IN (?, ?, ?)
+            """,
             (account_id, *sorted(ACTIVE_STATUSES)),
-        ).fetchone()
-        return int(row["count"] or 0)
+        ).fetchall()
+        now = _utc_now().timestamp()
+        return sum(
+            1
+            for row in rows
+            if (timestamp := _utc_timestamp(row["occurred_at"])) is not None
+            and now - timestamp <= ACTIVE_RESERVATION_TTL_SECONDS
+        )
 
     def select_account(self) -> str:
         """Select the least-loaded account that remains within its budget."""
@@ -354,24 +604,42 @@ class ModalUsageService:
         if routing["effective_account_id"]:
             return routing["effective_account_id"]
 
+        billing_totals = self._modal_billing_totals()
         with self._lock, self._connect() as conn:
             candidates = []
+            eligible = []
             for account in self._accounts:
                 if not account.enabled:
                     continue
                 if self._has_route_metadata() and not self._account_route_configured(account):
                     continue
                 active = self._active_count(conn, account.id)
-                spend = self._account_spend(conn, account.id)
+                local_spend = self._account_spend(conn, account.id)
+                spend = (
+                    billing_totals.get(account.workspace, local_spend)
+                    if account.workspace
+                    else local_spend
+                )
                 if spend >= account.monthly_budget:
                     continue
+                eligible.append((active, spend, account))
                 if active >= account.max_concurrency:
                     continue
                 candidates.append((active / account.max_concurrency, spend / account.monthly_budget, account.id))
-            if not candidates:
-                return "unassigned"
-            candidates.sort()
-            return candidates[0][2]
+            if candidates:
+                candidates.sort()
+                return candidates[0][2]
+            if eligible:
+                # A queued job still runs on a real bridge; it must not become
+                # ``unassigned`` merely because that bridge is temporarily at
+                # its local concurrency limit.  Passing the account through to
+                # the STP client makes it wait in that account's queue and keeps
+                # the spend attributable.
+                eligible.sort(key=lambda item: (item[0] / item[2].max_concurrency,
+                                                item[1] / item[2].monthly_budget,
+                                                item[2].id))
+                return eligible[0][2].id
+            return "unassigned"
 
     def account_for_job(self, profile_id: str, job_id: Any) -> str | None:
         """Return the account already reserved for a queued generation."""
@@ -387,6 +655,11 @@ class ModalUsageService:
         """Record a generation lifecycle event emitted by the existing queue."""
         if not event.startswith("generation_job_"):
             return
+        # Completion/failure events can arrive without the earlier queue or
+        # start event (for example after a websocket reconnect).  Load the
+        # account configuration before resolving route metadata so those
+        # events remain attributable as well.
+        self._load_accounts()
         job = data.get("job") or {}
         job_id = job.get("id")
         if job_id is None:
@@ -408,28 +681,51 @@ class ModalUsageService:
                 "SELECT account_id, created_at, started_at FROM modal_generation_usage WHERE profile_id = ? AND job_id = ?",
                 (profile_id, str(job_id)),
             ).fetchone()
+            event_account_id = data.get("modal_account_id") or job.get("modal_account_id")
             account_id = (
-                existing["account_id"]
+                str(event_account_id)
+                if event_account_id
+                else existing["account_id"]
                 if existing and existing["account_id"] != "unassigned"
                 else self.select_account()
             )
             created_at = job.get("created_at") or (existing["created_at"] if existing else _utc_now().isoformat())
             started_at = job.get("started_at") or (existing["started_at"] if existing else None)
             completed_at = job.get("completed_at")
-            start = _parse_datetime(started_at)
-            end = _parse_datetime(completed_at)
-            duration = max(0.0, (end - start).total_seconds()) if start and end else None
+            start_timestamp = _utc_timestamp(started_at)
+            end_timestamp = _utc_timestamp(completed_at)
+            duration = (
+                max(0.0, end_timestamp - start_timestamp)
+                if start_timestamp is not None and end_timestamp is not None
+                else None
+            )
             account = next((item for item in self._accounts if item.id == account_id), None)
+            resource = self._resource_for_job(account, job) if account else {}
+            # The STP executor reports elapsed time while it owns a concrete
+            # Modal bridge.  Prefer it over GenerationJob wall time, which may
+            # include time waiting behind another account-local queue.
+            reported_runtime = job.get("modal_runtime_seconds")
+            try:
+                if reported_runtime is not None and float(reported_runtime) >= 0:
+                    duration = float(reported_runtime)
+            except (TypeError, ValueError):
+                pass
+            if job.get("modal_gpu_type"):
+                resource["gpu_type"] = job["modal_gpu_type"]
+                resource["gpu_hour_price"] = None
+            if job.get("modal_memory_gib") is not None:
+                resource["memory_gib"] = job["modal_memory_gib"]
             estimated_cost = None
             if duration is not None and account:
-                estimated_cost = self._cost_for_duration(account, duration)
+                estimated_cost = self._cost_for_duration(account, duration, **resource)
 
             conn.execute(
                 """
                 INSERT INTO modal_generation_usage
                     (profile_id, job_id, account_id, status, task_type, model_name, backend_name,
-                     created_at, started_at, completed_at, duration_seconds, estimated_cost, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     created_at, started_at, completed_at, duration_seconds, estimated_cost, error,
+                     gpu_type, cpu_cores, memory_gib, billing_source, parameters)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id, job_id) DO UPDATE SET
                     account_id = excluded.account_id,
                     status = excluded.status,
@@ -441,7 +737,12 @@ class ModalUsageService:
                     completed_at = excluded.completed_at,
                     duration_seconds = COALESCE(excluded.duration_seconds, modal_generation_usage.duration_seconds),
                     estimated_cost = COALESCE(excluded.estimated_cost, modal_generation_usage.estimated_cost),
-                    error = excluded.error
+                    error = excluded.error,
+                    gpu_type = COALESCE(excluded.gpu_type, modal_generation_usage.gpu_type),
+                    cpu_cores = COALESCE(excluded.cpu_cores, modal_generation_usage.cpu_cores),
+                    memory_gib = COALESCE(excluded.memory_gib, modal_generation_usage.memory_gib),
+                    billing_source = COALESCE(excluded.billing_source, modal_generation_usage.billing_source),
+                    parameters = COALESCE(excluded.parameters, modal_generation_usage.parameters)
                 """,
                 (
                     profile_id,
@@ -457,6 +758,11 @@ class ModalUsageService:
                     duration,
                     estimated_cost,
                     job.get("error"),
+                    resource.get("gpu_type"),
+                    account.cpu_cores if account else None,
+                    resource.get("memory_gib"),
+                    "local_estimate" if estimated_cost is not None else None,
+                    self._serialize_parameters(job.get("parameters")),
                 ),
             )
 
@@ -477,10 +783,14 @@ class ModalUsageService:
                 try:
                     with sqlite3.connect(database_path, timeout=1) as source_conn:
                         source_conn.row_factory = sqlite3.Row
+                        source_columns = {
+                            row[1] for row in source_conn.execute("PRAGMA table_info(generation_jobs)")
+                        }
+                        parameters_column = ", parameters" if "parameters" in source_columns else ""
                         rows = source_conn.execute(
-                            """
+                            f"""
                             SELECT id, status, task_type, model_name, backend_name,
-                                   created_at, started_at, completed_at, error
+                                   created_at, started_at, completed_at, error{parameters_column}
                             FROM generation_jobs
                             """
                         ).fetchall()
@@ -491,8 +801,14 @@ class ModalUsageService:
                         """
                         INSERT OR IGNORE INTO modal_generation_usage
                             (profile_id, job_id, account_id, status, task_type, model_name,
-                             backend_name, created_at, started_at, completed_at, duration_seconds, error)
-                        VALUES (?, ?, 'unassigned', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             backend_name, created_at, started_at, completed_at, duration_seconds, error,
+                             parameters)
+                        VALUES (?, ?, 'unassigned', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(profile_id, job_id) DO UPDATE SET
+                            parameters = CASE
+                                WHEN excluded.parameters IS NOT NULL THEN excluded.parameters
+                                ELSE modal_generation_usage.parameters
+                            END
                         """,
                         (
                             profile_dir.name,
@@ -507,20 +823,138 @@ class ModalUsageService:
                             (
                                 max(
                                     0.0,
-                                    (
-                                        _parse_datetime(row["completed_at"])
-                                        - _parse_datetime(row["started_at"])
-                                    ).total_seconds(),
+                                    _utc_timestamp(row["completed_at"])
+                                    - _utc_timestamp(row["started_at"]),
                                 )
-                                if _parse_datetime(row["completed_at"]) and _parse_datetime(row["started_at"])
+                                if _utc_timestamp(row["completed_at"]) is not None
+                                and _utc_timestamp(row["started_at"]) is not None
                                 else None
                             ),
                             row["error"],
+                            self._serialize_parameters(row["parameters"] if "parameters" in row.keys() else None),
                         ),
                     )
 
-    def _public_account(self, account: ModalAccount, conn: sqlite3.Connection) -> dict[str, Any]:
-        spend = self._account_spend(conn, account.id)
+    def _route_attribution_cutoff(self) -> float | None:
+        """Return when the currently configured bridge metadata became valid."""
+        paths = []
+        configured = os.environ.get("MODAL_ROUTER_ACCOUNTS_FILE", "").strip()
+        paths.append(
+            Path(configured).expanduser()
+            if configured
+            else Path.home() / ".config" / "adp-comfy" / "modal-router.accounts.json"
+        )
+        paths.append(_bridge_manifest_path())
+        mtimes = []
+        for path in paths:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                pass
+        return min(mtimes) if mtimes else None
+
+    def _reconcile_unassigned_modal_jobs(self, conn: sqlite3.Connection) -> None:
+        """Recover route attribution and resource metadata for H3 jobs.
+
+        This is intentionally conservative: only a single currently routed
+        account can be inferred safely for unassigned rows, and only H3 jobs
+        created after the account/bridge configuration existed are moved.
+        Already-attributed rows are refreshed only when their resource facts
+        are missing or were produced by this reconciliation.  Ambiguous
+        historical rows remain ``unassigned`` instead of being presented as
+        fact.
+        """
+        routed = [
+            account for account in self._accounts
+            if account.enabled and self._account_route_configured(account)
+        ]
+        if len(routed) != 1:
+            return
+        account = routed[0]
+        cutoff = self._route_attribution_cutoff()
+        rows = conn.execute(
+            """
+            SELECT id, account_id, billing_source, task_type, model_name,
+                   backend_name, parameters, started_at, completed_at,
+                   duration_seconds
+            FROM modal_generation_usage
+            WHERE backend_name = 'comfyui-modal-h3'
+              AND (
+                  account_id = 'unassigned'
+                  OR (
+                      account_id = ?
+                      AND (billing_source = 'route_reconciliation' OR gpu_type IS NULL)
+                  )
+              )
+            """,
+            (account.id,),
+        ).fetchall()
+        for row in rows:
+            started_timestamp = _utc_timestamp(row["started_at"])
+            if row["account_id"] == "unassigned" and cutoff is not None and (
+                started_timestamp is None or started_timestamp < cutoff
+            ):
+                continue
+            duration = row["duration_seconds"]
+            if duration is None:
+                start = _utc_timestamp(row["started_at"])
+                end = _utc_timestamp(row["completed_at"])
+                duration = max(0.0, end - start) if start is not None and end is not None else None
+            job = {
+                "task_type": row["task_type"],
+                "model_name": row["model_name"],
+                "backend_name": row["backend_name"],
+                "parameters": row["parameters"],
+            }
+            resource = self._resource_for_job(account, job)
+            estimated_cost = (
+                self._cost_for_duration(account, float(duration), **resource)
+                if duration is not None
+                else None
+            )
+            conn.execute(
+                    """
+                UPDATE modal_generation_usage
+                SET account_id = ?, estimated_cost = ?, gpu_type = ?,
+                    cpu_cores = ?, memory_gib = ?, billing_source = ?
+                WHERE id = ?
+                  AND (
+                      account_id = 'unassigned'
+                      OR (
+                          account_id = ?
+                          AND (billing_source = 'route_reconciliation' OR gpu_type IS NULL)
+                      )
+                  )
+                """,
+                (
+                    account.id,
+                    estimated_cost,
+                    resource.get("gpu_type"),
+                    account.cpu_cores,
+                    resource.get("memory_gib"),
+                    (
+                        "route_reconciliation"
+                        if row["account_id"] == "unassigned"
+                        else "resource_reconciliation"
+                    ) if estimated_cost is not None else None,
+                    row["id"],
+                    account.id,
+                ),
+            )
+
+    def _public_account(
+        self,
+        account: ModalAccount,
+        conn: sqlite3.Connection,
+        billing_totals: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        estimated_spend = self._account_spend(conn, account.id)
+        actual_spend = (
+            billing_totals.get(account.workspace)
+            if billing_totals and account.workspace
+            else None
+        )
+        spend = actual_spend if actual_spend is not None else estimated_spend
         active = self._active_count(conn, account.id)
         return {
             "id": account.id,
@@ -530,13 +964,35 @@ class ModalUsageService:
             "status": "available" if account.enabled and spend < account.monthly_budget else "budget_reached",
             "monthly_budget": account.monthly_budget,
             "spent": round(spend, 6),
+            "estimated_spent": round(estimated_spend, 6),
+            "actual_spent": round(actual_spend, 6) if actual_spend is not None else None,
+            "spend_source": "modal_billing" if actual_spend is not None else "local_estimate",
             "remaining": round(max(0.0, account.monthly_budget - spend), 6),
             "active_jobs": active,
             "max_concurrency": account.max_concurrency,
             "gpu_type": account.gpu_type,
             "gpu_hour_price": round(self._gpu_price_per_second(account) * 3600, 6),
+            "hd_gpu_type": account.hd_gpu_type or (
+                "Nvidia B300" if account.hd_endpoint_url else None
+            ),
+            "hd_gpu_hour_price": round(
+                (
+                    account.hd_gpu_hour_price
+                    if account.hd_gpu_hour_price is not None
+                    else GPU_PRICES_PER_SECOND.get(
+                        self._canonical_gpu_type(
+                            account.hd_gpu_type
+                            or ("Nvidia B300" if account.hd_endpoint_url else "")
+                        ),
+                        0.0,
+                    )
+                    * 3600
+                ),
+                6,
+            ) if account.hd_endpoint_url or account.hd_gpu_type or account.hd_gpu_hour_price is not None else None,
             "cpu_cores": account.cpu_cores,
             "memory_gib": account.memory_gib,
+            "hd_memory_gib": account.hd_memory_gib or (128.0 if account.hd_endpoint_url else None),
             "route_configured": self._account_route_configured(account),
             "route_status": "configured" if self._account_route_configured(account) else "not_configured",
         }
@@ -544,8 +1000,13 @@ class ModalUsageService:
     def snapshot(self, limit: int = 50) -> dict[str, Any]:
         self._load_accounts()
         self._backfill_existing_jobs()
+        billing_totals = self._modal_billing_totals()
         with self._lock, self._connect() as conn:
-            accounts = [self._public_account(account, conn) for account in self._accounts]
+            self._reconcile_unassigned_modal_jobs(conn)
+            accounts = [
+                self._public_account(account, conn, billing_totals)
+                for account in self._accounts
+            ]
             rows = conn.execute(
                 "SELECT * FROM modal_generation_usage ORDER BY COALESCE(created_at, '') DESC, id DESC LIMIT ?",
                 (max(1, min(limit, 200)),),
@@ -574,6 +1035,11 @@ class ModalUsageService:
                     "remaining": round(max(0.0, total_budget - total_spent), 6),
                     "active_jobs": sum(account["active_jobs"] for account in accounts),
                     "generation_count": self._generation_count(conn),
+                    "spend_source": (
+                        "modal_billing"
+                        if any(account["spend_source"] == "modal_billing" for account in accounts)
+                        else "local_estimate"
+                    ),
                 },
                 "accounts": accounts,
                 "generations": generations,
@@ -581,11 +1047,15 @@ class ModalUsageService:
             }
 
     def _generation_count(self, conn: sqlite3.Connection) -> int:
-        row = conn.execute(
-            "SELECT COUNT(*) AS count FROM modal_generation_usage WHERE COALESCE(started_at, created_at) >= ?",
-            (self._month_start(),),
-        ).fetchone()
-        return int(row["count"] or 0)
+        month_start = _utc_timestamp(self._month_start()) or 0.0
+        rows = conn.execute(
+            "SELECT COALESCE(started_at, created_at) AS occurred_at FROM modal_generation_usage"
+        ).fetchall()
+        return sum(
+            1
+            for row in rows
+            if (_utc_timestamp(row["occurred_at"]) or 0.0) >= month_start
+        )
 
 
 _service: ModalUsageService | None = None

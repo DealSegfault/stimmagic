@@ -1,7 +1,7 @@
 <template>
-  <div class="bg-surface border-b border-edge-subtle px-6 py-2.5">
-    <div class="flex items-center justify-between">
-      <div class="min-w-0">
+  <div class="bg-surface border-b border-edge-subtle px-3 py-2.5 md:px-6">
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0 flex-shrink-0">
         <div class="inline-flex max-w-full items-center gap-2">
           <ArchiveBoxIcon
             class="h-4 w-4 flex-shrink-0"
@@ -30,7 +30,7 @@
         </div>
       </div>
 
-      <div class="flex items-center gap-1 overflow-x-auto">
+      <div class="flex min-w-0 items-center gap-1 overflow-x-auto overscroll-x-contain">
         <button
           v-for="item in navItems"
           :key="item.name"
