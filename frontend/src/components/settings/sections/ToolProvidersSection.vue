@@ -19,6 +19,7 @@
 
     <div class="divide-y divide-edge-subtle">
       <button
+        v-if="!cloudDisabled"
         type="button"
         class="group flex w-full items-center gap-4 px-1 py-4 text-left hover:bg-overlay-subtle"
         @click="!isAuthenticated ? handleCloudConnect() : cloudConnectedWithoutCredits ? openAddCredits() : openProviderDetails('stimma-cloud')"
@@ -857,7 +858,7 @@ const props = defineProps({
 })
 
 // Auth and cloud account state
-const { user, isAuthenticated, signInWithBrowser } = useAuth()
+const { user, isAuthenticated, signInWithBrowser, cloudDisabled } = useAuth()
 const { cloudBaseUrl, cloudUser, fetchCloudAccount, ensureCloudBaseUrl } = useCloudAccount()
 const comfyUiDocsUrl = 'https://stimma.ai/link/comfyui'
 const stpDocsUrl = 'https://stimma.ai/link/stp'

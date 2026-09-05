@@ -14,6 +14,7 @@ const user = ref(null)
 const isAuthenticated = ref(false)
 const isAuthLoading = ref(true)
 const authError = ref(null)
+const cloudDisabled = ref(false)
 
 let initialized = false
 
@@ -47,6 +48,7 @@ export async function initAuth() {
     if (response.ok) {
       const data = await response.json()
       console.log('[useAuth] backend auth status:', data)
+      cloudDisabled.value = data.cloud_disabled === true
       setPrivacyLockdownActive(data.privacy_lockdown === true)
 
       if (data.authenticated && data.user) {
@@ -57,10 +59,12 @@ export async function initAuth() {
       }
     } else {
       console.error('[useAuth] Failed to get auth status:', response.status)
+      cloudDisabled.value = false
       setUser(null)
     }
   } catch (error) {
     console.error('[useAuth] Error checking auth status:', error)
+    cloudDisabled.value = false
     setUser(null)
   } finally {
     isAuthLoading.value = false
@@ -73,6 +77,12 @@ export async function initAuth() {
  */
 export async function signInWithBrowser(mode) {
   authError.value = null
+
+  if (cloudDisabled.value) {
+    const message = 'Stimma sign-in is disabled in lean mode.'
+    authError.value = message
+    throw new Error(message)
+  }
 
   if (isPrivacyLockdownActive()) {
     const message = 'Stimma sign-in is unavailable in Privacy Lockdown.'
@@ -192,6 +202,7 @@ export function useAuth() {
     user: readonly(user),
     isAuthenticated: readonly(isAuthenticated),
     isAuthLoading: readonly(isAuthLoading),
+    cloudDisabled: readonly(cloudDisabled),
     authError,
 
     // Actions

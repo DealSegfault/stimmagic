@@ -33,6 +33,31 @@ from shot_continuity_service import validate_generation_request
 
 log = get_logger(__name__)
 
+# Video backends can spend more than 30 minutes in a single ``processing``
+# state without changing the database row. That is normal for a large H3
+# Ref2VA render (the provider still emits transient progress events), so the
+# generic wait_for_jobs stall threshold must be extended for video calls or
+# the chat reports a false failure just before the file is finalized.
+VIDEO_JOB_TYPES = frozenset({
+    "image-to-video",
+    "text-to-video",
+    "reference-to-video",
+    "video-to-video",
+    "upscale-video",
+    "video-stitch",
+    "video-extend",
+})
+VIDEO_JOB_STALL_TIMEOUT_SECONDS = 3600.0
+
+
+def _wait_timeout_for_task_type(task_type: str | None) -> float | None:
+    """Return the stall timeout appropriate for the generation task."""
+    return (
+        VIDEO_JOB_STALL_TIMEOUT_SECONDS
+        if str(task_type or "").casefold() in VIDEO_JOB_TYPES
+        else None
+    )
+
 CONTROLNET_PREPROCESSORS = {"canny", "depth", "lineart", "lineart_realistic", "lineart_anime", "pose", "pose_hands"}
 REFERENCE_VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".mpg", ".mpeg"}
 
@@ -199,6 +224,191 @@ def _r2v_variant_tool_id(tool_id: str) -> str | None:
 
 def _has_explicit_video_reference(prompt: Any) -> bool:
     return bool(re.search(r"<\s*Video\s+\d+\s*>", str(prompt or ""), re.IGNORECASE))
+
+
+def _coerce_media_id(value: Any) -> Optional[int]:
+    """Return a library media id from the scalar shapes used by tool calls."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit():
+            return int(stripped)
+        match = re.match(r"^media[:_](\d+)$", stripped, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _value_path_suffix(value: Any) -> str:
+    """Return a lower-case suffix for an on-disk/path-like media argument."""
+    if isinstance(value, (str, os.PathLike)):
+        raw = os.fsdecode(os.fspath(value)).strip()
+        if re.match(r"^media[:_]\d+$", raw, flags=re.IGNORECASE):
+            return ""
+        return Path(raw).suffix.lower()
+    return ""
+
+
+async def _normalize_misclassified_video_inputs(
+    params: Dict[str, Any],
+    session: AsyncSession,
+    workspace_dir: Optional[str],
+) -> bool:
+    """Move video references accidentally placed in ``input_images``.
+
+    The chat agent historically received a reminder that said to pass every
+    reference through ``input_images``.  For Ref2VA this is unsafe: ComfyUI
+    then opens an MP4 with its image loader.  Normalize both path-based and
+    library-id-based video values before schema resolution so the provider sees
+    the typed ``input_videos`` field instead.
+    """
+    raw_images = params.get("input_images")
+    if not isinstance(raw_images, list) or not raw_images:
+        return False
+
+    image_media_ids = params.get("input_media_ids")
+    image_media_ids_list = image_media_ids if isinstance(image_media_ids, list) else None
+    candidate_ids = {
+        media_id
+        for index, value in enumerate(raw_images)
+        for media_id in (
+            _coerce_media_id(value),
+            _coerce_media_id(image_media_ids_list[index])
+            if image_media_ids_list is not None and index < len(image_media_ids_list)
+            else None,
+        )
+        if media_id is not None
+    }
+
+    media_by_id: dict[int, MediaItem] = {}
+    if candidate_ids:
+        # execute_call_tool can be reached concurrently through
+        # asyncio.gather(). Never use the SDK's shared AsyncSession for this
+        # lookup; SQLAlchemy rejects overlapping operations on that session.
+        session_maker = None
+        try:
+            from database_registry import get_database_registry
+
+            database = get_database_registry().get_database(get_current_profile())
+            session_maker = getattr(database, "async_session_maker", None)
+        except Exception as exc:
+            log.debug("[call_tool_v2] Could not open profile DB for media typing: %s", exc)
+        if session_maker is None and hasattr(session, "bind"):
+            from sqlalchemy.ext.asyncio import async_sessionmaker
+
+            session_maker = async_sessionmaker(session.bind, expire_on_commit=False)
+        if session_maker is not None:
+            try:
+                async with session_maker() as lookup_session:
+                    result = await lookup_session.execute(
+                        select(MediaItem).where(MediaItem.id.in_(sorted(candidate_ids)))
+                    )
+                    media_by_id = {int(item.id): item for item in result.scalars().all()}
+            except Exception as exc:
+                log.debug("[call_tool_v2] Could not classify media ids as video: %s", exc)
+
+    def is_video(value: Any, media: Optional[MediaItem]) -> bool:
+        suffix = _value_path_suffix(value)
+        if suffix in REFERENCE_VIDEO_EXTENSIONS:
+            return True
+        if media is None:
+            return False
+        formats = {
+            str(getattr(media, "file_format", "") or "").lower().lstrip("."),
+            Path(str(getattr(media, "file_path", "") or "")).suffix.lower().lstrip("."),
+            Path(str(getattr(media, "original_filename", "") or "")).suffix.lower().lstrip("."),
+        }
+        return any(f".{fmt}" in REFERENCE_VIDEO_EXTENSIONS for fmt in formats if fmt)
+
+    kept_images: list[Any] = []
+    kept_image_media_ids: list[Any] = []
+    moved: list[tuple[Any, Optional[int]]] = []
+    for index, value in enumerate(raw_images):
+        value_media_id = _coerce_media_id(value)
+        paired_media_id = (
+            _coerce_media_id(image_media_ids_list[index])
+            if image_media_ids_list is not None and index < len(image_media_ids_list)
+            else None
+        )
+        media = media_by_id.get(value_media_id or paired_media_id or -1)
+        if is_video(value, media) or (paired_media_id is not None and is_video(paired_media_id, media)):
+            # The generation queue accepts numeric ids in input_videos but not
+            # the convenience ``media:<id>`` spelling supported by the image
+            # resolver. Convert that spelling while preserving ordinary paths.
+            video_value = (
+                value_media_id
+                if isinstance(value, str) and value.strip().lower().startswith(("media:", "media_"))
+                else value
+            )
+            if isinstance(video_value, (str, os.PathLike)):
+                video_path = Path(os.fsdecode(os.fspath(video_value))).expanduser()
+                if not video_path.is_absolute() and workspace_dir:
+                    video_path = Path(str(workspace_dir)) / video_path
+                if video_path.is_file():
+                    video_value = str(video_path.resolve())
+            moved.append((video_value, value_media_id or paired_media_id))
+            continue
+        kept_images.append(value)
+        if image_media_ids_list is not None and index < len(image_media_ids_list):
+            kept_image_media_ids.append(image_media_ids_list[index])
+
+    if not moved:
+        return False
+
+    params["input_images"] = kept_images
+    if image_media_ids_list is not None:
+        if kept_image_media_ids:
+            params["input_media_ids"] = kept_image_media_ids
+        else:
+            params.pop("input_media_ids", None)
+    elif not kept_images:
+        # A few callers use a scalar input_media_ids value for a one-item
+        # request. If that sole item was a video, it must not remain tagged as
+        # an image lineage input after the move.
+        params.pop("input_media_ids", None)
+
+    current_videos = params.get("input_videos") or []
+    if not isinstance(current_videos, list):
+        current_videos = [current_videos]
+    raw_video_ids = params.get("input_video_media_ids")
+    if isinstance(raw_video_ids, list):
+        video_media_ids: list[Any] = list(raw_video_ids[: len(current_videos)])
+    elif raw_video_ids is not None:
+        video_media_ids = [raw_video_ids]
+    else:
+        video_media_ids = []
+    video_media_ids.extend([None] * (len(current_videos) - len(video_media_ids)))
+
+    existing_paths = {str(value) for value in current_videos if isinstance(value, (str, os.PathLike))}
+    existing_ids = {
+        media_id for media_id in (_coerce_media_id(value) for value in video_media_ids) if media_id is not None
+    }
+    for value, media_id in moved:
+        if (media_id is not None and media_id in existing_ids) or (
+            isinstance(value, (str, os.PathLike)) and str(value) in existing_paths
+        ):
+            continue
+        current_videos.append(value)
+        video_media_ids.append(media_id)
+        if media_id is not None:
+            existing_ids.add(media_id)
+        if isinstance(value, (str, os.PathLike)):
+            existing_paths.add(str(value))
+
+    params["input_videos"] = current_videos
+    if any(media_id is not None for media_id in video_media_ids):
+        params["input_video_media_ids"] = video_media_ids
+    else:
+        params.pop("input_video_media_ids", None)
+    log.warning(
+        "[call_tool_v2] Moved %d video reference(s) from input_images to input_videos; "
+        "the chat supplied a video in the image slot.",
+        len(moved),
+    )
+    return True
 
 
 async def _chat_reference_videos(
@@ -368,23 +578,31 @@ async def _inject_chat_reference_videos(
     raw_ids = final_params.get("input_video_media_ids") or []
     if not isinstance(raw_ids, list):
         raw_ids = [raw_ids]
-    ordered_ids = [
-        int(value) for value in raw_ids
-        if str(value).isdigit()
+    # Keep this list positional: generation_queue pairs the Nth video with the
+    # Nth media id. Padding with None prevents an id for an appended chat
+    # reference from being accidentally assigned to an existing video path.
+    ordered_ids: list[Optional[int]] = [
+        _coerce_media_id(value) for value in raw_ids[: len(current)]
     ]
-    current_ids = set(ordered_ids)
+    ordered_ids.extend([None] * (len(current) - len(ordered_ids)))
+    current_ids = {
+        media_id for media_id in ordered_ids if media_id is not None
+    }
     current_paths = {str(value) for value in current}
     for ref in refs:
         if ref["path"] in current_paths or (ref["media_id"] is not None and ref["media_id"] in current_ids):
             continue
         current.append(ref["path"])
         current_paths.add(ref["path"])
-        if ref["media_id"] is not None:
-            current_ids.add(ref["media_id"])
-            ordered_ids.append(ref["media_id"])
+        media_id = ref["media_id"]
+        ordered_ids.append(media_id)
+        if media_id is not None:
+            current_ids.add(media_id)
     final_params["input_videos"] = current
-    if ordered_ids:
+    if any(media_id is not None for media_id in ordered_ids):
         final_params["input_video_media_ids"] = ordered_ids
+    else:
+        final_params.pop("input_video_media_ids", None)
 
 
 def _get_default_folder(workspace_dir: Optional[str] = None) -> str:
@@ -582,6 +800,12 @@ async def execute_call_tool(
     registry = ProviderRegistry.get_instance()
     chat_id = kwargs.get("chat_id")
     workspace_dir = kwargs.get("workspace_dir")
+
+    # Older chat turns could put every attachment in input_images, including
+    # MP4 references. Correct that shape before task inference and provider
+    # schema handling so a video can never reach the image loader.
+    await _normalize_misclassified_video_inputs(params, session, workspace_dir)
+
     # Chat attachments are references, not a request to animate a first frame.
     # If an H3 I2V/T2V binding is selected despite the authoritative chat
     # reminder, transparently switch to the matching R2V variant before schema
@@ -590,7 +814,7 @@ async def execute_call_tool(
     prompt_has_video_tag = _has_explicit_video_reference(params.get("prompt"))
     if chat_id is not None and r2v_tool_id and prompt_has_video_tag:
         attached_videos = await _chat_reference_videos(chat_id, session, workspace_dir)
-        if attached_videos:
+        if attached_videos or params.get("input_videos"):
             if registry.get_tool(r2v_tool_id):
                 log.info(
                     "[call_tool_v2] Chat video reference detected; routing %s to %s",
@@ -1184,10 +1408,14 @@ async def execute_call_tool(
         from database_registry import get_database_registry
         wait_db = get_database_registry().get_database(get_current_profile())
         async with wait_db.async_session_maker() as wait_session:
+            wait_kwargs = {"status_checker": _status_checker}
+            wait_timeout = _wait_timeout_for_task_type(task_type)
+            if wait_timeout is not None:
+                wait_kwargs["timeout"] = wait_timeout
             media_ids, errors, cancelled_count, _job_to_media = await wait_for_jobs(
                 [job_id],
                 wait_session,
-                status_checker=_status_checker,
+                **wait_kwargs,
             )
     except asyncio.CancelledError:
         await queue.cancel_job(job_id)
@@ -1263,7 +1491,8 @@ async def execute_call_tool(
     description=(
         "Execute an STP generation tool. Use discover first to find tool_id and check schema. "
         "Pass all tool arguments in a single `parameters` object: prompt, input_images (list of "
-        "media_id ints or preprocessed paths), width, height (for aspect ratio), seed, loras, plus "
+        "image media_id ints or paths), input_videos (list of video media_id ints or paths), "
+        "input_audios, width, height (for aspect ratio), seed, loras, plus "
         "any tool-specific generation knobs (steps, cfg, guidance, ...). Omitted parameters use "
         "schema defaults automatically. Omit seed for random results (the default). Only pass seed "
         "for reproducibility. For controlnet, pass controlnet='pose' (or canny, depth, lineart, etc.) "
@@ -1278,7 +1507,7 @@ async def execute_call_tool(
         ToolParameter(
             name="parameters",
             type="object",
-            description="All tool arguments in one object: prompt (required), input_images, width, height, seed, loras, and any tool-specific generation params (steps, cfg, guidance, ...). Omit seed for random.",
+            description="All tool arguments in one object: prompt (required), input_images, input_videos, input_audios, width, height, seed, loras, and any tool-specific generation params (steps, cfg, guidance, ...). Omit seed for random.",
         ),
         ToolParameter(
             name="controlnet",
@@ -1308,7 +1537,11 @@ async def call_tool(
     # "parameters". Recover: if parameters is missing but known fields appear in
     # kwargs, rebuild the parameters object from them.
     if parameters is None:
-        _known_keys = {"prompt", "input_images", "width", "height", "seed"}
+        _known_keys = {
+            "prompt", "input_images", "input_videos", "input_audios",
+            "input_media_ids", "input_video_media_ids", "input_audio_media_ids",
+            "width", "height", "seed",
+        }
         flat = {k: kwargs.pop(k) for k in list(kwargs) if k in _known_keys}
         if flat:
             parameters = flat

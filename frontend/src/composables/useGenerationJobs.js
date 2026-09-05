@@ -47,6 +47,7 @@ export function useGenerationJobs(options = {}) {
 
   // State
   const jobs = ref([])
+  const MAX_TRACKED_JOBS = 200
   const pendingJobs = ref([])  // Client-side pending jobs (enhancing prompt)
   const mediaHashes = ref({})
   const mediaData = ref({})  // Full media objects for slideshow
@@ -437,6 +438,24 @@ export function useGenerationJobs(options = {}) {
   // submit shows one placeholder but a batch submit queues N jobs.
   const placeholderConsumedBatches = new Set()
 
+  function prependTrackedJob(job) {
+    jobs.value.unshift(job)
+    if (jobs.value.length <= MAX_TRACKED_JOBS) return
+
+    // Prefer evicting the oldest terminal entry. If every entry is active,
+    // evict the oldest item anyway; the server remains the source of truth and
+    // a later refresh can restore the history window.
+    let evictIndex = jobs.value.length - 1
+    for (let index = jobs.value.length - 1; index >= 1; index--) {
+      if (['completed', 'failed', 'cancelled'].includes(jobs.value[index]?.status)) {
+        evictIndex = index
+        break
+      }
+    }
+    const [evicted] = jobs.value.splice(evictIndex, 1)
+    if (evicted?.id != null) clearJobProgress(evicted.id)
+  }
+
   // A submit that does LLM prompt work shows a client-side 'enhancing'
   // placeholder until the real job exists. The queued-job broadcast lands
   // BEFORE the submit HTTP response resolves, so without this the strip shows
@@ -538,7 +557,7 @@ export function useGenerationJobs(options = {}) {
 
     const existingIndex = jobs.value.findIndex(j => j.id === data.job.id)
     if (existingIndex === -1) {
-      jobs.value.unshift(data.job)
+      prependTrackedJob(data.job)
       consumePendingPlaceholder(data.job)
     } else {
       jobs.value.splice(existingIndex, 1, data.job)
@@ -552,7 +571,7 @@ export function useGenerationJobs(options = {}) {
     if (index !== -1) {
       jobs.value.splice(index, 1, data.job)
     } else {
-      jobs.value.unshift(data.job)
+      prependTrackedJob(data.job)
       consumePendingPlaceholder(data.job)
     }
   }
@@ -572,7 +591,7 @@ export function useGenerationJobs(options = {}) {
       jobs.value.splice(index, 1, data.job)
     } else {
       // Job wasn't in list (e.g., page was refreshed during processing) - add it
-      jobs.value.unshift(data.job)
+      prependTrackedJob(data.job)
     }
 
     // The completed TILE stays held back (via mediaLoadingJobIds in allJobs)
@@ -604,7 +623,7 @@ export function useGenerationJobs(options = {}) {
     if (index !== -1) {
       jobs.value.splice(index, 1, data.job)
     } else {
-      jobs.value.unshift(data.job)
+      prependTrackedJob(data.job)
       consumePendingPlaceholder(data.job)
     }
   }
@@ -638,7 +657,7 @@ export function useGenerationJobs(options = {}) {
     if (index !== -1) {
       jobs.value.splice(index, 1, data.job)
     } else if (data.job) {
-      jobs.value.unshift(data.job)
+      prependTrackedJob(data.job)
     }
   }
 

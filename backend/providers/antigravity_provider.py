@@ -62,6 +62,10 @@ class AntigravityImageProvider(ToolProvider):
     async def download_asset(self, asset_id: str) -> bytes:
         return self._assets[asset_id]
 
+    async def delete_asset(self, asset_id: str) -> bool:
+        """Release an uploaded asset without waiting for provider disconnect."""
+        return self._assets.pop(asset_id, None) is not None
+
     async def list_tools(self) -> List[ToolDescriptor]:
         return [
             ToolDescriptor(

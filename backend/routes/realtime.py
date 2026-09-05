@@ -6,7 +6,6 @@ from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sse_starlette.sse import EventSourceResponse
 
-from ingestion import get_ingestion
 from utils.websocket import ws_manager
 from agent_state import agent_state_manager
 
@@ -20,6 +19,8 @@ async def get_progress_stream():
     Server-sent events endpoint for ingestion progress.
     """
     async def event_generator():
+        from ingestion import get_ingestion
+
         ingestion = get_ingestion()
         while True:
             progress_data = ingestion.progress.to_dict()

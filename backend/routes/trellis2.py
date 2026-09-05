@@ -30,7 +30,6 @@ from core.dependencies import get_db_session
 from core.profile_context import get_current_profile, set_current_profile
 from database import GenerationJob, MediaItem, Project
 from database_registry import get_database_registry
-from upload_service import UploadError, UploadService
 from utils.websocket import ws_manager
 
 
@@ -238,6 +237,8 @@ async def _run_one_job(profile_id: str, job_id: int) -> None:
     started = datetime.utcnow()
     await _set_job_state(profile_id, job_id, status="processing", started_at=started)
     try:
+        from upload_service import UploadError, UploadService
+
         timeout = httpx.Timeout(None, connect=30)
         async with httpx.AsyncClient(timeout=timeout) as client:
             glb_bytes = await _modal_submit_and_result(

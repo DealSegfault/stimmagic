@@ -67,7 +67,7 @@
       </button>
 
       <!-- Optional cloud account -->
-      <p class="mt-4 text-content-tertiary" style="font-size: 12.5px;">
+      <p v-if="!cloudDisabled" class="mt-4 text-content-tertiary" style="font-size: 12.5px;">
         No Stimma account required.
         <a
           href="#"
@@ -113,7 +113,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { signInWithBrowser } from '../composables/useAuth'
+import { signInWithBrowser, useAuth } from '../composables/useAuth'
 import { isOfficialBuild } from '../distribution'
 import { makeGlobalKey } from '../utils/storageKeys'
 import { getApiBase } from '../apiConfig'
@@ -126,6 +126,7 @@ import RedeemCodeLink from '../components/RedeemCodeLink.vue'
 import Tooltip from '../components/ui/Tooltip.vue'
 
 const router = useRouter()
+const { cloudDisabled } = useAuth()
 const { track } = useTelemetry()
 const { cloudBaseUrl } = useCloudAccount()
 const { themePreference: currentTheme, setTheme } = useTheme()

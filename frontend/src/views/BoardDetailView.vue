@@ -586,6 +586,7 @@ const dragState = reactive({
   committing: false
 })
 const slideshowItemCache = new Map()
+const MAX_SLIDESHOW_ITEM_CACHE = 128
 const transparentDragImage = typeof Image !== 'undefined'
   ? (() => {
       const image = new Image()
@@ -986,12 +987,20 @@ async function loadSlideshowItem(item) {
   const assetId = assetIdOf(item)
   if (!assetId) return item
   if (slideshowItemCache.has(assetId)) {
-    return slideshowItemCache.get(assetId)
+    const cached = slideshowItemCache.get(assetId)
+    slideshowItemCache.delete(assetId)
+    slideshowItemCache.set(assetId, cached)
+    return cached
   }
 
   try {
     const fullItem = await getAssetBrowserItem(assetId)
     slideshowItemCache.set(assetId, fullItem)
+    while (slideshowItemCache.size > MAX_SLIDESHOW_ITEM_CACHE) {
+      const oldestKey = slideshowItemCache.keys().next().value
+      if (oldestKey === undefined) break
+      slideshowItemCache.delete(oldestKey)
+    }
     return fullItem
   } catch (error) {
     console.error('Failed to load board slideshow item:', error)

@@ -1,15 +1,15 @@
 <template>
   <div>
     <!-- Not signed in state -->
-    <div v-if="privacyLockdownActive" class="min-h-[60vh] flex flex-col items-center justify-center text-center">
+    <div v-if="privacyLockdownActive || cloudDisabled" class="min-h-[60vh] flex flex-col items-center justify-center text-center">
       <div class="w-16 h-16 mb-5 rounded-full bg-surface-raised border border-edge flex items-center justify-center">
         <svg class="w-8 h-8 text-content-tertiary" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z" />
         </svg>
       </div>
-      <h3 class="text-lg font-semibold text-content mb-2">Privacy Lockdown</h3>
+      <h3 class="text-lg font-semibold text-content mb-2">{{ cloudDisabled ? 'Lean mode' : 'Privacy Lockdown' }}</h3>
       <p class="text-sm text-content-tertiary">
-        Sign-in to your account is disabled.
+        {{ cloudDisabled ? 'Stimma Cloud sign-in is disabled for this desktop build.' : 'Sign-in to your account is disabled.' }}
       </p>
     </div>
 
@@ -174,7 +174,7 @@ defineProps({
 
 defineEmits(['close', 'navigate'])
 
-const { user, authError, signOut, signInWithBrowser } = useAuth()
+const { user, authError, signOut, signInWithBrowser, cloudDisabled } = useAuth()
 const { cloudBaseUrl, cloudUser, isCloudLoading, cloudError, fetchCloudAccount, ensureCloudBaseUrl, formatBalance } = useCloudAccount()
 const { privacyLockdownActive } = usePrivacyLockdown()
 

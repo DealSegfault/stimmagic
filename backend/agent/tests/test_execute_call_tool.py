@@ -227,6 +227,32 @@ class _I2IReg:
         return (_Prov(), _I2IDesc())
 
 
+@dataclass
+class _R2VDesc:
+    name: str = "Mock Ref2V"
+    task_types: list = field(default_factory=lambda: ["reference-to-video"])
+    task_type: str = "reference-to-video"
+    subtitle: str = ""
+    parameter_schema: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string"},
+            "input_images": {"type": "array"},
+            "input_videos": {"type": "array"},
+        },
+        "required": ["prompt"],
+    })
+
+
+class _R2VReg:
+    @staticmethod
+    def get_instance():
+        return _R2VReg()
+
+    def get_tool(self, tool_id):
+        return (_Prov(), _R2VDesc())
+
+
 @pytest.mark.asyncio
 async def test_media_prefix_input_image_resolves_to_id_without_db():
     """A `media:<id>` reference resolves to the numeric id directly — no DB
@@ -253,6 +279,37 @@ async def test_media_prefix_input_image_resolves_to_id_without_db():
             )
 
     assert captured["params"]["input_media_ids"] == [384]
+
+
+@pytest.mark.asyncio
+async def test_ref2v_never_submits_a_video_in_input_images(tmp_path):
+    video = tmp_path / "clay.mp4"
+    video.write_bytes(b"fake video")
+    captured = {}
+
+    class _Queue:
+        async def submit_job(self, **kw):
+            captured["params"] = kw["parameters"]
+            captured["task_type"] = kw["task_type"]
+            raise RuntimeError("__stop__")
+
+        async def cancel_job(self, *a, **k):
+            pass
+
+    with patch.object(ct, "ProviderRegistry", _R2VReg), \
+         patch.object(ct, "get_generation_queue", lambda: _Queue()), \
+         patch.object(ct, "_get_default_folder", lambda *a, **k: "/tmp"):
+        with pytest.raises(RuntimeError, match="__stop__"):
+            await ct.execute_call_tool(
+                tool_id="comfyui:minimax-h3-r2v",
+                parameters={"prompt": "orbit around <Video 1>", "input_images": [str(video)]},
+                task_type_override="reference-to-video",
+                session=object(),
+            )
+
+    assert captured["task_type"] == "reference-to-video"
+    assert "input_images" not in captured["params"]
+    assert captured["params"]["input_videos"] == [str(video)]
 
 
 @pytest.mark.asyncio

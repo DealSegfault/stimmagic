@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import random
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import TYPE_CHECKING, Optional, List
+
+if TYPE_CHECKING:
+    import numpy as np
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -21,8 +26,6 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-import numpy as np
-
 Base = declarative_base()
 
 
@@ -187,12 +190,16 @@ class MediaItem(Base):
 
     def set_embedding(self, embedding: np.ndarray):
         """Convert numpy array to bytes for storage."""
+        import numpy as np
+
         self.clip_embedding = embedding.astype(np.float32).tobytes()
 
     def get_embedding(self) -> Optional[np.ndarray]:
         """Convert bytes back to numpy array."""
         if self.clip_embedding is None:
             return None
+        import numpy as np
+
         return np.frombuffer(self.clip_embedding, dtype=np.float32)
 
     def to_dict(self):
@@ -864,12 +871,16 @@ class Face(Base):
 
     def set_embedding(self, embedding: np.ndarray):
         """Convert numpy array to bytes for storage."""
+        import numpy as np
+
         self.auraface_embedding = embedding.astype(np.float32).tobytes()
 
     def get_embedding(self) -> Optional[np.ndarray]:
         """Convert bytes back to numpy array."""
         if self.auraface_embedding is None:
             return None
+        import numpy as np
+
         return np.frombuffer(self.auraface_embedding, dtype=np.float32)
 
     def to_dict(self):

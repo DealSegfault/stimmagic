@@ -1,6 +1,8 @@
 """Workflow-scoped SageAttention acceleration for MiniMax H3."""
 
 import logging
+import os
+from functools import partial
 
 import torch
 from comfy.patcher_extension import CallbacksMP
@@ -106,6 +108,11 @@ class StimmaMiniMaxH3SageAttention:
                 "max_history": ("INT", {"default": 8, "min": 2, "max": 64, "step": 1}),
                 "history_storage": (["system_ram", "vram"], {"default": "system_ram"}),
                 "spectrum_debug": ("BOOLEAN", {"default": False}),
+                # Ref2VA video references exercise longer/different attention
+                # layouts than image-only H3.  The executor turns this on for
+                # those jobs so a bad CUDA result is rejected before it can
+                # reach the VAE/video encoder.
+                "validate_outputs": ("BOOLEAN", {"default": False}),
             },
         }
 
@@ -129,6 +136,7 @@ class StimmaMiniMaxH3SageAttention:
         max_history=8,
         history_storage="system_ram",
         spectrum_debug=False,
+        validate_outputs=False,
     ):
         model_clone = model.clone()
         originals = {}
@@ -138,18 +146,29 @@ class StimmaMiniMaxH3SageAttention:
             from comfy.ldm.minimax import model as minimax_model
             from comfy.ldm.minimax import vae as minimax_vae
 
-            # The B300 image currently exposes the SageAttention Python API,
-            # but its shipped CUDA kernel has no executable image for the
-            # B300 runtime.  Let ComfyUI use its native PyTorch attention on
-            # that device; otherwise every H3 attention call pays for a
-            # failed kernel launch before falling back, which can stall the
-            # first diffusion step indefinitely.
+            # The B300 image exposes FlashAttention-4 CuTeDSL, but the
+            # current upstream kernel can return numerically plausible yet
+            # visually corrupted H3 latents on Ref2VA (finite tensors with
+            # the right shape).  Keep the reliable native PyTorch path as the
+            # default.  An explicit opt-in remains available for kernel
+            # development/benchmarking, never for normal generation.
             device_name = ""
             if torch.cuda.is_available():
                 device_name = torch.cuda.get_device_name(torch.cuda.current_device())
             if "B300" in device_name.upper():
+                if os.environ.get("STIMMA_ENABLE_B300_FLASH4", "0") != "1":
+                    originals["b300_skipped"] = True
+                    logger.warning(
+                        "FlashAttention-4 disabled on %s for reliable H3 output; "
+                        "using native PyTorch attention (set "
+                        "STIMMA_ENABLE_B300_FLASH4=1 only for experiments)",
+                        device_name,
+                    )
+                    return
                 try:
-                    import flash_attn.cute  # noqa: F401
+                    from flash_attn.cute import flash_attn_func
+                    if not callable(flash_attn_func):
+                        raise RuntimeError("flash_attn_func is not callable")
                 except Exception as error:
                     originals["b300_skipped"] = True
                     logger.warning(
@@ -161,8 +180,17 @@ class StimmaMiniMaxH3SageAttention:
                 else:
                     originals["model"] = minimax_model.optimized_attention
                     originals["vae"] = minimax_vae.optimized_attention
-                    minimax_model.optimized_attention = _attention_flash4_safe
-                    minimax_vae.optimized_attention = _attention_flash4_safe
+                    flash4_state = {"disabled": False}
+                    minimax_model.optimized_attention = partial(
+                        _attention_flash4_safe,
+                        _state=flash4_state,
+                        validate_outputs=True,
+                    )
+                    minimax_vae.optimized_attention = partial(
+                        _attention_flash4_safe,
+                        _state=flash4_state,
+                        validate_outputs=True,
+                    )
                     originals["b300_flash4"] = True
                     logger.info(
                         "Enabled workflow-scoped FlashAttention-4 CuTeDSL on %s",
@@ -172,8 +200,17 @@ class StimmaMiniMaxH3SageAttention:
 
             originals["model"] = minimax_model.optimized_attention
             originals["vae"] = minimax_vae.optimized_attention
-            minimax_model.optimized_attention = _attention_sage_fp8_safe
-            minimax_vae.optimized_attention = _attention_sage_fp8_safe
+            sage_state = {"disabled": False}
+            minimax_model.optimized_attention = partial(
+                _attention_sage_fp8_safe,
+                _state=sage_state,
+                validate_outputs=bool(validate_outputs),
+            )
+            minimax_vae.optimized_attention = partial(
+                _attention_sage_fp8_safe,
+                _state=sage_state,
+                validate_outputs=bool(validate_outputs),
+            )
             logger.info("Enabled workflow-scoped MiniMax H3 SageAttention FP8")
 
         @torch.compiler.disable()
@@ -231,6 +268,8 @@ def _attention_sage_fp8_safe(
     attn_precision=None,
     skip_reshape=False,
     skip_output_reshape=False,
+    validate_outputs=False,
+    _state=None,
     **kwargs,
 ):
     """Comfy attention adapter for Sage's accurate FP8 CUDA kernel."""
@@ -248,6 +287,24 @@ def _attention_sage_fp8_safe(
         ):
             raise TypeError("q, k, and v must all be attention tensor containers")
         q, k, v = q.take(), k.take(), v.take()
+
+    # Keep the original convention for a safe fallback.  The Sage kernel uses
+    # NHD when ``skip_reshape`` is false, while PyTorch expects HND in its
+    # ``skip_reshape=True`` path.  Falling back with the already-reshaped NHD
+    # tensors silently swaps sequence/head axes and can poison the video.
+    original_q, original_k, original_v = q, k, v
+
+    if _state and _state.get("disabled"):
+        return attention_pytorch(
+            original_q,
+            original_k,
+            original_v,
+            heads,
+            mask=mask,
+            skip_reshape=skip_reshape,
+            skip_output_reshape=skip_output_reshape,
+            **kwargs,
+        )
 
     if mask is not None:
         return attention_pytorch(
@@ -282,14 +339,40 @@ def _attention_sage_fp8_safe(
             pv_accum_dtype="fp32+fp32",
         )
     except Exception as error:
+        if _state is not None:
+            _state["disabled"] = True
         logger.warning("MiniMax H3 SageAttention failed; using PyTorch attention: %s", error)
         return attention_pytorch(
-            q,
-            k,
-            v,
+            original_q,
+            original_k,
+            original_v,
             heads,
-            mask=None,
-            skip_reshape=True,
+            mask=mask,
+            skip_reshape=skip_reshape,
+            skip_output_reshape=skip_output_reshape,
+            **kwargs,
+        )
+
+    expected_shape = tuple(q.shape)
+    usable = isinstance(out, torch.Tensor) and tuple(out.shape) == expected_shape
+    if usable and validate_outputs:
+        usable = bool(torch.isfinite(out).all().item())
+        if usable and out.numel():
+            usable = bool(torch.any(out != 0).item())
+    if not usable:
+        if _state is not None:
+            _state["disabled"] = True
+        logger.warning(
+            "MiniMax H3 SageAttention returned an invalid tensor; "
+            "switching this run to PyTorch attention"
+        )
+        return attention_pytorch(
+            original_q,
+            original_k,
+            original_v,
+            heads,
+            mask=mask,
+            skip_reshape=skip_reshape,
             skip_output_reshape=skip_output_reshape,
             **kwargs,
         )
@@ -314,6 +397,8 @@ def _attention_flash4_safe(
     attn_precision=None,
     skip_reshape=False,
     skip_output_reshape=False,
+    validate_outputs=False,
+    _state=None,
     **kwargs,
 ):
     """Adapter for FlashAttention-4's SM103/B300 CuTeDSL kernel."""
@@ -327,6 +412,20 @@ def _attention_flash4_safe(
         ):
             raise TypeError("q, k, and v must all be attention tensor containers")
         q, k, v = q.take(), k.take(), v.take()
+
+    original_q, original_k, original_v = q, k, v
+
+    if _state and _state.get("disabled"):
+        return attention_pytorch(
+            original_q,
+            original_k,
+            original_v,
+            heads,
+            mask=mask,
+            skip_reshape=skip_reshape,
+            skip_output_reshape=skip_output_reshape,
+            **kwargs,
+        )
 
     # FA4 expects [batch, sequence, heads, head_dim]. H3's optimized
     # attention receives either Comfy's packed [B, S, hidden] form or its
@@ -357,22 +456,33 @@ def _attention_flash4_safe(
         )
 
     try:
-        out, _ = flash_attn_func(
+        result = flash_attn_func(
             q4,
             k4,
             v4,
             causal=False,
             softmax_scale=kwargs.get("scale"),
         )
+        # flash-attention releases have returned either the output tensor or
+        # an (output, LSE) tuple.  Accept both forms; blindly unpacking a
+        # tensor was the source of the old B300 tuple/transpose failure.
+        out = result[0] if isinstance(result, (tuple, list)) else result
+        usable = isinstance(out, torch.Tensor) and tuple(out.shape) == tuple(q4.shape)
+        if usable and validate_outputs:
+            usable = bool(torch.isfinite(out).all().item())
+        if not usable:
+            raise RuntimeError("FlashAttention-4 returned an invalid output tensor")
     except Exception as error:
+        if _state is not None:
+            _state["disabled"] = True
         logger.warning(
             "MiniMax H3 FlashAttention-4 failed; using PyTorch attention: %s",
             error,
         )
         return attention_pytorch(
-            q,
-            k,
-            v,
+            original_q,
+            original_k,
+            original_v,
             heads,
             mask=None,
             skip_reshape=skip_reshape,
@@ -382,7 +492,9 @@ def _attention_flash4_safe(
 
     if skip_reshape:
         return out.transpose(1, 2) if skip_output_reshape else out.transpose(1, 2).reshape(batch, -1, heads * dim_head)
-    return out if skip_output_reshape else out.reshape(batch, -1, heads * dim_head)
+    # With skip_reshape=False FA4 receives NHD.  Comfy's
+    # skip_output_reshape=True contract is HND, so transpose in that branch.
+    return out.transpose(1, 2) if skip_output_reshape else out.reshape(batch, -1, heads * dim_head)
 
 
 NODE_CLASS_MAPPINGS = {

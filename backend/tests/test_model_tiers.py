@@ -25,6 +25,7 @@ class TestTierFor:
         ("stimma:gpt-5.6-sol", DEEP),
         ("stimma:gpt-5.6-terra", BALANCED),
         ("stimma:gpt-5.6-luna", FAST),
+        ("stimma:gpt-6-astra", DEEP),
         ("stimma:kimi-k2.7", DEEP),
         ("stimma:minimax-m3", BALANCED),
         ("stimma:stepfun-3.7-flash", FAST),

@@ -247,6 +247,7 @@ function modelOrder(model: ModelLike): number {
   if (name.includes('claude-fable') || name.includes('claude fable')) return 1
   if (name.includes('claude-sonnet') || name.includes('claude sonnet')) return 2
   if (name.includes('claude-haiku') || name.includes('claude haiku')) return 3
+  if (name.includes('gpt-6-astra')) return 9
   if (name.includes('gpt-5.6-sol')) return 10
   if (name.includes('gpt-5.6-terra')) return 11
   if (name.includes('gpt-5.6-luna')) return 12

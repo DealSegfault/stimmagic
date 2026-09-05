@@ -17,6 +17,7 @@ import asyncio
 
 from core.logging import get_logger
 from privacy_lockdown import is_privacy_lockdown_enabled
+from runtime_mode import is_stimma_cloud_enabled
 from utils.websocket import ws_manager
 
 log = get_logger(__name__)
@@ -85,7 +86,7 @@ async def _ensure_cloud_provider_connected(id_token: str | None) -> None:
     provider connects whenever the user is signed in (unless disabled in
     config). Disconnect happens only on sign-out (routes/cloud.py).
     """
-    if is_privacy_lockdown_enabled():
+    if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
         return
 
     try:
@@ -123,7 +124,7 @@ async def refresh_account_state(source: str) -> dict | None:
     from cloud_api import fetch_user_account
     from firebase_auth import get_valid_id_token
 
-    if is_privacy_lockdown_enabled():
+    if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
         return None
 
     auth_state = load_auth_state()

@@ -729,8 +729,10 @@ def run_ingestion_worker(rescan_event=None, process_pending_event=None, pause_ev
         raise
 
 
-# Global thread pool for thumbnail generation
-thumbnail_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix="thumbnail")
+# Global thread pool for thumbnail generation.  A desktop session normally has
+# only a handful of visible tiles; sixteen workers create unnecessary decoder
+# buffers and thread stacks on small machines.
+thumbnail_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="thumbnail")
 
 
 def get_rescan_event():
@@ -1015,17 +1017,24 @@ async def lifespan(app: FastAPI):
                 if remove_profile_section(profile.id, "legacy_managed_roots"):
                     profile.legacy_managed_roots = []
 
-        # Check for and reset stale CLIP embeddings (from old model with different dimensions)
-        for profile in settings.profiles:
-            started = time.monotonic()
-            log.info("CLIP embedding compatibility check started", profile=profile.id)
-            reset_count = await check_and_reset_stale_clip_embeddings(profile.id)
-            log.info(
-                "CLIP embedding compatibility check completed",
-                profile=profile.id,
-                reset=reset_count,
-                elapsed_seconds=round(time.monotonic() - started, 1),
-            )
+        # Check for and reset stale CLIP embeddings (from old model with
+        # different dimensions).  The lean desktop never schedules CLIP work,
+        # so importing the ONNX-backed service for this maintenance pass would
+        # defeat the startup memory saving.
+        from runtime_mode import local_vision_enabled
+        if local_vision_enabled():
+            for profile in settings.profiles:
+                started = time.monotonic()
+                log.info("CLIP embedding compatibility check started", profile=profile.id)
+                reset_count = await check_and_reset_stale_clip_embeddings(profile.id)
+                log.info(
+                    "CLIP embedding compatibility check completed",
+                    profile=profile.id,
+                    reset=reset_count,
+                    elapsed_seconds=round(time.monotonic() - started, 1),
+                )
+        else:
+            log.info("CLIP embedding compatibility check skipped by lean mode")
 
         # Fix items created by agent with metadata already computed but stuck as 'pending'
         for profile in settings.profiles:
@@ -1261,62 +1270,73 @@ async def lifespan(app: FastAPI):
                 import update_check
                 update_check.start()
 
-                # Lazy import to avoid loading torch at module level
-                from ingestion import get_ingestion
+                from runtime_mode import ingestion_required
 
-                # Initialize ingestion coordinator (models load on first use)
-                log.info("initializing ingestion coordinator")
-                get_ingestion()
+                if ingestion_required(settings):
+                    # Lazy import to avoid loading the ingestion/ML stack when
+                    # uploads already have complete metadata and no watched
+                    # folders or background AI phases are enabled.
+                    from ingestion import get_ingestion
 
-                # Create IPC events using SimpleEvent (shared memory, no semaphores)
-                global _rescan_event, _process_pending_event, _pause_event, _reload_config_event
-                _rescan_event = SimpleEvent(_mp_context)
-                _process_pending_event = SimpleEvent(_mp_context)
-                _pause_event = SimpleEvent(_mp_context)  # Clear = running, Set = paused
-                _reload_config_event = SimpleEvent(_mp_context)  # Signal config reload
+                    log.info("initializing ingestion coordinator")
+                    get_ingestion()
 
-                # Load persisted pause state from database
-                pause_state = await load_pause_state_from_db(registry)
-                if pause_state:
-                    _pause_event.set()
-                    log.info("Restored paused state from database")
+                    # Create IPC events using SimpleEvent (shared memory, no semaphores)
+                    global _rescan_event, _process_pending_event, _pause_event, _reload_config_event
+                    _rescan_event = SimpleEvent(_mp_context)
+                    _process_pending_event = SimpleEvent(_mp_context)
+                    _pause_event = SimpleEvent(_mp_context)  # Clear = running, Set = paused
+                    _reload_config_event = SimpleEvent(_mp_context)  # Signal config reload
 
-                # Start ingestion subprocess with log queue for piping logs back
-                from app_context import get_bundle_id, get_sandbox
-                import threading
-                bundle_id = get_bundle_id()
-                # The worker is spawned in a fresh interpreter (mp 'spawn'), so it does
-                # NOT inherit the app context globals. We must pass BOTH bundle_id and
-                # sandbox explicitly, or the worker silently falls back to the "default"
-                # sandbox and processes the wrong profile databases.
-                sandbox = get_sandbox()
-                log.info(f"starting ingestion process (bundle={bundle_id}, sandbox={sandbox})")
+                    # Load persisted pause state from database
+                    pause_state = await load_pause_state_from_db(registry)
+                    if pause_state:
+                        _pause_event.set()
+                        log.info("Restored paused state from database")
 
-                # Create log queue and listener thread to receive logs from subprocess
-                log_queue = _mp_context.Queue()
-                log_listener_stop_event = threading.Event()
-                log_listener_thread = threading.Thread(
-                    target=_log_queue_listener,
-                    args=(log_queue, log_listener_stop_event),
-                    daemon=True,
-                    name="ingestion-log-listener"
-                )
-                log_listener_thread.start()
+                    # Start ingestion subprocess with log queue for piping logs back
+                    from app_context import get_bundle_id, get_sandbox
+                    import threading
+                    bundle_id = get_bundle_id()
+                    # The worker is spawned in a fresh interpreter (mp 'spawn'), so it does
+                    # NOT inherit the app context globals. We must pass BOTH bundle_id and
+                    # sandbox explicitly, or the worker silently falls back to the "default"
+                    # sandbox and processes the wrong profile databases.
+                    sandbox = get_sandbox()
+                    log.info(f"starting ingestion process (bundle={bundle_id}, sandbox={sandbox})")
 
-                ingestion_process = _mp_context.Process(
-                    target=run_ingestion_worker,
-                    args=(_rescan_event, _process_pending_event, _pause_event, _reload_config_event, bundle_id, log_queue, sandbox),
-                    daemon=True
-                )
-                ingestion_process.start()
+                    # Create log queue and listener thread to receive logs from subprocess
+                    log_queue = _mp_context.Queue()
+                    log_listener_stop_event = threading.Event()
+                    log_listener_thread = threading.Thread(
+                        target=_log_queue_listener,
+                        args=(log_queue, log_listener_stop_event),
+                        daemon=True,
+                        name="ingestion-log-listener"
+                    )
+                    log_listener_thread.start()
+
+                    ingestion_process = _mp_context.Process(
+                        target=run_ingestion_worker,
+                        args=(_rescan_event, _process_pending_event, _pause_event, _reload_config_event, bundle_id, log_queue, sandbox),
+                        daemon=True
+                    )
+                    ingestion_process.start()
+                else:
+                    log.info("background ingestion disabled: uploads extract metadata inline and no background phases/folders are enabled")
 
                 # Initialize generation queue (cleanup already ran pre-yield)
                 log.info("initializing generation queue")
                 generation_queue.set_websocket_manager(ws_manager)
                 ws_manager.set_on_generator_disconnect(generation_queue.cleanup_disconnected_client)
-                # Start enough workers to handle concurrent jobs across all backends
-                # Most providers report their concurrency on connect, so use a generous default
-                await generation_queue.start_workers(num_workers=16)
+                # H3 is a single local gateway in this build. Keep a small
+                # queue of workers while allowing an alternate launcher to
+                # raise the limit explicitly.
+                try:
+                    generation_workers = max(1, min(8, int(os.environ.get("STIMMA_GENERATION_WORKERS", "4"))))
+                except ValueError:
+                    generation_workers = 4
+                await generation_queue.start_workers(num_workers=generation_workers)
 
                 # Ensure early provider init has finished (or failed) before cloud auto-connect.
                 if tool_provider_init_task is not None:
@@ -1325,22 +1345,25 @@ async def lifespan(app: FastAPI):
                     except Exception:
                         pass
 
-                # Stimma Cloud is auth-managed, unlike saved JSON-RPC providers.
-                try:
-                    from routes.cloud import reconcile_cloud_connection
-                    await reconcile_cloud_connection()
+                # Stimma Cloud is intentionally not part of the lean H3 path.
+                # The helpers retain their normal behavior for alternate
+                # launchers that do not enable lean mode.
+                from runtime_mode import is_stimma_cloud_enabled
+                if is_stimma_cloud_enabled():
+                    try:
+                        from routes.cloud import reconcile_cloud_connection
+                        await reconcile_cloud_connection()
+                    except Exception as e:
+                        log.warning("failed to auto-connect to stimma cloud", error=str(e))
 
-                except Exception as e:
-                    log.warning("failed to auto-connect to stimma cloud", error=str(e))
-
-                # Open the account-events push channel for any signed-in user.
-                # Its on-connect refresh also discovers balance added while
-                # the app was closed.
-                try:
-                    from cloud_events import get_cloud_events_client
-                    get_cloud_events_client().start()
-                except Exception as e:
-                    log.warning("failed to start account-events client", error=str(e))
+                    # Open the account-events push channel for signed-in users.
+                    try:
+                        from cloud_events import get_cloud_events_client
+                        get_cloud_events_client().start()
+                    except Exception as e:
+                        log.warning("failed to start account-events client", error=str(e))
+                else:
+                    log.info("Stimma Cloud account channel disabled by lean mode")
 
                 log.info("deferred init complete")
 
@@ -1481,16 +1504,19 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
-    # Clean up ingestion coordinator resources (with timeout)
-    try:
-        from ingestion import get_ingestion
-        ingestion = get_ingestion()
-        await asyncio.wait_for(ingestion.cleanup(), timeout=2.0)
-        log.info("ingestion resources cleaned up")
-    except asyncio.TimeoutError:
-        log.warning("ingestion cleanup timed out")
-    except Exception as e:
-        log.exception("error cleaning up ingestion")
+    # Clean up ingestion coordinator resources (with timeout).  In lean mode
+    # the process is never started, so importing the whole ingestion stack at
+    # shutdown would only add needless work and memory churn.
+    if ingestion_process is not None or _rescan_event is not None:
+        try:
+            from ingestion import get_ingestion
+            ingestion = get_ingestion()
+            await asyncio.wait_for(ingestion.cleanup(), timeout=2.0)
+            log.info("ingestion resources cleaned up")
+        except asyncio.TimeoutError:
+            log.warning("ingestion cleanup timed out")
+        except Exception as e:
+            log.exception("error cleaning up ingestion")
 
     # Shutdown thumbnail thread pool
     try:

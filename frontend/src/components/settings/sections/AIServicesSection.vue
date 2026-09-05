@@ -36,7 +36,7 @@
           </div>
         </div>
 
-        <button type="button" class="group flex w-full items-center gap-4 px-1 py-3 text-left hover:bg-overlay-subtle" @click="cloudStatus === 'not_logged_in' ? handleCloudConnect() : cloudNeedsCredits ? openAddCredits() : openStimmaAccount()">
+        <button v-if="!cloudDisabled" type="button" class="group flex w-full items-center gap-4 px-1 py-3 text-left hover:bg-overlay-subtle" @click="cloudStatus === 'not_logged_in' ? handleCloudConnect() : cloudNeedsCredits ? openAddCredits() : openStimmaAccount()">
           <div class="flex h-9 w-9 shrink-0 items-center justify-center text-content-secondary" aria-hidden="true">
             <div class="h-7 w-7 bg-current [mask-image:url('/logo.svg')] [mask-position:center] [mask-repeat:no-repeat] [mask-size:contain] [-webkit-mask-image:url('/logo.svg')] [-webkit-mask-position:center] [-webkit-mask-repeat:no-repeat] [-webkit-mask-size:contain]"></div>
           </div>
@@ -576,7 +576,7 @@ const legacyReasoningOptions = [
 ]
 
 const { selectableModels, cloudStatus, cloudMessage, fetchModels, invalidateCache } = useAvailableModels()
-const { signInWithBrowser, isAuthenticated } = useAuth()
+const { signInWithBrowser, isAuthenticated, cloudDisabled } = useAuth()
 const { cloudUser, fetchCloudAccount, cloudBaseUrl, ensureCloudBaseUrl } = useCloudAccount()
 
 // Signed in but no balance: the catalog still lists models, but none of them

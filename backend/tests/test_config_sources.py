@@ -32,9 +32,11 @@ def test_installed_codex_cli_is_registered_without_api_key():
     assert provider["models"][0]["model_id"] == "gpt-5.6-luna"
     assert {
         model["model_id"] for model in provider["models"]
-    } == {"gpt-5.6-sol", "gpt-5.6-luna"}
+    } == {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"}
     sol = next(model for model in provider["models"] if model["model_id"] == "gpt-5.6-sol")
     assert sol["name"] == "GPT-5.6 Sol · ChatGPT"
+    astra = next(model for model in provider["models"] if model["model_id"] == "gpt-6-astra")
+    assert astra["name"] == "GPT-6 Astra · ChatGPT"
 
 
 def test_codex_cli_registration_respects_existing_provider():
@@ -52,7 +54,7 @@ def test_codex_cli_registration_respects_existing_provider():
     _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
 
     assert [model["model_id"] for model in existing["models"]] == [
-        "gpt-5.6-luna", "gpt-5.6-sol",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
     ]
 
 

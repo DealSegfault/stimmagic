@@ -12,6 +12,7 @@ from config import get_settings
 from core.logging import get_logger
 from cloud_runtime import cloud_access_headers, with_cloud_access_headers
 from privacy_lockdown import disabled_message, is_privacy_lockdown_enabled
+from runtime_mode import is_stimma_cloud_enabled, lean_disabled_message
 from tool_provider_identity import STIMMA_TOOL_PROVIDER_DISPLAY_NAME, STIMMA_TOOL_PROVIDER_ID
 from utils.websocket import ws_manager
 
@@ -88,6 +89,10 @@ async def _refresh_cloud_token(config: dict) -> bool:
 
 async def reconcile_cloud_connection() -> bool:
     """Make the cloud STP connection match the current account state."""
+    if not is_stimma_cloud_enabled():
+        await disconnect_cloud_internal()
+        return False
+
     from auth_storage import load_auth_state
     from firebase_auth import get_valid_id_token
     from providers import ProviderRegistry
@@ -136,8 +141,9 @@ async def connect_cloud_internal(id_token: str) -> bool:
     """
     from providers.jsonrpc_manager import get_jsonrpc_manager
 
-    if is_privacy_lockdown_enabled():
-        log.info("stimma cloud connect blocked by Privacy Lockdown")
+    if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
+        reason = "lean mode" if not is_stimma_cloud_enabled() else "Privacy Lockdown"
+        log.info("stimma cloud connect blocked", reason=reason)
         return False
 
     # A caller-supplied ID token is not sufficient authority to create a
@@ -228,11 +234,16 @@ async def connect_cloud_tools(request: ConnectRequest):
     Creates a WebSocket-based JsonRpcProvider for the cloud and registers it.
     The token is a Firebase ID token that authenticates the user.
     """
-    if is_privacy_lockdown_enabled():
+    if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
+        error = (
+            lean_disabled_message("Stimma tools")
+            if not is_stimma_cloud_enabled()
+            else disabled_message("Stimma tools")
+        )
         return ConnectResponse(
             success=False,
             provider_id=STIMMA_CLOUD_PROVIDER_ID,
-            error=disabled_message("Stimma tools"),
+            error=error,
         )
 
     success = await connect_cloud_internal(request.token)
@@ -271,16 +282,21 @@ async def get_cloud_tools_status():
 
     Returns connection status and tool count if connected.
     """
-    from providers import ProviderRegistry
-    from providers.jsonrpc_manager import get_jsonrpc_manager
-
-    if is_privacy_lockdown_enabled():
+    if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
+        error = (
+            lean_disabled_message("Stimma tools")
+            if not is_stimma_cloud_enabled()
+            else disabled_message("Stimma tools")
+        )
         return {
             "connected": False,
-            "status": "privacy_lockdown",
-            "error_message": disabled_message("Stimma tools"),
+            "status": "privacy_lockdown" if is_privacy_lockdown_enabled() else "disabled",
+            "error_message": error,
             "tool_count": 0,
         }
+
+    from providers import ProviderRegistry
+    from providers.jsonrpc_manager import get_jsonrpc_manager
 
     provider_registry = ProviderRegistry.get_instance()
     jsonrpc_manager = get_jsonrpc_manager()

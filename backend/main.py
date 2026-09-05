@@ -10,6 +10,12 @@ All route logic has been split into separate modules under the routes/ directory
 # (Workers re-run main.py but should stay in parent's process group)
 import os
 import sys
+
+# This desktop build uses the local H3 gateway plus Codex/agy.  Keep the
+# Stimma-owned account channel and optional local vision stack out of the
+# process unless an alternate launcher explicitly opts out of lean mode.
+os.environ.setdefault("STIMMA_LEAN_MODE", "1")
+
 if not any('--multiprocessing' in arg or 'from multiprocessing' in arg for arg in sys.argv):
     if os.name != "nt":
         try:

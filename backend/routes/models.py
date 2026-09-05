@@ -37,6 +37,7 @@ from llm_resolver import (
     set_catalog_cache,
 )
 from privacy_lockdown import is_privacy_lockdown_enabled
+from runtime_mode import is_stimma_cloud_enabled
 from llm_provider_catalog import (
     FIXED_MODEL_PROVIDERS,
     PROFILED_MODEL_PROVIDERS,
@@ -920,65 +921,76 @@ async def get_available_models(project_id: Optional[int] = Query(None)):
     models = []
     settings = get_settings()
     lockdown = is_privacy_lockdown_enabled()
-    cloud_status = "privacy_lockdown" if lockdown else "not_logged_in"
-    cloud_message = "" if lockdown else "Sign in to your Stimma account to use hosted models."
+    cloud_enabled = is_stimma_cloud_enabled()
+    cloud_status = (
+        "privacy_lockdown" if lockdown
+        else "disabled" if not cloud_enabled
+        else "not_logged_in"
+    )
+    cloud_message = (
+        "" if lockdown
+        else "Stimma hosted models are disabled in lean mode."
+        if not cloud_enabled
+        else "Sign in to your Stimma account to use hosted models."
+    )
     cloud_entries = []
     cloud_authenticated = False
 
     # 1. Fetch cloud catalog if authenticated
-    try:
-        from firebase_auth import get_valid_id_token
-        id_token = None if lockdown else await get_valid_id_token()
-        cloud_authenticated = bool(id_token)
-        if id_token:
-            cloud_status = "cloud_unreachable"
-            cloud_message = "Stimma cannot be reached."
-            base_url = settings.cloud.base_url
-            url = f"{base_url}/api/llm/v1/models"
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    url,
-                    headers=with_cloud_access_headers({"Authorization": f"Bearer {id_token}"}),
-                    timeout=10.0,
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    cloud_entries = data.get('data', [])
-                    cloud_status = "available"
-                    cloud_message = ""
-                    # Update resolver cache
-                    set_catalog_cache(cloud_entries)
-                    for entry in cloud_entries:
-                        models.append({
-                            "slug": entry["slug"],
-                            "source": "stimma_cloud",
-                            "name": entry["name"],
-                            "description": entry.get("description", ""),
-                            "based_on": entry.get("based_on"),
-                            "available": True,
-                            "status": "available",
-                            "max_context_tokens": get_max_context_tokens(entry["slug"]),
-                            "provider_id": "stimma",
-                            "provider_name": entry.get("provider_name", "Stimma"),
-                            "model_vendor": entry.get("model_vendor"),
-                            "upstream_provider": entry.get("upstream_provider"),
-                            "canonical_model_id": entry.get("canonical_model_id"),
-                            "reasoning": entry.get("reasoning"),
-                            "cost_tier": entry.get("cost_tier"),
-                            "supports_tools": entry.get("supports_tools", True),
-                            "input_modalities": entry.get("input_modalities", ["text"]),
-                            "is_default": entry.get("is_default", False),
-                        })
-                elif response.status_code in (401, 403):
-                    cloud_status = "subscription_required"
-                    cloud_message = "Your Stimma account does not currently include hosted models."
-    except Exception as e:
-        log.warning("failed to fetch cloud model catalog", error=str(e))
+    if cloud_enabled:
+        try:
+            from firebase_auth import get_valid_id_token
+            id_token = None if lockdown else await get_valid_id_token()
+            cloud_authenticated = bool(id_token)
+            if id_token:
+                cloud_status = "cloud_unreachable"
+                cloud_message = "Stimma cannot be reached."
+                base_url = settings.cloud.base_url
+                url = f"{base_url}/api/llm/v1/models"
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        url,
+                        headers=with_cloud_access_headers({"Authorization": f"Bearer {id_token}"}),
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        cloud_entries = data.get('data', [])
+                        cloud_status = "available"
+                        cloud_message = ""
+                        # Update resolver cache
+                        set_catalog_cache(cloud_entries)
+                        for entry in cloud_entries:
+                            models.append({
+                                "slug": entry["slug"],
+                                "source": "stimma_cloud",
+                                "name": entry["name"],
+                                "description": entry.get("description", ""),
+                                "based_on": entry.get("based_on"),
+                                "available": True,
+                                "status": "available",
+                                "max_context_tokens": get_max_context_tokens(entry["slug"]),
+                                "provider_id": "stimma",
+                                "provider_name": entry.get("provider_name", "Stimma"),
+                                "model_vendor": entry.get("model_vendor"),
+                                "upstream_provider": entry.get("upstream_provider"),
+                                "canonical_model_id": entry.get("canonical_model_id"),
+                                "reasoning": entry.get("reasoning"),
+                                "cost_tier": entry.get("cost_tier"),
+                                "supports_tools": entry.get("supports_tools", True),
+                                "input_modalities": entry.get("input_modalities", ["text"]),
+                                "is_default": entry.get("is_default", False),
+                            })
+                    elif response.status_code in (401, 403):
+                        cloud_status = "subscription_required"
+                        cloud_message = "Your Stimma account does not currently include hosted models."
+        except Exception as e:
+            log.warning("failed to fetch cloud model catalog", error=str(e))
 
     # The fallback names are compiled into the app; they do not come from a
     # network request. Even so, Cloud models should be absent—not advertised as
     # unavailable—while Privacy Lockdown is active.
-    if cloud_authenticated and not cloud_entries and not lockdown:
+    if cloud_enabled and cloud_authenticated and not cloud_entries and not lockdown:
         for slug in PUBLIC_CLOUD_FALLBACK_MODELS:
             models.append({
                 "slug": slug,

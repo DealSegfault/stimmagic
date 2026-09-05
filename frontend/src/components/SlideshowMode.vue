@@ -1409,6 +1409,7 @@ const visibleFaceOverlays = computed(() => {
 // Asset + payload keyed: Asset identity stays stable across revisions, while
 // faces, lineage and generation metadata belong to the exact payload.
 const metadataCache = ref(new Map()) // "assetId:mediaId" -> metadata
+const MAX_METADATA_CACHE_ENTRIES = 128
 
 function metadataCacheKey(item) {
   const identity = itemIdentity(item)
@@ -6052,7 +6053,13 @@ async function fetchAndCacheMetadata(item) {
 
   // Check cache first
   const cached = metadataCache.value.get(cacheKey)
-  if (cached) return cached
+  if (cached) {
+    // Map insertion order is our tiny LRU; touching hot entries keeps a
+    // long slideshow from retaining every metadata payload forever.
+    metadataCache.value.delete(cacheKey)
+    metadataCache.value.set(cacheKey, cached)
+    return cached
+  }
 
   try {
     // Fetch all metadata in parallel
@@ -6110,6 +6117,11 @@ async function fetchAndCacheMetadata(item) {
       inspiredDescendants: inspiredDescendants
     }
     metadataCache.value.set(cacheKey, metadata)
+    while (metadataCache.value.size > MAX_METADATA_CACHE_ENTRIES) {
+      const oldestKey = metadataCache.value.keys().next().value
+      if (oldestKey === undefined) break
+      metadataCache.value.delete(oldestKey)
+    }
 
     return metadata
   } catch (err) {

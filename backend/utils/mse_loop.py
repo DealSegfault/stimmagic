@@ -7,13 +7,17 @@ import json
 import shutil
 import subprocess
 import uuid
+import weakref
 from pathlib import Path
 
 from app_dirs import get_cache_dir
 
 
 MSE_LOOP_CACHE_VERSION = 2
-_locks: dict[str, asyncio.Lock] = {}
+# Locks are needed only while a hash is actively being prepared.  A weak map
+# preserves sharing between concurrent callers but lets one-shot hashes fall
+# out of memory after the last waiter releases its local reference.
+_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
 
 
 def _cache_dir(file_hash: str) -> Path:

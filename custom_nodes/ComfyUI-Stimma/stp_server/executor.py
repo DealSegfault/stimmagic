@@ -54,6 +54,43 @@ def _coerce_bool(value: Any) -> bool:
             return True
     return bool(value)
 
+
+async def _load_local_object_info() -> Optional[Dict[str, Any]]:
+    """Load the local ComfyUI catalog as a cold-start execution fallback.
+
+    The STP server runs inside the local ComfyUI process while generation is
+    executed by a Modal bridge.  During a Modal cold start the remote
+    ``/object_info`` request can take several minutes, which is longer than a
+    generation job's request lifetime.  The local server has the same node
+    registry and can provide the positional widget metadata immediately.  The
+    remote catalog remains authoritative whenever it is already available.
+    """
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=15.0)
+    try:
+        async with aiohttp.ClientSession(
+            timeout=timeout,
+            auto_decompress=False,
+        ) as session:
+            async with session.get(
+                "http://127.0.0.1:8188/object_info",
+                allow_redirects=False,
+            ) as response:
+                if response.status != 200:
+                    logger.warning(
+                        "Local ComfyUI object_info fallback returned HTTP %s",
+                        response.status,
+                    )
+                    return None
+                raw = await response.read()
+        catalog = json.loads(raw.decode("utf-8"))
+        if isinstance(catalog, dict) and catalog:
+            return catalog
+    except Exception as exc:
+        logger.info("Local ComfyUI object_info fallback unavailable: %s", exc)
+    return None
+
 # Pure output sinks with no downstream consumers. Stripped from STP jobs (when
 # the workflow has Stimma output nodes) so generations leave no copies in
 # ComfyUI's output directory.
@@ -329,17 +366,26 @@ async def execute_workflow(
 
             # Tool discovery is allowed to advertise bundled workflows while a
             # Modal GPU is cold, so provider.object_info can legitimately be
-            # empty here. Execution cannot skip it: remote defaults hydrate
-            # required widget values and its node catalog strips editor-only or
-            # unavailable nodes before /prompt validation.
+            # empty here. Use the local catalog first: it contains the same
+            # node definitions and avoids spending the whole job lifetime on a
+            # duplicate remote /object_info request while the container warms.
+            # The provider's background fetch remains authoritative and will
+            # refresh dynamic values once the execution instance is ready.
             if not object_info:
-                try:
-                    object_info = await instance.get_object_info()
-                except Exception as exc:
-                    raise RuntimeError(
-                        "Could not load ComfyUI object_info from the execution "
-                        "instance before preparing the workflow"
-                    ) from exc
+                object_info = await _load_local_object_info()
+                if object_info:
+                    logger.warning(
+                        "Using local ComfyUI object_info while the execution "
+                        "instance is still warming up"
+                    )
+                else:
+                    try:
+                        object_info = await instance.get_object_info()
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Could not load ComfyUI object_info from the execution "
+                            f"instance before preparing the workflow: {exc}"
+                        ) from exc
                 if not object_info:
                     raise RuntimeError(
                         "ComfyUI returned an empty object_info catalog for the "
@@ -361,6 +407,14 @@ async def execute_workflow(
             # optional references to them survive.
             if unprovided:
                 _strip_unprovided_input_chains(prompt, unprovided, object_info)
+
+            # Reference-video Ref2VA jobs use SageAttention with a guarded
+            # tensor-validation mode.  The adapter falls back to PyTorch with
+            # the original tensor layout if the CUDA kernel is unsupported or
+            # returns non-finite/empty output.  This keeps the speed path on
+            # RTX while preventing a bad attention result from reaching H3's
+            # VAE/video encoder.
+            _configure_sage_attention_for_reference_videos(prompt)
 
             # Step 4: Inject parameter values
             _inject_params(prompt, workflow, parameters)
@@ -1512,6 +1566,53 @@ def _bypass_guide_node(
         )
         del prompt[chased_id]
     return True
+
+
+def _configure_sage_attention_for_reference_videos(
+    prompt: Dict[str, Any],
+) -> bool:
+    """Enable guarded H3 SageAttention when a Ref2VA video is present.
+
+    H3 reference-video inputs are represented as ``ref_videos.*`` links on the
+    ``MiniMaxH3ReferenceToVideo`` node.  Once optional inputs have been stripped,
+    those links are an authoritative indication that the job really contains a
+    video reference.  Enable the node's validation switch so a failed kernel is
+    disabled for the rest of the run and the current call is recomputed by
+    native PyTorch attention using the original tensor layout.
+
+    Returns ``True`` when at least one SageAttention node was configured.
+    """
+    has_reference_video = any(
+        node.get("class_type") == "MiniMaxH3ReferenceToVideo"
+        and any(
+            input_name.startswith("ref_videos.")
+            and isinstance(input_value, list)
+            and len(input_value) == 2
+            and isinstance(input_value[0], str)
+            and input_value[0] in prompt
+            for input_name, input_value in node.get("inputs", {}).items()
+        )
+        for node in prompt.values()
+    )
+    if not has_reference_video:
+        return False
+
+    configured = 0
+    for node_id, node in list(prompt.items()):
+        if node.get("class_type") != "StimmaMiniMaxH3SageAttention":
+            continue
+        node.setdefault("inputs", {})["validate_outputs"] = True
+        configured += 1
+        logger.info(
+            "Enabled guarded MiniMax H3 SageAttention (#%s) for reference video",
+            node_id,
+        )
+    return configured > 0
+
+
+# Kept as a compatibility alias for callers/tests from the safety-bypass era.
+# It now configures the guarded Sage path instead of deleting the node.
+_disable_sage_attention_for_reference_videos = _configure_sage_attention_for_reference_videos
 
 
 def _strip_unprovided_input_chains(

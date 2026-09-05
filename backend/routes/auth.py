@@ -20,6 +20,7 @@ from config import get_settings
 from core.logging import get_logger
 from cloud_runtime import with_cloud_access_headers
 from privacy_lockdown import disabled_message, is_privacy_lockdown_enabled
+from runtime_mode import is_stimma_cloud_enabled, lean_disabled_message
 
 log = get_logger(__name__)
 
@@ -135,6 +136,12 @@ async def start_auth() -> StartAuthResponse:
     Creates a localhost callback server and returns the login URL
     for the system browser.
     """
+    if not is_stimma_cloud_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=_auth_error("cloud_disabled", lean_disabled_message("Stimma sign-in")),
+        )
+
     if is_privacy_lockdown_enabled():
         raise HTTPException(
             status_code=403,
@@ -414,6 +421,12 @@ async def get_auth_status():
     Returns authenticated user info if logged in, or unauthenticated status.
     Used by frontend to check login state on startup.
     """
+    if not is_stimma_cloud_enabled():
+        return {
+            "authenticated": False,
+            "cloud_disabled": True,
+        }
+
     from auth_storage import load_auth_state
 
     if is_privacy_lockdown_enabled():
@@ -442,6 +455,12 @@ async def get_account_info():
     Fetches the latest balance info. Use this when displaying
     account details that need to be up-to-date.
     """
+    if not is_stimma_cloud_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail=_auth_error("cloud_disabled", lean_disabled_message("Stimma account access")),
+        )
+
     from auth_storage import load_auth_state, save_auth_state, clear_auth_state
     from firebase_auth import (
         AuthNetworkError,

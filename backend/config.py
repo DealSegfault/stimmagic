@@ -85,6 +85,20 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
                 'enabled': True,
             })
             models.append(sol_model)
+        if not any(model.get('model_id') == 'gpt-6-astra' for model in models):
+            template = next(
+                (model for model in models if model.get('model_id')),
+                {},
+            )
+            astra_model = dict(template)
+            astra_model.update({
+                'id': f"{existing.get('id', 'codex-cli')}:gpt-6-astra",
+                'model_id': 'gpt-6-astra',
+                'name': 'GPT-6 Astra · ChatGPT',
+                'model_vendor': 'openai',
+                'enabled': True,
+            })
+            models.append(astra_model)
         return
 
     model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-5.6-luna').strip()
@@ -92,9 +106,10 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
         model_id = 'gpt-5.6-luna'
 
     # Keep the environment override first for installations that use it as
-    # their default, while making the two ChatGPT-backed models selectable
+    # their default, while making the ChatGPT-backed models selectable
     # from the shared chat model picker.
     supported_models = {
+        'gpt-6-astra': 'GPT-6 Astra · ChatGPT',
         'gpt-5.6-sol': 'GPT-5.6 Sol · ChatGPT',
         'gpt-5.6-luna': 'GPT-5.6 Luna · ChatGPT',
     }
@@ -1508,7 +1523,20 @@ class Settings(BaseSettings):
                     all_media_paths.append(folder.path)
         config_data['media_paths'] = all_media_paths
 
-        return cls(**config_data)
+        loaded = cls(**config_data)
+
+        # The desktop entry point enables lean mode for this checkout.  Keep
+        # the persisted config readable (and reversible for alternate
+        # launchers), but do not let an older config silently re-enable local
+        # vision/captioning work in the lean process.
+        from runtime_mode import is_lean_mode
+
+        if is_lean_mode():
+            loaded.clip.enabled = False
+            loaded.face_detection.enabled = False
+            loaded.captioning.enabled = False
+
+        return loaded
 
 # Global settings instance
 settings: Settings = None

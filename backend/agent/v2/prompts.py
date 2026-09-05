@@ -146,6 +146,9 @@ v1 immediately.
 in the result — whether editing one image or combining several into a scene — pass them as `input_images` (image-to-image). \
 Text-to-image generates from scratch and cannot reproduce the specific appearance of existing images, only approximate via description.
 
+**Video references**: For MiniMax H3 Ref2V, pass still-image references in `input_images` and whole video references in `input_videos`, \
+preserving each list's order. Never pass an MP4/MOV (or another video file) in `input_images`; that slot is image-only.
+
 **Working from a past generation's parameters**: A generated image carries the exact parameters that produced it. \
 When the user wants to modify a prior generation surgically — preserving its look and changing only what they call out — \
 fetch those parameters with `library(action="generation_params", media_id=…)` (or `stimma.library.regenerate` / \

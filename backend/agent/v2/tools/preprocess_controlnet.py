@@ -52,6 +52,10 @@ async def execute_preprocess_controlnet(
             f"Available: {', '.join(sorted(CONTROLNET_PREPROCESSORS))}"
         )
 
+    from runtime_mode import local_vision_enabled
+    if not local_vision_enabled():
+        raise ValueError("ControlNet is disabled in lean mode")
+
     # Resolve media_id → file path
     source_path = await _resolve_media_path(session, media_id)
 

@@ -8,7 +8,6 @@ from database import MediaItem, Keyword, MediaKeyword
 from core.dependencies import get_db_session
 from config import get_settings
 from utils.query_builder import build_filtered_query
-from utils.similarity import filter_media_query_by_face_similarity, parse_similarity_ids
 
 router = APIRouter(prefix="/api/keywords", tags=["keywords"])
 
@@ -100,6 +99,8 @@ async def get_top_keywords(
             raise HTTPException(status_code=400, detail="Cannot combine similar_to and similar_face_to")
 
         if similar_face_to is not None:
+            from utils.similarity import filter_media_query_by_face_similarity, parse_similarity_ids
+
             similar_face_to_ids = parse_similarity_ids(similar_face_to, "similar_face_to")
             query = select(MediaItem).where(MediaItem.deleted_at.is_(None))
             query = query.where(MediaItem.metadata_status == 'completed')

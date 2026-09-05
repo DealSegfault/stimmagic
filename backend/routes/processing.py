@@ -26,7 +26,6 @@ from models.api_models import StatsResponse
 from config import get_settings
 from background_work_filters import media_eligible_for_background_work
 from utils.query_builder import build_filtered_query, VIDEO_FORMATS, IMAGE_FORMATS, RESOLUTION_MAP
-from utils.similarity import filter_media_query_by_face_similarity, parse_similarity_ids
 from tool_display import resolve_tool_display_metadata
 
 router = APIRouter(prefix="/api", tags=["processing"])
@@ -598,6 +597,8 @@ async def get_top_keywords(
             raise HTTPException(status_code=400, detail="Cannot combine similar_to and similar_face_to")
 
         if similar_face_to is not None:
+            from utils.similarity import filter_media_query_by_face_similarity, parse_similarity_ids
+
             similar_face_to_ids = parse_similarity_ids(similar_face_to, "similar_face_to")
             query = select(MediaItem).where(MediaItem.deleted_at.is_(None))
             query = query.where(MediaItem.metadata_status == 'completed')
@@ -804,6 +805,8 @@ async def get_filter_counts(
         raise HTTPException(status_code=400, detail="Cannot combine similar_to and similar_face_to")
 
     if similar_face_to is not None:
+        from utils.similarity import filter_media_query_by_face_similarity, parse_similarity_ids
+
         similar_face_to_ids = parse_similarity_ids(similar_face_to, "similar_face_to")
 
         query = select(MediaItem).where(MediaItem.deleted_at.is_(None))

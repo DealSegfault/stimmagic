@@ -20,6 +20,7 @@ from config import get_settings
 from core.logging import get_logger
 from cloud_runtime import cloud_access_headers
 from privacy_lockdown import is_privacy_lockdown_enabled
+from runtime_mode import is_stimma_cloud_enabled
 
 log = get_logger(__name__)
 
@@ -46,7 +47,7 @@ class CloudEventsClient:
     def start(self) -> None:
         """Start (or keep) the connection loop. Idempotent; no-op when signed
         out or in Privacy Lockdown."""
-        if is_privacy_lockdown_enabled():
+        if not is_stimma_cloud_enabled() or is_privacy_lockdown_enabled():
             return
         from auth_storage import load_auth_state
 
@@ -84,6 +85,8 @@ class CloudEventsClient:
 
         backoff = RECONNECT_MIN_S
         while True:
+            if not is_stimma_cloud_enabled():
+                return
             auth_state = load_auth_state()
             if not auth_state or not auth_state.get('refresh_token'):
                 log.info("account-events: signed out, stopping")

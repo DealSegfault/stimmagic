@@ -1,4 +1,5 @@
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime, timedelta
@@ -38,9 +39,13 @@ from background_work_filters import media_eligible_for_background_work
 
 log = get_logger(__name__)
 
-# Metadata permits 16 items in flight. Match the executor to that limit so
-# filesystem work is not silently serialized down to four items.
-METADATA_IO_WORKERS = 16
+# Metadata extraction is intentionally conservative on desktop. Uploads do
+# their metadata extraction inline; this pool is primarily for watched source
+# folders, so sixteen threads only add stack/decoder pressure on small hosts.
+try:
+    METADATA_IO_WORKERS = max(1, min(8, int(os.environ.get("STIMMA_METADATA_IO_WORKERS", "4"))))
+except ValueError:
+    METADATA_IO_WORKERS = 4
 _io_executor = ThreadPoolExecutor(max_workers=METADATA_IO_WORKERS, thread_name_prefix="file_io")
 
 # Processing phases (metadata must come first - others depend on it)
@@ -298,10 +303,6 @@ class MediaIngestion:
     """Coordinates continuous media file ingestion and processing."""
 
     def __init__(self):
-        # Lazy import ML services to avoid loading torch/open_clip at module level
-        from clip_service import get_clip_service
-        from face_detection_service import get_face_detection_service
-
         log.info("INGESTION INIT: Initializing MediaIngestion coordinator...")
         self.settings = get_settings()
         self.registry = get_database_registry()
@@ -314,19 +315,30 @@ class MediaIngestion:
                 self.folder_to_profile[folder.path] = profile.id
         log.info(f"INGESTION INIT: Folder-to-profile mapping: {self.folder_to_profile}")
 
-        log.info("INGESTION INIT: Getting CLIP service...")
-        self.clip_service = get_clip_service(
-            self.settings.clip.model,
-            self.settings.clip.pretrained,
-            auto_load=False  # Load on first use
-        )
+        # Do not even import the optional ML service modules when their phase
+        # is disabled.  The old code created both service singletons on every
+        # ingestion worker start, despite ``auto_load=False``.
+        self.clip_service = None
+        if self.settings.clip.enabled:
+            from clip_service import get_clip_service
 
-        log.info("INGESTION INIT: Getting face detection service...")
-        self.face_detection_service = get_face_detection_service(
-            min_confidence=self.settings.face_detection.min_confidence,
-            max_faces=self.settings.face_detection.max_faces,
-            auto_load=False  # Load on first use
-        )
+            log.info("INGESTION INIT: Getting CLIP service...")
+            self.clip_service = get_clip_service(
+                self.settings.clip.model,
+                self.settings.clip.pretrained,
+                auto_load=False,  # Load on first use
+            )
+
+        self.face_detection_service = None
+        if self.settings.face_detection.enabled:
+            from face_detection_service import get_face_detection_service
+
+            log.info("INGESTION INIT: Getting face detection service...")
+            self.face_detection_service = get_face_detection_service(
+                min_confidence=self.settings.face_detection.min_confidence,
+                max_faces=self.settings.face_detection.max_faces,
+                auto_load=False,  # Load on first use
+            )
 
         # VLM service is initialized lazily in init_async() to support Stimma Cloud
         # which requires async token resolution
@@ -357,15 +369,15 @@ class MediaIngestion:
 
         # Slot limits per phase
         self.slots = {
-            'metadata': 16,                                     # Increased for parallel I/O
-            'clip': 4,                                          # ThreadPool workers
-            'face_detection': self.settings.face_detection.parallelism,  # GPU workers
-            'vlm_caption': self.settings.captioning.parallelism,
+            'metadata': METADATA_IO_WORKERS,
+            'clip': 4 if self.settings.clip.enabled else 0,
+            'face_detection': self.settings.face_detection.parallelism if self.settings.face_detection.enabled else 0,
+            'vlm_caption': self.settings.captioning.parallelism if self.settings.captioning.enabled else 0,
         }
 
         # Semaphore to limit concurrent SQLite writes (SQLite only allows one writer at a time)
         # This prevents blocking when many VLM tasks try to update status simultaneously
-        self._db_write_semaphore = asyncio.Semaphore(10)
+        self._db_write_semaphore = asyncio.Semaphore(3)
 
         # Timeout for stale 'processing' items (minutes)
         self.processing_timeout_minutes = 5
@@ -2197,16 +2209,17 @@ async def run_continuous_ingestion(rescan_event=None, process_pending_event=None
     import os
     import signal
 
-    # Increase httpx connection limits before any LLM calls
-    # httpx default max_keepalive_connections=20 causes hangs when parallelism > 20
+    # Keep the worker's HTTP footprint bounded.  Upload metadata does not need
+    # a large connection pool, and the previous 500/200 limits retained many
+    # sockets and response buffers on desktop.
     import httpx
     httpx._config.DEFAULT_LIMITS = httpx.Limits(
-        max_connections=500,
-        max_keepalive_connections=200,
+        max_connections=10,
+        max_keepalive_connections=5,
     )
 
     log.info("INGESTION WORKER: Starting continuous ingestion worker")
-    log.info(f"INGESTION WORKER: httpx limits set to max_conn=500, max_keepalive=200")
+    log.info("INGESTION WORKER: httpx limits set to max_conn=10, max_keepalive=5")
     log.info(f"INGESTION WORKER: AIOHTTP_CONNECTOR_LIMIT_PER_HOST={os.environ.get('AIOHTTP_CONNECTOR_LIMIT_PER_HOST')}")
 
     # With 'spawn' multiprocessing, this subprocess starts fresh without any inherited state

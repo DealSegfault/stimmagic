@@ -16,12 +16,6 @@ from utils.query_builder import (
     build_filtered_query, not_due_for_autodelete, VIDEO_FORMATS, IMAGE_FORMATS, AUDIO_FORMATS,
     TEXT_FORMATS, SET_FORMATS, GRID_FORMATS, LAYOUT_FORMATS, STRUCTURED_FORMATS, RESOLUTION_MAP
 )
-from utils.similarity import (
-    compute_relevance_cutoff,
-    filter_items_by_face_similarity,
-    parse_similarity_ids,
-    sort_similarity_items,
-)
 from utils.websocket import ws_manager
 
 router = APIRouter(tags=["media"])
@@ -312,6 +306,13 @@ async def get_media(
         raise HTTPException(
             status_code=400,
             detail="Cannot combine similar_to, similar_to_text, and similar_face_to",
+        )
+    if similarity_mode_count:
+        from utils.similarity import (
+            compute_relevance_cutoff,
+            filter_items_by_face_similarity,
+            parse_similarity_ids,
+            sort_similarity_items,
         )
 
     if similar_to_text is not None:
@@ -755,6 +756,13 @@ async def get_media_ids(
 
     if similar_to is not None and similar_face_to is not None:
         raise HTTPException(status_code=400, detail="Cannot combine similar_to and similar_face_to")
+
+    if similar_to is not None or similar_face_to is not None:
+        from utils.similarity import (
+            filter_items_by_face_similarity,
+            parse_similarity_ids,
+            sort_similarity_items,
+        )
 
     # For similarity search, we need to handle it differently
     if similar_face_to is not None:

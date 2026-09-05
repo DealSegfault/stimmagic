@@ -201,6 +201,10 @@ class UserToolsProvider(ToolProvider):
             raise ValueError(f"Asset not found: {asset_id}")
         return self._assets[asset_id]
 
+    async def delete_asset(self, asset_id: str) -> bool:
+        """Release an uploaded in-process asset without waiting for disconnect."""
+        return self._assets.pop(asset_id, None) is not None
+
     async def execute(
         self,
         tool_id: str,

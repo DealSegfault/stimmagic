@@ -110,6 +110,10 @@ class LightweightProvider(ToolProvider):
             raise ValueError(f"Asset not found: {asset_id}")
         return self._assets[asset_id]
 
+    async def delete_asset(self, asset_id: str) -> bool:
+        """Release an uploaded in-process asset as soon as the caller is done."""
+        return self._assets.pop(asset_id, None) is not None
+
     def _register_tools(self) -> None:
         """Register all lightweight tools."""
         # Detect Objects (returns all detections for find_objects tool)
@@ -452,6 +456,14 @@ class LightweightProvider(ToolProvider):
         progress_callback: Optional[Callable] = None,
     ) -> ExecutionResult:
         """Detect and locate objects in an image using SAM3. Returns ALL detections."""
+        from runtime_mode import local_vision_enabled
+
+        if not local_vision_enabled():
+            return ExecutionResult(
+                success=False,
+                error="Local vision features are disabled in lean mode",
+            )
+
         from sam3_service import get_sam3_service
 
         input_images = parameters.get("input_images", [])

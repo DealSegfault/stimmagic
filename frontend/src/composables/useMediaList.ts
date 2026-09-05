@@ -45,6 +45,11 @@ export interface UseMediaListOptions {
   slideshowPageSize?: number
 }
 
+// Keep a moving window around the most recently requested page. A library
+// browser can contain tens of thousands of assets; retaining every page ever
+// visited makes the WebView grow linearly with scrolling.
+const MAX_CACHED_ITEMS = 1200
+
 export interface MediaListState {
   /** Items indexed by position */
   itemsCache: Map<number, MediaItem>
@@ -84,6 +89,34 @@ export function useMediaList(options: UseMediaListOptions) {
    */
   function notifyCacheChanged() {
     cacheVersion.value++
+  }
+
+  function compactCache(
+    cache: Map<number, MediaItem>,
+    pages: Set<string>,
+    anchorStart: number,
+  ): { cache: Map<number, MediaItem>; pages: Set<string> } {
+    if (cache.size <= MAX_CACHED_ITEMS) return { cache, pages }
+
+    const halfWindow = Math.floor(MAX_CACHED_ITEMS / 2)
+    const minIndex = Math.max(0, anchorStart - halfWindow)
+    const maxIndex = minIndex + MAX_CACHED_ITEMS - 1
+    const compacted = new Map<number, MediaItem>()
+    for (const [index, item] of cache) {
+      if (index >= minIndex && index <= maxIndex) compacted.set(index, item)
+    }
+
+    const retainedPages = new Set<string>()
+    for (const pageKey of pages) {
+      const [pageText, sizeText] = pageKey.split(':')
+      const page = Number(pageText)
+      const size = Number(sizeText)
+      if (!Number.isFinite(page) || !Number.isFinite(size) || size <= 0) continue
+      const pageStart = page * size
+      const pageEnd = pageStart + size - 1
+      if (pageEnd >= minIndex && pageStart <= maxIndex) retainedPages.add(pageKey)
+    }
+    return { cache: compacted, pages: retainedPages }
   }
 
   /**
@@ -136,16 +169,18 @@ export function useMediaList(options: UseMediaListOptions) {
 
         // Cache items by index
         const startIndex = pageNumber * pageSize
-        const newCache = new Map(itemsCache.value)
+        let newCache = new Map(itemsCache.value)
         items.forEach((item, i) => {
           newCache.set(startIndex + i, item)
         })
-        itemsCache.value = newCache
 
         // Mark page as loaded
         const newLoadedPages = new Set(loadedPages.value)
         newLoadedPages.add(pageKey)
-        loadedPages.value = newLoadedPages
+        const compacted = compactCache(newCache, newLoadedPages, startIndex)
+        newCache = compacted.cache
+        itemsCache.value = newCache
+        loadedPages.value = compacted.pages
 
         notifyCacheChanged()
         return items

@@ -6,7 +6,7 @@ from typing import Optional, List
 from core.logging import get_logger
 from pathlib import Path
 import threading
-from queue import LifoQueue
+from queue import Full, LifoQueue
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select, update, func
@@ -74,6 +74,11 @@ async def _record_thumbnail_cache(session: AsyncSession, media_id: int, cache_pa
     await session.execute(stmt)
     await session.commit()
     _recorded_thumbnail_cache_entries.add(cache_key)
+    if len(_recorded_thumbnail_cache_entries) > 8192:
+        # This is only an in-process write de-duplication hint; the database
+        # uniqueness constraint remains authoritative.  Resetting the hint
+        # prevents distinct thumbnail versions from growing the set forever.
+        _recorded_thumbnail_cache_entries.clear()
 
 
 _recorded_thumbnail_cache_entries: set[tuple[int, str]] = set()
@@ -248,7 +253,10 @@ class ThumbnailWorkerPool:
     """
 
     def __init__(self, max_workers: int, thread_name_prefix: str):
-        self._queue: LifoQueue = LifoQueue()
+        # A disconnected scroll can enqueue work faster than decoders consume
+        # it.  Keep a finite backlog so each queued job cannot retain paths,
+        # metadata and image arguments indefinitely.
+        self._queue: LifoQueue = LifoQueue(maxsize=128)
         self._threads = [
             threading.Thread(target=self._worker, name=f"{thread_name_prefix}-{i}", daemon=True)
             for i in range(max_workers)
@@ -256,8 +264,14 @@ class ThumbnailWorkerPool:
         for t in self._threads:
             t.start()
 
-    def submit(self, job: _ThumbnailJob):
-        self._queue.put(job)
+    def submit(self, job: _ThumbnailJob) -> bool:
+        try:
+            self._queue.put_nowait(job)
+            return True
+        except Full:
+            job.abandoned.set()
+            job._resolve(exc=ThumbnailRequestAbandoned())
+            return False
 
     def _worker(self):
         while True:
@@ -276,8 +290,8 @@ class ThumbnailWorkerPool:
 # Two pools so heavy decodes (ffmpeg video/audio, document rendering) can't
 # occupy every slot and starve the cheap PIL image resizes that make up the
 # bulk of scroll traffic.
-_light_thumbnail_pool = ThumbnailWorkerPool(max_workers=12, thread_name_prefix="thumbnail")
-_heavy_thumbnail_pool = ThumbnailWorkerPool(max_workers=4, thread_name_prefix="thumbnail-heavy")
+_light_thumbnail_pool = ThumbnailWorkerPool(max_workers=2, thread_name_prefix="thumbnail")
+_heavy_thumbnail_pool = ThumbnailWorkerPool(max_workers=1, thread_name_prefix="thumbnail-heavy")
 
 _HEAVY_THUMBNAIL_FORMATS = {
     'mp4', 'webm', 'mov', 'avi', 'mkv',          # ffmpeg frame extraction

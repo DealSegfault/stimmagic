@@ -4,23 +4,38 @@ Segmentation only: natural-language mask commands are interpreted by the
 ToolView prompt agent (mask_subject / unmask_subject / expand_mask / ... in
 prompt_agent_tools.py), which calls /segment directly.
 """
+from __future__ import annotations
 import base64
 import hashlib
 import io
 import threading
 import time
-from typing import List, Literal, Optional
+from typing import TYPE_CHECKING, List, Literal, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from PIL import Image
 
 from core.logging import get_logger
-from sam3_service import get_sam3_service
+from runtime_mode import local_vision_enabled
 
 router = APIRouter(prefix="/api/mask", tags=["mask"])
 log = get_logger(__name__)
+
+
+def get_sam3_service():
+    """Resolve SAM3 only when a non-lean request actually needs it.
+
+    Keeping this compatibility shim module-level preserves the existing test
+    and extension patch point without importing the ONNX-backed service at
+    route-import time.
+    """
+    from sam3_service import get_sam3_service as _get_sam3_service
+
+    return _get_sam3_service()
 
 
 # --- Request/Response Models ---
@@ -195,6 +210,8 @@ def _decode_data_url(data_url: str) -> bytes:
 
 def _mask_png_to_selection_rgba(mask_png: bytes) -> str:
     """SAM3 grayscale mask (white = object) -> white-on-transparent RGBA data URL."""
+    import numpy as np
+
     gray = np.asarray(Image.open(io.BytesIO(mask_png)).convert("L"))
     rgba = np.zeros((*gray.shape, 4), dtype=np.uint8)
     rgba[gray > 128] = (255, 255, 255, 255)
@@ -205,6 +222,8 @@ def _mask_png_to_selection_rgba(mask_png: bytes) -> str:
 
 def _alpha_to_selection_rgba(alpha: np.ndarray) -> str:
     """Continuous grayscale alpha -> white RGBA selection without thresholding."""
+    import numpy as np
+
     alpha = np.asarray(alpha, dtype=np.uint8)
     if alpha.ndim != 2:
         raise ValueError(f"Expected a 2D alpha mask, got {alpha.shape}")
@@ -217,6 +236,8 @@ def _alpha_to_selection_rgba(alpha: np.ndarray) -> str:
 
 def _alpha_bbox(alpha: np.ndarray) -> dict:
     """Bounding box metadata for one continuous selection mask."""
+    import numpy as np
+
     rows, cols = np.nonzero(alpha)
     if not len(rows):
         return {"x": 0, "y": 0, "width": 0, "height": 0}
@@ -241,6 +262,8 @@ async def warm_select(request: WarmRequest):
     fires this when the Object tool arms; the request returns once the
     embedding is cached, and the client ignores the response.
     """
+    if not local_vision_enabled():
+        raise HTTPException(status_code=503, detail="Local vision features are disabled in lean mode")
     try:
         image_bytes = _decode_data_url(request.image_data_url)
     except Exception as e:
@@ -253,6 +276,11 @@ async def warm_select(request: WarmRequest):
 @router.post("/select", response_model=SelectResponse)
 async def select_mask(request: SelectRequest):
     """Segment the posted image for the editor's AI selection gestures."""
+    if not local_vision_enabled():
+        raise HTTPException(status_code=503, detail="Local vision features are disabled in lean mode")
+
+    import numpy as np
+
     try:
         image_bytes = _decode_data_url(request.image_data_url)
     except Exception as e:
@@ -351,6 +379,12 @@ async def segment_with_sam3(request: SegmentRequest):
     """
     Run SAM3 segmentation and return mask in frontend-compatible format.
     """
+    if not local_vision_enabled():
+        return SegmentResponse(
+            success=False,
+            error="Local vision features are disabled in lean mode",
+        )
+
     try:
         sam3 = get_sam3_service()
         result = await sam3.segment(

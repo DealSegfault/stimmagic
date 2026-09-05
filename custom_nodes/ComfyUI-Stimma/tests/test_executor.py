@@ -36,6 +36,7 @@ from stp_server.executor import (
     _strip_unprovided_input_chains,
     _strip_ui_only_nodes,
     _strip_unknown_nodes,
+    _disable_sage_attention_for_reference_videos,
     _expand_stimma_images_reference_chains,
 )
 
@@ -413,6 +414,54 @@ class TestReferenceAudioBypass(unittest.TestCase):
         self.assertIn("ref", prompt)
         self.assertIn("idlora", prompt)
         self.assertEqual(prompt["guider"]["inputs"]["model"], ["ref", 0])
+
+
+class TestReferenceVideoSageAttentionGuard(unittest.TestCase):
+    """Reference-video Ref2VA jobs must enable Sage's guarded path."""
+
+    @staticmethod
+    def _make_prompt(with_video=True):
+        prompt = {
+            "base": {"class_type": "StimmaMiniMaxH3ReferenceModelLoader", "inputs": {}},
+            "turbo": {
+                "class_type": "MiniMaxH3TurboLoRA",
+                "inputs": {"model": ["base", 0]},
+            },
+            "sage": {
+                "class_type": "StimmaMiniMaxH3SageAttention",
+                "inputs": {"model": ["turbo", 0]},
+            },
+            "guider": {
+                "class_type": "BasicGuider",
+                "inputs": {"model": ["sage", 0], "conditioning": ["positive", 0]},
+            },
+            "scheduler": {
+                "class_type": "BasicScheduler",
+                "inputs": {"model": ["sage", 0]},
+            },
+            "positive": {"class_type": "MiniMaxH3ReferenceToVideo", "inputs": {}},
+        }
+        if with_video:
+            prompt["video"] = {"class_type": "StimmaVideoParam", "inputs": {"video": "ref.mp4"}}
+            prompt["positive"]["inputs"]["ref_videos.ref_video_0"] = ["video", 0]
+        return prompt
+
+    def test_reference_video_enables_validation_and_keeps_turbo_lora(self):
+        prompt = self._make_prompt(with_video=True)
+
+        self.assertTrue(_disable_sage_attention_for_reference_videos(prompt))
+        self.assertIn("sage", prompt)
+        self.assertTrue(prompt["sage"]["inputs"]["validate_outputs"])
+        self.assertIn("turbo", prompt)
+        self.assertEqual(prompt["guider"]["inputs"]["model"], ["sage", 0])
+        self.assertEqual(prompt["scheduler"]["inputs"]["model"], ["sage", 0])
+
+    def test_image_or_audio_only_ref2va_keeps_sage(self):
+        prompt = self._make_prompt(with_video=False)
+
+        self.assertFalse(_disable_sage_attention_for_reference_videos(prompt))
+        self.assertIn("sage", prompt)
+        self.assertEqual(prompt["guider"]["inputs"]["model"], ["sage", 0])
 
 
 class TestInjectFieldsListHandling(unittest.TestCase):

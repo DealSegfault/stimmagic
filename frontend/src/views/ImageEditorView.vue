@@ -961,6 +961,23 @@ const stepPreviews = ref<Record<string, string>>({})
 // and the immutable in-memory snapshot is a stronger source for the revision
 // that just landed than asking WebKit to re-read an overwritten PNG.
 const payloadCache = new Map<string, CanvasImageSource>()
+const MAX_PAYLOAD_CACHE_ENTRIES = 4
+
+function setPayloadCache(key: string, value: CanvasImageSource) {
+  // Keep recent payloads hot, but never retain every full-resolution image
+  // encountered during a long editing session.
+  payloadCache.delete(key)
+  payloadCache.set(key, value)
+  while (payloadCache.size > MAX_PAYLOAD_CACHE_ENTRIES) {
+    const oldestKey = payloadCache.keys().next().value
+    if (oldestKey === undefined) break
+    payloadCache.delete(oldestKey)
+  }
+}
+
+function clearPayloadCache() {
+  payloadCache.clear()
+}
 
 function invalidatePayload(ref: string) {
   for (const key of payloadCache.keys()) {
@@ -981,9 +998,12 @@ function loadImage(url: string): Promise<HTMLImageElement> {
 async function loadStackPayload(ref: string, revision = 0) {
   const key = `${ref}@${revision}`
   const cached = payloadCache.get(key)
-  if (cached) return cached
+  if (cached) {
+    setPayloadCache(key, cached)
+    return cached
+  }
   const img = await loadImage(stack.payloadUrl(ref, revision))
-  payloadCache.set(key, img)
+  setPayloadCache(key, img)
   return img
 }
 
@@ -3426,7 +3446,7 @@ async function limitSelectedAdjustToSelection() {
       `${opId}-${regionId}-mask-${newOpId()}.png`,
       await canvasToBlob(compact.mask),
     )
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
     region = {
       id: regionId,
       kind,
@@ -4079,7 +4099,7 @@ async function commitPaintStroke(
   // The preview may only hand off after the compositor has rendered THIS
   // snapshot. Keeping it under the same ref@revision key loadAnchored requests
   // removes the stable-filename/browser-cache race entirely.
-  payloadCache.set(`${ref}@${payloadRevision}`, layer)
+  setPayloadCache(`${ref}@${payloadRevision}`, layer)
   // The composite owns the stroke from here; the overlay handing off rather
   // than keeping a copy is what stops the halo and the paint that outlived
   // its own step being switched off.
@@ -4538,7 +4558,7 @@ async function buildRecipeComponents(
       await canvasToBlob(compact.mask),
     )
     if (fragileRetouchRegions.isCancelled(regionId)) return null
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
     components.push({
       id: newOpId(),
       mode: entry.mode,
@@ -4610,7 +4630,7 @@ async function commitMaskedAdjustmentMask(
       await canvasToBlob(compact.mask),
     )
     if (fragileRetouchRegions.isCancelled(regionId)) return
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
     const selected = ((stack.opById(opId) as any)?.regions ?? [] as RetouchRegion[])
       .find((region: RetouchRegion) =>
         region.id === regionId && isMaskedAdjustmentKind(region.kind))
@@ -4783,7 +4803,7 @@ async function commitMaskComponentCapture(
       await canvasToBlob(compact.mask),
     )
     if (fragileRetouchRegions.isCancelled(regionId)) return
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
     // Re-resolve after the await: edits may have moved or removed the region.
     const current = retouchRegionLocation(regionId)
     if (!current || current.op.id !== opId) return
@@ -4923,7 +4943,7 @@ async function commitGenerativeMaskCapture(
       `${opId}-mask-${newOpId()}.png`,
       await canvasToBlob(compact.mask),
     )
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
     component = {
       id: newOpId(),
       mode: capture.mode === 'new' ? 'add' : capture.mode,
@@ -5057,8 +5077,8 @@ async function commitRetouchRegion(
   // The payloads have unique immutable refs, so revision zero is their
   // permanent cache key. This also lets the compositor take the overlay
   // hand-off without waiting for WebKit to fetch the PNG it just uploaded.
-  if (resultRef) payloadCache.set(`${resultRef}@0`, compact.result)
-  payloadCache.set(`${maskRef}@0`, compact.mask)
+  if (resultRef) setPayloadCache(`${resultRef}@0`, compact.result)
+  setPayloadCache(`${maskRef}@0`, compact.mask)
 
   if (!existing) {
     stack.addOp({
@@ -6012,7 +6032,7 @@ async function recomputeSemanticComponent(
       `${opId}-${regionId}-mask-${newOpId()}.png`,
       await canvasToBlob(compact.mask),
     )
-    payloadCache.set(`${maskRef}@0`, compact.mask)
+    setPayloadCache(`${maskRef}@0`, compact.mask)
 
     // Re-resolve after the awaits; the segmentation ran against the pixels
     // below the op, so the anchor is the frame AT the op's index.
@@ -8347,7 +8367,11 @@ onDeactivated(() => {
   clearViewportGestureState()
   // Leaving IS saving: the applied stack becomes the Asset's current Revision
   // (and the recipe is persisted regardless, for eviction or reload).
-  void autosaveEdits()
+  void autosaveEdits().finally(() => {
+    // KeepAlive keeps this component mounted; release decoded full-resolution
+    // surfaces once the editor is no longer visible.
+    if (!editorActive.value) clearPayloadCache()
+  })
 })
 
 // The sidebar entry's unsaved-edits indicator.
@@ -8387,6 +8411,7 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect()
   candidates.stop()
   void autosaveEdits()
+  clearPayloadCache()
 })
 
 // Mounting or unmounting the annotation overlay hands its pixels between the

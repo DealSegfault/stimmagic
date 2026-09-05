@@ -1530,6 +1530,10 @@ async def preprocess_reference_pipeline(request: ReferencePreprocessRequest) -> 
 
         # Step 5: Apply controlnet preprocessor
         if request.preprocessor:
+            from runtime_mode import local_vision_enabled
+            if not local_vision_enabled():
+                raise HTTPException(status_code=503, detail="ControlNet is disabled in lean mode")
+
             intermediate_path = cache_dir / f"{cache_hash}_intermediate.png"
             img.convert("RGB").save(intermediate_path)
 
@@ -1738,6 +1742,11 @@ async def preprocess_controlnet(request: ControlnetPreprocessRequest):
     Returns:
         { path, width, height }
     """
+    from runtime_mode import local_vision_enabled
+
+    if not local_vision_enabled():
+        raise HTTPException(status_code=503, detail="ControlNet is disabled in lean mode")
+
     from controlnet import preprocess, PREPROCESSORS
 
     if request.preprocessor not in PREPROCESSORS:

@@ -30,13 +30,13 @@ from config import (
 from database_registry import get_database_registry
 from database import MediaItem
 from sqlalchemy import select, func
-from ingestion import sync_auto_markers_for_items
 from llm_resolver import normalize_model_slug
 from tool_provider_identity import (
     STIMMA_TOOL_PROVIDER_DISPLAY_NAME,
     STIMMA_TOOL_PROVIDER_ID,
     tool_provider_display_name,
 )
+from runtime_mode import is_stimma_cloud_enabled
 from utils.websocket import ws_manager
 from utils.http_headers import content_disposition
 from config_writer import (
@@ -694,7 +694,7 @@ async def get_settings_all():
 
     # Add Stimma Cloud provider if registered (dynamically connected on login)
     # or if user is authenticated (so they can enable/disable it)
-    if STIMMA_CLOUD_PROVIDER_ID not in configured_ids:
+    if is_stimma_cloud_enabled() and STIMMA_CLOUD_PROVIDER_ID not in configured_ids:
         provider = registry.get_provider(STIMMA_CLOUD_PROVIDER_ID)
         if provider:
             # Provider is connected
@@ -1310,6 +1310,7 @@ async def _sync_folder_auto_markers(profile_id: str, folders_data: list[dict]):
             log.info(f"Syncing auto-markers for {len(media_items)} media items")
 
             # Sync auto-markers (handles both adding and removing)
+            from ingestion import sync_auto_markers_for_items
             await sync_auto_markers_for_items(session, media_items, profile_folders)
             await session.commit()
 
