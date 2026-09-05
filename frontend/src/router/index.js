@@ -221,8 +221,17 @@ const routes = [
   }
 ]
 
+// The hosted web build is served from `/stimma` while the desktop/Tauri app
+// owns the origin root.  Detect the hosted mount at runtime so the same bundle
+// keeps normal root-based routing during local development and in Tauri.
+const webMount = '/stimma'
+const isHostedWebMount = typeof window !== 'undefined'
+  && !window.__TAURI_INTERNALS__
+  && (window.location.pathname === webMount
+    || window.location.pathname.startsWith(`${webMount}/`))
+
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(isHostedWebMount ? `${webMount}/` : '/'),
   routes
 })
 
