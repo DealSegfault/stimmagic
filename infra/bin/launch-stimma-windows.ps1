@@ -8,6 +8,94 @@ Set-StrictMode -Version Latest
 
 $InfraRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $RepoRoot = Split-Path -Parent $InfraRoot
+$launchLogs = Join-Path $env:LOCALAPPDATA "Stimma\Logs"
+$launcherPidPath = Join-Path $launchLogs "windows-launcher.pid"
+$webUrl = if ($env:STIMMA_FRONTEND_URL) { $env:STIMMA_FRONTEND_URL } else { "http://127.0.0.1:9192/" }
+
+New-Item -ItemType Directory -Path $launchLogs -Force | Out-Null
+
+function Stop-ProcessTree([int]$ProcessId, [string]$Label) {
+    if ($ProcessId -le 0 -or $ProcessId -eq $PID) {
+        return
+    }
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    Write-Host "Arrêt de l'ancienne instance Stimma ($Label, PID $ProcessId)..."
+    & taskkill.exe /PID $ProcessId /T /F 2>$null | Out-Null
+}
+
+function Read-PidFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    $raw = (Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue).Trim()
+    $parsed = 0
+    if ([int]::TryParse($raw, [ref]$parsed) -and $parsed -gt 0) {
+        return $parsed
+    }
+    return $null
+}
+
+function Test-StimmaLauncherProcess([int]$ProcessId) {
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        $commandLine = [string]$process.CommandLine
+        return $commandLine -like "*launch-stimma-windows.ps1*" -and
+            $commandLine -like "*$RepoRoot*"
+    } catch {
+        return $false
+    }
+}
+
+function Test-StimmaServiceProcess([int]$ProcessId, [string]$ScriptName) {
+    try {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop
+        $commandLine = [string]$process.CommandLine
+        return $commandLine -like "*$ScriptName*"
+    } catch {
+        return $false
+    }
+}
+
+function Stop-PreviousStimma {
+    $previousLauncherPid = Read-PidFile $launcherPidPath
+    if ($previousLauncherPid) {
+        if (Test-StimmaLauncherProcess $previousLauncherPid) {
+            Stop-ProcessTree $previousLauncherPid "lanceur"
+        }
+        Remove-Item -LiteralPath $launcherPidPath -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($entry in @(
+        @{ Path = (Join-Path $launchLogs "gateway.pid"); Label = "passerelle"; Script = "start-gateway.sh" },
+        @{ Path = (Join-Path $launchLogs "stimma.pid"); Label = "application"; Script = "start-stimma.sh" }
+    )) {
+        $previousPid = Read-PidFile $entry.Path
+        if ($previousPid -and (Test-StimmaServiceProcess $previousPid $entry.Script)) {
+            Stop-ProcessTree $previousPid $entry.Label
+        }
+        Remove-Item -LiteralPath $entry.Path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Wait-ForWebPage([string]$Url, [int]$TimeoutSeconds = 45) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        try {
+            $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) {
+                return
+            }
+        } catch {
+            # The frontend may still be compiling while the backend is ready.
+        }
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "La page Stimma n'est pas disponible sur $Url."
+}
 
 function Add-PathEntry([string]$Path) {
     if ($Path -and (Test-Path -LiteralPath $Path) -and (($env:Path -split ";") -notcontains $Path)) {
@@ -110,20 +198,35 @@ if ($Check) {
     exit 0
 }
 
-$cargoTarget = if (Test-Path -LiteralPath "D:\stimmagic-cargo-target") {
-    "D:\stimmagic-cargo-target"
-} else {
-    Join-Path $env:LOCALAPPDATA "Stimma\cargo-target"
-}
-$launchLogs = Join-Path $env:LOCALAPPDATA "Stimma\Logs"
-New-Item -ItemType Directory -Path $cargoTarget -Force | Out-Null
-New-Item -ItemType Directory -Path $launchLogs -Force | Out-Null
+$launcherMutex = [System.Threading.Mutex]::new($false, "Local\Stimma.WindowsLauncher")
+$mutexAcquired = $false
+try {
+    try {
+        $mutexAcquired = $launcherMutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        $mutexAcquired = $true
+    }
+    if (-not $mutexAcquired) {
+        Write-Host "Stimma est déjà en cours de lancement ; double-clic ignoré."
+        return
+    }
 
-$env:STIMMA_REPO_ROOT_WINDOWS = $RepoRoot
-$env:STIMMA_CARGO_TARGET_DIR_WINDOWS = $cargoTarget
-$env:STIMMA_LAUNCH_LOG_DIR_WINDOWS = $launchLogs
+    Stop-PreviousStimma
+    Set-Content -LiteralPath $launcherPidPath -Value ([string]$PID) -NoNewline
 
-$launchCommand = @'
+    $cargoTarget = if (Test-Path -LiteralPath "D:\stimmagic-cargo-target") {
+        "D:\stimmagic-cargo-target"
+    } else {
+        Join-Path $env:LOCALAPPDATA "Stimma\cargo-target"
+    }
+    New-Item -ItemType Directory -Path $cargoTarget -Force | Out-Null
+
+    $env:STIMMA_REPO_ROOT_WINDOWS = $RepoRoot
+    $env:STIMMA_CARGO_TARGET_DIR_WINDOWS = $cargoTarget
+    $env:STIMMA_LAUNCH_LOG_DIR_WINDOWS = $launchLogs
+    Remove-Item Env:MODAL_TOKEN_ID, Env:MODAL_TOKEN_SECRET, Env:HF_TOKEN -ErrorAction SilentlyContinue
+
+    $launchCommand = @'
 set -eu
 export CARGO_TARGET_DIR="$(cygpath -u "$STIMMA_CARGO_TARGET_DIR_WINDOWS")"
 export STIMMA_LAUNCH_LOG_DIR="$(cygpath -u "$STIMMA_LAUNCH_LOG_DIR_WINDOWS")"
@@ -131,6 +234,19 @@ cd "$(cygpath -u "$STIMMA_REPO_ROOT_WINDOWS")"
 exec bash infra/bin/launch-stimma.sh
 '@
 
-Write-Host "Lancement de Stimma : passerelle, backend, frontend et application..."
-$launchCommand | & $bash --login -s --
-exit $LASTEXITCODE
+    Write-Host "Lancement de Stimma : passerelle, backend, frontend et application..."
+    $launchCommand | & $bash --login -s --
+    $launchExitCode = $LASTEXITCODE
+    if ($launchExitCode -eq 0) {
+        Wait-ForWebPage $webUrl
+        Start-Process -FilePath $webUrl | Out-Null
+        Write-Host "Page Stimma ouverte dans le navigateur : $webUrl"
+    }
+    Remove-Item -LiteralPath $launcherPidPath -Force -ErrorAction SilentlyContinue
+    exit $launchExitCode
+} finally {
+    if ($mutexAcquired) {
+        $launcherMutex.ReleaseMutex()
+    }
+    $launcherMutex.Dispose()
+}

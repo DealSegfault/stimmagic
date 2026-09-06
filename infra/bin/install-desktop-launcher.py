@@ -13,7 +13,8 @@ from pathlib import Path
 
 INFRA_ROOT = Path(__file__).resolve().parent.parent
 LAUNCH_SCRIPT = INFRA_ROOT / "bin" / "launch-stimma.sh"
-WINDOWS_LAUNCH_SCRIPT = INFRA_ROOT / "bin" / "launch-stimma-windows.cmd"
+WINDOWS_LAUNCH_SCRIPT = INFRA_ROOT / "bin" / "launch-stimma-windows.ps1"
+WINDOWS_LAUNCH_COMMAND = INFRA_ROOT / "bin" / "launch-stimma-windows.cmd"
 LAUNCHER_NAME = "Lancer Stimma.command"
 WINDOWS_LAUNCHER_NAME = "Stimma.lnk"
 MEMO_NAME = "STIMMA - Installation terminée.txt"
@@ -127,10 +128,12 @@ def install_windows_launcher(args: argparse.Namespace) -> int:
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($env:STIMMA_SHORTCUT_PATH)
-$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\cmd.exe'
-$shortcut.Arguments = '/d /c "' + $env:STIMMA_WINDOWS_LAUNCHER + '"'
+$shortcut.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$quotedLauncher = '"' + ($env:STIMMA_WINDOWS_LAUNCHER -replace '"', '\"') + '"'
+$shortcut.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + $quotedLauncher
 $shortcut.WorkingDirectory = $env:STIMMA_REPO_ROOT
 $shortcut.Description = 'Démarrer Stimma — passerelle, backend, frontend et application'
+$shortcut.WindowStyle = 7
 if (Test-Path -LiteralPath $env:STIMMA_ICON_PATH) {
     $shortcut.IconLocation = $env:STIMMA_ICON_PATH + ',0'
 }
@@ -171,7 +174,7 @@ $shortcut.Save()
     for secret_name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "HF_TOKEN"):
         launch_env.pop(secret_name, None)
     completed = subprocess.run(
-        ["cmd.exe", "/d", "/c", str(WINDOWS_LAUNCH_SCRIPT)],
+        ["cmd.exe", "/d", "/c", str(WINDOWS_LAUNCH_COMMAND)],
         cwd=str(INFRA_ROOT.parent),
         env=launch_env,
         check=False,

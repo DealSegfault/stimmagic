@@ -76,3 +76,10 @@ $python = ".\infra\.runtime\ComfyUI\.venv\Scripts\python.exe"
 
 Les identifiants restent gérés par Codex, Modal ou le répertoire de
 configuration de l'utilisateur ; ils ne doivent jamais être ajoutés au dépôt.
+
+Le raccourci de Bureau Windows lance PowerShell sans fenêtre de terminal,
+arrête les arbres Stimma précédents avant un nouveau démarrage et ignore les
+double-clics concurrents pendant qu'un lancement est déjà en cours. Une fois
+le backend et le frontend prêts, il ouvre automatiquement
+`http://127.0.0.1:9192/` dans le navigateur par défaut. Les logs de démarrage
+restent disponibles dans `%LOCALAPPDATA%\Stimma\Logs`.
