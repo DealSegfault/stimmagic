@@ -27,7 +27,7 @@ class StorageServiceError(RuntimeError):
 
 
 def managed_object_root(profile_id: str) -> Path:
-    return app_dirs.get_profile_dir(profile_id) / "objects"
+    return app_dirs.get_managed_object_dir(profile_id)
 
 
 def object_key_for_hash(file_hash: str) -> str:

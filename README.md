@@ -72,6 +72,19 @@ tools/stimma dev app        # Tauri shell
 
 Dependencies install on first run. Development uses its own data directory and config, separate from any packaged install — see [docs/DATA_DIRECTORIES.md](docs/DATA_DIRECTORIES.md).
 
+### Windows plug-and-play
+
+Sur Windows, une commande prépare les prérequis de build, synchronise les
+dépendances verrouillées et produit l'installateur NSIS autonome :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\infra\bin\build-windows-installer.ps1
+```
+
+L'installateur obtenu dans `src-tauri\target\release\bundle\nsis` embarque le
+backend Python : aucune toolchain de développement n'est requise sur le poste
+cible. Le guide complet est dans [docs/WINDOWS.md](docs/WINDOWS.md).
+
 ```bash
 tools/stimma test backend       # backend pytest suite
 tools/stimma test acceptance    # end-to-end lane against a fresh sandbox

@@ -2,7 +2,13 @@
 set -eu
 
 INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_ROOT="${STIMMA_LAUNCH_LOG_DIR:-$HOME/Library/Logs/Stimma}"
+if [ -n "${STIMMA_LAUNCH_LOG_DIR:-}" ]; then
+  LOG_ROOT="$STIMMA_LAUNCH_LOG_DIR"
+elif [ -n "${LOCALAPPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+  LOG_ROOT="$(cygpath -u "$LOCALAPPDATA")/Stimma/Logs"
+else
+  LOG_ROOT="$HOME/Library/Logs/Stimma"
+fi
 BACKEND_URL="${STIMMA_BACKEND_URL:-http://127.0.0.1:9191}"
 WAIT_SECONDS="${STIMMA_LAUNCH_TIMEOUT_SECONDS:-900}"
 
@@ -22,15 +28,23 @@ case "$WAIT_SECONDS" in
     ;;
 esac
 
-command -v python3 >/dev/null 2>&1 || {
+if [ -x "$INFRA_ROOT/.runtime/ComfyUI/.venv/bin/python" ]; then
+  PYTHON_EXE="$INFRA_ROOT/.runtime/ComfyUI/.venv/bin/python"
+elif [ -x "$INFRA_ROOT/.runtime/ComfyUI/.venv/Scripts/python.exe" ]; then
+  PYTHON_EXE="$INFRA_ROOT/.runtime/ComfyUI/.venv/Scripts/python.exe"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON_EXE="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_EXE="$(command -v python)"
+else
   echo "Python 3 est requis pour lancer et vérifier Stimma." >&2
   exit 1
-}
+fi
 
 mkdir -p "$LOG_ROOT"
 
 port_is_open() {
-  python3 - "$1" <<'PY'
+  "$PYTHON_EXE" - "$1" <<'PY'
 import socket
 import sys
 
@@ -73,7 +87,7 @@ start_stimma_if_needed() {
 }
 
 ready_for_first_video() {
-  python3 - "$BACKEND_URL" <<'PY'
+  "$PYTHON_EXE" - "$BACKEND_URL" <<'PY'
 import json
 import sys
 from urllib.parse import urlencode
@@ -88,22 +102,30 @@ def get_json(path: str):
 
 
 try:
-    settings = get_json("/api/settings")
-    if not settings.get("readiness", {}).get("has_agent_llm"):
+    profiles = get_json("/api/profiles").get("profiles", [])
+    if not profiles or not profiles[0].get("id"):
+        raise RuntimeError("aucun profil Stimma disponible")
+    profile_id = profiles[0]["id"]
+    profile_query = urlencode({"profile": profile_id})
+
+    settings = get_json(f"/api/settings?{profile_query}")
+    readiness = settings.get("readiness")
+    if readiness is not None and not readiness.get("has_agent_llm"):
         raise RuntimeError("Codex CLI n'est pas disponible comme agent LLM")
 
-    gateway = get_json("/api/gateway/status")
+    gateway = get_json(f"/api/gateway/status?{profile_query}")
     if not gateway.get("running"):
         raise RuntimeError("la passerelle Modal n'est pas prête")
 
     query = urlencode({
         "provider_id": "comfyui-modal-h3",
         "include_unavailable": "false",
+        "profile": profile_id,
     })
     tools = get_json(f"/api/tools/providers/tools?{query}")
     if not any(
         tool.get("availability") == "available"
-        and str(tool.get("tool_id", "")).startswith("minimax_h3_")
+        and str(tool.get("tool_id", "")).startswith("minimax-h3-")
         for tool in tools
     ):
         raise RuntimeError("aucun outil vidéo MiniMax H3 n'est disponible")

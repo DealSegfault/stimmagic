@@ -12,8 +12,12 @@ if [ -x "$HOME/.local/share/uv/tools/modal/bin/python" ]; then
   MODAL_PY="$HOME/.local/share/uv/tools/modal/bin/python"
 elif [ -x "$COMFY_ROOT/.venv/bin/python" ]; then
   MODAL_PY="$COMFY_ROOT/.venv/bin/python"
+elif [ -x "$COMFY_ROOT/.venv/Scripts/python.exe" ]; then
+  MODAL_PY="$COMFY_ROOT/.venv/Scripts/python.exe"
 elif command -v python3 >/dev/null 2>&1; then
   MODAL_PY="python3"
+elif command -v python >/dev/null 2>&1; then
+  MODAL_PY="python"
 else
   echo "Python 3 introuvable pour Modal." >&2
   exit 1
@@ -25,8 +29,8 @@ if [ ! -r "$TOKEN_FILE" ]; then
   exit 1
 fi
 
-if [ ! -f "$COMFY_ROOT/main.py" ] || [ ! -x "$COMFY_ROOT/.venv/bin/python" ]; then
-  echo "Runtime ComfyUI absent : exécutez 'infra/bin/bootstrap-local.sh'." >&2
+if [ ! -f "$COMFY_ROOT/main.py" ] || { [ ! -x "$COMFY_ROOT/.venv/bin/python" ] && [ ! -x "$COMFY_ROOT/.venv/Scripts/python.exe" ]; }; then
+  echo "Runtime ComfyUI absent : exécutez le bootstrap local de votre plateforme." >&2
   exit 1
 fi
 
@@ -81,6 +85,9 @@ start_bridge() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage modal_bridge.py..."
   PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
   if [ ! -x "$PYTHON_EXE" ]; then
+    PYTHON_EXE="$COMFY_ROOT/.venv/Scripts/python.exe"
+  fi
+  if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi
   "$PYTHON_EXE" "$INFRA_ROOT/modal_bridge.py" \
@@ -96,6 +103,9 @@ start_hd_bridge() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage du proxy HD B300 (port 8191)..."
   PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
   if [ ! -x "$PYTHON_EXE" ]; then
+    PYTHON_EXE="$COMFY_ROOT/.venv/Scripts/python.exe"
+  fi
+  if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi
   (
@@ -109,6 +119,9 @@ start_hd_bridge() {
 start_comfy() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage ComfyUI local STP (port 8188)..."
   PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
+  if [ ! -x "$PYTHON_EXE" ]; then
+    PYTHON_EXE="$COMFY_ROOT/.venv/Scripts/python.exe"
+  fi
   if [ ! -x "$PYTHON_EXE" ]; then
     PYTHON_EXE="$MODAL_PY"
   fi

@@ -9,6 +9,10 @@ BINARIES_DIR="$SCRIPT_DIR/binaries"
 
 # Get target triple
 TARGET=$(rustc -vV | grep host | cut -d' ' -f2)
+case "$TARGET" in
+  *-windows-msvc) EXE_SUFFIX=".exe" ;;
+  *) EXE_SUFFIX="" ;;
+esac
 
 echo "Building stimma-watchdog for $TARGET..."
 
@@ -18,7 +22,7 @@ cargo build --release
 
 # Copy to binaries directory with target triple suffix
 mkdir -p "$BINARIES_DIR"
-cp "$WATCHDOG_DIR/target/release/stimma-watchdog" "$BINARIES_DIR/stimma-watchdog-$TARGET"
+cp "$WATCHDOG_DIR/target/release/stimma-watchdog$EXE_SUFFIX" "$BINARIES_DIR/stimma-watchdog-$TARGET$EXE_SUFFIX"
 
-echo "Built: $BINARIES_DIR/stimma-watchdog-$TARGET"
-ls -la "$BINARIES_DIR/stimma-watchdog-$TARGET"
+echo "Built: $BINARIES_DIR/stimma-watchdog-$TARGET$EXE_SUFFIX"
+ls -la "$BINARIES_DIR/stimma-watchdog-$TARGET$EXE_SUFFIX"

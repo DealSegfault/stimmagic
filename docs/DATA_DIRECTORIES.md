@@ -170,11 +170,17 @@ Environment variables take highest precedence, overriding all path derivation:
 |----------|---------|
 | `STIMMA_DATA_DIR` | Override data directory |
 | `STIMMA_CACHE_DIR` | Override cache directory |
+| `STIMMA_ASSET_ROOT` | Optional root for generated staging and durable managed asset bytes |
 | `STIMMA_TMP_DIR` | Override temp directory |
 | `STIMMA_PORT` | Override server port |
 | `STIMMA_LOG_LEVEL` | `debug`, `info`, `warn`, `error` |
 
 The Tauri app only derives paths from the bundle identifier when `STIMMA_DATA_DIR` is **not** set. The CLI always computes paths from the bundle ID and sandbox name, then passes them as env vars to the server.
+
+When `STIMMA_ASSET_ROOT` is set, generated staging is written below
+`<asset_root>/staging/<profile-id>/generated` and durable managed objects below
+`<asset_root>/assets/<profile-id>/objects`. This keeps large generated media off
+the system volume without moving the profile database or settings.
 
 ## How It Fits Together
 

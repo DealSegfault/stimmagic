@@ -6,6 +6,8 @@ Uses a two-level directory scheme: bundle ID (release channel) + sandbox (isolat
     <os-data-root>/<bundle-id>/<sandbox>/
 
 Environment variables STIMMA_DATA_DIR and STIMMA_CACHE_DIR override all derivation.
+STIMMA_ASSET_ROOT optionally moves generated staging and durable managed objects
+to a dedicated volume while leaving the app database and settings in place.
 
 Platform conventions:
 - macOS: ~/Library/Application Support/<bundle-id>/<sandbox>/
@@ -104,6 +106,9 @@ def get_all_stimma_owned_roots() -> list[Path]:
         get_bundle_id(),
     }
     roots = [get_data_dir(), get_cache_dir()]
+    asset_root = get_asset_root()
+    if asset_root is not None:
+        roots.append(asset_root)
     roots.extend(_os_data_root() / bundle_id for bundle_id in bundle_ids)
     roots.extend(_os_cache_root() / bundle_id for bundle_id in bundle_ids)
     return list(dict.fromkeys(root.expanduser().resolve(strict=False) for root in roots))
@@ -146,7 +151,33 @@ def get_managed_staging_dir(
     """Return an app-owned transient directory outside watched sources."""
     if category not in {"generated", "uploads"}:
         raise ValueError(f"Unsupported staging category: {category}")
+    asset_root = get_asset_root()
+    if asset_root is not None:
+        return asset_root / "staging" / profile_id / category
     return get_profile_dir(profile_id) / "staging" / category
+
+
+def get_asset_root() -> Optional[Path]:
+    """Return the optional root for generated asset bytes.
+
+    This is deliberately separate from ``STIMMA_DATA_DIR``: databases,
+    settings, and logs stay in the normal app data directory, while large
+    generated payloads can live on a dedicated volume.
+    """
+    override = os.environ.get("STIMMA_ASSET_ROOT")
+    if not override or not override.strip():
+        return None
+    return Path(override).expanduser()
+
+
+def get_managed_object_dir(profile_id: Optional[str] = None) -> Path:
+    """Return the durable managed-object directory for a profile."""
+    if not profile_id:
+        raise ValueError("profile_id is required")
+    asset_root = get_asset_root()
+    if asset_root is None:
+        return get_profile_dir(profile_id) / "objects"
+    return asset_root / "assets" / profile_id / "objects"
 
 
 def get_thumbnail_cache_dir() -> Path:

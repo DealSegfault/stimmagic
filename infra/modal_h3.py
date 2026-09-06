@@ -68,7 +68,13 @@ comfy_image = (
         add_python="3.12",
     )
     .entrypoint([])
-    .apt_install("build-essential", "ffmpeg", "git", "ninja-build")
+    # Keep image builds non-interactive on Windows-driven Modal deploys too;
+    # Debian's tzdata configuration otherwise waits for a terminal.
+    .run_commands(
+        "export DEBIAN_FRONTEND=noninteractive && "
+        "apt-get update && "
+        "apt-get install -y build-essential ffmpeg git ninja-build"
+    )
     .run_commands(
         "git clone https://github.com/Comfy-Org/ComfyUI.git /root/ComfyUI",
         f"git -C /root/ComfyUI checkout {COMFYUI_REVISION}",
@@ -100,7 +106,10 @@ comfy_image = (
         # Image builds do not expose a GPU. Compile SageAttention for both
         # Blackwell families used by this app: B300 (SM 10.3) and RTX PRO
         # 6000 (SM 12.0).
-        "TORCH_CUDA_ARCH_LIST='10.3;12.0' MAX_JOBS=4 CC=gcc CXX=g++ python -m pip install --no-build-isolation /tmp/SageAttention",
+        "sed -i 's/-std=c++17/-std=c++20/g' /tmp/SageAttention/setup.py "
+        "/tmp/SageAttention/sageattention3_blackwell/setup.py",
+        "TORCH_CUDA_ARCH_LIST='10.3;12.0' MAX_JOBS=4 CC=gcc CXX=g++ "
+        "python -m pip install --no-build-isolation /tmp/SageAttention",
         # FlashAttention-4 is the Blackwell-native CuTeDSL path used by the
         # workflow-scoped H3 B300 adapter below.
         "git clone --depth 1 https://github.com/Dao-AILab/flash-attention.git /tmp/flash-attention",

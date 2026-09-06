@@ -120,9 +120,15 @@ def check_modal_cli() -> str:
     """Verify modal executable exists or install it."""
     modal_bin = shutil.which("modal")
     if not modal_bin:
-        uv_modal = Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "bin" / "modal"
-        if uv_modal.exists():
-            modal_bin = str(uv_modal)
+        uv_modal_candidates = [
+            Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "bin" / "modal",
+            Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "Scripts" / "modal.exe",
+            Path(sys.executable).parent / "modal.exe",
+            Path(sys.executable).parent / "modal",
+        ]
+        modal_path = next((path for path in uv_modal_candidates if path.exists()), None)
+        if modal_path is not None:
+            modal_bin = str(modal_path)
     
     if not modal_bin:
         log_warn("Modal CLI n'est pas encore installé.")
@@ -411,7 +417,7 @@ def main() -> None:
                 deploy_trellis2,
             )
 
-    # 7. Raccourci macOS, lancement et mémo de réussite
+    # 7. Raccourci Bureau, lancement et mémo de réussite
     log_step(7, TOTAL_STEPS, "Raccourci Bureau et lancement de Stimma")
     launcher_cmd = [sys.executable, str(ROOT_DIR / "bin" / "install-desktop-launcher.py")]
     handoff_ready = deploy_h3 and do_download
@@ -428,8 +434,9 @@ def main() -> None:
     print(f"\n{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}")
     print(f"{GREEN}{BOLD}             CONFIGURATION MODAL TERMINÉE AVEC SUCCÈS !          {RESET}")
     print(f"{GREEN}{BOLD}════════════════════════════════════════════════════════════════{RESET}\n")
-    if handoff_ready and sys.platform == "darwin":
-        print("Un raccourci 'Lancer Stimma.command' a été mis sur le Bureau.")
+    if handoff_ready and sys.platform in {"darwin", "win32"}:
+        launcher_name = "Lancer Stimma.command" if sys.platform == "darwin" else "Stimma.lnk"
+        print(f"Un raccourci '{launcher_name}' a été mis sur le Bureau.")
         print("Stimma est lancé et prêt à générer votre première vidéo.")
     else:
         print("Le raccourci est installé, mais Stimma n'a pas été déclaré prêt.")

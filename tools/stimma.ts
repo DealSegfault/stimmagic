@@ -570,7 +570,7 @@ Commands:
   app build       Build packaged app with portable backend
   app build --release  Build with polished DMG (macOS)
   app run         Run built app
-  app install     Install built app
+  app install     Install the built app (macOS / Windows)
   config edit     Open config.yaml in $EDITOR
   stimpacks dev [path]   Use a stimpacks dir as the live authority for built-in stimpacks
                       (default: sibling stimma-skills repo). Shadows installed copies.
@@ -1221,15 +1221,37 @@ async function buildPortableBackend(target: string): Promise<void> {
   await run("bash", [join(repoRoot, "scripts", "build-portable-backend.sh")], { cwd: repoRoot });
 }
 
-async function ensurePlatformResourceMapping(target: string): Promise<void> {
-  if (Deno.build.os !== "windows" && Deno.build.os !== "linux") return;
+async function platformResourceMapping(target: string): Promise<Record<string, string>> {
   const tauriPath = join(repoRoot, "src-tauri", "tauri.conf.json");
   const raw = await Deno.readTextFile(tauriPath);
   const cfg = JSON.parse(raw);
-  cfg.bundle.resources = {
-    [`binaries/stimma-backend-${target}`]: "stimma-backend",
-  };
-  await Deno.writeTextFile(tauriPath, JSON.stringify(cfg, null, 2) + "\n");
+  const resources: Record<string, string> = { ...(cfg.bundle?.resources ?? {}) };
+  for (const resourcePath of Object.keys(resources)) {
+    if (resourcePath.startsWith("binaries/stimma-backend-")) delete resources[resourcePath];
+  }
+  resources[`binaries/stimma-backend-${target}`] = "stimma-backend";
+  if (Deno.build.os !== "darwin") delete resources["icons/Assets.car"];
+  return resources;
+}
+
+async function windowsInstallerPath(): Promise<string> {
+  const bundleDir = join(repoRoot, "src-tauri", "target", "release", "bundle", "nsis");
+  const candidates: Array<{ path: string; modified: number }> = [];
+  try {
+    for await (const entry of Deno.readDir(bundleDir)) {
+      if (!entry.isFile || !entry.name.toLowerCase().endsWith(".exe")) continue;
+      const path = join(bundleDir, entry.name);
+      const stat = await Deno.stat(path);
+      candidates.push({ path, modified: stat.mtime?.getTime() ?? 0 });
+    }
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+  candidates.sort((a, b) => b.modified - a.modified);
+  if (candidates.length === 0) {
+    throw new Error("Windows installer not found. Run 'stimma app build' first.");
+  }
+  return candidates[0].path;
 }
 
 async function getTauriProductName(): Promise<string> {
@@ -1315,9 +1337,15 @@ async function channelIconConfig(channel: string): Promise<Record<string, unknow
   // so carry the existing entries over alongside the redirected Assets.car.
   const cfg = JSON.parse(await Deno.readTextFile(join(repoRoot, "src-tauri", "tauri.conf.json")));
   const resources: Record<string, string> = { ...(cfg.bundle?.resources ?? {}) };
-  if ("icons/Assets.car" in resources) {
-    delete resources["icons/Assets.car"];
-    resources[`${relDir}/Assets.car`] = "Assets.car";
+  delete resources["icons/Assets.car"];
+  // Assets.car is a macOS-only resource. The icon generator intentionally
+  // skips it on Windows/Linux, so never leave a non-existent path in the
+  // Tauri override for those platforms.
+  if (Deno.build.os === "darwin") resources[`${relDir}/Assets.car`] = "Assets.car";
+  if (Deno.build.os !== "darwin") {
+    for (const resourcePath of Object.keys(resources)) {
+      if (resourcePath.includes("-apple-darwin")) delete resources[resourcePath];
+    }
   }
 
   return {
@@ -1351,7 +1379,7 @@ async function appBuild(args: string[], channel: string): Promise<void> {
   await buildPortableBackend(target);
 
   await buildWatchdog(target);
-  await ensurePlatformResourceMapping(target);
+  const platformResources = await platformResourceMapping(target);
 
   const env: Record<string, string> = {};
   if (Deno.build.os === "darwin" && !polishedDmg) {
@@ -1386,6 +1414,44 @@ async function appBuild(args: string[], channel: string): Promise<void> {
 
   const iconConfig = await channelIconConfig(channel);
   if (iconConfig) Object.assign(configOverride, iconConfig);
+
+  const configuredBundle = configOverride.bundle && typeof configOverride.bundle === "object"
+    ? configOverride.bundle as Record<string, unknown>
+    : {};
+  const configuredResources: Record<string, string> = configuredBundle.resources &&
+      typeof configuredBundle.resources === "object"
+    ? configuredBundle.resources as Record<string, string>
+    : {};
+  if (
+    Deno.build.os === "darwin" &&
+    !Object.values(configuredResources).includes("Assets.car") &&
+    await pathExists(join(repoRoot, "src-tauri", "icons", "Assets.car"))
+  ) {
+    configuredResources["icons/Assets.car"] = "Assets.car";
+  }
+  configOverride.bundle = {
+    ...configuredBundle,
+    resources: { ...platformResources, ...configuredResources },
+  };
+  if (Deno.build.os === "windows") {
+    const windows = configuredBundle.windows && typeof configuredBundle.windows === "object"
+      ? configuredBundle.windows as Record<string, unknown>
+      : {};
+    const nsis = windows.nsis && typeof windows.nsis === "object"
+      ? windows.nsis as Record<string, unknown>
+      : {};
+    configOverride.bundle = {
+      ...(configOverride.bundle as Record<string, unknown>),
+      targets: ["nsis"],
+      // Official CI supplies the updater signing key. Local builds should
+      // still produce an installable app without requiring release secrets.
+      ...(Deno.env.get("TAURI_SIGNING_PRIVATE_KEY") ? {} : { createUpdaterArtifacts: false }),
+      windows: {
+        ...windows,
+        nsis: { ...nsis, installMode: "currentUser" },
+      },
+    };
+  }
 
   if (Object.keys(configOverride).length > 0) {
     tauriBuildArgs.push("--config", JSON.stringify(configOverride));
@@ -1777,13 +1843,20 @@ function tauriDevConfig(
   ports: { frontend: number },
   iconConfig: Record<string, unknown> | null = null,
 ): string {
-  return JSON.stringify({
+  const config: Record<string, unknown> = {
     identifier: sandboxIdentifier(bundleId, sandbox),
     build: {
       devUrl: `http://${DEV_HOST}:${ports.frontend}`,
     },
     ...(iconConfig ?? {}),
-  });
+  };
+  // Dev mode uses the separately running backend on :9191. Do not inherit
+  // production/macOS-only resources from tauri.conf.json on Windows.
+  const bundle = config.bundle && typeof config.bundle === "object"
+    ? config.bundle as Record<string, unknown>
+    : {};
+  config.bundle = { ...bundle, resources: {} };
+  return JSON.stringify(config);
 }
 
 async function commandDevStack(
@@ -2119,18 +2192,21 @@ async function main(): Promise<void> {
           Deno.exit(1);
         }
       } else if (sub === "install") {
-        if (Deno.build.os !== "darwin") {
-          console.error("app install currently supports macOS only.");
+        if (Deno.build.os === "windows") {
+          await run(await windowsInstallerPath(), []);
+        } else if (Deno.build.os === "darwin") {
+          const appBundle = await macosAppBundlePath();
+          if (!(await pathExists(appBundle))) {
+            console.error("Error: App not built. Run 'stimma app build' first.");
+            Deno.exit(1);
+          }
+          const installedBundle = join("/Applications", `${await getTauriProductName()}.app`);
+          await run("rm", ["-rf", installedBundle]);
+          await run("cp", ["-R", appBundle, installedBundle]);
+        } else {
+          console.error("app install currently supports macOS and Windows.");
           Deno.exit(1);
         }
-        const appBundle = await macosAppBundlePath();
-        if (!(await pathExists(appBundle))) {
-          console.error("Error: App not built. Run 'stimma app build' first.");
-          Deno.exit(1);
-        }
-        const installedBundle = join("/Applications", `${await getTauriProductName()}.app`);
-        await run("rm", ["-rf", installedBundle]);
-        await run("cp", ["-R", appBundle, installedBundle]);
       } else {
         printUsage();
       }

@@ -17,6 +17,8 @@ if [ -x "$HOME/.local/share/uv/tools/modal/bin/python" ]; then
   MODAL_PY="$HOME/.local/share/uv/tools/modal/bin/python"
 elif [ -x "$RUNTIME_ROOT/ComfyUI/.venv/bin/python" ]; then
   MODAL_PY="$RUNTIME_ROOT/ComfyUI/.venv/bin/python"
+elif [ -x "$RUNTIME_ROOT/ComfyUI/.venv/Scripts/python.exe" ]; then
+  MODAL_PY="$RUNTIME_ROOT/ComfyUI/.venv/Scripts/python.exe"
 fi
 if [ -n "$MODAL_PY" ] && [ -r "$TOKEN_FILE" ]; then
   TRELLIS2_MODAL_URL="${TRELLIS2_MODAL_URL:-$(
@@ -33,7 +35,11 @@ if [ -n "$MODAL_PY" ] && [ -r "$TOKEN_FILE" ]; then
 fi
 
 stimma_target=$(rustc -vV | awk '/^host:/ {print $2}')
-stimma_watchdog="src-tauri/binaries/stimma-watchdog-$stimma_target"
+case "$stimma_target" in
+  *-windows-msvc) stimma_exe_suffix=".exe" ;;
+  *) stimma_exe_suffix="" ;;
+esac
+stimma_watchdog="src-tauri/binaries/stimma-watchdog-$stimma_target$stimma_exe_suffix"
 stimma_backend="src-tauri/binaries/stimma-backend-$stimma_target"
 
 if [ ! -x "$stimma_watchdog" ]; then
