@@ -29,7 +29,6 @@ async def test_account_provisioning_api_starts_and_never_returns_secrets(monkeyp
             "profile": "studio-b",
             "modal_token_id": "ak-example",
             "modal_token_secret": "as-example",
-            "hf_token": "hf_example",
             "monthly_budget": 50,
         })
         progress = await client.get("/api/modal/provisioning")
@@ -38,8 +37,8 @@ async def test_account_provisioning_api_starts_and_never_returns_secrets(monkeyp
     assert captured["profile"] == "studio-b"
     assert captured["modal_token_id"] == "ak-example"
     assert captured["modal_token_secret"] == "as-example"
-    assert captured["hf_token"] == "hf_example"
+    assert captured["hf_token"] is None
+    assert captured["force_redeploy"] is False
     assert progress.json()["progress"] == 42
     assert "ak-example" not in json.dumps(response.json())
     assert "as-example" not in json.dumps(response.json())
-    assert "hf_example" not in json.dumps(response.json())

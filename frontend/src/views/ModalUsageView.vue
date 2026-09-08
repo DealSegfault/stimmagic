@@ -271,15 +271,22 @@
             />
           </label>
           <label class="block sm:col-span-2">
-            <span class="text-xs font-medium text-content-secondary">Hugging Face Read Token</span>
+            <span class="text-xs font-medium text-content-secondary">Hugging Face Read Token <span class="font-normal text-content-muted">(facultatif)</span></span>
             <input
               v-model.trim="hfToken"
               type="password"
-              required
               autocomplete="new-password"
-              placeholder="hf_…"
+              placeholder="Laisser vide si inutile ou déjà configuré"
               class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 font-mono text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
+            <span class="mt-1 block text-[11px] leading-4 text-content-muted">Utilisé uniquement pour accélérer certains téléchargements de modèles.</span>
+          </label>
+          <label class="flex items-start gap-2 sm:col-span-2">
+            <input v-model="forceRedeploy" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-edge-subtle bg-overlay-subtle text-accent focus-visible:ring-2 focus-visible:ring-accent/60" />
+            <span class="text-xs leading-5 text-content-secondary">
+              Forcer le redéploiement
+              <span class="block text-[11px] text-content-muted">À laisser désactivé : les applications Modal existantes seront réutilisées.</span>
+            </span>
           </label>
           <label class="block sm:col-span-2">
             <span class="text-xs font-medium text-content-secondary">Budget mensuel</span>
@@ -380,6 +387,7 @@ const modalProfile = ref('')
 const modalTokenId = ref('')
 const modalTokenSecret = ref('')
 const hfToken = ref('')
+const forceRedeploy = ref(false)
 const monthlyBudget = ref(30)
 let provisioningTimer = null
 
@@ -406,7 +414,7 @@ const canProvision = computed(() => (
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(modalProfile.value)
   && modalTokenId.value.startsWith('ak-')
   && modalTokenSecret.value.startsWith('as-')
-  && hfToken.value.startsWith('hf_')
+  && (!hfToken.value || hfToken.value.startsWith('hf_'))
   && Number(monthlyBudget.value) >= 0
 ))
 
@@ -466,13 +474,15 @@ async function provisionAccount() {
       profile: modalProfile.value,
       modal_token_id: modalTokenId.value,
       modal_token_secret: modalTokenSecret.value,
-      hf_token: hfToken.value,
+      hf_token: hfToken.value || null,
       monthly_budget: monthlyBudget.value,
+      force_redeploy: forceRedeploy.value,
     })
     modalProfile.value = ''
     modalTokenId.value = ''
     modalTokenSecret.value = ''
     hfToken.value = ''
+    forceRedeploy.value = false
     setupStarted.value = true
     pollProvisioning()
   } catch {

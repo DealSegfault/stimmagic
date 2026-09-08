@@ -406,9 +406,10 @@ class ModalUsageService:
         modal_token_id: str,
         modal_token_secret: str,
         profile: str,
-        hf_token: str,
+        hf_token: str | None = None,
         label: str | None = None,
         monthly_budget: float = 30.0,
+        force_redeploy: bool = False,
     ) -> dict[str, Any]:
         """Start one serialized setup through a named Modal CLI profile."""
         # ponytail: one setup at a time avoids shared CLI/config races; queue
@@ -431,13 +432,13 @@ class ModalUsageService:
         }
         self._provisioning_task = asyncio.create_task(
             self._provision_account(
-                job_id=job_id,
                 modal_token_id=modal_token_id,
                 modal_token_secret=modal_token_secret,
                 profile=profile,
                 hf_token=hf_token,
                 label=label,
                 monthly_budget=monthly_budget,
+                force_redeploy=force_redeploy,
             )
         )
         return self.provisioning_status()
@@ -495,7 +496,13 @@ class ModalUsageService:
         except ImportError as exc:
             raise RuntimeError("Python Modal introuvable après l’installation") from exc
 
-    async def _run_setup(self, proxy_token_path: Path, profile: str, env: dict[str, str]) -> None:
+    async def _run_setup(
+        self,
+        proxy_token_path: Path,
+        profile: str,
+        env: dict[str, str],
+        force_redeploy: bool = False,
+    ) -> None:
         script = self._setup_script()
         command = [
             str(script),
@@ -506,6 +513,8 @@ class ModalUsageService:
         ]
         if script.parent.parent.name == "infra":
             command.append("--skip-desktop")
+        if force_redeploy:
+            command.append("--force-redeploy")
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=str(script.parent.parent),
@@ -651,17 +660,23 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
     async def _provision_account(
         self,
         *,
-        job_id: str,
         modal_token_id: str,
         modal_token_secret: str,
         profile: str,
-        hf_token: str,
+        hf_token: str | None,
         label: str | None,
         monthly_budget: float,
+        force_redeploy: bool,
     ) -> None:
         accounts_path = _accounts_path()
         accounts_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_proxy_token = accounts_path.parent / f".modal-proxy-token-{job_id}.json"
+        self._load_accounts()
+        existing = next((account for account in self._accounts if account.profile == profile), None)
+        temporary_proxy_token = (
+            Path(existing.proxy_token_file).expanduser()
+            if existing and existing.proxy_token_file
+            else accounts_path.parent / f".modal-proxy-token-{profile}.json"
+        )
         env = os.environ.copy()
         env.update({
             "MODAL_TOKEN_ID": modal_token_id,
@@ -669,9 +684,10 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
             "NO_COLOR": "1",
             "PYTHONUNBUFFERED": "1",
         })
-        env["HF_TOKEN"] = hf_token
+        if hf_token:
+            env["HF_TOKEN"] = hf_token
         try:
-            await self._run_setup(temporary_proxy_token, profile, env)
+            await self._run_setup(temporary_proxy_token, profile, env, force_redeploy)
             self._update_provisioning(progress=88, stage="validation", message="Validation du workspace et des endpoints…")
             deployed = await self._inspect_modal_account(env)
             self._update_provisioning(progress=93, stage="routing", message="Configuration de la route locale…")

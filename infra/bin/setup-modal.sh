@@ -52,6 +52,7 @@ SKIP_LIPSYNC=0
 SKIP_TRELLIS2=0
 SKIP_DESKTOP=0
 HAS_HF_SECRET=0
+FORCE_REDEPLOY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -94,6 +95,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_DESKTOP=1
       shift
       ;;
+    --force-redeploy)
+      FORCE_REDEPLOY=1
+      shift
+      ;;
     -h|--help)
       echo "Usage: ./infra/bin/setup-modal.sh [OPTIONS]"
       echo ""
@@ -108,6 +113,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --skip-lipsync                Skip deploying Maya LatentSync"
       echo "  --skip-trellis2               Skip deploying TRELLIS.2 image-to-3D"
       echo "  --skip-desktop                Skip launcher installation (account provisioning)"
+      echo "  --force-redeploy              Redeploy applications even when already active"
       echo "  -h, --help                    Show this help message"
       exit 0
       ;;
@@ -251,12 +257,30 @@ fi
 # 5. Déploiement des Applications Modal
 log_step "5/7 : Déploiement des conteneurs Modal (Scale-to-Zero)"
 
-log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000 + B300 HD)..."
-cd "$INFRA_ROOT"
-modal deploy --strategy recreate modal_h3.py
-log_success "Application 'comfyui-minimax-h3' déployée."
+MODAL_APPS_JSON="[]"
+if [ "$FORCE_REDEPLOY" -eq 0 ]; then
+  MODAL_APPS_JSON=$(modal app list --json) || {
+    log_error "Impossible de vérifier les applications Modal existantes."
+    exit 1
+  }
+fi
 
-if [ "$HAS_HF_SECRET" -eq 1 ]; then
+modal_app_active() {
+  printf '%s' "$MODAL_APPS_JSON" | python3 -c 'import json,sys; name=sys.argv[1]; rows=json.load(sys.stdin); raise SystemExit(not any(row.get("description") == name and row.get("state") != "stopped" for row in rows))' "$1"
+}
+
+if modal_app_active "comfyui-minimax-h3"; then
+  log_success "Application 'comfyui-minimax-h3' déjà active : déploiement réutilisé."
+else
+  log_info "1. Déploiement ComfyUI + MiniMax H3 + MiniMax Music 3 (RTX PRO 6000 + B300 HD)..."
+  cd "$INFRA_ROOT"
+  modal deploy --strategy recreate modal_h3.py
+  log_success "Application 'comfyui-minimax-h3' déployée."
+fi
+
+if [ "$HAS_HF_SECRET" -eq 1 ] && modal_app_active "stimma-flux-fill"; then
+  log_success "Application 'stimma-flux-fill' déjà active : déploiement réutilisé."
+elif [ "$HAS_HF_SECRET" -eq 1 ]; then
   log_info "2. Déploiement FLUX.1 Fill Repaint Service (NVIDIA L40S)..."
   cd "$REPO_ROOT"
   modal deploy cloud_repaint/repaint_service.py
@@ -265,14 +289,18 @@ else
   log_info "2. Repaint ignoré (secret Hugging Face absent)."
 fi
 
-if [ "$SKIP_LIPSYNC" -eq 0 ]; then
+if [ "$SKIP_LIPSYNC" -eq 0 ] && modal_app_active "maya-latentsync"; then
+  log_success "Application 'maya-latentsync' déjà active : déploiement réutilisé."
+elif [ "$SKIP_LIPSYNC" -eq 0 ]; then
   log_info "3. Déploiement Maya LatentSync 1.6 LipSync (RTX PRO 6000)..."
   cd "$INFRA_ROOT"
   modal deploy modal_latentsync.py
   log_success "Application 'maya-latentsync' déployée."
 fi
 
-if [ "$SKIP_TRELLIS2" -eq 0 ] && [ "$HAS_HF_SECRET" -eq 1 ]; then
+if [ "$SKIP_TRELLIS2" -eq 0 ] && [ "$HAS_HF_SECRET" -eq 1 ] && modal_app_active "stimma-trellis2"; then
+  log_success "Application 'stimma-trellis2' déjà active : déploiement réutilisé."
+elif [ "$SKIP_TRELLIS2" -eq 0 ] && [ "$HAS_HF_SECRET" -eq 1 ]; then
   log_info "4. Déploiement TRELLIS.2 Image-to-3D (H100/H200)..."
   cd "$INFRA_ROOT"
   modal deploy modal_trellis2.py

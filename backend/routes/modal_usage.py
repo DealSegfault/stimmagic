@@ -19,8 +19,9 @@ class ModalAccountCreate(BaseModel):
     profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     modal_token_id: SecretStr
     modal_token_secret: SecretStr
-    hf_token: SecretStr
+    hf_token: SecretStr | None = None
     monthly_budget: float = Field(default=30.0, ge=0, le=1_000_000)
+    force_redeploy: bool = False
 
 
 @router.get("/usage")
@@ -40,10 +41,10 @@ async def create_modal_account(payload: ModalAccountCreate):
     """Provision one isolated Modal workspace and add its gateway route."""
     token_id = payload.modal_token_id.get_secret_value().strip()
     token_secret = payload.modal_token_secret.get_secret_value().strip()
-    hf_token = payload.hf_token.get_secret_value().strip()
+    hf_token = payload.hf_token.get_secret_value().strip() if payload.hf_token else None
     if not token_id.startswith("ak-") or not token_secret.startswith("as-"):
         raise HTTPException(status_code=400, detail="Clés API Modal invalides")
-    if not hf_token.startswith("hf_"):
+    if hf_token and not hf_token.startswith("hf_"):
         raise HTTPException(status_code=400, detail="Token Hugging Face invalide")
     try:
         return get_modal_usage_service().start_account_provisioning(
@@ -53,6 +54,7 @@ async def create_modal_account(payload: ModalAccountCreate):
             hf_token=hf_token,
             label=payload.label,
             monthly_budget=payload.monthly_budget,
+            force_redeploy=payload.force_redeploy,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
