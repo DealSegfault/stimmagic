@@ -26,6 +26,7 @@ async def test_account_provisioning_api_starts_and_never_returns_secrets(monkeyp
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/api/modal/accounts", json={
             "label": "Studio B",
+            "profile": "studio-b",
             "modal_token_id": "ak-example",
             "modal_token_secret": "as-example",
             "hf_token": "hf_example",
@@ -34,6 +35,7 @@ async def test_account_provisioning_api_starts_and_never_returns_secrets(monkeyp
         progress = await client.get("/api/modal/provisioning")
 
     assert response.status_code == 202
+    assert captured["profile"] == "studio-b"
     assert captured["modal_token_id"] == "ak-example"
     assert captured["modal_token_secret"] == "as-example"
     assert captured["hf_token"] == "hf_example"

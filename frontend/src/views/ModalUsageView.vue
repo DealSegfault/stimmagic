@@ -226,7 +226,7 @@
 
       <div v-if="!setupStarted" class="space-y-5 px-6 py-5">
         <div class="grid gap-4 sm:grid-cols-2">
-          <label class="block sm:col-span-2">
+          <label class="block">
             <span class="text-xs font-medium text-content-secondary">Nom affiché <span class="font-normal text-content-muted">(facultatif)</span></span>
             <input
               v-model.trim="accountName"
@@ -234,6 +234,18 @@
               maxlength="80"
               placeholder="Le nom du workspace sera utilisé par défaut"
               class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium text-content-secondary">Profil Modal</span>
+            <input
+              v-model.trim="modalProfile"
+              type="text"
+              required
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="ex. mon-workspace"
+              class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 font-mono text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
             />
           </label>
           <label class="block">
@@ -286,7 +298,7 @@
           </label>
         </div>
         <p class="text-[11px] leading-5 text-content-muted">
-          Les clés API servent uniquement au processus de déploiement et ne sont pas enregistrées. Seul le Proxy Token Modal propre à ce workspace est conservé localement avec des droits restreints.
+          Les clés API sont enregistrées uniquement dans le profil local Modal indiqué, jamais dans le fichier des comptes Stimma. Le Proxy Token du workspace est conservé séparément avec des droits restreints.
         </p>
         <p v-if="provisioningError" class="text-xs text-red-300" role="alert">{{ provisioningError }}</p>
       </div>
@@ -364,6 +376,7 @@ const routingHydrated = ref(false)
 const accountSetupOpen = ref(false)
 const setupStarted = ref(false)
 const accountName = ref('')
+const modalProfile = ref('')
 const modalTokenId = ref('')
 const modalTokenSecret = ref('')
 const hfToken = ref('')
@@ -390,7 +403,8 @@ onMounted(() => {
 onBeforeUnmount(() => clearTimeout(provisioningTimer))
 
 const canProvision = computed(() => (
-  modalTokenId.value.startsWith('ak-')
+  /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(modalProfile.value)
+  && modalTokenId.value.startsWith('ak-')
   && modalTokenSecret.value.startsWith('as-')
   && hfToken.value.startsWith('hf_')
   && Number(monthlyBudget.value) >= 0
@@ -449,11 +463,13 @@ async function provisionAccount() {
   try {
     await addAccount({
       label: accountName.value || null,
+      profile: modalProfile.value,
       modal_token_id: modalTokenId.value,
       modal_token_secret: modalTokenSecret.value,
       hf_token: hfToken.value,
       monthly_budget: monthlyBudget.value,
     })
+    modalProfile.value = ''
     modalTokenId.value = ''
     modalTokenSecret.value = ''
     hfToken.value = ''

@@ -96,11 +96,18 @@ def _accounts_path() -> Path:
     return Path.home() / ".config" / "adp-comfy" / "modal-router.accounts.json"
 
 
+def _modal_executable() -> str | None:
+    installed = shutil.which("modal")
+    fallback = Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "bin" / "modal"
+    return installed or (str(fallback) if fallback.is_file() else None)
+
+
 @dataclass(frozen=True)
 class ModalAccount:
     id: str
     label: str
     workspace: str | None = None
+    profile: str | None = None
     monthly_budget: float = 30.0
     gpu_type: str = "Nvidia RTX PRO 6000"
     gpu_hour_price: float | None = None
@@ -238,6 +245,7 @@ class ModalUsageService:
                         id=str(item["id"]),
                         label=str(item.get("label") or item["id"]),
                         workspace=str(item["workspace"]) if item.get("workspace") else None,
+                        profile=str(item["profile"]) if item.get("profile") else None,
                         monthly_budget=max(0.0, float(item.get("monthly_budget", 30.0))),
                         gpu_type=str(item.get("gpu_type") or "Nvidia RTX PRO 6000"),
                         gpu_hour_price=(
@@ -356,6 +364,22 @@ class ModalUsageService:
                 raise ValueError("This Modal account is disabled")
             if self._has_route_metadata() and not self._account_route_configured(account):
                 raise ValueError("This Modal account has no configured gateway route")
+            if account.profile:
+                modal_bin = _modal_executable()
+                if not modal_bin:
+                    raise ValueError("Modal CLI introuvable pour activer ce compte")
+                try:
+                    activated = subprocess.run(
+                        [modal_bin, "profile", "activate", account.profile],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise ValueError(f"Impossible d’activer le profil Modal '{account.profile}'") from exc
+                if activated.returncode:
+                    raise ValueError(f"Impossible d’activer le profil Modal '{account.profile}'")
 
         path = _routing_state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,11 +405,12 @@ class ModalUsageService:
         *,
         modal_token_id: str,
         modal_token_secret: str,
+        profile: str,
         hf_token: str,
         label: str | None = None,
         monthly_budget: float = 30.0,
     ) -> dict[str, Any]:
-        """Start one serialized setup without changing Modal's global profile."""
+        """Start one serialized setup through a named Modal CLI profile."""
         # ponytail: one setup at a time avoids shared CLI/config races; queue
         # parallel workspace setups only if onboarding throughput needs it.
         if self._provisioning_task and not self._provisioning_task.done():
@@ -409,6 +434,7 @@ class ModalUsageService:
                 job_id=job_id,
                 modal_token_id=modal_token_id,
                 modal_token_secret=modal_token_secret,
+                profile=profile,
                 hf_token=hf_token,
                 label=label,
                 monthly_budget=monthly_budget,
@@ -452,10 +478,7 @@ class ModalUsageService:
 
     @staticmethod
     def _modal_python() -> str:
-        modal_bin = shutil.which("modal")
-        if not modal_bin:
-            candidate = Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "bin" / "modal"
-            modal_bin = str(candidate) if candidate.is_file() else None
+        modal_bin = _modal_executable()
         if modal_bin:
             sibling = Path(modal_bin).resolve().parent / "python"
             if sibling.is_file():
@@ -472,9 +495,15 @@ class ModalUsageService:
         except ImportError as exc:
             raise RuntimeError("Python Modal introuvable après l’installation") from exc
 
-    async def _run_setup(self, proxy_token_path: Path, env: dict[str, str]) -> None:
+    async def _run_setup(self, proxy_token_path: Path, profile: str, env: dict[str, str]) -> None:
         script = self._setup_script()
-        command = [str(script), "--proxy-token-file", str(proxy_token_path)]
+        command = [
+            str(script),
+            "--proxy-token-file",
+            str(proxy_token_path),
+            "--modal-profile",
+            profile,
+        ]
         if script.parent.parent.name == "infra":
             command.append("--skip-desktop")
         process = await asyncio.create_subprocess_exec(
@@ -544,6 +573,7 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
         self,
         *,
         workspace: str,
+        profile: str,
         label: str | None,
         monthly_budget: float,
         endpoint_url: str,
@@ -592,6 +622,7 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
             "id": account_id,
             "label": (label or "").strip() or (existing or {}).get("label") or workspace,
             "workspace": workspace,
+            "profile": profile,
             "endpoint_url": endpoint_url.rstrip("/"),
             "hd_endpoint_url": hd_endpoint_url.rstrip("/") or None,
             "proxy_token_file": str(proxy_token_path),
@@ -623,6 +654,7 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
         job_id: str,
         modal_token_id: str,
         modal_token_secret: str,
+        profile: str,
         hf_token: str,
         label: str | None,
         monthly_budget: float,
@@ -634,17 +666,18 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
         env.update({
             "MODAL_TOKEN_ID": modal_token_id,
             "MODAL_TOKEN_SECRET": modal_token_secret,
-            "HF_TOKEN": hf_token,
             "NO_COLOR": "1",
             "PYTHONUNBUFFERED": "1",
         })
+        env["HF_TOKEN"] = hf_token
         try:
-            await self._run_setup(temporary_proxy_token, env)
+            await self._run_setup(temporary_proxy_token, profile, env)
             self._update_provisioning(progress=88, stage="validation", message="Validation du workspace et des endpoints…")
             deployed = await self._inspect_modal_account(env)
             self._update_provisioning(progress=93, stage="routing", message="Configuration de la route locale…")
             account_id = self._save_provisioned_account(
                 workspace=deployed["workspace"],
+                profile=profile,
                 label=label,
                 monthly_budget=monthly_budget,
                 endpoint_url=deployed["endpoint_url"],
@@ -1285,6 +1318,7 @@ print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_u
             "id": account.id,
             "label": account.label,
             "workspace": account.workspace,
+            "profile": account.profile,
             "enabled": account.enabled,
             "status": "available" if account.enabled and spend < account.monthly_budget else "budget_reached",
             "monthly_budget": account.monthly_budget,

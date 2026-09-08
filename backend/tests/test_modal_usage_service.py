@@ -1,6 +1,7 @@
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from modal_usage_service import ModalUsageService
 
@@ -71,6 +72,7 @@ def test_modal_routing_persists_auto_and_fixed_modes(tmp_path, monkeypatch):
                     {
                         "id": "workspace-a",
                         "label": "Workspace A",
+                        "profile": "workspace-a",
                         "endpoint_url": "https://workspace-a.modal.run",
                         "proxy_token_file": str(token_path),
                     },
@@ -87,12 +89,19 @@ def test_modal_routing_persists_auto_and_fixed_modes(tmp_path, monkeypatch):
     monkeypatch.setenv("STIMMA_DATA_DIR", str(tmp_path / "data"))
 
     service = ModalUsageService()
+    activated = []
+    monkeypatch.setattr("modal_usage_service.shutil.which", lambda _: "/usr/local/bin/modal")
+    monkeypatch.setattr(
+        "modal_usage_service.subprocess.run",
+        lambda command, **_: activated.append(command) or SimpleNamespace(returncode=0),
+    )
     assert service.get_routing()["mode"] == "auto"
     assert service.get_routing()["route_accounts_configured"] == ["workspace-a"]
 
     routing = service.update_routing("fixed", "workspace-a")
     assert routing["mode"] == "fixed"
     assert routing["effective_account_id"] == "workspace-a"
+    assert activated == [["/usr/local/bin/modal", "profile", "activate", "workspace-a"]]
     assert service.select_account() == "workspace-a"
     assert service.account_for_job("default", 999) is None
 
@@ -199,6 +208,7 @@ def test_provisioned_account_gets_an_isolated_token_and_free_port_pair(tmp_path,
     service = ModalUsageService()
     account_id = service._save_provisioned_account(
         workspace="Studio B",
+        profile="studio-b",
         label=None,
         monthly_budget=50,
         endpoint_url="https://studio-b--comfyui.modal.run",
@@ -209,6 +219,7 @@ def test_provisioned_account_gets_an_isolated_token_and_free_port_pair(tmp_path,
     payload = json.loads(accounts_path.read_text(encoding="utf-8"))
     account = payload["accounts"][1]
     assert account_id == "studio-b"
+    assert account["profile"] == "studio-b"
     assert (account["local_port"], account["local_hd_port"]) == (8192, 8193)
     assert account["proxy_token_file"] == str(tmp_path / "modal-proxy-token-studio-b.json")
     assert "ak-" not in accounts_path.read_text(encoding="utf-8")

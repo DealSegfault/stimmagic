@@ -16,6 +16,7 @@ class ModalRoutingUpdate(BaseModel):
 
 class ModalAccountCreate(BaseModel):
     label: str | None = Field(default=None, max_length=80)
+    profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     modal_token_id: SecretStr
     modal_token_secret: SecretStr
     hf_token: SecretStr
@@ -48,6 +49,7 @@ async def create_modal_account(payload: ModalAccountCreate):
         return get_modal_usage_service().start_account_provisioning(
             modal_token_id=token_id,
             modal_token_secret=token_secret,
+            profile=payload.profile,
             hf_token=hf_token,
             label=payload.label,
             monthly_budget=payload.monthly_budget,

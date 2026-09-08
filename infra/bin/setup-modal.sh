@@ -46,6 +46,7 @@ log_step() {
 CLI_HF_TOKEN="${HF_TOKEN:-}"
 CLI_MODAL_TOKEN_ID="${MODAL_TOKEN_ID:-}"
 CLI_MODAL_TOKEN_SECRET="${MODAL_TOKEN_SECRET:-}"
+CLI_MODAL_PROFILE=""
 SKIP_DOWNLOADS=0
 SKIP_LIPSYNC=0
 SKIP_TRELLIS2=0
@@ -67,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --modal-token-secret)
       CLI_MODAL_TOKEN_SECRET="$2"
+      shift 2
+      ;;
+    --modal-profile)
+      CLI_MODAL_PROFILE="$2"
       shift 2
       ;;
     --proxy-token-file)
@@ -97,6 +102,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --hf-token <TOKEN>            Hugging Face Read Token (optional FLUX/TRELLIS extras)"
       echo "  --modal-token-id <ID>         Modal Token ID (ak-...)"
       echo "  --modal-token-secret <SECRET> Modal Token Secret (as-...)"
+      echo "  --modal-profile <NAME>        Save and activate credentials under this Modal profile"
       echo "  --proxy-token-file <PATH>     Store this account's Modal Proxy Token at PATH"
       echo "  --skip-downloads              Skip pre-populating Modal volumes"
       echo "  --skip-lipsync                Skip deploying Maya LatentSync"
@@ -151,10 +157,17 @@ log_success "Modal CLI opérationnel : $(modal --version 2>/dev/null || echo 'mo
 log_step "2/7 : Configuration de l'authentification Modal"
 
 if [ -n "$CLI_MODAL_TOKEN_ID" ] && [ -n "$CLI_MODAL_TOKEN_SECRET" ]; then
-  # Keep account provisioning isolated from the developer's active profile.
-  export MODAL_TOKEN_ID="$CLI_MODAL_TOKEN_ID"
-  export MODAL_TOKEN_SECRET="$CLI_MODAL_TOKEN_SECRET"
-  log_success "Identifiants Modal chargés pour ce provisionnement uniquement."
+  log_info "Enregistrement des clés dans le profil Modal ${CLI_MODAL_PROFILE:-automatique}..."
+  if [ -n "$CLI_MODAL_PROFILE" ]; then
+    modal token set --token-id "$CLI_MODAL_TOKEN_ID" --token-secret "$CLI_MODAL_TOKEN_SECRET" --profile="$CLI_MODAL_PROFILE"
+    modal profile activate "$CLI_MODAL_PROFILE"
+  else
+    modal token set --token-id "$CLI_MODAL_TOKEN_ID" --token-secret "$CLI_MODAL_TOKEN_SECRET"
+    CLI_MODAL_PROFILE=$(modal profile current)
+  fi
+  unset MODAL_TOKEN_ID MODAL_TOKEN_SECRET
+  export MODAL_PROFILE="$CLI_MODAL_PROFILE"
+  log_success "Profil Modal '$CLI_MODAL_PROFILE' activé."
 else
   # Vérifier si déjà authentifié
   if modal profile current >/dev/null 2>&1; then
