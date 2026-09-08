@@ -5,6 +5,8 @@ INFRA_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="${STIMMA_RUNTIME_DIR:-$INFRA_ROOT/.runtime}"
 COMFY_ROOT="$RUNTIME_ROOT/ComfyUI"
 TOKEN_FILE="${MODAL_PROXY_TOKEN_FILE:-$HOME/.config/adp-comfy/modal-proxy-token.json}"
+ACCOUNTS_FILE="${MODAL_ROUTER_ACCOUNTS_FILE:-$HOME/.config/adp-comfy/modal-router.accounts.json}"
+BRIDGE_MANIFEST="${MODAL_ROUTER_BRIDGES_FILE:-$HOME/.config/adp-comfy/modal-router.bridges.json}"
 
 # Resolve Python environment that has modal installed
 MODAL_PY=""
@@ -19,40 +21,60 @@ else
   exit 1
 fi
 
-if [ ! -r "$TOKEN_FILE" ]; then
-  echo "Modal proxy token is missing: $TOKEN_FILE" >&2
-  echo "Exécutez 'infra/bin/setup-modal.sh' pour configurer automatiquement votre environnement." >&2
-  exit 1
-fi
-
 if [ ! -f "$COMFY_ROOT/main.py" ] || [ ! -x "$COMFY_ROOT/.venv/bin/python" ]; then
   echo "Runtime ComfyUI absent : exécutez 'infra/bin/bootstrap-local.sh'." >&2
   exit 1
 fi
 
-COMFY_MODAL_URL=$(
-  "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("comfyui-minimax-h3", "comfyui").get_web_url())'
+HAS_ROUTED_ACCOUNTS=$(
+  "$MODAL_PY" -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]).expanduser(); d=json.loads(p.read_text()) if p.is_file() else {}; rows=d.get("accounts", []) if isinstance(d, dict) else d; ok=[]
+for row in rows or []:
+    if not isinstance(row, dict) or row.get("enabled") is False or not row.get("endpoint_url") or not row.get("proxy_token_file"): continue
+    token=Path(str(row["proxy_token_file"])).expanduser()
+    try: secret=json.loads(token.read_text())
+    except Exception: continue
+    if secret.get("Modal-Key") and secret.get("Modal-Secret"): ok.append(row)
+print("1" if ok else "0")' "$ACCOUNTS_FILE"
 )
-COMFY_MODAL_HD_URL=$(
-  "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("comfyui-minimax-h3", "comfyui_hd").get_web_url())' \
-  2>/dev/null || true
-)
-REPAINT_MODAL_URL=$(
-  "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("stimma-flux-fill", "api").get_web_url())' \
-  2>/dev/null || true
-)
-TRELLIS2_MODAL_URL=$(
-  "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("stimma-trellis2", "api").get_web_url())' \
-  2>/dev/null || true
-)
-MODAL_PROXY_TOKEN_ID=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Key"])' "$TOKEN_FILE")
-MODAL_PROXY_TOKEN_SECRET=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Secret"])' "$TOKEN_FILE")
+
+if [ "$HAS_ROUTED_ACCOUNTS" = "1" ]; then
+  COMFY_MODAL_URL=""
+  COMFY_MODAL_HD_URL=""
+  REPAINT_MODAL_URL=""
+  TRELLIS2_MODAL_URL=""
+  MODAL_PROXY_TOKEN_ID=""
+  MODAL_PROXY_TOKEN_SECRET=""
+else
+  if [ ! -r "$TOKEN_FILE" ]; then
+    echo "Modal proxy token is missing: $TOKEN_FILE" >&2
+    echo "Exécutez 'infra/bin/setup-modal.sh' pour configurer automatiquement votre environnement." >&2
+    exit 1
+  fi
+  COMFY_MODAL_URL=$(
+    "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("comfyui-minimax-h3", "comfyui").get_web_url())'
+  )
+  COMFY_MODAL_HD_URL=$(
+    "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("comfyui-minimax-h3", "comfyui_hd").get_web_url())' \
+    2>/dev/null || true
+  )
+  REPAINT_MODAL_URL=$(
+    "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("stimma-flux-fill", "api").get_web_url())' \
+    2>/dev/null || true
+  )
+  TRELLIS2_MODAL_URL=$(
+    "$MODAL_PY" -c 'import modal; print(modal.Function.from_name("stimma-trellis2", "api").get_web_url())' \
+    2>/dev/null || true
+  )
+  MODAL_PROXY_TOKEN_ID=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Key"])' "$TOKEN_FILE")
+  MODAL_PROXY_TOKEN_SECRET=$("$MODAL_PY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["Modal-Secret"])' "$TOKEN_FILE")
+fi
 export COMFY_MODAL_URL COMFY_MODAL_HD_URL MODAL_PROXY_TOKEN_ID MODAL_PROXY_TOKEN_SECRET REPAINT_MODAL_URL TRELLIS2_MODAL_URL
 
 mkdir -p "$INFRA_ROOT/logs"
 
 BRIDGE_PID=""
 HD_BRIDGE_PID=""
+BRIDGE_SUPERVISOR_PID=""
 COMFY_PID=""
 SHUTDOWN=0
 
@@ -67,6 +89,9 @@ cleanup() {
   fi
   if [ -n "$HD_BRIDGE_PID" ] && kill -0 "$HD_BRIDGE_PID" 2>/dev/null; then
     kill "$HD_BRIDGE_PID" 2>/dev/null || true
+  fi
+  if [ -n "$BRIDGE_SUPERVISOR_PID" ] && kill -0 "$BRIDGE_SUPERVISOR_PID" 2>/dev/null; then
+    kill "$BRIDGE_SUPERVISOR_PID" 2>/dev/null || true
   fi
   wait 2>/dev/null || true
 }
@@ -106,6 +131,22 @@ start_hd_bridge() {
   HD_BRIDGE_PID=$!
 }
 
+start_bridges() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage des bridges Modal par compte..."
+  (
+    MODAL_BRIDGE_PYTHON="$COMFY_ROOT/.venv/bin/python" "$COMFY_ROOT/.venv/bin/python" "$INFRA_ROOT/modal_account_bridges.py" \
+      --accounts-file "$ACCOUNTS_FILE" \
+      --manifest "$BRIDGE_MANIFEST" \
+      --bridge-script "$INFRA_ROOT/modal_bridge.py" \
+      --log-dir "$INFRA_ROOT/logs" \
+      --fallback-url "$COMFY_MODAL_URL" \
+      --fallback-hd-url "$COMFY_MODAL_HD_URL" \
+      --fallback-token "$TOKEN_FILE"
+  ) &
+  BRIDGE_SUPERVISOR_PID=$!
+  sleep 0.2
+}
+
 start_comfy() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] Démarrage ComfyUI local STP (port 8188)..."
   PYTHON_EXE="$COMFY_ROOT/.venv/bin/python"
@@ -133,19 +174,30 @@ else
 fi
 echo "Ctrl-C arrête proprement la passerelle locale; le GPU Modal scale à zéro automatiquement."
 
-start_bridge
-start_hd_bridge
+if [ "$HAS_ROUTED_ACCOUNTS" = "1" ]; then
+  start_bridges
+else
+  start_bridge
+  start_hd_bridge
+fi
 start_comfy
 
 while [ "$SHUTDOWN" -eq 0 ]; do
-  if [ -z "$BRIDGE_PID" ] || ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+  if [ "$HAS_ROUTED_ACCOUNTS" = "1" ] && { [ -z "$BRIDGE_SUPERVISOR_PID" ] || ! kill -0 "$BRIDGE_SUPERVISOR_PID" 2>/dev/null; }; then
+    if [ "$SHUTDOWN" -eq 0 ]; then
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] ATTENTION : superviseur Modal arrêté. Redémarrage..."
+      start_bridges
+    fi
+  fi
+
+  if [ "$HAS_ROUTED_ACCOUNTS" != "1" ] && { [ -z "$BRIDGE_PID" ] || ! kill -0 "$BRIDGE_PID" 2>/dev/null; }; then
     if [ "$SHUTDOWN" -eq 0 ]; then
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] ATTENTION : modal_bridge.py a crashé ou s'est arrêté. Redémarrage..."
       start_bridge
     fi
   fi
 
-  if [ -n "$COMFY_MODAL_HD_URL" ] && { [ -z "$HD_BRIDGE_PID" ] || ! kill -0 "$HD_BRIDGE_PID" 2>/dev/null; }; then
+  if [ "$HAS_ROUTED_ACCOUNTS" != "1" ] && [ -n "$COMFY_MODAL_HD_URL" ] && { [ -z "$HD_BRIDGE_PID" ] || ! kill -0 "$HD_BRIDGE_PID" 2>/dev/null; }; then
     if [ "$SHUTDOWN" -eq 0 ]; then
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] ATTENTION : proxy HD B300 arrêté. Redémarrage..."
       start_hd_bridge

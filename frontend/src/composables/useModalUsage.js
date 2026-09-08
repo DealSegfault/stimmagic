@@ -7,6 +7,9 @@ const loading = ref(false)
 const error = ref('')
 const routingSaving = ref(false)
 const routingError = ref('')
+const provisioning = ref({ status: 'idle', logs: [] })
+const provisioningSaving = ref(false)
+const provisioningError = ref('')
 let refreshPromise = null
 let realtimeStarted = false
 
@@ -62,6 +65,33 @@ async function updateRouting(mode, accountId = null) {
   }
 }
 
+async function refreshProvisioning() {
+  try {
+    const { data } = await axios.get('/api/modal/provisioning')
+    provisioning.value = data
+    provisioningError.value = ''
+    return data
+  } catch (err) {
+    provisioningError.value = err?.response?.data?.detail || err?.message || 'Impossible de suivre la configuration Modal.'
+    throw err
+  }
+}
+
+async function addAccount(payload) {
+  provisioningSaving.value = true
+  provisioningError.value = ''
+  try {
+    const { data } = await axios.post('/api/modal/accounts', payload)
+    provisioning.value = data
+    return data
+  } catch (err) {
+    provisioningError.value = err?.response?.data?.detail || err?.message || 'Impossible de lancer la configuration Modal.'
+    throw err
+  } finally {
+    provisioningSaving.value = false
+  }
+}
+
 function formatCurrency(value) {
   return new Intl.NumberFormat('fr-FR', {
     style: 'currency',
@@ -106,8 +136,13 @@ export function useModalUsage() {
     error,
     routingSaving,
     routingError,
+    provisioning,
+    provisioningSaving,
+    provisioningError,
     refreshUsage,
     updateRouting,
+    refreshProvisioning,
+    addAccount,
     formatCurrency,
     formatDuration,
   }

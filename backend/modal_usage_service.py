@@ -6,13 +6,17 @@ gateway/deployment environment.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,6 +89,13 @@ def _bridge_manifest_path() -> Path:
     return Path.home() / ".config" / "adp-comfy" / "modal-router.bridges.json"
 
 
+def _accounts_path() -> Path:
+    configured = os.environ.get("MODAL_ROUTER_ACCOUNTS_FILE", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".config" / "adp-comfy" / "modal-router.accounts.json"
+
+
 @dataclass(frozen=True)
 class ModalAccount:
     id: str
@@ -140,6 +151,8 @@ class ModalUsageService:
         self._config_mtime: float | None = None
         self._accounts: list[ModalAccount] = []
         self._billing_cache: dict[str, dict[str, Any]] = {}
+        self._provisioning_task: asyncio.Task | None = None
+        self._provisioning: dict[str, Any] = {"status": "idle", "logs": []}
         self._db_path = app_dirs.get_data_dir() / "modal_usage.sqlite3"
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
@@ -203,12 +216,7 @@ class ModalUsageService:
                     )
 
     def _load_accounts(self) -> None:
-        config_path_value = os.environ.get("MODAL_ROUTER_ACCOUNTS_FILE", "")
-        config_path = (
-            Path(config_path_value).expanduser()
-            if config_path_value
-            else Path.home() / ".config" / "adp-comfy" / "modal-router.accounts.json"
-        )
+        config_path = _accounts_path()
         try:
             mtime = config_path.stat().st_mtime
         except OSError:
@@ -360,6 +368,323 @@ class ModalUsageService:
         temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         temporary.replace(path)
         return self.get_routing()
+
+    def provisioning_status(self) -> dict[str, Any]:
+        """Return the latest redacted account-setup progress."""
+        return {
+            key: list(value) if key == "logs" else value
+            for key, value in self._provisioning.items()
+        }
+
+    def start_account_provisioning(
+        self,
+        *,
+        modal_token_id: str,
+        modal_token_secret: str,
+        hf_token: str,
+        label: str | None = None,
+        monthly_budget: float = 30.0,
+    ) -> dict[str, Any]:
+        """Start one serialized setup without changing Modal's global profile."""
+        # ponytail: one setup at a time avoids shared CLI/config races; queue
+        # parallel workspace setups only if onboarding throughput needs it.
+        if self._provisioning_task and not self._provisioning_task.done():
+            raise ValueError("Un compte Modal est déjà en cours de configuration")
+
+        job_id = uuid.uuid4().hex
+        self._provisioning = {
+            "id": job_id,
+            "account_id": None,
+            "status": "running",
+            "progress": 1,
+            "stage": "queued",
+            "message": "Préparation du compte Modal…",
+            "logs": [],
+            "started_at": _utc_now().isoformat(),
+            "completed_at": None,
+            "error": None,
+        }
+        self._provisioning_task = asyncio.create_task(
+            self._provision_account(
+                job_id=job_id,
+                modal_token_id=modal_token_id,
+                modal_token_secret=modal_token_secret,
+                hf_token=hf_token,
+                label=label,
+                monthly_budget=monthly_budget,
+            )
+        )
+        return self.provisioning_status()
+
+    def _update_provisioning(
+        self,
+        *,
+        progress: int | None = None,
+        stage: str | None = None,
+        message: str | None = None,
+        log_line: str | None = None,
+        **values: Any,
+    ) -> None:
+        if progress is not None:
+            self._provisioning["progress"] = max(0, min(100, int(progress)))
+        if stage is not None:
+            self._provisioning["stage"] = stage
+        if message is not None:
+            self._provisioning["message"] = message
+        if log_line:
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", log_line).strip()
+            if clean:
+                self._provisioning.setdefault("logs", []).append(clean[-500:])
+                self._provisioning["logs"] = self._provisioning["logs"][-100:]
+        self._provisioning.update(values)
+
+    @staticmethod
+    def _setup_script() -> Path:
+        backend_path = Path(__file__).resolve()
+        candidates = (
+            backend_path.parents[2] / "bin" / "setup-modal.sh",
+            backend_path.parents[1] / "infra" / "bin" / "setup-modal.sh",
+        )
+        for path in candidates:
+            if path.is_file():
+                return path
+        raise RuntimeError("Script setup-modal.sh introuvable")
+
+    @staticmethod
+    def _modal_python() -> str:
+        modal_bin = shutil.which("modal")
+        if not modal_bin:
+            candidate = Path.home() / ".local" / "share" / "uv" / "tools" / "modal" / "bin" / "modal"
+            modal_bin = str(candidate) if candidate.is_file() else None
+        if modal_bin:
+            sibling = Path(modal_bin).resolve().parent / "python"
+            if sibling.is_file():
+                return str(sibling)
+            try:
+                first_line = Path(modal_bin).read_text(encoding="utf-8").splitlines()[0]
+                if first_line.startswith("#!") and Path(first_line[2:]).is_file():
+                    return first_line[2:]
+            except (OSError, UnicodeDecodeError, IndexError):
+                pass
+        try:
+            __import__("modal")
+            return sys.executable
+        except ImportError as exc:
+            raise RuntimeError("Python Modal introuvable après l’installation") from exc
+
+    async def _run_setup(self, proxy_token_path: Path, env: dict[str, str]) -> None:
+        script = self._setup_script()
+        command = [str(script), "--proxy-token-file", str(proxy_token_path)]
+        if script.parent.parent.name == "infra":
+            command.append("--skip-desktop")
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(script.parent.parent),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        try:
+            assert process.stdout is not None
+            async for raw_line in process.stdout:
+                line = raw_line.decode("utf-8", errors="replace").rstrip()
+                match = re.search(r"(\d+)\s*/\s*(\d+)\s*:", line)
+                progress = None
+                if match and int(match.group(2)):
+                    progress = max(3, min(85, round(int(match.group(1)) / int(match.group(2)) * 85)))
+                self._update_provisioning(
+                    progress=progress,
+                    stage="setup",
+                    message=re.sub(r"\x1b\[[0-9;]*m", "", line).strip() or "Configuration Modal…",
+                    log_line=line,
+                )
+            return_code = await process.wait()
+        except asyncio.CancelledError:
+            process.terminate()
+            await process.wait()
+            raise
+        if return_code:
+            raise RuntimeError(f"Le script Modal s’est arrêté avec le code {return_code}")
+
+    async def _inspect_modal_account(self, env: dict[str, str]) -> dict[str, str]:
+        code = """
+import json
+import modal
+workspace = modal.Workspace.from_context().hydrate().name
+normal = modal.Function.from_name('comfyui-minimax-h3', 'comfyui').get_web_url()
+hd = modal.Function.from_name('comfyui-minimax-h3', 'comfyui_hd').get_web_url()
+print(json.dumps({'workspace': workspace, 'endpoint_url': normal, 'hd_endpoint_url': hd}))
+""".strip()
+        process = await asyncio.create_subprocess_exec(
+            self._modal_python(),
+            "-c",
+            code,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise RuntimeError("Modal ne répond pas pendant la validation des endpoints") from exc
+        if process.returncode:
+            detail = stderr.decode("utf-8", errors="replace").strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else "Impossible de valider le workspace Modal")
+        try:
+            result = json.loads(stdout.decode("utf-8").strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError) as exc:
+            raise RuntimeError("Modal a renvoyé des métadonnées de workspace invalides") from exc
+        if not result.get("workspace") or not result.get("endpoint_url"):
+            raise RuntimeError("Le déploiement Modal ne fournit pas d’endpoint H3 valide")
+        return {key: str(value or "") for key, value in result.items()}
+
+    def _save_provisioned_account(
+        self,
+        *,
+        workspace: str,
+        label: str | None,
+        monthly_budget: float,
+        endpoint_url: str,
+        hd_endpoint_url: str,
+        temporary_proxy_token: Path,
+    ) -> str:
+        path = _accounts_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"accounts": []}
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Configuration de comptes Modal illisible : {path}") from exc
+        raw_accounts = payload.get("accounts", []) if isinstance(payload, dict) else payload
+        if not isinstance(raw_accounts, list):
+            raise RuntimeError(f"Configuration de comptes Modal invalide : {path}")
+
+        account_id = re.sub(r"[^a-z0-9]+", "-", workspace.lower()).strip("-")
+        if not account_id:
+            raise RuntimeError("Le workspace Modal n’a pas d’identifiant exploitable")
+        existing = next(
+            (
+                item for item in raw_accounts
+                if isinstance(item, dict)
+                and (str(item.get("id")) == account_id or str(item.get("workspace")) == workspace)
+            ),
+            None,
+        )
+        used_ports = {
+            int(item[key])
+            for item in raw_accounts
+            if isinstance(item, dict) and item is not existing
+            for key in ("local_port", "local_hd_port")
+            if item.get(key) is not None
+        }
+        local_port = int(existing.get("local_port")) if existing and existing.get("local_port") else 8190
+        local_hd_port = int(existing.get("local_hd_port")) if existing and existing.get("local_hd_port") else local_port + 1
+        while local_port in used_ports or local_hd_port in used_ports:
+            local_port += 2
+            local_hd_port += 2
+
+        proxy_token_path = path.parent / f"modal-proxy-token-{account_id}.json"
+        temporary_proxy_token.replace(proxy_token_path)
+        proxy_token_path.chmod(0o600)
+        account = {
+            **(existing or {}),
+            "id": account_id,
+            "label": (label or "").strip() or (existing or {}).get("label") or workspace,
+            "workspace": workspace,
+            "endpoint_url": endpoint_url.rstrip("/"),
+            "hd_endpoint_url": hd_endpoint_url.rstrip("/") or None,
+            "proxy_token_file": str(proxy_token_path),
+            "local_port": local_port,
+            "local_hd_port": local_hd_port if hd_endpoint_url else None,
+            "monthly_budget": max(0.0, float(monthly_budget)),
+            "gpu_type": "Nvidia RTX PRO 6000",
+            "hd_gpu_type": "Nvidia B300",
+            "hd_memory_gib": 128,
+            "cpu_cores": 0.125,
+            "memory_gib": 32,
+            "max_concurrency": 1,
+            "enabled": True,
+        }
+        accounts = [account if item is existing else item for item in raw_accounts]
+        if existing is None:
+            accounts.append(account)
+        output = {**payload, "accounts": accounts} if isinstance(payload, dict) else {"accounts": accounts}
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(output, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+        self._config_mtime = None
+        return account_id
+
+    async def _provision_account(
+        self,
+        *,
+        job_id: str,
+        modal_token_id: str,
+        modal_token_secret: str,
+        hf_token: str,
+        label: str | None,
+        monthly_budget: float,
+    ) -> None:
+        accounts_path = _accounts_path()
+        accounts_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_proxy_token = accounts_path.parent / f".modal-proxy-token-{job_id}.json"
+        env = os.environ.copy()
+        env.update({
+            "MODAL_TOKEN_ID": modal_token_id,
+            "MODAL_TOKEN_SECRET": modal_token_secret,
+            "HF_TOKEN": hf_token,
+            "NO_COLOR": "1",
+            "PYTHONUNBUFFERED": "1",
+        })
+        try:
+            await self._run_setup(temporary_proxy_token, env)
+            self._update_provisioning(progress=88, stage="validation", message="Validation du workspace et des endpoints…")
+            deployed = await self._inspect_modal_account(env)
+            self._update_provisioning(progress=93, stage="routing", message="Configuration de la route locale…")
+            account_id = self._save_provisioned_account(
+                workspace=deployed["workspace"],
+                label=label,
+                monthly_budget=monthly_budget,
+                endpoint_url=deployed["endpoint_url"],
+                hd_endpoint_url=deployed["hd_endpoint_url"],
+                temporary_proxy_token=temporary_proxy_token,
+            )
+            self._update_provisioning(account_id=account_id, progress=96, stage="gateway", message="Redémarrage de la passerelle multi-compte…")
+            from gateway_service import gateway_service
+
+            current = gateway_service.get_status()
+            if current.get("running") or current.get("partial"):
+                await gateway_service.stop_gateway()
+            gateway = await gateway_service.start_gateway()
+            if not gateway.get("running"):
+                raise RuntimeError(gateway.get("error") or "La passerelle Modal n’a pas redémarré")
+            self._update_provisioning(
+                status="completed",
+                progress=100,
+                stage="completed",
+                message=f"{deployed['workspace']} est prêt et routé.",
+                completed_at=_utc_now().isoformat(),
+                error=None,
+            )
+        except asyncio.CancelledError:
+            self._update_provisioning(
+                status="failed",
+                stage="failed",
+                message="Configuration interrompue.",
+                completed_at=_utc_now().isoformat(),
+                error="Configuration interrompue",
+            )
+            raise
+        except Exception as exc:
+            self._update_provisioning(
+                status="failed",
+                stage="failed",
+                message="La configuration du compte a échoué.",
+                completed_at=_utc_now().isoformat(),
+                error=str(exc),
+            )
 
     @staticmethod
     def _canonical_gpu_type(value: str) -> str:

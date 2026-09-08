@@ -114,7 +114,17 @@
               <h2 class="text-sm font-semibold text-content">Comptes et budgets</h2>
               <p class="mt-1 text-xs text-content-muted">Les secrets restent côté backend.</p>
             </div>
-            <span class="text-xs text-content-muted">{{ accounts.length }} compte{{ accounts.length > 1 ? 's' : '' }}</span>
+            <div class="flex items-center gap-3">
+              <span class="font-mono text-xs text-content-muted">{{ accounts.length }} compte{{ accounts.length > 1 ? 's' : '' }}</span>
+              <Button size="sm" @click="openAccountSetup">
+                <template #icon>
+                  <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </template>
+                Ajouter un compte
+              </Button>
+            </div>
           </div>
 
           <div v-if="accounts.length" class="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -156,7 +166,7 @@
           <div v-else class="rounded-lg border border-dashed border-edge-subtle bg-surface/50 px-6 py-10 text-center">
             <h3 class="text-sm font-medium text-content">Aucun compte Modal configuré</h3>
             <p class="mx-auto mt-2 max-w-md text-xs leading-5 text-content-tertiary">
-              Crée <code class="font-mono text-content-secondary">~/.config/adp-comfy/modal-router.accounts.json</code> ou définis <code class="font-mono text-content-secondary">MODAL_ROUTER_ACCOUNTS_FILE</code> côté backend pour afficher tes workspaces.
+              Utilise « Ajouter un compte » : le workspace, les conteneurs et sa route locale seront préparés automatiquement.
             </p>
           </div>
         </section>
@@ -203,12 +213,128 @@
         </section>
       </template>
     </div>
+
+    <Modal :show="accountSetupOpen" size="lg" :close-on-backdrop="!provisioningSaving" @close="closeAccountSetup">
+      <template #header>
+        <div>
+          <h2 class="font-brand text-lg font-semibold text-content">Ajouter un compte Modal</h2>
+          <p class="mt-1 text-xs leading-5 text-content-muted">
+            Le conteneur, les modèles, le Proxy Token et la route locale seront configurés automatiquement.
+          </p>
+        </div>
+      </template>
+
+      <div v-if="!setupStarted" class="space-y-5 px-6 py-5">
+        <div class="grid gap-4 sm:grid-cols-2">
+          <label class="block sm:col-span-2">
+            <span class="text-xs font-medium text-content-secondary">Nom affiché <span class="font-normal text-content-muted">(facultatif)</span></span>
+            <input
+              v-model.trim="accountName"
+              type="text"
+              maxlength="80"
+              placeholder="Le nom du workspace sera utilisé par défaut"
+              class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium text-content-secondary">Modal Token ID</span>
+            <input
+              v-model.trim="modalTokenId"
+              type="password"
+              required
+              autocomplete="new-password"
+              placeholder="ak-…"
+              class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 font-mono text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label class="block">
+            <span class="text-xs font-medium text-content-secondary">Modal Token Secret</span>
+            <input
+              v-model.trim="modalTokenSecret"
+              type="password"
+              required
+              autocomplete="new-password"
+              placeholder="as-…"
+              class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 font-mono text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label class="block sm:col-span-2">
+            <span class="text-xs font-medium text-content-secondary">Hugging Face Read Token</span>
+            <input
+              v-model.trim="hfToken"
+              type="password"
+              required
+              autocomplete="new-password"
+              placeholder="hf_…"
+              class="mt-1.5 w-full rounded-md bg-overlay-subtle px-3 py-2 font-mono text-sm text-content placeholder:text-content-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+            />
+          </label>
+          <label class="block sm:col-span-2">
+            <span class="text-xs font-medium text-content-secondary">Budget mensuel</span>
+            <span class="mt-1.5 flex items-center rounded-md bg-overlay-subtle focus-within:ring-2 focus-within:ring-accent/60">
+              <span class="pl-3 text-sm text-content-muted">$</span>
+              <input
+                v-model.number="monthlyBudget"
+                type="number"
+                min="0"
+                max="1000000"
+                step="1"
+                required
+                class="min-w-0 flex-1 bg-transparent px-2 py-2 font-mono text-sm text-content focus-visible:outline-none"
+              />
+            </span>
+          </label>
+        </div>
+        <p class="text-[11px] leading-5 text-content-muted">
+          Les clés API servent uniquement au processus de déploiement et ne sont pas enregistrées. Seul le Proxy Token Modal propre à ce workspace est conservé localement avec des droits restreints.
+        </p>
+        <p v-if="provisioningError" class="text-xs text-red-300" role="alert">{{ provisioningError }}</p>
+      </div>
+
+      <div v-else class="space-y-5 px-6 py-5">
+        <div aria-live="polite">
+          <div class="flex items-center justify-between gap-4">
+            <p class="text-sm font-medium text-content">{{ provisioning.message }}</p>
+            <span class="font-mono text-xs tabular-nums text-content-muted">{{ provisioning.progress || 0 }}%</span>
+          </div>
+          <ProgressBar class="mt-3" :value="provisioning.progress || 0" :indeterminate="provisioning.status === 'running' && !provisioning.progress" :hue="provisioning.status === 'failed' ? 'bg-red-500' : provisioning.status === 'completed' ? 'bg-green-500' : 'bg-blue-500'" />
+          <p class="mt-2 text-xs text-content-muted">{{ provisioningStageLabel }}</p>
+        </div>
+
+        <div v-if="provisioning.error" class="rounded-md bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-300" role="alert">
+          {{ provisioning.error }}
+        </div>
+
+        <div v-if="provisioning.logs?.length" class="max-h-56 overflow-y-auto rounded-md bg-base px-3 py-2 font-mono text-[10px] leading-5 text-content-muted custom-scrollbar" role="log" aria-label="Journal du provisionnement">
+          <p v-for="(line, index) in provisioning.logs" :key="`${index}-${line}`" class="break-words">{{ line }}</p>
+        </div>
+
+        <p v-if="provisioning.status === 'running'" class="text-[11px] leading-5 text-content-muted">
+          Tu peux fermer cette fenêtre : le provisionnement continue en arrière-plan.
+        </p>
+      </div>
+
+      <template #footer>
+        <template v-if="!setupStarted">
+          <Button variant="ghost" @click="closeAccountSetup">Annuler</Button>
+          <Button :loading="provisioningSaving" :disabled="!canProvision" @click="provisionAccount">Déployer et connecter</Button>
+        </template>
+        <template v-else-if="provisioning.status === 'failed'">
+          <Button variant="ghost" @click="closeAccountSetup">Fermer</Button>
+          <Button @click="setupStarted = false">Réessayer</Button>
+        </template>
+        <Button v-else variant="secondary" @click="closeAccountSetup">{{ provisioning.status === 'completed' ? 'Terminer' : 'Fermer' }}</Button>
+      </template>
+    </Modal>
   </main>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useModalUsage } from '../composables/useModalUsage'
+import Button from '../components/ui/Button.vue'
+import Modal from '../components/ui/Modal.vue'
+import ProgressBar from '../components/ui/ProgressBar.vue'
 
 const {
   snapshot,
@@ -220,8 +346,13 @@ const {
   error,
   routingSaving,
   routingError,
+  provisioning,
+  provisioningSaving,
+  provisioningError,
   refreshUsage,
   updateRouting,
+  refreshProvisioning,
+  addAccount,
   formatCurrency,
   formatDuration,
 } = useModalUsage()
@@ -230,6 +361,14 @@ const selectedRoutingMode = ref('auto')
 const selectedAccountId = ref(null)
 const routingDirty = ref(false)
 const routingHydrated = ref(false)
+const accountSetupOpen = ref(false)
+const setupStarted = ref(false)
+const accountName = ref('')
+const modalTokenId = ref('')
+const modalTokenSecret = ref('')
+const hfToken = ref('')
+const monthlyBudget = ref(30)
+let provisioningTimer = null
 
 watch([selectedRoutingMode, selectedAccountId], () => {
   if (routingHydrated.value) routingDirty.value = true
@@ -243,7 +382,29 @@ watch(routing, (value) => {
 
 onMounted(() => {
   refreshUsage().catch(() => {})
+  refreshProvisioning().then((value) => {
+    if (value.status === 'running') pollProvisioning()
+  }).catch(() => {})
 })
+
+onBeforeUnmount(() => clearTimeout(provisioningTimer))
+
+const canProvision = computed(() => (
+  modalTokenId.value.startsWith('ak-')
+  && modalTokenSecret.value.startsWith('as-')
+  && hfToken.value.startsWith('hf_')
+  && Number(monthlyBudget.value) >= 0
+))
+
+const provisioningStageLabel = computed(() => ({
+  queued: 'Préparation',
+  setup: 'Installation et déploiement',
+  validation: 'Validation des endpoints',
+  routing: 'Configuration du compte',
+  gateway: 'Connexion à la passerelle',
+  completed: 'Compte opérationnel',
+  failed: 'Configuration interrompue',
+}[provisioning.value.stage] || 'Configuration Modal'))
 
 const summaryCards = computed(() => [
   { label: 'Dépensé ce mois', value: formatCurrency(summary.value.spent), detail: `${summary.value.generation_count} génération${summary.value.generation_count > 1 ? 's' : ''}`, icon: '$' },
@@ -267,6 +428,55 @@ const effectiveRoutingLabel = computed(() => {
   if (routing.value.effective_account_id) return accountLabel(routing.value.effective_account_id)
   return routing.value.mode === 'auto' ? 'déterminé au lancement' : '—'
 })
+
+async function openAccountSetup() {
+  accountSetupOpen.value = true
+  try {
+    const value = await refreshProvisioning()
+    setupStarted.value = value.status === 'running'
+    if (setupStarted.value) pollProvisioning()
+  } catch {
+    setupStarted.value = false
+  }
+}
+
+function closeAccountSetup() {
+  accountSetupOpen.value = false
+}
+
+async function provisionAccount() {
+  if (!canProvision.value) return
+  try {
+    await addAccount({
+      label: accountName.value || null,
+      modal_token_id: modalTokenId.value,
+      modal_token_secret: modalTokenSecret.value,
+      hf_token: hfToken.value,
+      monthly_budget: monthlyBudget.value,
+    })
+    modalTokenId.value = ''
+    modalTokenSecret.value = ''
+    hfToken.value = ''
+    setupStarted.value = true
+    pollProvisioning()
+  } catch {
+    // The composable exposes the API error in the form.
+  }
+}
+
+async function pollProvisioning() {
+  clearTimeout(provisioningTimer)
+  try {
+    const value = await refreshProvisioning()
+    if (value.status === 'running') {
+      provisioningTimer = setTimeout(pollProvisioning, 1000)
+    } else if (value.status === 'completed') {
+      await refreshUsage()
+    }
+  } catch {
+    provisioningTimer = setTimeout(pollProvisioning, 2500)
+  }
+}
 
 async function saveRouting() {
   try {

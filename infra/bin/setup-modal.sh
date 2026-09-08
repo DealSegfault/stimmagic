@@ -49,6 +49,7 @@ CLI_MODAL_TOKEN_SECRET="${MODAL_TOKEN_SECRET:-}"
 SKIP_DOWNLOADS=0
 SKIP_LIPSYNC=0
 SKIP_TRELLIS2=0
+SKIP_DESKTOP=0
 HAS_HF_SECRET=0
 
 while [[ $# -gt 0 ]]; do
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       CLI_MODAL_TOKEN_SECRET="$2"
       shift 2
       ;;
+    --proxy-token-file)
+      PROXY_TOKEN_FILE="$2"
+      shift 2
+      ;;
     --skip-downloads)
       SKIP_DOWNLOADS=1
       shift
@@ -80,6 +85,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_TRELLIS2=1
       shift
       ;;
+    --skip-desktop)
+      SKIP_DESKTOP=1
+      shift
+      ;;
     -h|--help)
       echo "Usage: ./infra/bin/setup-modal.sh [OPTIONS]"
       echo ""
@@ -88,9 +97,11 @@ while [[ $# -gt 0 ]]; do
       echo "  --hf-token <TOKEN>            Hugging Face Read Token (optional FLUX/TRELLIS extras)"
       echo "  --modal-token-id <ID>         Modal Token ID (ak-...)"
       echo "  --modal-token-secret <SECRET> Modal Token Secret (as-...)"
+      echo "  --proxy-token-file <PATH>     Store this account's Modal Proxy Token at PATH"
       echo "  --skip-downloads              Skip pre-populating Modal volumes"
       echo "  --skip-lipsync                Skip deploying Maya LatentSync"
       echo "  --skip-trellis2               Skip deploying TRELLIS.2 image-to-3D"
+      echo "  --skip-desktop                Skip launcher installation (account provisioning)"
       echo "  -h, --help                    Show this help message"
       exit 0
       ;;
@@ -140,9 +151,10 @@ log_success "Modal CLI opérationnel : $(modal --version 2>/dev/null || echo 'mo
 log_step "2/7 : Configuration de l'authentification Modal"
 
 if [ -n "$CLI_MODAL_TOKEN_ID" ] && [ -n "$CLI_MODAL_TOKEN_SECRET" ]; then
-  log_info "Enregistrement des clés Modal fournies..."
-  modal token set --token-id "$CLI_MODAL_TOKEN_ID" --token-secret "$CLI_MODAL_TOKEN_SECRET"
-  log_success "Token Modal configuré."
+  # Keep account provisioning isolated from the developer's active profile.
+  export MODAL_TOKEN_ID="$CLI_MODAL_TOKEN_ID"
+  export MODAL_TOKEN_SECRET="$CLI_MODAL_TOKEN_SECRET"
+  log_success "Identifiants Modal chargés pour ce provisionnement uniquement."
 else
   # Vérifier si déjà authentifié
   if modal profile current >/dev/null 2>&1; then
@@ -201,6 +213,7 @@ fi
 log_step "4/7 : Configuration des Tokens Proxy de sécurité"
 
 mkdir -p "$CONFIG_DIR"
+mkdir -p "$(dirname "$PROXY_TOKEN_FILE")"
 if [ -f "$PROXY_TOKEN_FILE" ] && python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["Modal-Key"].startswith("wk-") and d["Modal-Secret"].startswith("ws-")' "$PROXY_TOKEN_FILE" 2>/dev/null; then
   log_success "Proxy Token Modal existant : $PROXY_TOKEN_FILE"
 else
@@ -292,7 +305,9 @@ fi
 
 # 7. Handoff macOS : raccourci, lancement, contrôle de disponibilité, mémo.
 log_step "7/7 : Installation du raccourci et lancement de Stimma"
-if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
+if [ "$SKIP_DESKTOP" -eq 1 ]; then
+  log_info "Installation du raccourci ignorée pour le provisionnement de compte."
+elif [ "$SKIP_DOWNLOADS" -eq 0 ]; then
   python3 "$INFRA_ROOT/bin/install-desktop-launcher.py"
 else
   python3 "$INFRA_ROOT/bin/install-desktop-launcher.py" --no-launch
@@ -308,7 +323,9 @@ EOF
 printf "${COLOR_RESET}"
 
 echo ""
-if [ "$SKIP_DOWNLOADS" -eq 0 ]; then
+if [ "$SKIP_DESKTOP" -eq 1 ]; then
+  echo "Le workspace Modal est prêt ; la passerelle locale peut être redémarrée."
+elif [ "$SKIP_DOWNLOADS" -eq 0 ]; then
   echo "Un raccourci 'Lancer Stimma.command' a été mis sur le Bureau."
   echo "Stimma est lancé et prêt à générer votre première vidéo."
 else

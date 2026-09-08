@@ -181,3 +181,36 @@ def test_modal_hd_resource_uses_b300_rate_and_memory(tmp_path, monkeypatch):
     assert resource["gpu_type"] == "Nvidia B300"
     assert resource["memory_gib"] == 128.0
     assert service._cost_for_duration(account, 1, **resource) > service._cost_for_duration(account, 1)
+
+
+def test_provisioned_account_gets_an_isolated_token_and_free_port_pair(tmp_path, monkeypatch):
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text(json.dumps({"accounts": [{
+        "id": "workspace-a",
+        "workspace": "workspace-a",
+        "local_port": 8190,
+        "local_hd_port": 8191,
+    }]}), encoding="utf-8")
+    temporary_token = tmp_path / ".provisioning-token.json"
+    temporary_token.write_text('{"Modal-Key":"wk-test","Modal-Secret":"ws-test"}', encoding="utf-8")
+    monkeypatch.setenv("MODAL_ROUTER_ACCOUNTS_FILE", str(accounts_path))
+    monkeypatch.setenv("STIMMA_DATA_DIR", str(tmp_path / "data"))
+
+    service = ModalUsageService()
+    account_id = service._save_provisioned_account(
+        workspace="Studio B",
+        label=None,
+        monthly_budget=50,
+        endpoint_url="https://studio-b--comfyui.modal.run",
+        hd_endpoint_url="https://studio-b--comfyui-hd.modal.run",
+        temporary_proxy_token=temporary_token,
+    )
+
+    payload = json.loads(accounts_path.read_text(encoding="utf-8"))
+    account = payload["accounts"][1]
+    assert account_id == "studio-b"
+    assert (account["local_port"], account["local_hd_port"]) == (8192, 8193)
+    assert account["proxy_token_file"] == str(tmp_path / "modal-proxy-token-studio-b.json")
+    assert "ak-" not in accounts_path.read_text(encoding="utf-8")
+    assert "as-" not in accounts_path.read_text(encoding="utf-8")
+    assert (tmp_path / "modal-proxy-token-studio-b.json").stat().st_mode & 0o777 == 0o600
