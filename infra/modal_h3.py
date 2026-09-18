@@ -92,11 +92,13 @@ comfy_image = (
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/requirements.txt",
         # MiniMax H3's workflow-scoped attention node imports the CUDA FP8
         # SageAttention API. Build the pinned release in this image instead
-        # of using a prebuilt wheel: ComfyUI's current requirements resolve
-        # to PyTorch 2.13, while the public Comfy-Org wheel is built against
-        # an older PyTorch ABI and fails at import time with an undefined
-        # c10 symbol.
+        # of using a prebuilt wheel: ComfyUI leaves PyTorch unpinned, while
+        # the public Comfy-Org wheel can target an older ABI and fail at
+        # import time with an undefined c10 symbol.
         "git clone --depth 1 --branch v2.2.0 https://github.com/thu-ml/SageAttention.git /tmp/SageAttention",
+        # PyTorch 2.14 requires C++20, while SageAttention 2.2.0 still pins
+        # C++17 in setup.py.
+        "sed -i 's/-std=c++17/-std=c++20/g' /tmp/SageAttention/setup.py",
         # Image builds do not expose a GPU. Compile SageAttention for both
         # Blackwell families used by this app: B300 (SM 10.3) and RTX PRO
         # 6000 (SM 12.0).
