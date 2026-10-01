@@ -503,32 +503,29 @@ async def execute_workflow(
                     gen_start = time.time()
                     await _monitor_execution(ws, prompt_id, context)
                     t_gen = time.time() - gen_start
+
+                    await context.report_progress(0.9)
+
+                    # Step 9: Capture output while the Modal WebSocket still
+                    # pins the ephemeral container that owns the generated file.
+                    t_cap0 = time.time()
+                    expected_output_node_ids = [
+                        nid for nid, nd in prompt.items()
+                        if nd.get("class_type") in {"StimmaImageOutput", "StimmaVideoOutput"}
+                    ]
+                    result = await _capture_output(
+                        output_dir,
+                        prompt,
+                        context,
+                        instance,
+                        prompt_id,
+                        expected_output_node_ids=expected_output_node_ids,
+                    )
+                    t_cap = time.time() - t_cap0
                 finally:
-                    # Tear the monitoring socket down in the background. A graceful
-                    # ws close handshake blocks until ComfyUI acks it, and ComfyUI's
-                    # event loop is busy with post-execution work for ~0.5s right
-                    # after a job finishes — so awaiting the close here would tack
-                    # that latency onto every generation. We already have the
-                    # completion signal and the output file, so let it close async.
+                    # Closing before /history + /view lets a scale-to-zero Modal
+                    # worker disappear with its output file between the requests.
                     _schedule_ws_close(ws)
-
-                await context.report_progress(0.9)
-
-                # Step 9: Capture output
-                t_cap0 = time.time()
-                expected_output_node_ids = [
-                    nid for nid, nd in prompt.items()
-                    if nd.get("class_type") in {"StimmaImageOutput", "StimmaVideoOutput"}
-                ]
-                result = await _capture_output(
-                    output_dir,
-                    prompt,
-                    context,
-                    instance,
-                    prompt_id,
-                    expected_output_node_ids=expected_output_node_ids,
-                )
-                t_cap = time.time() - t_cap0
             finally:
                 # Privacy: drop the job's ComfyUI history entry (it holds the
                 # full prompt, including user text). Runs after capture — the

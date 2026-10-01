@@ -3,6 +3,7 @@
 import app_dirs
 import pytest
 import yaml
+from unittest.mock import patch
 from sqlalchemy import func, select
 
 from config import (
@@ -10,6 +11,7 @@ from config import (
     _inject_agy_cli_model,
     _inject_codex_cli_provider,
     _inject_modal_gateway_provider,
+    _inject_ollama_model,
     ensure_config_exists,
     reload_settings,
 )
@@ -20,7 +22,8 @@ from storage_service import register_external_asset
 from tests.helpers.media import create_media_item, generate_test_image
 
 
-def test_installed_codex_cli_is_registered_without_api_key():
+def test_installed_codex_cli_is_registered_without_api_key(monkeypatch):
+    monkeypatch.delenv("STIMMA_CODEX_MODEL", raising=False)
     config_data = {}
 
     _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
@@ -32,11 +35,19 @@ def test_installed_codex_cli_is_registered_without_api_key():
     assert provider["models"][0]["model_id"] == "gpt-5.6-luna"
     assert {
         model["model_id"] for model in provider["models"]
-    } == {"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"}
+    } == {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"}
     sol = next(model for model in provider["models"] if model["model_id"] == "gpt-5.6-sol")
     assert sol["name"] == "GPT-5.6 Sol · ChatGPT"
     astra = next(model for model in provider["models"] if model["model_id"] == "gpt-6-astra")
     assert astra["name"] == "GPT-6 Astra · ChatGPT"
+    for model_id, name in (
+        ("gpt-6.1-sol", "GPT-6.1 Sol · ChatGPT"),
+        ("gpt-6-luna", "GPT-6.0 Luna · ChatGPT"),
+    ):
+        model = next(model for model in provider["models"] if model["model_id"] == model_id)
+        assert model["name"] == name
+        assert model["input_modalities"] == ["text", "image"]
+        assert model["supports_tools"] is True
 
 
 def test_codex_cli_registration_respects_existing_provider():
@@ -47,15 +58,19 @@ def test_codex_cli_registration_respects_existing_provider():
             "id": "codex-cli:gpt-5.6-luna",
             "model_id": "gpt-5.6-luna",
             "name": "GPT-5.6 Luna · ChatGPT",
+            "enabled": False,
         }],
     }
     config_data = {"llm_providers": [existing]}
 
     _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
 
     assert [model["model_id"] for model in existing["models"]] == [
-        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra",
+        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna",
     ]
+    assert existing["models"][0]["enabled"] is False
+    assert all(model["enabled"] for model in existing["models"][1:])
 
 
 def test_codex_cli_registration_respects_deleted_provider():
@@ -86,6 +101,58 @@ def test_agy_cli_registration_adds_gemini_38_flash():
     assert flash["model_id"] == "Gemini 3.8 Flash (High)"
     assert flash["name"] == "Gemini 3.8 Flash · Antigravity"
     assert flash["model_vendor"] == "gemini"
+
+
+def test_ollama_is_skipped_when_binary_is_missing():
+    with patch("config.shutil.which", return_value=None), patch("config.urlopen") as urlopen:
+        config_data = {}
+        _inject_ollama_model(config_data)
+
+    assert config_data == {}
+    urlopen.assert_not_called()
+
+
+def test_ollama_is_skipped_when_server_or_model_is_unavailable():
+    with patch("config.shutil.which", return_value="/usr/local/bin/ollama"), patch(
+        "config.urlopen", side_effect=OSError
+    ):
+        config_data = {}
+        _inject_ollama_model(config_data)
+    assert config_data == {}
+
+    response = type("Response", (), {
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *args: None,
+        "read": lambda self: b'{"models": [{"name": "llama3:latest"}]}',
+    })()
+    with patch("config.shutil.which", return_value="/usr/local/bin/ollama"), patch(
+        "config.urlopen", return_value=response
+    ):
+        config_data = {}
+        _inject_ollama_model(config_data)
+    assert config_data == {}
+
+
+def test_ollama_registers_listed_model_without_starting_or_downloading_it():
+    response = type("Response", (), {
+        "__enter__": lambda self: self,
+        "__exit__": lambda self, *args: None,
+        "read": lambda self: b'{"models": [{"name": "huihui_ai/qwen3-abliterated:latest"}]}',
+    })()
+    with patch("config.shutil.which", return_value="/usr/local/bin/ollama"), patch(
+        "config.urlopen", return_value=response
+    ) as urlopen:
+        config_data = {}
+        _inject_ollama_model(config_data)
+        _inject_ollama_model(config_data)
+
+    provider = config_data["llm_providers"][0]
+    assert provider["id"] == "ollama"
+    assert [model["model_id"] for model in provider["models"]] == [
+        "huihui_ai/qwen3-abliterated",
+    ]
+    assert urlopen.call_count == 2
+    urlopen.assert_any_call("http://127.0.0.1:11434/api/tags", timeout=0.5)
 
 
 def test_modal_gateway_registration_is_runtime_only_and_idempotent():

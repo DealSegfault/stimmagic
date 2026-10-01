@@ -38,6 +38,7 @@ from stp_server.executor import (
     _strip_unknown_nodes,
     _disable_sage_attention_for_reference_videos,
     _expand_stimma_images_reference_chains,
+    execute_workflow,
 )
 
 
@@ -646,6 +647,15 @@ class TestMonitorExecution(unittest.TestCase):
             asyncio.get_event_loop().run_until_complete(
                 _monitor_execution(ClosedWebSocket(), "prompt-123", context)
             )
+
+    def test_modal_output_is_captured_before_websocket_closes(self):
+        import inspect
+
+        source = inspect.getsource(execute_workflow)
+        self.assertLess(
+            source.index("result = await _capture_output("),
+            source.index("_schedule_ws_close(ws)"),
+        )
 
 
 class TestUiOnlyNodes(unittest.TestCase):

@@ -139,6 +139,31 @@ def _last_jsonl_agent_message(stdout: bytes) -> Optional[str]:
     return last_message
 
 
+def _jsonl_error_message(stdout: bytes) -> Optional[str]:
+    """Recover CLI failures emitted on stdout by ``codex exec --json``."""
+    for raw_line in reversed(stdout.decode("utf-8", errors="replace").splitlines()):
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") not in {"error", "turn.failed"}:
+            continue
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else event.get("message")
+        if not isinstance(message, str) or not message.strip():
+            continue
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError:
+            return message
+        if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+            detail = payload["error"].get("message")
+            if isinstance(detail, str) and detail.strip():
+                return detail
+        return message
+    return None
+
+
 def _codex_image_args(
     messages: List[Dict[str, Any]],
     temp_dir: Path,
@@ -440,7 +465,10 @@ async def complete_with_codex_cli(
             ) from exc
 
         if process.returncode != 0:
-            detail = stderr.decode("utf-8", errors="replace").strip()[-2000:]
+            detail = (
+                _jsonl_error_message(stdout)
+                or stderr.decode("utf-8", errors="replace").strip()
+            )[-2000:]
             raise CodexCLIError(
                 f"Codex CLI exited with status {process.returncode}: {detail or 'no diagnostic'}"
             )

@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,7 @@ from codex_cli import (
     _output_schema,
     _parse_completion,
     _planner_prompt,
+    complete_with_codex_cli,
 )
 from config import LLMEndpointConfig
 from llm import FinishReason, llm_completion
@@ -59,6 +61,35 @@ def test_last_jsonl_agent_message_recovers_structured_output():
     ])
 
     assert _last_jsonl_agent_message(stdout) == '{"content":"OK"}'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", [
+    {"type": "error", "message": "Model unavailable"},
+    {"type": "turn.failed", "error": {"message": "Model unavailable"}},
+    {"type": "turn.failed", "error": {"message": json.dumps({
+        "type": "error", "status": 400, "error": {"message": "Model unavailable"},
+    })}},
+    None,
+])
+async def test_cli_failure_reports_jsonl_error_or_stderr(monkeypatch, tmp_path, event):
+    stdout = b'not json\n[]\n{"type":"turn.started"}\n'
+    if event is not None:
+        stdout += json.dumps(event).encode()
+
+    async def communicate(prompt):
+        return stdout, b"CLI diagnostic"
+
+    async def create_process(*args, **kwargs):
+        return SimpleNamespace(returncode=1, communicate=communicate)
+
+    monkeypatch.setattr("codex_cli._codex_executable", lambda: "codex")
+    monkeypatch.setattr("codex_cli.asyncio.create_subprocess_exec", create_process)
+    expected = "Model unavailable" if event is not None else "CLI diagnostic"
+    with pytest.raises(CodexCLIError, match=expected):
+        await complete_with_codex_cli(
+            model="gpt-6.1-sol", messages=[], working_directory=str(tmp_path),
+        )
 
 
 def test_parse_completion_normalizes_arguments():

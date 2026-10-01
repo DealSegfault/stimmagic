@@ -97,6 +97,14 @@ def _max_turns_for_chat(chat: Chat) -> int:
     return 100
 
 
+def _tool_scope_for_chat(chat: Optional[Chat], enabled_stimpacks: list[str] | None = None) -> str:
+    """Keep flow chats sandboxed, except for an explicitly invoked assembly skill."""
+    flow_id = getattr(chat, "flow_id", None)
+    if flow_id is not None and "video-assembly" in (enabled_stimpacks or []):
+        return "agent"
+    return "flow" if flow_id is not None else "agent"
+
+
 def _track_skill_invoked(chat_id: int, skill_name: str) -> None:
     """Emit stimpack_invoked {chatHash, stimpackSource, stimpackName?}.
 
@@ -670,7 +678,7 @@ async def _execute_tool_call(
     # through to the "unknown tool" error path below.
     chat_flow_id = getattr(chat, "flow_id", None) if chat else None
     chat_project_id = getattr(chat, "project_id", None) if chat else None
-    scope = "flow" if chat_flow_id is not None else "agent"
+    scope = _tool_scope_for_chat(chat, enabled_stimpacks)
     tool = get_tool(fn_name, scope=scope)
     standalone_project_tool = (
         chat_project_id is None
@@ -1706,11 +1714,14 @@ async def _run_agentic_loop_inner(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    # Scope the tool surface: flow chats must not see run_code / sdk_help /
-    # library, otherwise the model pulls stimma-SDK docs (agent sandbox) into
-    # flow program.py edits and writes code that can't run in the flow
-    # sandbox.
-    tool_scope = "flow" if chat.flow_id is not None else "agent"
+    # Scope flow chats to the flow sandbox. An explicitly invoked
+    # video-assembly skill opts this chat into the agent sandbox so it can use
+    # run_code/stimma.ffmpeg for the requested media operation.
+    if chat.flow_id is not None and "video-assembly" in _invoked_skills:
+        # Flow authoring uses flow_dir for program.py, but attachments live in
+        # the durable chat workspace. Assembly must run where those files are.
+        workspace_dir = get_workspace_dir(chat_id, chat_project_id)
+    tool_scope = _tool_scope_for_chat(chat, list(_invoked_skills))
     # World State and shot-continuity tools are meaningful only when this chat
     # is attached to a project. Hiding them here prevents a model from burning
     # a tool call on a guaranteed "not attached to a project" response before

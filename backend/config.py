@@ -1,9 +1,12 @@
+import json
 import os
 import random
 import re
+import shutil
 import string
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
+from urllib.request import urlopen
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -16,7 +19,9 @@ LEGACY_LLM_MODEL_SLUGS = {
     "agent-max": "stimma:minimax-m3",
     "default": "stimma:minimax-m3",
     "stimma:claude-opus-4.8": "stimma:claude-opus-5",
+    "ollama:huihui_ai/qwen3-abliterated:latest": "ollama:huihui_ai/qwen3-abliterated",
 }
+
 
 # Reasoning levels each replacement model accepts, used when migrating a saved
 # per-slug reasoning selection off a retired alias.
@@ -62,6 +67,13 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
     if not executable:
         return
 
+    supported_models = {
+        'gpt-5.6-sol': 'GPT-5.6 Sol · ChatGPT',
+        'gpt-6-astra': 'GPT-6 Astra · ChatGPT',
+        'gpt-6.1-sol': 'GPT-6.1 Sol · ChatGPT',
+        'gpt-6-luna': 'GPT-6.0 Luna · ChatGPT',
+        'gpt-5.6-luna': 'GPT-5.6 Luna · ChatGPT',
+    }
     providers = config_data.setdefault('llm_providers', [])
     existing = next(
         (provider for provider in providers if provider.get('kind') == 'codex_cli'),
@@ -71,34 +83,18 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
         if existing.get('deleted_at'):
             return
         models = existing.setdefault('models', [])
-        if not any(model.get('model_id') == 'gpt-5.6-sol' for model in models):
-            template = next(
-                (model for model in models if model.get('model_id')),
-                {},
-            )
-            sol_model = dict(template)
-            sol_model.update({
-                'id': f"{existing.get('id', 'codex-cli')}:gpt-5.6-sol",
-                'model_id': 'gpt-5.6-sol',
-                'name': 'GPT-5.6 Sol · ChatGPT',
+        template = next((model for model in models if model.get('model_id')), {})
+        for candidate_id, name in supported_models.items():
+            if any(model.get('model_id') == candidate_id for model in models):
+                continue
+            models.append({
+                **template,
+                'id': f"{existing.get('id', 'codex-cli')}:{candidate_id}",
+                'model_id': candidate_id,
+                'name': name,
                 'model_vendor': 'openai',
                 'enabled': True,
             })
-            models.append(sol_model)
-        if not any(model.get('model_id') == 'gpt-6-astra' for model in models):
-            template = next(
-                (model for model in models if model.get('model_id')),
-                {},
-            )
-            astra_model = dict(template)
-            astra_model.update({
-                'id': f"{existing.get('id', 'codex-cli')}:gpt-6-astra",
-                'model_id': 'gpt-6-astra',
-                'name': 'GPT-6 Astra · ChatGPT',
-                'model_vendor': 'openai',
-                'enabled': True,
-            })
-            models.append(astra_model)
         return
 
     model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-5.6-luna').strip()
@@ -108,11 +104,6 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
     # Keep the environment override first for installations that use it as
     # their default, while making the ChatGPT-backed models selectable
     # from the shared chat model picker.
-    supported_models = {
-        'gpt-6-astra': 'GPT-6 Astra · ChatGPT',
-        'gpt-5.6-sol': 'GPT-5.6 Sol · ChatGPT',
-        'gpt-5.6-luna': 'GPT-5.6 Luna · ChatGPT',
-    }
     model_ids = [model_id, *(
         supported_id for supported_id in supported_models
         if supported_id != model_id
@@ -183,6 +174,75 @@ def _inject_agy_cli_model(config_data: dict) -> None:
     })
     models.append(flash_model)
 
+
+def _inject_ollama_model(config_data: dict) -> None:
+    """Register the Ollama model only when its running local server lists it."""
+    model_id = 'huihui_ai/qwen3-abliterated'
+    if not shutil.which('ollama'):
+        return
+    try:
+        with urlopen('http://127.0.0.1:11434/api/tags', timeout=0.5) as response:
+            payload = json.load(response)
+    except (OSError, ValueError, TypeError):
+        return
+
+    models = payload.get('models', []) if isinstance(payload, dict) else []
+    if not isinstance(models, list):
+        return
+    if not any(
+        isinstance(model, dict)
+        and model.get('name') in (model_id, f'{model_id}:latest')
+        for model in models
+    ):
+        return
+
+    providers = config_data.setdefault('llm_providers', [])
+    existing = next(
+        (p for p in providers if p.get('id') == 'ollama' or (p.get('kind') == 'local' and '11434' in str(p.get('base_url', '')))),
+        None,
+    )
+    if existing and existing.get('deleted_at'):
+        return
+
+    if not existing:
+        existing = {
+            'id': 'ollama',
+            'kind': 'local',
+            'name': 'Ollama',
+            'base_url': 'http://127.0.0.1:11434/v1',
+            'enabled': True,
+            'last_tested_at': '2026-09-07T05:45:00Z',
+            'last_test_passed': True,
+            'models': [],
+        }
+        providers.append(existing)
+
+    models = existing.setdefault('models', [])
+    provider_id = existing.get('id', 'ollama')
+    model_slug = f"{provider_id}:huihui_ai/qwen3-abliterated"
+    if not any(m.get('id') == model_slug or m.get('model_id') in (model_id, f"{model_id}:latest") for m in models):
+        models.append({
+            'id': model_slug,
+            'model_id': model_id,
+            'name': 'Qwen3 Abliterated · Ollama',
+            'model_vendor': 'alibaba',
+            'enabled': True,
+            'max_context_tokens': 40960,
+            'input_modalities': ['text'],
+            'supports_tools': True,
+            'reasoning': {
+                'mode': 'optional',
+                'levels': ['off', 'high'],
+                'default': 'off',
+                'quick_task': 'off',
+                'control': 'none',
+                'wire_levels': {},
+            },
+            'content_policy_enabled': False,
+            'reasoning_control_source': 'manual',
+            'last_tested_at': '2026-09-07T05:45:00Z',
+            'last_test_passed': True,
+        })
 
 def _inject_modal_gateway_provider(config_data: dict, gateway_url: str) -> None:
     """Register this fork's local STP gateway when its launcher enables it."""
@@ -1171,6 +1231,7 @@ class Settings(BaseSettings):
         from codex_cli import find_codex_executable
         _inject_codex_cli_provider(config_data, find_codex_executable())
         _inject_agy_cli_model(config_data)
+        _inject_ollama_model(config_data)
         _inject_modal_gateway_provider(
             config_data,
             os.environ.get('STIMMA_MODAL_GATEWAY_URL', ''),
