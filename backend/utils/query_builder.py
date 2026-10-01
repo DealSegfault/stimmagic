@@ -40,7 +40,7 @@ VECTOR_FORMATS = ['svg']
 MODEL_FORMATS = ['glb', 'gltf', 'obj', 'fbx', 'stl']
 SET_FORMATS = ['stimmaset.json']
 GRID_FORMATS = ['stimmagrid.json']
-LAYOUT_FORMATS = ['stimmalayout']
+LAYOUT_FORMATS = ['stimmalayout', 'html', 'htm']
 
 # Composite media: containers that hold references to other media items
 # These are "grouping" operations that don't transform media

@@ -1022,10 +1022,10 @@
           <!-- Media Display: left-aligned, expands as needed. Artifact revisions
                belonging to this chat's staged asset collapse to a compact
                version chip (Mock A/B) — clicking navigates the stage, or
-               reopens it if the user closed it. -->
-          <div v-else-if="item.item_type === 'media_display'" class="flex justify-start" :class="{ 'w-full': !getStagedItemArtifact(item) }">
+               reopens it if the user closed it. HTML also stays visible inline. -->
+          <div v-else-if="item.item_type === 'media_display'" class="flex justify-start" :class="{ 'w-full': !getStagedItemArtifact(item) || hasHtmlPreview(item) }">
             <ChatItemWrapper
-              :class="getStagedItemArtifact(item) ? '' : 'w-full'"
+              :class="getStagedItemArtifact(item) && !hasHtmlPreview(item) ? '' : 'w-full'"
               :item-id="item.id"
               align="left"
               @branch="branchFromHere(item.id)" @delete-from-here="deleteFromHere(item.id)"
@@ -1034,6 +1034,7 @@
             >
               <ArtifactVersionChip
                 v-if="getStagedItemArtifact(item)"
+                :class="{ 'mb-2': hasHtmlPreview(item) }"
                 :artifact="getStagedItemArtifact(item)"
                 :revision="artifactStage.findRevision(getStagedItemArtifact(item).revision_id)"
                 :is-current="artifactStage.viewedRevisionId.value === getStagedItemArtifact(item).revision_id"
@@ -1041,7 +1042,7 @@
                 @click="artifactStage.selectFromChip(getStagedItemArtifact(item))"
               />
               <MediaDisplay
-                v-else
+                v-if="!getStagedItemArtifact(item) || hasHtmlPreview(item)"
                 :display-data="parseMediaDisplayData(item)"
                 :chat-item-id="item.id"
                 :show-role="item.show_role"
@@ -1930,6 +1931,12 @@ function parseMediaDisplayData(item) {
     console.error('Failed to parse media display data:', e)
     return { rows: [], status: 'pending' }
   }
+}
+
+function hasHtmlPreview(item) {
+  return parseMediaDisplayData(item).rows?.some(row =>
+    ['html', 'htm'].includes(row.output?.file_format?.toLowerCase())
+  )
 }
 
 // Artifact chip collapse: only in standalone chats, and only once this chat's

@@ -1946,7 +1946,7 @@ async def get_layout_html(
     media_id: int,
     session: AsyncSession = Depends(get_db_session)
 ):
-    """Get self-contained HTML for a .stimmalayout bundle with images inlined as data URIs."""
+    """Preview HTML documents and layout bundles with local images inlined."""
     import base64
     import mimetypes
     import re as re_mod
@@ -1958,11 +1958,12 @@ async def get_layout_html(
 
     if not item:
         raise HTTPException(status_code=404, detail="Asset not found")
-    if item.file_format != 'stimmalayout':
+    if item.file_format.lower() not in ('stimmalayout', 'html', 'htm'):
         raise HTTPException(status_code=400, detail="Not a layout asset")
 
-    bundle_dir = Path(item.file_path)
-    index_path = bundle_dir / 'index.html'
+    file_path = Path(item.file_path)
+    bundle_dir = file_path if item.file_format.lower() == 'stimmalayout' else file_path.parent
+    index_path = file_path / 'index.html' if item.file_format.lower() == 'stimmalayout' else file_path
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="Layout index.html not found")
 
@@ -1973,8 +1974,8 @@ async def get_layout_html(
         """Convert a local filename to a data URI, or return None to skip."""
         if src_value.startswith(('data:', 'http://', 'https://')):
             return None
-        asset_path = bundle_dir / src_value
-        if not asset_path.exists():
+        asset_path = (bundle_dir / src_value).resolve()
+        if not asset_path.is_relative_to(bundle_dir.resolve()) or not asset_path.is_file():
             return None
         mime_type = mimetypes.guess_type(str(asset_path))[0] or 'application/octet-stream'
         data = base64.b64encode(asset_path.read_bytes()).decode('ascii')

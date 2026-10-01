@@ -58,13 +58,27 @@
 
     <!-- Complete or Trashed (trashed items still viewable) -->
     <template v-else-if="(row.output.status === 'complete' || row.output.status === 'trashed') && row.output.media_id">
+      <LayoutViewer
+        v-if="outputMediaType === 'layout'"
+        :media-id="row.output.media_id"
+        :file-format="outputFileFormat"
+        class="w-full h-full bg-matte"
+      />
       <MediaImage
+        v-else
         :media-id="row.output.media_id"
         :thumbnail="effectiveThumbnail"
         :thumbnail-size="effectiveThumbnail ? 512 : undefined"
         :contain="true"
         container-class="w-full h-full"
       />
+      <Button
+        v-if="outputMediaType === 'layout' && !isTrashed"
+        variant="secondary"
+        size="sm"
+        class="absolute bottom-2 right-2 z-chrome"
+        @click.stop="handleClick"
+      >Open preview</Button>
 
       <div
         v-if="isTrashed"
@@ -189,6 +203,8 @@
 <script setup>
 import { computed, onMounted, watch } from 'vue'
 import { MediaImage } from '../media'
+import LayoutViewer from '../viewers/LayoutViewer.vue'
+import Button from '../ui/Button.vue'
 import { rewriteUrl } from '../../apiConfig'
 import { getCurrentProfileId } from '../../composables/useProfile'
 import { getCachedPin } from '../../composables/usePinLock'
@@ -320,12 +336,10 @@ const isTrashed = computed(() => {
 })
 
 // Get the media type for badge display
-const outputMediaType = computed(() => {
-  // Check if we have file_format from media state or row output
-  const fileFormat = currentMediaState.value?.file_format || props.row.output.file_format
-  if (!fileFormat) return null
-  return getMediaType({ file_format: fileFormat })
-})
+const outputFileFormat = computed(() => currentMediaState.value?.file_format || props.row.output.file_format)
+const outputMediaType = computed(() => outputFileFormat.value
+  ? getMediaType({ file_format: outputFileFormat.value })
+  : null)
 
 // Force thumbnail mode for composite media (grids, sets) whose raw files are JSON, not images.
 // Default to thumbnail until we know the type — safe because chat tiles top out around the

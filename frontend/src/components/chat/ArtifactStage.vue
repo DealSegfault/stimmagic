@@ -93,7 +93,7 @@
           @click="$emit('open-slideshow', viewedRevision.media_id)"
           @contextmenu="onHeroContextMenu"
         >
-          <LayoutViewer v-if="heroKind === 'layout'" :media-id="viewedRevision.media_id" class="w-full h-full" />
+          <LayoutViewer v-if="heroKind === 'layout'" :media-id="viewedRevision.media_id" :file-format="viewedRevision.file_format" class="w-full h-full" />
           <SvgViewer v-else-if="heroKind === 'vector'" :media-id="viewedRevision.media_id" class="w-full h-full" />
           <video
             v-else-if="heroKind === 'video'"
@@ -114,6 +114,13 @@
             img-class="!object-contain !bg-none !bg-transparent"
             alt="Artifact"
           />
+          <Button
+            v-if="heroKind === 'layout'"
+            variant="secondary"
+            size="sm"
+            class="absolute bottom-3 right-3 z-chrome"
+            @click.stop="$emit('open-slideshow', viewedRevision.media_id)"
+          >Open preview</Button>
         </div>
 
         <!-- Chip bar beneath the hero. The vector viewer reports the document's
@@ -139,6 +146,7 @@ import {
 } from '@heroicons/vue/24/outline'
 import { MediaImage } from '../media'
 import IconButton from '../ui/IconButton.vue'
+import Button from '../ui/Button.vue'
 import LayoutViewer from '../viewers/LayoutViewer.vue'
 import SvgViewer from '../viewers/SvgViewer.vue'
 import { useMediaApi } from '../../composables/useMediaApi'

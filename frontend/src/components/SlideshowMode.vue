@@ -414,6 +414,7 @@
           v-else-if="isLayout"
           :key="`layout-${displayItem?.id}-${refreshKey}`"
           :media-id="mediaIdOf(displayItem)"
+          :file-format="displayItem.file_format"
           class="absolute inset-0"
         />
 

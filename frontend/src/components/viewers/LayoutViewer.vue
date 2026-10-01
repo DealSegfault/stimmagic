@@ -7,7 +7,7 @@
       Loading layout...
     </div>
 
-    <div v-else-if="error" class="text-red-500">
+    <div v-else-if="error" class="text-red-500" role="alert">
       {{ error }}
     </div>
 
@@ -16,8 +16,10 @@
         ref="iframeRef"
         :srcdoc="htmlContent"
         :style="iframeStyle"
+        title="Document preview"
+        sandbox="allow-same-origin"
         class="border-0 origin-top-left"
-        scrolling="no"
+        :scrolling="isDocument ? 'auto' : 'no'"
         @load="onIframeLoad"
       />
     </div>
@@ -33,9 +35,14 @@ const props = defineProps({
   mediaId: {
     type: Number,
     required: true
+  },
+  fileFormat: {
+    type: String,
+    default: 'stimmalayout'
   }
 })
 
+const isDocument = computed(() => ['html', 'htm'].includes(props.fileFormat.toLowerCase()))
 const loading = ref(true)
 const error = ref(null)
 const htmlContent = ref('')
@@ -66,6 +73,7 @@ onBeforeUnmount(() => {
 })
 
 function onIframeLoad() {
+  if (isDocument.value) return
   // For legacy layouts with height="auto", measure from iframe DOM
   if (!heightResolved.value) {
     try {
@@ -92,13 +100,13 @@ const scale = computed(() => {
   return Math.min(scaleX, scaleY, 1)
 })
 
-const wrapperStyle = computed(() => ({
+const wrapperStyle = computed(() => isDocument.value ? { width: '100%', height: '100%' } : ({
   width: `${layoutWidth.value * scale.value}px`,
   height: `${layoutHeight.value * scale.value}px`,
   overflow: 'hidden',
 }))
 
-const iframeStyle = computed(() => ({
+const iframeStyle = computed(() => isDocument.value ? { width: '100%', height: '100%' } : ({
   width: `${layoutWidth.value}px`,
   height: `${layoutHeight.value}px`,
   transform: `scale(${scale.value})`,

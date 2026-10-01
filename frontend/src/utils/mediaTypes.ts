@@ -11,7 +11,7 @@ export const VECTOR_FORMATS = ['svg']
 export const MODEL_FORMATS = ['glb', 'gltf', 'obj', 'fbx', 'stl']
 export const SET_FORMATS = ['stimmaset.json']
 export const GRID_FORMATS = ['stimmagrid.json']
-export const LAYOUT_FORMATS = ['stimmalayout']
+export const LAYOUT_FORMATS = ['stimmalayout', 'html', 'htm']
 export const STRUCTURED_FORMATS = [...TEXT_FORMATS, ...VECTOR_FORMATS, ...SET_FORMATS, ...GRID_FORMATS, ...LAYOUT_FORMATS]
 
 export type MediaType = 'image' | 'video' | 'audio' | 'model' | 'text' | 'vector' | 'set' | 'grid' | 'layout'
@@ -31,7 +31,7 @@ export function getMediaType(item: MediaItem): MediaType {
   if (format === 'svg') return 'vector'
   if (format === 'stimmaset.json') return 'set'
   if (format === 'stimmagrid.json') return 'grid'
-  if (format === 'stimmalayout') return 'layout'
+  if (LAYOUT_FORMATS.includes(format)) return 'layout'
   if (MODEL_FORMATS.includes(format)) return 'model'
   if (AUDIO_FORMATS.includes(format)) return 'audio'
   if (VIDEO_FORMATS.includes(format)) return 'video'
