@@ -16,6 +16,10 @@ from cloud_runtime import env_cloud_base_url
 
 
 LEGACY_LLM_MODEL_SLUGS = {
+    "codex-cli:gpt-5.6-sol": "codex-cli:gpt-6.1-sol",
+    "codex-cli:gpt-5.6-terra": "codex-cli:gpt-6.1-sol",
+    "codex-cli:gpt-5.6-luna": "codex-cli:gpt-6-luna",
+    "agy-cli:gemini-3.7-flash": "agy-cli:gemini-3.8-flash",
     "agent-max": "stimma:minimax-m3",
     "default": "stimma:minimax-m3",
     "stimma:claude-opus-4.8": "stimma:claude-opus-5",
@@ -26,6 +30,8 @@ LEGACY_LLM_MODEL_SLUGS = {
 # Reasoning levels each replacement model accepts, used when migrating a saved
 # per-slug reasoning selection off a retired alias.
 LEGACY_LLM_REASONING_LEVELS = {
+    "codex-cli:gpt-6.1-sol": {"low", "medium", "high"},
+    "codex-cli:gpt-6-luna": {"low", "medium", "high"},
     "stimma:minimax-m3": {"off", "high"},
     "stimma:claude-opus-5": {"off", "low", "medium", "high", "xhigh", "max"},
 }
@@ -68,11 +74,9 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
         return
 
     supported_models = {
-        'gpt-5.6-sol': 'GPT-5.6 Sol · ChatGPT',
         'gpt-6-astra': 'GPT-6 Astra · ChatGPT',
         'gpt-6.1-sol': 'GPT-6.1 Sol · ChatGPT',
         'gpt-6-luna': 'GPT-6.0 Luna · ChatGPT',
-        'gpt-5.6-luna': 'GPT-5.6 Luna · ChatGPT',
     }
     providers = config_data.setdefault('llm_providers', [])
     existing = next(
@@ -84,6 +88,7 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
             return
         models = existing.setdefault('models', [])
         template = next((model for model in models if model.get('model_id')), {})
+        models[:] = [model for model in models if not model.get('model_id', '').startswith('gpt-5.6')]
         for candidate_id, name in supported_models.items():
             if any(model.get('model_id') == candidate_id for model in models):
                 continue
@@ -97,9 +102,9 @@ def _inject_codex_cli_provider(config_data: dict, executable: Optional[str]) -> 
             })
         return
 
-    model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-5.6-luna').strip()
-    if not model_id:
-        model_id = 'gpt-5.6-luna'
+    model_id = os.environ.get('STIMMA_CODEX_MODEL', 'gpt-6-luna').strip()
+    if not model_id or model_id.startswith('gpt-5.6'):
+        model_id = 'gpt-6-luna'
 
     # Keep the environment override first for installations that use it as
     # their default, while making the ChatGPT-backed models selectable
@@ -154,16 +159,16 @@ def _inject_agy_cli_model(config_data: dict) -> None:
         return
 
     models = existing.setdefault('models', [])
+    template = next((model for model in models if model.get('model_id')), {})
+    models[:] = [model for model in models if not re.match(
+        r'gemini[- ]3\.7[- ]flash\b', model.get('model_id', ''), re.IGNORECASE,
+    )]
     provider_id = existing.get('id', 'agy-cli')
     model_slug = f"{provider_id}:gemini-3.8-flash"
     model_id = 'Gemini 3.8 Flash (High)'
     if any(model.get('id') == model_slug or model.get('model_id') == model_id for model in models):
         return
 
-    template = next(
-        (model for model in models if model.get('model_id')),
-        {},
-    )
     flash_model = dict(template)
     flash_model.update({
         'id': model_slug,

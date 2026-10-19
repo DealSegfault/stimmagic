@@ -36,6 +36,10 @@ const lastFetchTime = ref(0)
 const lastProjectId = ref(null)
 
 const LEGACY_MODEL_SLUGS = {
+  'codex-cli:gpt-5.6-sol': 'codex-cli:gpt-6.1-sol',
+  'codex-cli:gpt-5.6-terra': 'codex-cli:gpt-6.1-sol',
+  'codex-cli:gpt-5.6-luna': 'codex-cli:gpt-6-luna',
+  'agy-cli:gemini-3.7-flash': 'agy-cli:gemini-3.8-flash',
   'agent-max': 'stimma:minimax-m3',
   default: 'stimma:minimax-m3',
 }

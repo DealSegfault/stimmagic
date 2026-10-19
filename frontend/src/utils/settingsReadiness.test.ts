@@ -26,12 +26,12 @@ test('only explicitly available models are selectable', () => {
 
 test('stale model choices are never presented as current models', () => {
   const stale = { slug: 'anthropic:opus', name: 'Claude Opus 4.8', available: false }
-  const available = { slug: 'openai:sol', name: 'GPT-5.6 Sol', available: true }
+  const available = { slug: 'openai:sol', name: 'GPT-6.1 Sol', available: true }
 
   assert.equal(selectableModelForSlug([stale], stale.slug), undefined)
   assert.equal(modelSelectionLabel([stale], stale.slug), 'No models available')
   assert.equal(modelSelectionLabel([stale, available], stale.slug), 'Choose a model')
-  assert.equal(modelSelectionLabel([stale, available], available.slug), 'GPT-5.6 Sol')
+  assert.equal(modelSelectionLabel([stale, available], available.slug), 'GPT-6.1 Sol')
 })
 
 test('auto only resolves through an available concrete model', () => {
@@ -97,4 +97,19 @@ test('requires an available concrete or resolved LLM', () => {
   assert.equal(hasUsableLlmModel([
     { source: 'provider', available: true },
   ]), true)
+})
+
+
+test('retired GPT 5.6 and Gemini 3.7 Flash are hidden even in a stale catalog', () => {
+  for (const slug of ['codex-cli:gpt-5.6-sol', 'provider:gpt-5.6-terra', 'stimma:gpt-5.6-luna', 'agy-cli:gemini-3.7-flash']) {
+    const retired = { slug, available: true }
+    const auto = { slug: 'auto', source: 'auto', available: true, resolved_slug: slug }
+    assert.equal(isSelectableModel(retired), false)
+    assert.equal(isCatalogSelectableModel([auto, retired], auto), false)
+    assert.equal(selectableModelForSlug([retired], slug), undefined)
+  }
+  assert.equal(isSelectableModel({ name: 'Gemini 3.7 Flash · Antigravity', available: true }), false)
+  for (const slug of ['codex-cli:gpt-6.1-sol', 'codex-cli:gpt-6-luna', 'agy-cli:gemini-3.8-flash', 'stepfun:step-3.7-flash']) {
+    assert.equal(isSelectableModel({ slug, available: true }), true)
+  }
 })

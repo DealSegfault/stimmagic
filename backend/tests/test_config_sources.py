@@ -32,12 +32,12 @@ def test_installed_codex_cli_is_registered_without_api_key(monkeypatch):
     assert provider["kind"] == "codex_cli"
     assert provider["base_url"] == "codex-cli://local"
     assert "api_key" not in provider
-    assert provider["models"][0]["model_id"] == "gpt-5.6-luna"
+    assert provider["models"][0]["model_id"] == "gpt-6-luna"
     assert {
         model["model_id"] for model in provider["models"]
-    } == {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"}
-    sol = next(model for model in provider["models"] if model["model_id"] == "gpt-5.6-sol")
-    assert sol["name"] == "GPT-5.6 Sol · ChatGPT"
+    } == {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"}
+    sol = next(model for model in provider["models"] if model["model_id"] == "gpt-6.1-sol")
+    assert sol["name"] == "GPT-6.1 Sol · ChatGPT"
     astra = next(model for model in provider["models"] if model["model_id"] == "gpt-6-astra")
     assert astra["name"] == "GPT-6 Astra · ChatGPT"
     for model_id, name in (
@@ -55,9 +55,9 @@ def test_codex_cli_registration_respects_existing_provider():
         "id": "codex-cli",
         "kind": "codex_cli",
         "models": [{
-            "id": "codex-cli:gpt-5.6-luna",
-            "model_id": "gpt-5.6-luna",
-            "name": "GPT-5.6 Luna · ChatGPT",
+            "id": "codex-cli:gpt-6-luna",
+            "model_id": "gpt-6-luna",
+            "name": "GPT-6 Luna · ChatGPT",
             "enabled": False,
         }],
     }
@@ -67,11 +67,33 @@ def test_codex_cli_registration_respects_existing_provider():
     _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
 
     assert [model["model_id"] for model in existing["models"]] == [
-        "gpt-5.6-luna", "gpt-5.6-sol", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna",
+        "gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol",
     ]
     assert existing["models"][0]["enabled"] is False
     assert all(model["enabled"] for model in existing["models"][1:])
 
+
+
+@pytest.mark.parametrize("override", ["", "gpt-5.6-sol", "gpt-5.6-luna"])
+def test_codex_cli_does_not_register_retired_override(monkeypatch, override):
+    monkeypatch.setenv("STIMMA_CODEX_MODEL", override)
+    config_data = {}
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+    assert config_data["llm_providers"][0]["models"][0]["model_id"] == "gpt-6-luna"
+    assert not any("gpt-5.6" in model["model_id"] for model in config_data["llm_providers"][0]["models"])
+
+
+def test_codex_cli_removes_existing_retired_models():
+    config_data = {"llm_providers": [{
+        "id": "custom-codex", "kind": "codex_cli", "models": [
+            {"id": f"custom-codex:{model}", "model_id": model}
+            for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+        ],
+    }]}
+    _inject_codex_cli_provider(config_data, "/usr/local/bin/codex")
+    assert {model["model_id"] for model in config_data["llm_providers"][0]["models"]} == {
+        "gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna",
+    }
 
 def test_codex_cli_registration_respects_deleted_provider():
     existing = {"kind": "codex_cli", "deleted_at": "2026-08-26T00:00:00Z"}
@@ -101,6 +123,7 @@ def test_agy_cli_registration_adds_gemini_38_flash():
     assert flash["model_id"] == "Gemini 3.8 Flash (High)"
     assert flash["name"] == "Gemini 3.8 Flash · Antigravity"
     assert flash["model_vendor"] == "gemini"
+    assert len(existing["models"]) == 1
 
 
 def test_ollama_is_skipped_when_binary_is_missing():
@@ -397,3 +420,25 @@ async def test_removing_source_immediately_hides_and_deactivates_its_media(
             )
         )
         assert eligible_count == 1
+
+
+@pytest.mark.parametrize(("old", "current"), [
+    ("codex-cli:gpt-5.6-sol", "codex-cli:gpt-6.1-sol"),
+    ("codex-cli:gpt-5.6-terra", "codex-cli:gpt-6.1-sol"),
+    ("codex-cli:gpt-5.6-luna", "codex-cli:gpt-6-luna"),
+    ("agy-cli:gemini-3.7-flash", "agy-cli:gemini-3.8-flash"),
+])
+def test_retired_cli_selection_uses_current_model(old, current):
+    from llm_resolver import normalize_model_slug
+    assert normalize_model_slug(old) == current
+
+
+def test_agy_removes_old_flash_when_replacement_already_exists():
+    provider = {"id": "custom-agy", "kind": "agy_cli", "models": [
+        {"id": "custom-agy:gemini-3.7-flash", "model_id": "Gemini 3.7 Flash (High)"},
+        {"id": "custom-agy:gemini-3.8-flash", "model_id": "Gemini 3.8 Flash (High)", "enabled": False},
+    ]}
+    _inject_agy_cli_model({"llm_providers": [provider]})
+    assert len(provider["models"]) == 1
+    assert provider["models"][0]["model_id"] == "Gemini 3.8 Flash (High)"
+    assert provider["models"][0]["enabled"] is False

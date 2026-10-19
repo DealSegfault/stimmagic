@@ -29,6 +29,7 @@ export type StimmaCloudReadiness = {
 
 export function isSelectableModel(model: AvailableModel | null | undefined): boolean {
   return model?.available === true
+    && !/gpt[- ]5\.6\b|gemini[- ]3\.7[- ]flash\b/i.test(`${model.slug || ''} ${model.name || ''}`)
 }
 
 export function isCatalogSelectableModel(
