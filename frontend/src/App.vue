@@ -137,7 +137,7 @@
     />
 
     <!-- Main area (header + content) -->
-    <div v-scroll-guard class="flex-1 flex flex-col overflow-hidden">
+    <div v-scroll-guard class="flex-1 min-w-0 flex flex-col overflow-hidden">
       <!-- Static top bar -->
       <TopBar
         class="top-bar"

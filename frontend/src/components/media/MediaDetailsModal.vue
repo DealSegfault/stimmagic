@@ -2,7 +2,7 @@
   <Modal
     :show="mediaDetails.state.value.visible"
     size="custom"
-    custom-class="relative w-[1100px] h-[75vh] flex overflow-hidden"
+    custom-class="relative w-[1100px] max-w-[calc(100vw-2rem)] h-[85dvh] sm:h-[75vh] flex overflow-hidden"
     :close-on-esc="false"
     @close="mediaDetails.close()"
   >

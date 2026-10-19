@@ -1,7 +1,7 @@
 <template>
-  <div class="w-full h-full flex">
+  <div class="w-full h-full min-h-0 flex flex-col sm:flex-row">
     <!-- Left: Image (letterboxed, full resolution) -->
-    <div class="w-2/3 bg-black flex-shrink-0">
+    <div class="w-full h-2/5 sm:w-2/3 sm:h-full bg-matte flex-shrink-0">
       <ModelViewer
         v-if="isModelMedia"
         :src="getMediaFileUrl(media.file_hash)"
@@ -19,7 +19,7 @@
     </div>
 
     <!-- Right: Info -->
-    <div class="w-1/3 overflow-y-auto overflow-x-hidden p-4 space-y-3 select-text">
+    <div class="w-full min-h-0 flex-1 sm:w-1/3 overflow-y-auto overflow-x-hidden p-4 space-y-3 select-text">
       <!-- Markers (editable) -->
       <div v-if="availableMarkers.length > 0">
         <div class="flex flex-wrap gap-1.5">

@@ -15,14 +15,15 @@
 
     <!-- Right sidebar -->
     <SlideshowInfoPanel
-      v-if="showSidebar"
+      v-if="sidebarVisible"
+      :class="isCompact ? '!absolute inset-0 !w-full !max-w-none pt-16' : 'shrink-0'"
       ref="infoPanelRef"
       :current-item="currentPayloadItem"
       :is-trash-view="isTrashView"
       :is-current-item-trashed="isCurrentItemTrashed"
       :available-markers="availableMarkers"
       :is-video="isVideo"
-      :focus-mode="focusMode"
+      :focus-mode="focusMode && !isCompact"
       :marker-update-trigger="markerUpdateTrigger"
       :media-projects="mediaProjects"
       :media-boards="mediaBoards"
@@ -108,7 +109,7 @@
     <div
       v-if="isViewingGrid && currentGridView"
       class="absolute top-4 -translate-x-1/2 z-chrome flex flex-col items-center"
-      :style="{ left: (showSidebar && !focusMode) ? 'calc(50% - 192px)' : '50%' }"
+      :style="{ left: `calc((100% - ${sidebarWidth}px) / 2)` }"
     >
       <!-- Compact pill indicator with editable title -->
       <div
@@ -159,7 +160,7 @@
         !currentSetView.title ? 'cursor-text' : (isEditingSetTitle ? 'cursor-text' : 'cursor-pointer')
       ]"
       :style="{
-        left: (showSidebar && !focusMode) ? 'calc(50% - 192px)' : '50%',
+        left: `calc((100% - ${sidebarWidth}px) / 2)`,
         minWidth: setTitleContainerWidth ? `${setTitleContainerWidth}px` : undefined
       }"
       @dblclick.stop="startEditingSetTitle"
@@ -199,7 +200,7 @@
         !setOverviewData?.title ? 'cursor-text' : (isEditingSetOverviewTitle ? 'cursor-text' : 'cursor-pointer')
       ]"
       :style="{
-        left: (showSidebar && !focusMode) ? 'calc(50% - 192px)' : '50%',
+        left: `calc((100% - ${sidebarWidth}px) / 2)`,
         minWidth: setOverviewTitleContainerWidth ? `${setOverviewTitleContainerWidth}px` : undefined
       }"
       @dblclick.stop="startEditingSetOverviewTitle"
@@ -239,7 +240,7 @@
         !gridOverviewData?.title ? 'cursor-text' : (isEditingGridOverviewTitle ? 'cursor-text' : 'cursor-pointer')
       ]"
       :style="{
-        left: (showSidebar && !focusMode) ? 'calc(50% - 192px)' : '50%',
+        left: `calc((100% - ${sidebarWidth}px) / 2)`,
         minWidth: gridOverviewTitleContainerWidth ? `${gridOverviewTitleContainerWidth}px` : undefined
       }"
       @dblclick.stop="startEditingGridOverviewTitle"
@@ -274,7 +275,7 @@
     <div
       v-if="!focusMode && isGrid && !isViewingGrid"
       class="absolute top-4 h-12 z-chrome flex items-center"
-      :style="{ right: (showSidebar && !focusMode) ? '468px' : '84px' }"
+      :style="{ right: `${sidebarWidth + 120}px` }"
     >
       <!-- Initial compare button (not in compare mode) -->
       <button
@@ -326,7 +327,18 @@
     </div>
 
     <!-- Close button -->
-    <button class="absolute top-4 bg-black/40 backdrop-blur-md border-none text-white text-[2rem] w-12 h-12 rounded-full cursor-pointer z-chrome transition-all hover:bg-black/60" :style="{ right: (showSidebar && !focusMode) ? '400px' : '16px' }" @click="handleCloseClick" title="Close slideshow">✕</button>
+    <div class="absolute top-4 z-chrome flex gap-2" :style="{ right: `${sidebarWidth + 16}px` }">
+      <Tooltip :text="sidebarVisible ? 'Hide asset details' : 'Show asset details'">
+        <IconButton class="!w-11 !h-11 bg-surface/90" aria-label="Asset details" :aria-expanded="sidebarVisible" @click="toggleSidebar">
+          <InformationCircleIcon class="w-6 h-6" />
+        </IconButton>
+      </Tooltip>
+      <Tooltip text="Close slideshow">
+        <IconButton class="!w-11 !h-11 bg-surface/90" aria-label="Close slideshow" @click="handleCloseClick">
+          <XMarkIcon class="w-6 h-6" />
+        </IconButton>
+      </Tooltip>
+    </div>
 
     <!-- Caption (bottom) -->
     <div v-if="currentItem && showCaption && currentItem.vlm_caption && captioningEnabledRef" class="absolute bottom-0 left-0 right-0 bg-black/60 backdrop-blur-md px-8 py-6 text-white text-sm leading-normal z-chrome">
@@ -336,8 +348,8 @@
     <!-- Media display -->
     <div
       ref="mediaContainer"
-      class="flex-1 flex items-center justify-center relative transition-all duration-300"
-      :style="{ marginBottom: (showImageStrip && !focusMode && !isViewingGrid) ? `${STRIP_HEIGHT}px` : '0px' }"
+      class="flex-1 min-w-0 flex items-center justify-center relative transition-all duration-300"
+      :style="{ marginBottom: stripVisible ? `${STRIP_HEIGHT}px` : '0px' }"
     >
       <div v-if="!displayItem" class="text-content">Loading...</div>
       <!-- Placeholder for deleted/trashed items (rare edge case) -->
@@ -458,6 +470,8 @@
           @dragstart="handleDragStart"
           @dragend="handleDragEnd"
           @loadedmetadata="handleMediaLoad"
+          @ended="onVideoEnded"
+          @error="handleVideoPlaybackError"
         >
         </video>
 
@@ -556,12 +570,13 @@
         @contextmenu="handleContextMenu($event, displayItem)"
         :class="[
           'absolute left-0 flex items-center justify-start cursor-pointer z-chrome group bg-transparent border-none',
-          isGrid ? 'w-12 h-24 top-1/2 -translate-y-1/2' : 'w-48 top-20 bottom-0'
+          isGrid || isCompact ? 'w-11 h-24 top-1/2 -translate-y-1/2' : 'w-48 top-20 bottom-0'
         ]"
         title="Previous (← or A)"
       >
         <div class="w-12 h-24 flex items-center justify-center rounded-r-lg bg-transparent group-hover:bg-black/30 group-hover:backdrop-blur-md transition-all">
-          <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-8 h-8 text-white/0 group-hover:text-white transition-all">
+          <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-8 h-8 group-hover:text-white transition-all"
+            :class="isCompact ? 'text-white/80' : 'text-white/0'">
             <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
           </svg>
         </div>
@@ -574,12 +589,13 @@
         @contextmenu="handleContextMenu($event, displayItem)"
         :class="[
           'absolute right-0 flex items-center justify-end cursor-pointer z-chrome group bg-transparent border-none',
-          isGrid ? 'w-12 h-24 top-1/2 -translate-y-1/2' : 'w-48 top-20 bottom-0'
+          isGrid || isCompact ? 'w-11 h-24 top-1/2 -translate-y-1/2' : 'w-48 top-20 bottom-0'
         ]"
         title="Next (→ or D)"
       >
         <div class="w-12 h-24 flex items-center justify-center rounded-l-lg bg-transparent group-hover:bg-black/30 group-hover:backdrop-blur-md transition-all">
-          <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-8 h-8 text-white/0 group-hover:text-white transition-all">
+          <svg fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-8 h-8 group-hover:text-white transition-all"
+            :class="isCompact ? 'text-white/80' : 'text-white/0'">
             <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
           </svg>
         </div>
@@ -601,12 +617,12 @@
     <!-- Image Strip (shows thumbnails from current dataset, or single source image when viewing source) -->
     <!-- Hidden when viewing an expanded grid cell (the grid cell navigation replaces the strip) -->
     <div
-      v-if="showImageStrip && !focusMode && props.showThumbnailStrip && !isViewingGrid"
+      v-if="stripVisible"
       :class="inline ? 'absolute' : 'fixed'"
       class="bottom-0 left-0 bg-surface-elevated backdrop-blur-[10px] border-t border-edge-subtle z-chrome transition-all duration-300 py-2 px-2"
       :style="{
         height: `${STRIP_HEIGHT}px`,
-        right: (showSidebar && !focusMode) ? `${SIDEBAR_WIDTH}px` : '0px'
+        right: `${sidebarWidth}px`
       }"
     >
       <!-- When viewing a source image, show single centered thumbnail -->
@@ -815,12 +831,15 @@
     <!-- Control Bar (default: vertical, upper-left; user-draggable) -->
     <div
       ref="controlBar"
+      v-show="!isCompact || !mobileInfoOpen"
+      data-testid="slideshow-controls"
       :class="[
         'absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-black/40 backdrop-blur-xl px-4 py-2 rounded-full border border-white/10 z-chrome shadow-[0_4px_20px_rgba(0,0,0,0.3)] transition-all duration-200 select-none',
         { 'cursor-grabbing !transition-none': isDragging },
         { '!bg-black/60': isHovered },
         { 'cursor-grab': !isDragging },
-        { 'flex-col px-2 py-4': controlBarOrientation === 'vertical' }
+        { 'flex-col px-2 py-4': controlBarLayout === 'vertical' },
+        { '!gap-2 !px-3 overflow-x-auto max-w-[calc(100%-24px)] [&>*]:shrink-0 [&_button]:min-w-11 [&_button]:min-h-11': isCompact }
       ]"
       :style="controlBarStyle"
       @mousedown="startDrag"
@@ -829,7 +848,7 @@
       title="Drag to reposition"
     >
       <!-- Cluster 1 — Playback: shuffle · play/pause · loop · interval · volume -->
-      <div :class="['flex gap-2', { 'flex-col': controlBarOrientation === 'vertical' }]">
+      <div :class="['flex gap-2', { 'flex-col': controlBarLayout === 'vertical' }]">
         <!-- Shuffle button -->
         <button
           @click="toggleRandomize"
@@ -895,7 +914,7 @@
             ref="volumeSliderRef"
             :class="[
               'absolute bg-black/70 backdrop-blur-xl rounded-lg border border-white/10 shadow-[0_4px_20px_rgba(0,0,0,0.4)] z-menu',
-              controlBarOrientation === 'vertical'
+              controlBarLayout === 'vertical'
                 ? 'left-full ml-2 top-1/2 -translate-y-1/2 px-2 py-2 flex items-center gap-2'
                 : volumePopupOpensDown
                   ? 'top-full mt-2 left-1/2 -translate-x-1/2 px-2 py-2 flex flex-col items-center gap-2'
@@ -903,7 +922,7 @@
             ]"
             @mousedown.stop
           >
-            <template v-if="controlBarOrientation === 'vertical'">
+            <template v-if="controlBarLayout === 'vertical'">
               <button
                 @click="toggleMute"
                 :class="[
@@ -952,7 +971,7 @@
 
       <!-- Interval — its own section, only while the slideshow is running -->
       <template v-if="isPlaying">
-        <div :class="['bg-white/20 cursor-grab', controlBarOrientation === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
+        <div :class="['bg-white/20 cursor-grab', controlBarLayout === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
         <button
           @click="cycleDuration"
           class="text-sm font-medium text-white/60 flex items-center justify-center cursor-pointer transition-all bg-transparent border-none p-1.5 rounded-md min-w-[42px] hover:bg-white/10 hover:text-white"
@@ -962,18 +981,18 @@
         </button>
       </template>
 
-      <div :class="['bg-white/20 cursor-grab', controlBarOrientation === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
+      <div :class="['bg-white/20 cursor-grab', controlBarLayout === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
 
       <!-- Cluster 2 — Position -->
       <div
         class="text-xs font-semibold text-white cursor-grab"
-        :class="controlBarOrientation === 'vertical' ? 'flex flex-col gap-0.5 items-center leading-none' : 'min-w-[80px] text-center'"
+        :class="controlBarLayout === 'vertical' ? 'flex flex-col gap-0.5 items-center leading-none' : 'min-w-[80px] text-center'"
         @dblclick="toggleOrientation"
         :title="isViewingGrid ? 'Grid position | Arrow keys to navigate | Double-click to toggle orientation' : 'Position | Arrow keys / a/d to navigate | Double-click to toggle orientation'"
       >
         <!-- Grid view: show linear position in reading order -->
         <template v-if="isViewingGrid && currentGridView">
-          <template v-if="controlBarOrientation === 'vertical'">
+          <template v-if="controlBarLayout === 'vertical'">
             <div class="text-sm font-semibold">{{ gridLinearPosition }}</div>
             <div class="text-xs opacity-50 font-medium">{{ gridTotalCells }}</div>
           </template>
@@ -982,7 +1001,7 @@
           </template>
         </template>
         <!-- Normal mode: show linear position -->
-        <template v-else-if="controlBarOrientation === 'vertical'">
+        <template v-else-if="controlBarLayout === 'vertical'">
           <div class="text-sm font-semibold">{{ effectiveIndex + 1 }}</div>
           <div class="text-xs opacity-50 font-medium">{{ effectiveTotalCount }}</div>
         </template>
@@ -991,10 +1010,10 @@
         </template>
       </div>
 
-      <div :class="['bg-white/20 cursor-grab', controlBarOrientation === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
+      <div :class="['bg-white/20 cursor-grab', controlBarLayout === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
 
       <!-- Cluster 3 — This image: focus · lineage · show in Finder · markers -->
-      <div :class="['flex gap-2', { 'flex-col': controlBarOrientation === 'vertical' }]">
+      <div :class="['flex gap-2', { 'flex-col': controlBarLayout === 'vertical' }]">
         <!-- Focus mode button -->
         <button
           @click="toggleFocusMode"
@@ -1039,7 +1058,7 @@
 
         <!-- Marker toggles (own sub-group, divided from the view actions) -->
         <template v-if="availableMarkers.length > 0 && currentItem">
-          <div :class="['bg-white/20 self-center', controlBarOrientation === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
+          <div :class="['bg-white/20 self-center', controlBarLayout === 'vertical' ? 'w-5 h-px' : 'w-px h-5']"></div>
           <button
             v-for="marker in availableMarkers"
             :key="marker.id"
@@ -1061,7 +1080,9 @@
          Filmstrip scrubber: the track is a frame-strip montage of the video with a
          live playhead, same treatment as the prep frame picker. Toggle with V. -->
     <div
-      v-if="isVideo && showVideoTransport"
+      v-if="isVideo && (showVideoTransport || isCompact) && (!isCompact || !mobileInfoOpen)"
+      data-testid="video-transport"
+      :class="{ '[&_button]:min-w-11 [&_button]:min-h-11': isCompact }"
       class="absolute z-chrome flex items-center gap-2 bg-black/40 backdrop-blur-xl border border-white/10 rounded-lg px-3 py-1.5 shadow-[0_4px_20px_rgba(0,0,0,0.3)] select-none w-[620px]"
       :style="transportBarStyle"
       @mousedown.stop
@@ -1091,7 +1112,7 @@
 
       <!-- Filmstrip track -->
       <div
-        class="relative flex-1 h-[34px] rounded-md overflow-hidden border border-white/10 bg-black/30 cursor-pointer select-none touch-none"
+        class="relative flex-1 min-w-0 h-[34px] rounded-md overflow-hidden border border-white/10 bg-black/30 cursor-pointer select-none touch-none"
         @pointerdown="onTransportPointerDown"
         @pointermove="onTransportPointerMove"
         @pointerup="onTransportPointerUp"
@@ -1251,10 +1272,14 @@ import {
   ArrowsPointingOutIcon,
   DocumentIcon,
   PlayIcon,
-  PauseIcon
+  PauseIcon,
+  InformationCircleIcon,
+  XMarkIcon
 } from '@heroicons/vue/24/solid'
 import BoardPicker from './BoardPicker.vue'
 import Modal from './ui/Modal.vue'
+import IconButton from './ui/IconButton.vue'
+import Tooltip from './ui/Tooltip.vue'
 import ExportModal from './ExportModal.vue'
 import ShareDialog from './ShareDialog.vue'
 import HorizontalVirtualScroller from './HorizontalVirtualScroller.vue'
@@ -1680,10 +1705,13 @@ watch(
         videoDuration.value = readyPlayback.duration
         mediaLoaded.value = true
       },
-      onError: (error) => {
+      onError: () => {
         if (msePlayback !== playback) return
-        console.error('[SlideshowMode] Seamless video playback failed:', error)
-        addToast('Could not prepare this video for seamless playback', 'error')
+        // WebKit without MSE and full SourceBuffers can still play the original file.
+        destroyMsePlayback()
+        element.src = getMediaFileUrl(fileHash)
+        element.load()
+        if (slideshowViewActive) void element.play().catch(() => {})
       },
       onMaintenanceError: (error) => {
         if (msePlayback === playback) {
@@ -1698,6 +1726,27 @@ watch(
 )
 const controlBar = ref(null)
 const overlay = ref(null)
+const viewerWidth = ref(window.innerWidth)
+const isCompact = computed(() => viewerWidth.value < 768)
+const mobileInfoOpen = ref(false)
+const sidebarVisible = computed(() => isCompact.value ? mobileInfoOpen.value : showSidebar.value)
+const sidebarWidth = computed(() => !isCompact.value && showSidebar.value && !focusMode.value ? SIDEBAR_WIDTH : 0)
+const stripVisible = computed(() => !isCompact.value && showImageStrip.value && !focusMode.value && props.showThumbnailStrip && !isViewingGrid.value)
+const controlBarLayout = computed(() => isCompact.value ? 'horizontal' : controlBarOrientation.value)
+
+function toggleSidebar() {
+  if (isCompact.value) mobileInfoOpen.value = !mobileInfoOpen.value
+  else showSidebar.value = !showSidebar.value
+}
+
+watch(isCompact, () => { mobileInfoOpen.value = false })
+watch(overlay, (element, _, onCleanup) => {
+  if (!element) return
+  viewerWidth.value = element.clientWidth
+  const observer = new ResizeObserver(([entry]) => { viewerWidth.value = entry.contentRect.width })
+  observer.observe(element)
+  onCleanup(() => observer.disconnect())
+})
 const gridViewerRef = ref(null)
 
 // Cursor hiding state for focus mode
@@ -2445,11 +2494,16 @@ const hasOnlyCaption = computed(() => {
 })
 
 const controlBarStyle = computed(() => {
+  if (isCompact.value) return {
+    left: '50%', right: 'auto', top: 'auto',
+    bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
+    transform: 'translateX(-50%)'
+  }
   const anchors = controlBarEdgeAnchors.value
   // In focus mode, treat sidebar as if it's not there
-  const sidebarWidth = (showSidebar.value && !focusMode.value) ? SIDEBAR_WIDTH : 0
+  const reservedSidebarWidth = sidebarWidth.value
   // Account for image strip height when visible
-  const relatedStripOffset = (showImageStrip.value && !focusMode.value) ? STRIP_HEIGHT : 0
+  const relatedStripOffset = stripVisible.value ? STRIP_HEIGHT : 0
 
   // If we have saved edge anchors, calculate position from edges
   if (anchors.horizontal !== null && anchors.vertical !== null) {
@@ -2469,7 +2523,7 @@ const controlBarStyle = computed(() => {
       style.right = 'auto'
     } else {
       // When anchored to right, account for sidebar on right
-      style.right = `${sidebarWidth + horizontalDistance}px`
+      style.right = `${reservedSidebarWidth + horizontalDistance}px`
       style.left = 'auto'
     }
 
@@ -2502,13 +2556,17 @@ const controlBarStyle = computed(() => {
 // above the image strip. Sits low (near the viewer bottom) — the control bar is
 // user-draggable, so we don't reserve space for its default spot.
 const transportBarStyle = computed(() => {
-  const sidebarWidth = (showSidebar.value && !focusMode.value) ? SIDEBAR_WIDTH : 0
-  const relatedStripOffset = (showImageStrip.value && !focusMode.value) ? STRIP_HEIGHT : 0
+  if (isCompact.value) return {
+    left: '12px', right: '12px', width: 'auto', maxWidth: 'none',
+    bottom: 'calc(80px + env(safe-area-inset-bottom, 0px))'
+  }
+  const reservedSidebarWidth = sidebarWidth.value
+  const relatedStripOffset = stripVisible.value ? STRIP_HEIGHT : 0
   return {
-    left: `calc((100% - ${sidebarWidth}px) / 2)`,
+    left: `calc((100% - ${reservedSidebarWidth}px) / 2)`,
     transform: 'translateX(-50%)',
     bottom: `${relatedStripOffset + 24}px`,
-    maxWidth: `calc((100% - ${sidebarWidth}px) * 0.75)`
+    maxWidth: `calc((100% - ${reservedSidebarWidth}px) * 0.75)`
   }
 })
 
@@ -3733,6 +3791,10 @@ function toggleVideoTransport() {
   trackControl(showVideoTransport.value ? 'video_transport_show' : 'video_transport_hide')
 }
 
+function handleVideoPlaybackError() {
+  if (!msePlayback && videoElement.value?.error) addToast('Could not play this video', 'error')
+}
+
 function toggleVideoPlayback() {
   const v = videoElement.value
   if (!v) return
@@ -3929,6 +3991,7 @@ function toggleOrientation() {
 
 // Control bar dragging
 function startDrag(event) {
+  if (isCompact.value) return
   isDragging.value = true
   dragDistance.value = 0
   preventClick.value = false
@@ -3937,7 +4000,7 @@ function startDrag(event) {
   // If no edge anchors are set yet, initialize them based on current visual position
   // This prevents the "hop" when transitioning from centered to edge-anchored positioning
   if (controlBarEdgeAnchors.value.horizontal === null || controlBarEdgeAnchors.value.vertical === null) {
-    const sidebarWidth = (showSidebar.value && !focusMode.value) ? SIDEBAR_WIDTH : 0
+    const reservedSidebarWidth = sidebarWidth.value
     const containerRect = overlay.value.getBoundingClientRect()
     const containerWidth = containerRect.width
     const containerHeight = containerRect.height
@@ -3951,10 +4014,10 @@ function startDrag(event) {
     // Calculate distances from edges (clamped non-negative in case the bar's
     // actual position is already behind the sidebar/strip from a stale state)
     const distanceFromLeft = Math.max(0, currentX)
-    const distanceFromRight = Math.max(0, (containerWidth - sidebarWidth) - (currentX + controlBarWidth))
+    const distanceFromRight = Math.max(0, (containerWidth - reservedSidebarWidth) - (currentX + controlBarWidth))
     const distanceFromTop = Math.max(0, currentY)
     // Account for image strip when calculating bottom distance (consistent with controlBarStyle)
-    const relatedStripOffset = (showImageStrip.value && !focusMode.value) ? STRIP_HEIGHT : 0
+    const relatedStripOffset = stripVisible.value ? STRIP_HEIGHT : 0
     const distanceFromBottom = Math.max(0, containerHeight - relatedStripOffset - (currentY + controlBarHeight))
 
     // Set initial anchors
@@ -3993,8 +4056,8 @@ function onDrag(event) {
       const y = event.clientY - containerRect.top - dragStart.value.y
 
       // In focus mode, treat sidebar/strip as if they're not there
-      const sidebarWidth = (showSidebar.value && !focusMode.value) ? SIDEBAR_WIDTH : 0
-      const relatedStripOffset = (showImageStrip.value && !focusMode.value) ? STRIP_HEIGHT : 0
+      const reservedSidebarWidth = sidebarWidth.value
+      const relatedStripOffset = stripVisible.value ? STRIP_HEIGHT : 0
       const containerWidth = containerRect.width
       const containerHeight = containerRect.height
       const controlBarWidth = controlBar.value.offsetWidth
@@ -4004,7 +4067,7 @@ function onDrag(event) {
       // can never be dragged underneath them (which produced negative saved
       // distances that persisted after the sidebar closed — the bar would
       // then render off-screen).
-      const maxX = containerWidth - sidebarWidth - controlBarWidth
+      const maxX = containerWidth - reservedSidebarWidth - controlBarWidth
       const maxY = containerHeight - relatedStripOffset - controlBarHeight
 
       const clampedX = Math.max(0, Math.min(x, maxX))
@@ -4014,7 +4077,7 @@ function onDrag(event) {
       // Sidebar is on the right, so left distance is just clampedX
       const distanceFromLeft = clampedX
       // Right distance accounts for sidebar on right
-      const distanceFromRight = (containerWidth - sidebarWidth) - (clampedX + controlBarWidth)
+      const distanceFromRight = (containerWidth - reservedSidebarWidth) - (clampedX + controlBarWidth)
 
       // Determine vertical edge
       const distanceFromTop = clampedY
@@ -4183,7 +4246,7 @@ function handleKeydown(event) {
       break
     case 'i':
       event.preventDefault()
-      showSidebar.value = !showSidebar.value
+      toggleSidebar()
       break
     case 'C':
       if (event.shiftKey) {
@@ -5501,6 +5564,12 @@ useGlobalKeyboardShortcuts({
 // that closes the slideshow, but we want to exit set view first
 function handleEscapeCapture(event) {
   if (event.key === 'Escape') {
+    if (isCompact.value && mobileInfoOpen.value) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      mobileInfoOpen.value = false
+      return
+    }
     // Grid view takes precedence - exit cell view back to grid overview
     if (isViewingGrid.value) {
       event.preventDefault()
