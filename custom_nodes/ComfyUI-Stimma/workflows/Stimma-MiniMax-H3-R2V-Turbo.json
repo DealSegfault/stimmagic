@@ -1,8 +1,8 @@
 {
-  "id": "a8cfe4e6-31ad-4315-8450-b0be6a1a52b4",
-  "revision": 0,
-  "last_node_id": 185,
-  "last_link_id": 327,
+  "id": "243c79f4-20ce-5ba3-b599-009930e62231",
+  "revision": 1,
+  "last_node_id": 191,
+  "last_link_id": 333,
   "nodes": [
     {
       "id": 116,
@@ -23,7 +23,7 @@
       "title": "Note: MiniMax H3",
       "properties": {},
       "widgets_values": [
-        "## ⚡ Turbo variant\n\nThis workflow applies the recommended MiniMax H3 Turbo EMA checkpoint at strength 1.0 and uses its adaptive four-step sampler. Four steps with the simple scheduler is the intended default. The current checkpoint is a preview and may produce plastic-looking skin or over-sharp grain.\n\n## MiniMax H3\n\n[MiniMax H3](https://www.minimax.io/blog/minimax-h3) is MiniMax's general-purpose, omni-modal generation model. It jointly understands text, image, video, and audio, and generates video with **native stereo audio**: voice, sound effects, and music are modeled jointly in a single forward pass, not layered on afterward. Output is up to 2K resolution, 24fps, and up to about 15 seconds.\n\n## ComfyUI links\n- [ComfyUI#15224](https://github.com/Comfy-Org/ComfyUI/pull/15224)\n- [🤗 Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\n## About this workflow\n\nThis template runs the **reference-to-video (ref2va)** task using the `MiniMaxH3ReferenceToVideo` node. It takes any mix of reference images, videos, and standalone audio, and weaves them into the generation to lock in a character's identity, a style, a motion, a camera move, or a voice.\n\n**Key inputs**\n\n- **ref_images / ref_videos / ref_video_audios / ref_audios**: up to 9 reference images, 3 reference videos (each may carry its own paired soundtrack), and 3 standalone reference audio clips\n- **prompt**: use the model-visible tags in their native presentation order: all `<Picture N>` tags first; then each reference video's `<Audio N>` immediately before its matching `<Video N>`; then standalone audio continues the `<Audio N>` numbering after the video count\n- **ref_image_size**: `match` scales references down to the generation's resolution (faster); `max` keeps up to a 2048px short edge for stronger identity fidelity, at the cost of speed since reference tokens ride along every sampling step\n- **width / height**: set via Resolution Selector.\n- **duration (seconds)**: converted to a valid frame `length` by the Math Expression node\n\n**Sampling and decode**\n\n- Sampler: `res_multistep`. `beta` or `normal` scheduler tends to outperform `simple` for reference-heavy prompts like this one\n- The sampler's joint audio+video `LATENT` output feeds directly into both `VAEDecode` (video, `minimax_h3_video_vae_fp16`) and `VAEDecodeAudio` (audio, `minimax_h3_audio_vae_fp32`); each decode node automatically pulls its own half out of the packed latent. `CreateVideo` then muxes the two into a single MP4 with synced sound\n- The diffusion model here is `minimax_h3_ref2va_pruned_int8_convrot.safetensors`, a different set of weights from the `fl2va` model used by the t2v/i2v templates\n\nRef2va's output is very sensitive to prompt wording; matching the reference tags precisely and being explicit about which reference drives which part of the shot tends to work best."
+        "## MiniMax H3\n\n[MiniMax H3](https://www.minimax.io/blog/minimax-h3) is MiniMax's general-purpose, omni-modal generation model. It jointly understands text, image, video, and audio, and generates video with **native stereo audio**: voice, sound effects, and music are modeled jointly in a single forward pass, not layered on afterward. Output is up to 2K resolution, 24fps, and up to about 15 seconds.\n\n## ComfyUI links\n- [ComfyUI#15224](https://github.com/Comfy-Org/ComfyUI/pull/15224)\n- [\ud83e\udd17 Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\n## About this workflow\n\nThis template runs the **reference-to-video (ref2va)** task using the `MiniMaxH3ReferenceToVideo` node. It takes any mix of reference images, videos, and standalone audio, and weaves them into the generation to lock in a character's identity, a style, a motion, a camera move, or a voice.\n\n**Key inputs**\n\n- **ref_images / ref_videos / ref_video_audios / ref_audios**: up to 9 reference images, 3 reference videos (each may carry its own paired soundtrack), and 3 standalone reference audio clips\n- **prompt**: use the model-visible tags in their native presentation order: all `<Picture N>` tags first; then each reference video's `<Audio N>` immediately before its matching `<Video N>`; then standalone audio continues the `<Audio N>` numbering after the video count\n- **ref_image_size**: `match` scales references down to the generation's resolution (faster); `max` keeps up to a 2048px short edge for stronger identity fidelity, at the cost of speed since reference tokens ride along every sampling step\n- **width / height**: set via Resolution Selector.\n- **duration (seconds)**: converted to a valid frame `length` by the Math Expression node\n\n**Sampling and decode**\n\n- Sampler: `res_multistep`. `beta` or `normal` scheduler tends to outperform `simple` for reference-heavy prompts like this one\n- The sampler's joint audio+video `LATENT` output feeds directly into both `VAEDecode` (video, `minimax_h3_video_vae_fp16`) and `VAEDecodeAudio` (audio, `minimax_h3_audio_vae_fp32`); each decode node automatically pulls its own half out of the packed latent. `CreateVideo` then muxes the two into a single MP4 with synced sound\n- The diffusion model here is `minimax_h3_ref2va_pruned_int8_convrot.safetensors`, a different set of weights from the `fl2va` model used by the t2v/i2v templates\n\nRef2va's output is very sensitive to prompt wording; matching the reference tags precisely and being explicit about which reference drives which part of the shot tends to work best."
       ],
       "color": "#222",
       "bgcolor": "#000"
@@ -47,7 +47,7 @@
       "title": "Note: Model Links",
       "properties": {},
       "widgets_values": [
-        "## Model Links\n[🤗 Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\n**vae**\n\n- [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors)\n- [minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors)\n\n**diffusion_models**\n\n- [minimax_h3_ref2va_pruned_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors)\n\n**text_encoders**\n\n- [qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors)\n\n\n## Model Storage Location\n\n```\n📂 ComfyUI/\n├── 📂 models/\n│   ├── 📂 vae/\n│   │   ├── minimax_h3_video_vae_fp16.safetensors\n│   │   └── minimax_h3_audio_vae_fp32.safetensors\n│   ├── 📂 diffusion_models/\n│   │   └── minimax_h3_ref2va_pruned_int8_convrot.safetensors\n│   └── 📂 text_encoders/\n│       └── qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors\n```\n\n## Report Issue\n\nNote: Please update ComfyUI first ([guide](https://docs.comfy.org/installation/update_comfyui)) and prepare required models. Desktop/Cloud updates follow stable releases, so some nightly-supported models may not be available yet.\n\n- Cannot run / runtime errors: [ComfyUI/issues](https://github.com/comfyanonymous/ComfyUI/issues)\n- UI / frontend issues: [ComfyUI_frontend/issues](https://github.com/Comfy-Org/ComfyUI_frontend/issues)\n- Workflow issues: [workflow_templates/issues](https://github.com/Comfy-Org/workflow_templates/issues)\n"
+        "## Model Links\n[\ud83e\udd17 Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3)\n\n**vae**\n\n- [minimax_h3_video_vae_fp16.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors)\n- [minimax_h3_audio_vae_fp32.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors)\n\n**diffusion_models**\n\n- [minimax_h3_ref2va_pruned_int8_convrot.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors)\n\n**text_encoders**\n\n- [qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors)\n\n\n## Model Storage Location\n\n```\n\ud83d\udcc2 ComfyUI/\n\u251c\u2500\u2500 \ud83d\udcc2 models/\n\u2502   \u251c\u2500\u2500 \ud83d\udcc2 vae/\n\u2502   \u2502   \u251c\u2500\u2500 minimax_h3_video_vae_fp16.safetensors\n\u2502   \u2502   \u2514\u2500\u2500 minimax_h3_audio_vae_fp32.safetensors\n\u2502   \u251c\u2500\u2500 \ud83d\udcc2 diffusion_models/\n\u2502   \u2502   \u2514\u2500\u2500 minimax_h3_ref2va_pruned_int8_convrot.safetensors\n\u2502   \u2514\u2500\u2500 \ud83d\udcc2 text_encoders/\n\u2502       \u2514\u2500\u2500 qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors\n```\n\n## Report Issue\n\nNote: Please update ComfyUI first ([guide](https://docs.comfy.org/installation/update_comfyui)) and prepare required models. Desktop/Cloud updates follow stable releases, so some nightly-supported models may not be available yet.\n\n- Cannot run / runtime errors: [ComfyUI/issues](https://github.com/comfyanonymous/ComfyUI/issues)\n- UI / frontend issues: [ComfyUI_frontend/issues](https://github.com/Comfy-Org/ComfyUI_frontend/issues)\n- Workflow issues: [workflow_templates/issues](https://github.com/Comfy-Org/workflow_templates/issues)\n"
       ],
       "color": "#222",
       "bgcolor": "#000"
@@ -216,19 +216,28 @@
     },
     {
       "id": 123,
-      "type": "MiniMaxH3TurboSampler",
+      "type": "KSamplerSelect",
       "pos": [
         -260,
         5190
       ],
       "size": [
-        300,
-        60
+        370,
+        70
       ],
       "flags": {},
       "order": 6,
       "mode": 0,
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "type": "STRING",
+          "link": 288,
+          "widget": {
+            "name": "sampler_name"
+          }
+        }
+      ],
       "outputs": [
         {
           "name": "SAMPLER",
@@ -239,9 +248,11 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "MiniMaxH3TurboSampler"
+        "Node name for S&R": "KSamplerSelect"
       },
-      "widgets_values": []
+      "widgets_values": [
+        "euler"
+      ]
     },
     {
       "id": 124,
@@ -294,7 +305,7 @@
       },
       "widgets_values": [
         "simple",
-        20,
+        8,
         1
       ]
     },
@@ -398,60 +409,6 @@
         "Node name for S&R": "BasicGuider"
       },
       "widgets_values": []
-    },
-    {
-      "id": 127,
-      "type": "StimmaMiniMaxH3ReferenceModelLoader",
-      "pos": [
-        -1490,
-        4940
-      ],
-      "size": [
-        640,
-        90
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "precision",
-          "name": "precision",
-          "type": "COMBO",
-          "widget": {
-            "name": "precision"
-          },
-          "link": 312
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "MODEL",
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            324
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaMiniMaxH3ReferenceModelLoader",
-        "models": [
-          {
-            "name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
-            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
-            "directory": "diffusion_models"
-          },
-          {
-            "name": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
-            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
-            "directory": "diffusion_models"
-          }
-        ]
-      },
-      "widgets_values": [
-        "INT8 ConvRot"
-      ]
     },
     {
       "id": 128,
@@ -920,12 +877,12 @@
       },
       "widgets_values": [
         "minimax-h3-r2v-turbo",
-        "MiniMax H3 Reference to Video ⚡",
+        "MiniMax H3 Reference to Video \u26a1",
         "reference-to-video",
-        "⚡ Turbo 4-Step\nOpen Weights\nNative Audio\nMultimodal References\nINT8 Default",
-        "Generate from multimodal references with synchronized audio using MiniMax H3 Turbo's four-step preview LoRA.",
+        "Open Weights\nNative Audio\nMultimodal References\nINT8 Default\nLightX2V 8-Step\nSol Attention",
+        "Generate video from ordered image, video, and audio references with synchronized stereo audio. Includes selectable INT8/FP8 precision and Sol tuning. LightX2V 768p eight-step adapter with conservative Sol attention.",
         "MiniMax",
-        "MiniMax H3 Turbo"
+        "MiniMax H3 Ref2VA"
       ]
     },
     {
@@ -1366,13 +1323,81 @@
       },
       "widgets_values": [
         "steps",
-        4,
-        4,
+        8,
+        1,
         50,
         1,
         "slider",
         30,
-        "Turbo sampling steps. Four is recommended; additional steps may slightly improve detail."
+        "Sampling steps."
+      ]
+    },
+    {
+      "id": 147,
+      "type": "StimmaDropdownParam",
+      "pos": [
+        -1050,
+        5600
+      ],
+      "size": [
+        360,
+        180
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "name",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "name"
+          }
+        },
+        {
+          "name": "value",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        },
+        {
+          "name": "ui_order",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "ui_order"
+          }
+        },
+        {
+          "name": "ui_description",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "ui_description"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            288
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "StimmaDropdownParam"
+      },
+      "widgets_values": [
+        "sampler",
+        "euler",
+        40,
+        "Sampling algorithm."
       ]
     },
     {
@@ -1692,7 +1717,7 @@
       },
       "widgets_values": [
         "Advanced",
-        "steps\nscheduler\nseed",
+        "steps\nsampler\nscheduler\nseed",
         true,
         10
       ]
@@ -3221,7 +3246,7 @@
       "outputs": [
         {
           "name": "value",
-          "type": "*",
+          "type": "STRING",
           "links": [
             312
           ],
@@ -3236,74 +3261,6 @@
         "INT8 ConvRot",
         22,
         "Diffusion-model precision. INT8 ConvRot is the default; FP8 is the quality-reference alternative."
-      ]
-    },
-    {
-      "id": 170,
-      "type": "StimmaBoolParam",
-      "pos": [
-        630,
-        6500
-      ],
-      "size": [
-        384,
-        180
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "BOOLEAN",
-          "links": [
-            313
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaBoolParam"
-      },
-      "widgets_values": [
-        "spectrum",
-        false,
-        23,
-        "Forecast selected H3 transformer steps for higher throughput. This approximate mode can change motion, fine detail, and audio."
       ]
     },
     {
@@ -3400,222 +3357,14 @@
         "Node name for S&R": "StimmaFloatParam"
       },
       "widgets_values": [
-        "spectrum_blend",
-        0.5,
-        0,
-        1,
-        0.01,
+        "sol_sparsity",
+        1.0,
+        0.0,
+        2.0,
+        0.05,
         "slider",
         50,
-        "Spectrum polynomial share; the remainder uses a local linear forecast."
-      ]
-    },
-    {
-      "id": 172,
-      "type": "StimmaIntParam",
-      "pos": [
-        1490,
-        6500
-      ],
-      "size": [
-        384,
-        355
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "INT",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "minimum",
-          "type": "INT",
-          "widget": {
-            "name": "minimum"
-          },
-          "link": null
-        },
-        {
-          "name": "maximum",
-          "type": "INT",
-          "widget": {
-            "name": "maximum"
-          },
-          "link": null
-        },
-        {
-          "name": "step",
-          "type": "INT",
-          "widget": {
-            "name": "step"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_control",
-          "type": "COMBO",
-          "widget": {
-            "name": "ui_control"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "INT",
-          "links": [
-            315
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaIntParam"
-      },
-      "widgets_values": [
-        "spectrum_degree",
-        4,
-        1,
-        16,
-        1,
-        "slider",
-        51,
-        "Maximum Chebyshev polynomial degree."
-      ]
-    },
-    {
-      "id": 173,
-      "type": "StimmaFloatParam",
-      "pos": [
-        200,
-        6890
-      ],
-      "size": [
-        384,
-        355
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "FLOAT",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "minimum",
-          "type": "FLOAT",
-          "widget": {
-            "name": "minimum"
-          },
-          "link": null
-        },
-        {
-          "name": "maximum",
-          "type": "FLOAT",
-          "widget": {
-            "name": "maximum"
-          },
-          "link": null
-        },
-        {
-          "name": "step",
-          "type": "FLOAT",
-          "widget": {
-            "name": "step"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_control",
-          "type": "COMBO",
-          "widget": {
-            "name": "ui_control"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "FLOAT",
-          "links": [
-            316
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaFloatParam"
-      },
-      "widgets_values": [
-        "spectrum_ridge",
-        0.1,
-        0,
-        10,
-        0.01,
-        "slider",
-        52,
-        "Ridge regularization applied to Spectrum's regression fit."
+        "Higher values trade detail for speed. 1.0 is the tested Sol setting."
       ]
     },
     {
@@ -3712,14 +3461,14 @@
         "Node name for S&R": "StimmaFloatParam"
       },
       "widgets_values": [
-        "spectrum_window",
-        2,
-        1,
-        16,
+        "sol_start",
+        0.2,
+        0.0,
+        1.0,
         0.05,
         "slider",
-        53,
-        "Initial interval between actual transformer evaluations."
+        51,
+        "Fraction of the denoising schedule before Sol begins; earlier steps use dense attention."
       ]
     },
     {
@@ -3816,462 +3565,14 @@
         "Node name for S&R": "StimmaFloatParam"
       },
       "widgets_values": [
-        "spectrum_flex_window",
-        0.75,
-        0,
-        8,
+        "sol_end",
+        0.9,
+        0.0,
+        1.0,
         0.05,
         "slider",
-        54,
-        "Interval growth after each scheduled actual evaluation; larger values are more aggressive."
-      ]
-    },
-    {
-      "id": 176,
-      "type": "StimmaIntParam",
-      "pos": [
-        1490,
-        6890
-      ],
-      "size": [
-        384,
-        355
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "INT",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "minimum",
-          "type": "INT",
-          "widget": {
-            "name": "minimum"
-          },
-          "link": null
-        },
-        {
-          "name": "maximum",
-          "type": "INT",
-          "widget": {
-            "name": "maximum"
-          },
-          "link": null
-        },
-        {
-          "name": "step",
-          "type": "INT",
-          "widget": {
-            "name": "step"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_control",
-          "type": "COMBO",
-          "widget": {
-            "name": "ui_control"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "INT",
-          "links": [
-            319
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaIntParam"
-      },
-      "widgets_values": [
-        "spectrum_warmup_steps",
-        5,
-        0,
-        64,
-        1,
-        "slider",
-        55,
-        "Initial solver steps that always run the full transformer."
-      ]
-    },
-    {
-      "id": 177,
-      "type": "StimmaIntParam",
-      "pos": [
-        200,
-        7280
-      ],
-      "size": [
-        384,
-        355
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "INT",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "minimum",
-          "type": "INT",
-          "widget": {
-            "name": "minimum"
-          },
-          "link": null
-        },
-        {
-          "name": "maximum",
-          "type": "INT",
-          "widget": {
-            "name": "maximum"
-          },
-          "link": null
-        },
-        {
-          "name": "step",
-          "type": "INT",
-          "widget": {
-            "name": "step"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_control",
-          "type": "COMBO",
-          "widget": {
-            "name": "ui_control"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "INT",
-          "links": [
-            320
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaIntParam"
-      },
-      "widgets_values": [
-        "spectrum_tail_steps",
-        1,
-        0,
-        64,
-        1,
-        "slider",
-        56,
-        "Requested final full-transformer steps; supported samplers may enforce a safer minimum."
-      ]
-    },
-    {
-      "id": 178,
-      "type": "StimmaIntParam",
-      "pos": [
-        630,
-        7280
-      ],
-      "size": [
-        384,
-        355
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "INT",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "minimum",
-          "type": "INT",
-          "widget": {
-            "name": "minimum"
-          },
-          "link": null
-        },
-        {
-          "name": "maximum",
-          "type": "INT",
-          "widget": {
-            "name": "maximum"
-          },
-          "link": null
-        },
-        {
-          "name": "step",
-          "type": "INT",
-          "widget": {
-            "name": "step"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_control",
-          "type": "COMBO",
-          "widget": {
-            "name": "ui_control"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "INT",
-          "links": [
-            321
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaIntParam"
-      },
-      "widgets_values": [
-        "spectrum_max_history",
-        8,
-        2,
-        64,
-        1,
-        "slider",
-        57,
-        "Maximum actual feature snapshots retained; must be greater than the polynomial degree."
-      ]
-    },
-    {
-      "id": 179,
-      "type": "StimmaDropdownParam",
-      "pos": [
-        1060,
-        7280
-      ],
-      "size": [
-        384,
-        228
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "STRING",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "*",
-          "links": [
-            322
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaDropdownParam"
-      },
-      "widgets_values": [
-        "spectrum_history_storage",
-        "system_ram",
-        58,
-        "Store Spectrum history in system RAM or VRAM. VRAM can avoid transfers but consumes several additional GiB."
-      ]
-    },
-    {
-      "id": 180,
-      "type": "StimmaBoolParam",
-      "pos": [
-        1490,
-        7280
-      ],
-      "size": [
-        384,
-        180
-      ],
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "name",
-          "type": "STRING",
-          "widget": {
-            "name": "name"
-          },
-          "link": null
-        },
-        {
-          "name": "value",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "value"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_order",
-          "type": "INT",
-          "widget": {
-            "name": "ui_order"
-          },
-          "link": null
-        },
-        {
-          "name": "ui_description",
-          "type": "STRING",
-          "widget": {
-            "name": "ui_description"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "value",
-          "type": "BOOLEAN",
-          "links": [
-            323
-          ],
-          "slot_index": 0
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "StimmaBoolParam"
-      },
-      "widgets_values": [
-        "spectrum_debug",
-        false,
-        59,
-        "Write detailed Spectrum scheduling and fallback diagnostics to the ComfyUI log."
+        52,
+        "Fraction of the denoising schedule where Sol ends; later steps use dense attention."
       ]
     },
     {
@@ -4328,7 +3629,7 @@
       },
       "widgets_values": [
         "Performance",
-        "model_precision\nspectrum",
+        "model_precision",
         false,
         7
       ]
@@ -4386,22 +3687,22 @@
         "Node name for S&R": "StimmaLayoutGroup"
       },
       "widgets_values": [
-        "Spectrum Tuning",
-        "spectrum_blend\nspectrum_degree\nspectrum_ridge\nspectrum_window\nspectrum_flex_window\nspectrum_warmup_steps\nspectrum_tail_steps\nspectrum_max_history\nspectrum_history_storage\nspectrum_debug",
+        "Sol Tuning",
+        "sol_sparsity\nsol_start\nsol_end",
         true,
         8
       ]
     },
     {
       "id": 183,
-      "type": "StimmaMiniMaxH3SageAttention",
+      "type": "ModelAttentionBackend",
       "pos": [
         -800,
         4810
       ],
       "size": [
-        410,
-        60
+        470,
+        90
       ],
       "flags": {},
       "order": 15,
@@ -4411,106 +3712,7 @@
           "localized_name": "model",
           "name": "model",
           "type": "MODEL",
-          "link": 327
-        },
-        {
-          "localized_name": "spectrum_enabled",
-          "name": "spectrum_enabled",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "spectrum_enabled"
-          },
-          "link": 313
-        },
-        {
-          "localized_name": "blend_weight",
-          "name": "blend_weight",
-          "type": "FLOAT",
-          "widget": {
-            "name": "blend_weight"
-          },
-          "link": 314
-        },
-        {
-          "localized_name": "degree",
-          "name": "degree",
-          "type": "INT",
-          "widget": {
-            "name": "degree"
-          },
-          "link": 315
-        },
-        {
-          "localized_name": "ridge_lambda",
-          "name": "ridge_lambda",
-          "type": "FLOAT",
-          "widget": {
-            "name": "ridge_lambda"
-          },
-          "link": 316
-        },
-        {
-          "localized_name": "window_size",
-          "name": "window_size",
-          "type": "FLOAT",
-          "widget": {
-            "name": "window_size"
-          },
-          "link": 317
-        },
-        {
-          "localized_name": "flex_window",
-          "name": "flex_window",
-          "type": "FLOAT",
-          "widget": {
-            "name": "flex_window"
-          },
-          "link": 318
-        },
-        {
-          "localized_name": "warmup_steps",
-          "name": "warmup_steps",
-          "type": "INT",
-          "widget": {
-            "name": "warmup_steps"
-          },
-          "link": 319
-        },
-        {
-          "localized_name": "tail_actual_steps",
-          "name": "tail_actual_steps",
-          "type": "INT",
-          "widget": {
-            "name": "tail_actual_steps"
-          },
-          "link": 320
-        },
-        {
-          "localized_name": "max_history",
-          "name": "max_history",
-          "type": "INT",
-          "widget": {
-            "name": "max_history"
-          },
-          "link": 321
-        },
-        {
-          "localized_name": "history_storage",
-          "name": "history_storage",
-          "type": "COMBO",
-          "widget": {
-            "name": "history_storage"
-          },
-          "link": 322
-        },
-        {
-          "localized_name": "spectrum_debug",
-          "name": "spectrum_debug",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "spectrum_debug"
-          },
-          "link": 323
+          "link": 332
         }
       ],
       "outputs": [
@@ -4519,15 +3721,16 @@
           "name": "model",
           "type": "MODEL",
           "links": [
-            252,
-            257
+            333
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "StimmaMiniMaxH3SageAttention"
+        "Node name for S&R": "ModelAttentionBackend"
       },
-      "widgets_values": []
+      "widgets_values": [
+        "comfy kitchen attention"
+      ]
     },
     {
       "id": 184,
@@ -4825,52 +4028,177 @@
       ]
     },
     {
-      "id": 185,
-      "type": "MiniMaxH3TurboLoRA",
+      "id": 189,
+      "type": "LoraLoaderModelOnly",
       "pos": [
-        -400,
-        4700
+        -800,
+        7735
       ],
       "size": [
-        360,
-        110
+        430,
+        150
       ],
       "flags": {},
       "order": 15,
       "mode": 0,
       "inputs": [
         {
-          "localized_name": "model",
           "name": "model",
           "type": "MODEL",
           "link": 326
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            331
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "widgets_values": [
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+        1.0
+      ]
+    },
+    {
+      "id": 190,
+      "type": "MiniMaxH3SigmaShift",
+      "pos": [
+        -300,
+        7735
+      ],
+      "size": [
+        430,
+        150
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 331
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            332
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MiniMaxH3SigmaShift"
+      },
+      "widgets_values": [
+        6.0,
+        3.0
+      ]
+    },
+    {
+      "id": 191,
+      "type": "BlockSparseAttention",
+      "pos": [
+        200,
+        7735
+      ],
+      "size": [
+        430,
+        330
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 333
         },
         {
-          "localized_name": "lora_name",
-          "name": "lora_name",
-          "type": "COMBO",
-          "widget": {
-            "name": "lora_name"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "strength",
-          "name": "strength",
+          "name": "selection.tau",
           "type": "FLOAT",
           "widget": {
-            "name": "strength"
+            "name": "selection.tau"
           },
-          "link": null
+          "link": 314
         },
         {
-          "localized_name": "low_vram",
-          "name": "low_vram",
-          "type": "BOOLEAN",
+          "name": "start_percent",
+          "type": "FLOAT",
           "widget": {
-            "name": "low_vram"
+            "name": "start_percent"
           },
-          "link": null
+          "link": 317
+        },
+        {
+          "name": "end_percent",
+          "type": "FLOAT",
+          "widget": {
+            "name": "end_percent"
+          },
+          "link": 318
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            252,
+            257
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "BlockSparseAttention"
+      },
+      "widgets_values": [
+        "sol-attn",
+        1.0,
+        0.2,
+        0.9,
+        "0, 49",
+        0,
+        256,
+        "exact_kv_and_rows",
+        false
+      ]
+    },
+    {
+      "id": 127,
+      "type": "StimmaMiniMaxH3ReferenceModelLoader",
+      "pos": [
+        -1490,
+        4940
+      ],
+      "size": [
+        640,
+        90
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "precision",
+          "name": "precision",
+          "type": "COMBO",
+          "widget": {
+            "name": "precision"
+          },
+          "link": 312
         }
       ],
       "outputs": [
@@ -4878,26 +4206,28 @@
           "localized_name": "MODEL",
           "name": "MODEL",
           "type": "MODEL",
-          "slot_index": 0,
           "links": [
-            327
+            324
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "MiniMaxH3TurboLoRA",
+        "Node name for S&R": "StimmaMiniMaxH3ReferenceModelLoader",
         "models": [
           {
-            "name": "minimax_h3_turbo_v4_step600_ema.safetensors",
-            "url": "https://huggingface.co/larryvrh/MiniMax-H3-Turbo-Lora/resolve/main/minimax_h3_turbo_v4_step600_ema.safetensors",
-            "directory": "loras"
+            "name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+            "directory": "diffusion_models"
+          },
+          {
+            "name": "minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_ref2va_pruned_fp8_scaled.safetensors",
+            "directory": "diffusion_models"
           }
         ]
       },
       "widgets_values": [
-        "minimax_h3_turbo_v4_step600_ema.safetensors",
-        1,
-        false
+        "INT8 ConvRot"
       ]
     }
   ],
@@ -4920,7 +4250,7 @@
     ],
     [
       252,
-      183,
+      191,
       0,
       124,
       0,
@@ -4960,7 +4290,7 @@
     ],
     [
       257,
-      183,
+      191,
       0,
       126,
       0,
@@ -5077,6 +4407,14 @@
       124,
       1,
       "INT"
+    ],
+    [
+      288,
+      147,
+      0,
+      123,
+      0,
+      "STRING"
     ],
     [
       289,
@@ -5271,92 +4609,28 @@
       "STRING"
     ],
     [
-      313,
-      170,
-      0,
-      183,
-      1,
-      "BOOLEAN"
-    ],
-    [
       314,
       171,
       0,
-      183,
-      2,
-      "FLOAT"
-    ],
-    [
-      315,
-      172,
-      0,
-      183,
-      3,
-      "INT"
-    ],
-    [
-      316,
-      173,
-      0,
-      183,
-      4,
+      191,
+      1,
       "FLOAT"
     ],
     [
       317,
       174,
       0,
-      183,
-      5,
+      191,
+      2,
       "FLOAT"
     ],
     [
       318,
       175,
       0,
-      183,
-      6,
+      191,
+      3,
       "FLOAT"
-    ],
-    [
-      319,
-      176,
-      0,
-      183,
-      7,
-      "INT"
-    ],
-    [
-      320,
-      177,
-      0,
-      183,
-      8,
-      "INT"
-    ],
-    [
-      321,
-      178,
-      0,
-      183,
-      9,
-      "INT"
-    ],
-    [
-      322,
-      179,
-      0,
-      183,
-      10,
-      "STRING"
-    ],
-    [
-      323,
-      180,
-      0,
-      183,
-      11,
-      "BOOLEAN"
     ],
     [
       324,
@@ -5378,15 +4652,31 @@
       326,
       184,
       0,
-      185,
+      189,
       0,
       "MODEL"
     ],
     [
-      327,
-      185,
+      331,
+      189,
+      0,
+      190,
+      0,
+      "MODEL"
+    ],
+    [
+      332,
+      190,
       0,
       183,
+      0,
+      "MODEL"
+    ],
+    [
+      333,
+      183,
+      0,
+      191,
       0,
       "MODEL"
     ]

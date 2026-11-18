@@ -127,7 +127,11 @@
       :exclude-ids="attachmentMediaIds"
       @close="assetPickerOpen = false"
       @select="addAssetAttachments"
-    />
+    >
+      <template #extra-actions>
+        <slot name="asset-picker-extra" :close="() => { assetPickerOpen = false }" />
+      </template>
+    </ChatAssetPickerModal>
   </div>
 </template>
 

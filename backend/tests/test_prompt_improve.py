@@ -12,6 +12,7 @@ from routes.prompt_enhancement import (
     _h3_dialogue_guidance,
     _h3_input_has_dialogue,
     _h3_task_guidance,
+    _h3_output_structure,
     _protected_text_guidance,
     _strip_hallucinated_placeholders,
     _input_images_phrase,
@@ -245,6 +246,31 @@ def test_h3_audio_disabled_keeps_schema_but_forces_na():
     guidance = _h3_audio_guidance(False)
     assert "overall_soundscape: N/A" in guidance
     assert "non_diegetic_music: N/A" in guidance
+
+
+def test_h3_rewriter_structure_matches_reference_mode():
+    reference = _h3_output_structure("ref2va")
+    fields = ["subject_definitions:", "summary:", "retention_analysis:", "detailed_description:", "overall_soundscape:", "non_diegetic_music:"]
+    assert [reference.index(field) for field in fields] == sorted(reference.index(field) for field in fields)
+    assert "integrated_multimodal_description:" not in reference
+    assert "Begin directly with subject_definitions" in _h3_task_guidance("ref2va", 5)
+    assert "integrated_multimodal_description:" in _h3_output_structure("i2va")
+
+
+async def test_h3_actual_system_prompt_uses_only_the_selected_schema(prompt_variant_probe, monkeypatch):
+    import prompts
+    import routes.prompt_enhancement as pe
+
+    monkeypatch.setattr(pe, "get_prompt", prompts.get_prompt)
+    await pe.improve_prompt(
+        ImprovePromptRequest(prompt="a subject walks", model="minimax-h3-r2v-turbo", is_video=True, h3_task="ref2va"),
+        session=None,
+    )
+    system = prompt_variant_probe["messages"][0]["content"]
+    assert "Output exactly these six sections" in system
+    assert "subject_definitions:" in system and "detailed_description:" in system
+    assert "integrated_multimodal_description:" not in system
+    assert "{h3_output_structure}" not in system
 
 
 def test_h3_dialogue_guidance_is_conditional():

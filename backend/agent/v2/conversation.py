@@ -275,7 +275,7 @@ def _inject_last_user_context(
     prefix = "\n".join(prefix_parts)
 
     for msg in reversed(messages):
-        if msg.get("role") == "user":
+        if msg.get("role") == "user" and msg.get("name") != "_stimma_context":
             content = msg.get("content")
             if isinstance(content, str):
                 msg["content"] = f"{prefix}\n\n{content}"
@@ -704,8 +704,11 @@ def _estimate_tokens(messages: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def _find_user_turn_boundaries(messages: List[Dict[str, Any]]) -> List[int]:
-    """Return indices of user messages (turn boundaries), excluding system messages."""
-    return [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    """Return human turn boundaries, excluding injected skill instructions."""
+    return [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "user" and m.get("name") != "_stimma_context"
+    ]
 
 
 async def _compress_stale_items(
@@ -898,7 +901,7 @@ def _apply_token_budget(
     """If estimated (corrected) history tokens exceed budget, drop middle messages.
 
     Preserves: system prompt, first user message + response, last RECENT_TURNS_TO_KEEP
-    user turns with all their associated messages.
+    user turns with all their associated messages, and loaded skill instructions.
     Replaces the middle with a condensed placeholder.
     """
     tokens = _estimate_tokens(messages)
@@ -926,7 +929,7 @@ def _apply_token_budget(
     middle_section = messages[second_user_idx:recent_cutoff_idx]
     end_section = messages[recent_cutoff_idx:]
 
-    middle_user_count = sum(1 for m in middle_section if m.get("role") == "user")
+    middle_user_count = len(_find_user_turn_boundaries(middle_section))
     first_user_text = ""
     for m in messages:
         if m.get("role") == "user":
@@ -942,7 +945,10 @@ def _apply_token_budget(
         ),
     }
 
-    result = start_section + [placeholder] + end_section
+    # Skills remain enabled until explicitly removed from the chat. Keep their
+    # bodies too, so the invoke registry cannot outlive the model's instructions.
+    skill_context = [m for m in middle_section if m.get("name") == "_stimma_context"]
+    result = start_section + [placeholder] + skill_context + end_section
 
     log.info(
         f"Token budget applied: dropped {len(middle_section)} middle messages "

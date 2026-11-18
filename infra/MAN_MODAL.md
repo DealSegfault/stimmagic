@@ -25,7 +25,7 @@ Face restent des services séparés, utilisés uniquement pour les outils GPU.
 
 Le système exécute tous les modèles lourds et calculs CUDA exclusivement sur **Modal Cloud** :
 - **0 Go de poids téléchargés sur votre machine locale**.
-- **Scale-to-Zero strict** : après chaque génération, Modal libère le GPU après 2 secondes d'inactivité (`min_containers=0`, `scaledown_window=2`). Aucun coût au repos.
+- **Scale-to-zero rapide, maintien explicite pour une série** : une génération isolée conserve `min_containers=0`, `scaledown_window=2`. Après validation et autorisation, `stimma.generate_video_plan()` ouvre un maintien temporaire pour plusieurs clips préparés : le plugin garde une connexion WebSocket sur la route réellement utilisée, sans modifier les réglages Modal. Il la ferme à la fin, en cas d'erreur, d'annulation ou de déconnexion du chat. Une expiration de secours de 60 secondes entre jobs évite une réservation abandonnée ; elle ne s'applique pas aux jobs en cours. Une seule série peut réserver un provider à la fois. Le worker HD dispose de trois connexions simultanées (maintien, progression, HTTP), mais les générations restent séquentielles. Le maintien GPU temporaire est facturé jusqu’à sa libération.
 - **Passerelle locale authentifiée (`modal_bridge.py`)** : assure le routage sécurisé entre l'agent local (protocole STP sur `ws://127.0.0.1:8188/stp-v1` et `http://127.0.0.1:8190/repaint`) et les conteneurs Modal protégés.
 
 ```mermaid
@@ -284,6 +284,27 @@ Les workflows exposés à l'agent incluent :
 - `minimax_h3_r2v` / `minimax_h3_r2v_turbo` (Références visuelles multiples vers Vidéo)
 - `minimax_music3_t2a` (Texte vers Musique)
 - `flux_fill_repaint` (Inpainting / Repaint local relayé sur Modal)
+
+### Turbo H3 : LightX2V et Sol
+
+Les trois outils `minimax_h3_*_turbo` utilisent les adaptateurs LightX2V 768p
+à **8 étapes**, le sampler **Euler**, le scheduler **simple**, et les shifts
+vidéo/audio **6/3**. T2V et I2V partagent l'adaptateur FL2V ; R2V utilise son
+adaptateur Ref2V dédié. Le mode rapide du chat impose déjà 8 étapes.
+
+Sol utilise les réglages conservateurs `sol_sparsity=1.0`, `sol_start=0.2`,
+`sol_end=0.9`, les blocs denses `0, 49` et `exact_kv_and_rows` pour préserver
+les références et l'audio. Les contrôles se trouvent dans « Sol Tuning ».
+Les modèles de base INT8/FP8 restent utilisés ; aucun téléchargement BF16
+complet n'est nécessaire pour cette mise à jour. Les workflows standard et
+leur routage HD restent séparés.
+
+La mise à jour nécessite **ComfyUI v0.39.0** sur le serveur local et sur Modal.
+`infra/bin/bootstrap-local.sh` aligne le runtime local sans lancer le serveur.
+`modal run infra/modal_h3.py::download_models` installe les deux adaptateurs
+dans le volume existant ; `modal deploy infra/modal_h3.py` reconstruit le worker
+avec les mêmes workflows Turbo que le plugin local. Les révisions ComfyUI et
+LightX2V sont figées dans `infra/modal_h3.py`.
 
 ---
 

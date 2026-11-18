@@ -629,6 +629,23 @@ class TestReferenceChainExpansion(unittest.TestCase):
 
 
 class TestMonitorExecution(unittest.TestCase):
+    def test_binary_previews_respect_the_job_setting(self):
+        import asyncio
+        import aiohttp
+
+        class Events:
+            def __aiter__(self):
+                async def messages():
+                    yield types.SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"type": "executing", "data": {"prompt_id": "p", "node": "1"}}))
+                    yield types.SimpleNamespace(type=aiohttp.WSMsgType.BINARY, data=b"\x00\x00\x00\x01\x00\x00\x00\x01jpeg")
+                    yield types.SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=json.dumps({"type": "execution_success", "data": {"prompt_id": "p"}}))
+                return messages()
+
+        for enabled in (False, True):
+            context = MagicMock(preview_frames=enabled, report_progress=AsyncMock())
+            asyncio.get_event_loop().run_until_complete(_monitor_execution(Events(), "p", context))
+            self.assertEqual(context.report_progress.await_count, int(enabled))
+
     def test_websocket_eof_is_not_treated_as_success(self):
         import asyncio
 

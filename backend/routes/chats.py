@@ -973,6 +973,14 @@ async def update_chat(
     # Check if settings (not just name) are being changed
     settings_changed = 'throttle' in update_data or 'generation_settings' in update_data
 
+    if "generation_settings" in update_data:
+        from agent.v2.video_plan import preserve_video_plan, read_settings
+        try:
+            incoming = json.loads(update_data["generation_settings"] or "{}")
+            update_data["generation_settings"] = json.dumps(preserve_video_plan(read_settings(chat), incoming))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     for key, value in update_data.items():
         setattr(chat, key, value)
 

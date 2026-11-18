@@ -17,6 +17,7 @@ import tempfile
 import uuid
 from abc import ABC, abstractmethod
 from collections import deque
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple, Union
@@ -1632,6 +1633,20 @@ class JsonRpcProvider(ToolProvider):
             raise RuntimeError("No transport available")
 
         return await self.upload_finalize(upload_id)
+
+    @asynccontextmanager
+    async def video_sequence(self):
+        """Keep the executing Modal route warm only for this prepared series."""
+        sequence_id = uuid.uuid4().hex
+        await self._send_request("tools.video_sequence", {"id": sequence_id, "active": True})
+        try:
+            yield sequence_id
+        finally:
+            try:
+                await self._send_request("tools.video_sequence", {"id": sequence_id, "active": False}, timeout=5.0)
+            except Exception:
+                # The plugin also releases on disconnect / idle expiry.
+                log.warning("Could not release video sequence; provider expiry will release it", provider=self.provider_id)
 
     async def execute(
         self,

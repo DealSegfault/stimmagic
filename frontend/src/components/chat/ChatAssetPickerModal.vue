@@ -240,6 +240,7 @@ watch(filter, () => {
         >
           {{ option.label }}
         </button>
+        <slot name="extra-actions" />
         <div class="ml-auto">
           <Button variant="secondary" size="sm" :disabled="loading" @click="openUpload">
             Upload file

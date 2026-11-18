@@ -45,6 +45,41 @@ def _big_text_result(tool_call_id: str, tool_name: str = "some_tool"):
     )
 
 
+def test_compaction_keeps_loaded_skills_and_counts_only_human_turns():
+    from agent.v2.conversation import (
+        RECENT_TURNS_TO_KEEP,
+        _apply_token_budget,
+        _find_user_turn_boundaries,
+        _inject_last_user_context,
+        _item_to_message,
+    )
+
+    skill = _item_to_message(ChatItem(
+        item_type="stimpack_injection", message_text="Direct playable objectives.",
+    ))
+    messages = [{"role": "system", "content": "system"}]
+    human_turns = []
+    for i in range(12):
+        turn = {"role": "user", "content": f"turn {i}: " + "x" * 4000}
+        human_turns.append(turn)
+        messages.extend([turn, {"role": "assistant", "content": "ok"}])
+        if i == 2:
+            messages.append(skill)
+
+    assert len(_find_user_turn_boundaries(messages)) == len(human_turns)
+    compacted = _apply_token_budget(messages, budget=1000)
+    assert compacted.count(skill) == 1
+    assert human_turns[2] not in compacted
+    assert all(turn in compacted for turn in human_turns[-RECENT_TURNS_TO_KEEP:])
+
+    # A skill loaded after the last human turn must not receive its reminders.
+    compacted.append({"role": "user", "name": "_stimma_context", "content": "Camera skill."})
+    _inject_last_user_context(compacted, ["current shot contract"])
+    assert "current shot contract" in human_turns[-1]["content"]
+    assert compacted[-1]["content"] == "Camera skill."
+    assert skill["content"] == "Direct playable objectives."
+
+
 @pytest.mark.asyncio
 async def test_stale_view_image_result_gets_placeholdered():
     tool_call, tool_result = _big_text_result("t1")

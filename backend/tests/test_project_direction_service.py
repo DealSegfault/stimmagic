@@ -190,3 +190,91 @@ async def test_reconcile_preserves_matching_boards_and_removes_stale_scenes(db_s
             select(ProjectScene).where(ProjectScene.project_id == project.id)
         )).scalars().all()
         assert {scene.title for scene in live_scenes} == {"Cuisine", "Rue"}
+
+
+@pytest.mark.asyncio
+async def test_directing_notes_survive_chat_reload_without_accepting_shots(db_session):
+    from agent.v2.tools.direction import update_project_scene
+    from database import ProjectShot
+    from world_state_service import build_project_world_state, compact_world_state_for_agent
+
+    async with db_session() as session:
+        project = Project(name="Causal directing")
+        session.add(project)
+        await session.flush()
+        payload, _ = await reconcile_script(
+            session, project.id,
+            "# SÉQUENCE 1 — Arrival\n"
+            "| # | Durée | Code | Action | Raccord |\n"
+            "| 1 | 4 s | A | Releases buckle. | Start |\n",
+            "Causal test", None, {},
+        )
+        scene_id = payload["scenes"][0]["id"]
+        scene = await session.get(ProjectScene, scene_id)
+        original_context = json.loads(scene.context)
+        shot = await session.scalar(select(ProjectShot).where(ProjectShot.scene_id == scene_id))
+        shot_id, project_id = shot.id, project.id
+        original_shot_settings = shot.settings
+        key = f"shot:{shot_id}"
+        evidence = {
+            "planned": {"trigger": "release", "reactions": ["straps follow"]},
+            "observed": [{"media_id": 321, "timecode": "00:02.1", "result": "fall precedes release", "audio": "unverified"}],
+        }
+        result = await update_project_scene(
+            scene_id, directing={"visual_language": {"axis": "left to right"}, key: evidence},
+            session=session, project_id=project_id,
+        )
+        assert "error" not in result
+        # An unrelated note update preserves both the plan and its evidence.
+        await update_project_scene(
+            scene_id, directing={"insert:impact": {"planned": "straps still moving"}},
+            session=session, project_id=project_id,
+        )
+
+    async with db_session() as session:
+        state = compact_world_state_for_agent(await build_project_world_state(
+            session, project_id=project_id, scene_id=scene_id,
+        ))
+        context = state["current_scene"]["context"]
+        assert context["directing"][key] == evidence
+        assert context["directing"]["visual_language"]["axis"] == "left to right"
+        assert all(context[k] == v for k, v in original_context.items())
+        shot = await session.get(ProjectShot, shot_id)
+        assert shot.accepted_media_id is None
+        assert shot.accepted_last_frame_media_id is None
+        assert shot.settings == original_shot_settings
+        assert shot.validation_status == "pending"
+
+        await update_project_scene(
+            scene_id, directing={"insert:impact": None}, session=session, project_id=project_id,
+        )
+        scene = await session.get(ProjectScene, scene_id)
+        notes = json.loads(scene.context)["directing"]
+        assert "insert:impact" not in notes
+        assert notes[key] == evidence
+
+
+@pytest.mark.asyncio
+async def test_invalid_directing_notes_do_not_partially_update_scene(db_session):
+    from agent.v2.tools.direction import update_project_scene
+
+    async with db_session() as session:
+        project = Project(name="Directing validation")
+        session.add(project)
+        await session.flush()
+        scene = ProjectScene(project_id=project.id, title="Arrival", context='{"keep": true}')
+        session.add(scene)
+        await session.commit()
+        for invalid in (["not an object"], {"huge": "x" * 24_001}, {"delay": float("nan")}):
+            result = await update_project_scene(
+                scene.id, status="complete", directing=invalid, session=session, project_id=project.id,
+            )
+            assert "error" in result
+            await session.refresh(scene)
+            assert scene.status == "planned"
+            assert json.loads(scene.context) == {"keep": True}
+        result = await update_project_scene(
+            scene.id, directing={"leak": "wrong project"}, session=session, project_id=project.id + 100_000,
+        )
+        assert "error" in result
+        assert json.loads(scene.context) == {"keep": True}

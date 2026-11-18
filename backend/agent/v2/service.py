@@ -452,12 +452,7 @@ def _parse_tool_args(raw_arguments: Optional[str]) -> dict:
 
 
 def _is_generation_tool_call(fn_name: str, raw_arguments: Optional[str]) -> bool:
-    """Return whether a tool call is a generation run_code or CLI generation command.
-
-    A completed ``stimma.show(..., role="final")`` is already visible to the
-    user. If the model immediately emits another generation call in the
-    same turn, executing it is an accidental duplicate retry.
-    """
+    """Return whether a tool call submits a generation via the SDK or CLI."""
     if fn_name == "run_code":
         code = _parse_tool_args(raw_arguments).get("code")
         return isinstance(code, str) and (
@@ -585,6 +580,7 @@ async def _pause_for_ask_user(
     ask_questions = question_args.get("questions")
 
     gen_settings = {}
+    await session.refresh(chat)
     if chat.generation_settings:
         try:
             gen_settings = json.loads(chat.generation_settings)
@@ -596,6 +592,11 @@ async def _pause_for_ask_user(
         "turn": turn,
         "remaining_tool_calls": remaining_tool_calls or [],
     }
+    if question_args.get("video_review") is not None:
+        from .video_plan import prepare_review, validate_assets
+        await validate_assets(session, gen_settings.get("_video_plan") or {"assets": []})
+        pending["video_review"], ask_options = prepare_review(gen_settings, question_args["video_review"])
+        ask_questions = None
     gen_settings["_v2_ask_pending"] = pending
     chat.generation_settings = json.dumps(gen_settings)
 
@@ -694,7 +695,7 @@ async def _execute_tool_call(
         fn_name == "run_code"
         and chat_project_id is not None
         and isinstance(raw_code, str)
-        and any(token in raw_code.casefold() for token in ("minimax_h3", "reference_to_video", "image_to_video", "text_to_video"))
+        and any(token in raw_code.casefold() for token in ("minimax_h3", "reference_to_video", "image_to_video", "text_to_video", "generate_video_plan"))
         and not (run_context and isinstance(run_context.get("shot_contract"), dict))
     )
     if standalone_project_tool:
@@ -1749,7 +1750,10 @@ async def _run_agentic_loop_inner(
     # after `show` lets the images speak for themselves — but a substantive
     # closing message doesn't need it.
     #
-    # Only two text-only shapes are rejected, each with a single nudge before
+    # Incomplete asset preparation is also observable: a planned missing
+    # asset was filled during this run, but preparation/review remains. Read-
+    # only questions and newly drafted plans do not activate that signal.
+    # These text-only shapes get a single nudge before
     # we give up so a non-compliant model can't spin against max_turns:
     #   - a tool flagged unresolved work (`needs_continuation`, e.g. the flow
     #     build is still broken): the model must keep going, not narrate.
@@ -1769,6 +1773,10 @@ async def _run_agentic_loop_inner(
     # spin against max_turns.
     produced_visible_output = False
     empty_finish_nudged = False
+    from .video_plan import asset_preparation_needs_continuation, read_settings
+    previous_video_plan = read_settings(chat).get("_video_plan")
+    video_preparation_in_progress = False
+    generation_keys: set[str] = set()
 
     # If resuming with pending tool calls, execute them first
     if pending_tool_calls:
@@ -1842,6 +1850,7 @@ async def _run_agentic_loop_inner(
             skip_reason = _claim_generation_call(
                 fn_name, fn_arguments, pending_generation_keys
             )
+            generation_keys.update(pending_generation_keys)
             await _execute_tool_call(
                 fn_name, fn_arguments, tool_call_id,
                 chat_id, workspace_dir, str(project_workspace_dir) if project_workspace_dir else None, session, ws_manager,
@@ -1899,7 +1908,7 @@ async def _run_agentic_loop_inner(
                 "STANDALONE CHAT MODE: this chat is not attached to a project. "
                 "Use the prompt and current-turn clipboard/context assets directly. "
                 "Do not call project World State, Project Direction, or shot-continuity tools; "
-                "for a video request, dispatch the matching generation tool immediately."
+                "for a direct single-clip request follow video dispatch settings; interactive storyboards use video preparation."
             )
         else:
             system_reminders.append(
@@ -1916,6 +1925,9 @@ async def _run_agentic_loop_inner(
         video_steps = 20
         video_resolution = "720"
         video_duration = 5.0
+        await session.refresh(chat)
+        chat_generation_settings = chat.generation_settings
+        gen_settings = {}
         if chat_generation_settings:
             try:
                 gen_settings = json.loads(chat_generation_settings)
@@ -1928,19 +1940,23 @@ async def _run_agentic_loop_inner(
             except (json.JSONDecodeError, TypeError):
                 pass
         effective_video_steps = 8 if video_quick_mode else video_steps
+        current_video_plan = gen_settings.get("_video_plan")
+        video_preparation_in_progress = asset_preparation_needs_continuation(
+            previous_video_plan, current_video_plan, continuing=video_preparation_in_progress,
+        )
+        previous_video_plan = current_video_plan
         if h3_available:
             system_reminders.append(
                 "VIDEO DISPATCH MODE (authoritative for this chat): "
                 + ("MiniMax H3 ⚡ fast (8 steps imposed); always use `minimax_h3_i2v_turbo` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v_turbo` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v_turbo` (from `stimma.tools.text_to_video`) for text."
                    if video_quick_mode else
                    f"MiniMax H3 standard (full sampling, {video_steps} steps); always use `minimax_h3_i2v` (from `stimma.tools.image_to_video`) for 1 image / first+last frame, `minimax_h3_r2v` (from `stimma.tools.reference_to_video`) for multi-references or semantic anchor references, or `minimax_h3_t2v` (from `stimma.tools.text_to_video`) for text.")
-                + " Execute video generation immediately via `run_code`: browse `.stimma/tools/` for the exact function, import it from `stimma.tools.<category>`, and pass still-image references in `input_images` and video references in `input_videos` (never put an MP4/MOV in `input_images`). For Ref2V, keep the image order in `input_images` and the video order in `input_videos`; use R2V for 2+ references or semantic anchors, I2V for exactly one starting frame, and T2V for text-only requests. Then immediately call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`."
+                + " For a direct single-clip request without a preparation plan, generate via `run_code`: browse `.stimma/tools/` for the exact function, import it from `stimma.tools.<category>`, and pass still-image references in `input_images` and video references in `input_videos` (never put an MP4/MOV in `input_images`). For Ref2V, keep the image order in `input_images` and the video order in `input_videos`; use R2V for 2+ references or semantic anchors, I2V for exactly one starting frame, and T2V for text-only requests. Then call `stimma.show(r, role=\"final\", title=\"<Title> · MiniMax H3\")`."
             )
         else:
             system_reminders.append(
-                "VIDEO DISPATCH MODE: MiniMax H3 is not currently connected. Do not call project context tools, "
-                "do not invent an adapter import, and do not claim that a job was queued. Return the provider "
-                "availability error so the user can reconnect H3 and resend the same prompt."
+                "VIDEO DISPATCH MODE: MiniMax H3 is not currently connected. Storyboard/asset preparation and video settings can continue. "
+                "For video execution, do not invent an adapter import or claim a queued job; report provider availability so the user can reconnect H3."
             )
         system_reminders.append(
             "CHAT VIDEO REFERENCE ROUTING (authoritative): only use attached videos or audios as "
@@ -1982,8 +1998,32 @@ async def _run_agentic_loop_inner(
         system_reminders.append(
             f"VIDEO CHAT SETTINGS (authoritative override): requested resolution={video_resolution}, "
             f"duration={video_duration:g}s, effective steps={effective_video_steps}. "
-            "The dispatch layer applies these values to every MiniMax H3 video job, even if the code call contains different defaults."
+            "Update these same visible controls during planning with await stimma.video_settings(duration=..., steps=..., resolution=..., fast=...). "
+            "The dispatch layer applies the current controls to every H3 job. Duration is per clip (1–15s), not the final edit duration."
         )
+        system_reminders.append(
+            "VIDEO PREPARATION: for an interactive storyboard or multi-clip film, first persist all required assets (including missing placeholders), "
+            "clip prompts and durations with await stimma.video_plan({...}); inside run_code, print(sdk_help('video_plan')) reads its exact schema. "
+            "Generate the planned missing still assets one at a time, reuse the established references, and show each result as it becomes ready. "
+            "Continue between assets without asking permission or approval for each image, unless the user explicitly requests those checkpoints. "
+            "Continue in this same turn until the collective review: an announcement of the next image is followed by its tool call, not an end of turn. "
+            "Once the asset set is ready, show it for one collective review with ask_user(video_review={media_ids: [all pending asset IDs]}). "
+            "Once all assets and prompts are ready and reviewed, ask_user with video_review={start: true} for the explicit series launch. "
+            "Then await stimma.generate_video_plan() runs the prepared clips one at a time and shows each result. "
+            "Prepare everything before launch. The helper explicitly holds the Modal worker warm between multiple prepared clips and releases it on completion/error/interruption. "
+            "Single generations retain the default fast shutdown; do not change global scaling settings or keep a GPU warm while waiting for asset reviews."
+        )
+        if gen_settings.get("_video_plan"):
+            from .video_plan import preparation_errors
+            prepared = gen_settings["_video_plan"]
+            system_reminders.append(
+                "ACTIVE VIDEO PREPARATION: " + json.dumps({
+                    "target_duration": prepared["target_duration"],
+                    "pending": preparation_errors(prepared),
+                    "approved_media_ids": prepared["approved_media_ids"],
+                    "completed_clips": list(prepared["outputs"]),
+                }) + ". Read the complete plan with await stimma.video_plan(). Video dispatch is gated by its recorded reviews/start."
+            )
         effective_image_backend = image_backend or "antigravity"
 
         if effective_image_backend == "both":
@@ -2002,7 +2042,7 @@ async def _run_agentic_loop_inner(
                 "To generate the first image, run via `bash` (timeout=600): "
                 "codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check 'Generate <brief prompt>, save as <name>_codex.png' </dev/null >\"$PWD/.codex-last.log\" 2>&1. "
                 "For follow-up edits or scene continuations in the same chat, use `codex exec resume --last` to reuse local session memory with only the prompt delta. "
-                "Then immediately call `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")` and stop."
+                "Then immediately call `show(path=\"<name>_codex.png\", title=\"<Title> · Codex ImageGen\", role=\"final\")`."
             )
         else:
             system_reminders.append(
@@ -2012,7 +2052,7 @@ async def _run_agentic_loop_inner(
                 "For a new image omit `reference_media_ids`; for an edit pass the exact ordered reference_media_ids and write the complete prompt with matching <Picture N> roles. "
                 "The tool materializes references, invokes the real Antigravity CLI, ingests the output, and records lineage. "
                 "Do not import local `stimma.tools.image_to_image` adapters and do not call the retired `call_tool` image route. "
-                "Then call `show(media_id=<returned media_id>, role=\"final\")` (or role=\"intermediate\" for a candidate) and stop."
+                "Then call `show(media_id=<returned media_id>, role=\"final\")` (or role=\"intermediate\" for a candidate)."
             )
 
         # Resolve LLM config first so build_messages knows the window size and
@@ -2260,10 +2300,15 @@ async def _run_agentic_loop_inner(
                     finish_requested = True
                     break
 
-                # A final media result has already been surfaced in this
-                # agent run. Do not let a subsequent empty LLM turn silently
-                # submit another generation.
-                if shown_media_ids and _is_generation_tool_call(fn_name, fn_arguments):
+                # Showing one planned asset does not complete the whole set.
+                # Keep blocking equivalent requests and unplanned follow-ups.
+                generation_key = _generation_call_key(fn_name, fn_arguments)
+                next_planned_asset = (
+                    video_preparation_in_progress
+                    and any(asset["media_id"] is None for asset in current_video_plan["assets"])
+                    and generation_key not in generation_keys
+                )
+                if shown_media_ids and generation_key and not next_planned_asset:
                     log.warning(
                         "Chat %s: blocked duplicate generation tool call after final media %s",
                         chat_id,
@@ -2272,6 +2317,8 @@ async def _run_agentic_loop_inner(
                     finish_requested = True
                     break
 
+                if generation_key:
+                    generation_keys.add(generation_key)
                 active_tool_calls.append({
                     "fn_name": fn_name,
                     "fn_arguments": fn_arguments,
@@ -2491,7 +2538,8 @@ async def _run_agentic_loop_inner(
 
         # Text response with no tool call — the model's native end of turn.
         # Accept it whenever the user got a visible reply and no tool has
-        # flagged unresolved work. Two cases are NOT valid ends and get one
+        # flagged unresolved work. Incomplete preparation that progressed
+        # during this run is also unresolved work. These cases get one
         # nudge before we give up, so the model can neither stall silently nor
         # spin:
         #   - unresolved work: a tool reported the job isn't done (e.g. the
@@ -2505,8 +2553,17 @@ async def _run_agentic_loop_inner(
         _raise_if_interrupted(chat_id)
         consecutive_textonly += 1
         empty_turn = not (content and content.strip())
-        if (needs_continuation or empty_turn) and consecutive_textonly < 2:
-            if needs_continuation:
+        if (needs_continuation or empty_turn or video_preparation_in_progress) and consecutive_textonly < 2:
+            if video_preparation_in_progress:
+                pending_stall_nudge = (
+                    "<system-reminder>\n"
+                    "A missing asset was just prepared and registered, but the active video plan still has unfinished preparation. "
+                    "An announcement of the next generation is not completion. Continue with the next preparation tool call now; "
+                    "when assets are ready, request their collective review with ask_user. Video launch still requires explicit approval. "
+                    "If the user requested a checkpoint or only this one asset, use finish or ask_user to pause intentionally.\n"
+                    "</system-reminder>"
+                )
+            elif needs_continuation:
                 # Stronger signal: a tool reported unresolved work (e.g. the
                 # flow build is still broken). Point the model straight at it.
                 needs_continuation.clear()
@@ -2904,6 +2961,9 @@ async def resume_after_ask_user(
         log.warning(f"Chat {chat_id}: No _v2_ask_pending state for resume")
         return
 
+    from .video_plan import record_review
+    record_review(gen_settings, pending, answer)
+
     # Save HITL response ChatItem
     response_item = ChatItem(
         chat_id=chat_id,
@@ -3007,6 +3067,7 @@ async def interrupt_execution(
     # Clear any pending v2 HITL continuation state.
     # If there was a pending permission prompt, create a denial response so the
     # UI permanently shows it as resolved.
+    await session.refresh(chat)
     gen_settings = {}
     created_hitl_responses: list[ChatItem] = []
     if chat.generation_settings:
@@ -3015,6 +3076,9 @@ async def interrupt_execution(
         except json.JSONDecodeError:
             pass
     needs_commit = False
+    if gen_settings.get("_video_plan", {}).get("authorized_key"):
+        gen_settings["_video_plan"]["authorized_key"] = None
+        needs_commit = True
     if "_v2_pending" in gen_settings:
         gen_settings.pop("_v2_pending", None)
         chat.generation_settings = json.dumps(gen_settings)
@@ -3044,6 +3108,7 @@ async def interrupt_execution(
         needs_commit = True
 
     if needs_commit:
+        chat.generation_settings = json.dumps(gen_settings)
         await session.commit()
         for item in created_hitl_responses:
             await session.refresh(item)

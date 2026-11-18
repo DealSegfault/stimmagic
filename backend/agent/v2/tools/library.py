@@ -926,7 +926,7 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
     name="library",
     description="Search, retrieve, save, browse media library and manage assets, elements, tags, markers, boards. media_id resolves to owning Asset automatically.",
     parameters=[
-        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | save | lineage | asset | element | tag | marker | board"),
+        ToolParameter("action", "string", "search | get | generation_params | browse | browse_schema | browse_options | prompt_examples | save | lineage | asset | element | tag | marker | board"),
         ToolParameter("query", "string", "Text search query.", required=False),
         ToolParameter("search_fields", "string", "prompt (default) | caption | keywords | all", required=False),
         ToolParameter("media_id", "integer", "Media ID target.", required=False),
@@ -936,7 +936,7 @@ async def _load_lineage_data(session: AsyncSession, media_id: int) -> Dict[str, 
         ToolParameter("tags", "array", "Tag names for filter or tag action.", required=False, items={"type": "string"}),
         ToolParameter("limit", "integer", "Max results (default 20).", required=False),
         ToolParameter("offset", "integer", "Result offset (default 0).", required=False),
-        ToolParameter("filters", "object", "Browse filter object.", required=False),
+        ToolParameter("filters", "object", "Browse filters; prompt_examples accepts example_id (full prompt), style, topic, similar_to. Results include clickable stimma-h3 links.", required=False),
         ToolParameter("sort_by", "string", "created_desc | created_asc | indexed_desc | indexed_asc | random", required=False),
         ToolParameter("random_seed", "integer", "Seed for random sort.", required=False),
         ToolParameter("facet", "string", "Facet name for browse_options.", required=False),
@@ -988,10 +988,26 @@ async def library(
     session: AsyncSession = kwargs.get("session")
     workspace_dir: Optional[Path] = kwargs.get("workspace_dir")
 
+    action = action.lower().strip()
+    if action == "prompt_examples":
+        from h3_examples import get_example, search_examples
+
+        options = filters or {}
+        try:
+            if options.get("example_id"):
+                result = get_example(str(options["example_id"]))
+            else:
+                result = search_examples(
+                    query or "", style=options.get("style", ""), topic=options.get("topic", ""),
+                    similar_to=options.get("similar_to", ""), limit=limit or 6, offset=offset or 0,
+                )
+            return json.dumps(result, ensure_ascii=False)
+        except (KeyError, TypeError, ValueError) as error:
+            return f"Error: H3 example query failed: {error}"
+
     if not session:
         return "Error: No database session available"
 
-    action = action.lower().strip()
     op = (operation or "add").lower().strip()
 
     project_id = kwargs.get("project_id")

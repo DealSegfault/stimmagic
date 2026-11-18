@@ -24,13 +24,33 @@ async def get_project_direction(**kwargs) -> dict:
     return payload
 
 
-@tool(name="update_project_scene", description="Record an editorial change, blocker, status or validation on a Direction scene. This is the canonical project record, not a private chat note.", parameters=[ToolParameter(name="scene_id", type="integer", description="Direction scene id"), ToolParameter(name="status", type="string", description="planned, in_progress, ready_for_review, complete", required=False), ToolParameter(name="validation_status", type="string", description="pending, approved, changes_requested", required=False), ToolParameter(name="blockers", type="array", description="Current blocking issues", required=False, items={"type": "string"}), ToolParameter(name="prompt", type="string", description="Approved generation prompt", required=False)], scope="agent")
-async def update_project_scene(scene_id: int, status: str | None = None, validation_status: str | None = None, blockers: list | None = None, prompt: str | None = None, **kwargs) -> dict:
+@tool(name="update_project_scene", description="Record an editorial change, directing notes, blocker, status or validation on a Direction scene. This is the canonical project record, not a private chat note.", parameters=[ToolParameter(name="scene_id", type="integer", description="Direction scene id"), ToolParameter(name="status", type="string", description="planned, in_progress, ready_for_review, complete", required=False), ToolParameter(name="validation_status", type="string", description="pending, approved, changes_requested", required=False), ToolParameter(name="blockers", type="array", description="Current blocking issues", required=False, items={"type": "string"}), ToolParameter(name="prompt", type="string", description="Approved generation prompt", required=False), ToolParameter(name="directing", type="object", description="Durable scene directing notes, merged by top-level key into context.directing (24,000 characters total). Use visual_language and shot:<canonical shot id> or insert:<label> entries. Each shot entry separates planned causes/actions/reactions/cuts from observed evidence with media_id and timecodes. Supplied entries replace those entries; null removes an entry. Read existing notes before editing. Notes never accept a take or change generation settings.", required=False)], scope="agent")
+async def update_project_scene(scene_id: int, status: str | None = None, validation_status: str | None = None, blockers: list | None = None, prompt: str | None = None, directing: dict | None = None, **kwargs) -> dict:
     session = kwargs.get("session"); project_id = kwargs.get("project_id")
     if not session or not project_id: return {"error": "This chat is not attached to a project."}
     scene = await session.scalar(select(ProjectScene).where(ProjectScene.id == scene_id, ProjectScene.project_id == project_id))
     if not scene: return {"error": f"Scene {scene_id} was not found in this project."}
     changed = {}
+    if directing is not None:
+        if not isinstance(directing, dict):
+            return {"error": "directing must be an object of editorial notes."}
+        context = json_value(scene.context, {})
+        existing = context.get("directing")
+        notes = dict(existing) if isinstance(existing, dict) else {}
+        for key, value in directing.items():
+            if value is None:
+                notes.pop(key, None)
+            else:
+                notes[key] = value
+        try:
+            encoded = json.dumps(notes, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            return {"error": "directing notes must contain finite, JSON-compatible values."}
+        if len(encoded) > 24_000:
+            return {"error": "Keep directing notes within 24,000 characters per scene; summarize older observations."}
+        context["directing"] = notes
+        scene.context = json.dumps(context, ensure_ascii=False)
+        changed["directing"] = notes
     for key, value in (("status", status), ("validation_status", validation_status), ("prompt", prompt)):
         if value is not None: setattr(scene, key, value); changed[key] = value
     if blockers is not None: scene.blockers = json.dumps(blockers); changed["blockers"] = blockers

@@ -37,6 +37,7 @@ import urllib.request
 
 import aiohttp
 from collections import Counter, defaultdict, deque
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from itertools import chain, combinations, count, cycle, islice, permutations, product
 from pathlib import Path
@@ -650,6 +651,17 @@ class StimmaLibraryAPI:
     def __init__(self, sdk: "StimmaSDK"):
         self._sdk = sdk
 
+    async def prompt_examples(
+        self, query: str = "", *, example_id: str = "", style: str = "", topic: str = "",
+        similar_to: str = "", limit: int = 6,
+    ) -> dict:
+        """Search H3 prompt/render examples, or read one without importing media."""
+        from h3_examples import get_example, search_examples
+
+        if example_id:
+            return get_example(example_id)
+        return search_examples(query, style=style, topic=topic, similar_to=similar_to, limit=limit)
+
     async def search(
         self,
         query: str,
@@ -827,6 +839,7 @@ class StimmaSDK:
         # Per-run STP tool permission decisions (tool_id -> allowed). Populated by
         # the in-run permission gate so repeat calls in this run don't re-prompt.
         self._tool_perm_cache: dict[str, bool] = {}
+        self._video_plan_running = False
         # Accumulated LLM token usage from ctx.llm() and ctx.delegate() calls
         self._llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "reasoning_tokens": 0, "calls": 0, "elapsed_seconds": 0.0}
 
@@ -843,6 +856,158 @@ class StimmaSDK:
     def get_llm_usage(self) -> dict:
         """Return accumulated LLM usage from this SDK session."""
         return dict(self._llm_usage)
+
+    async def video_settings(self, **changes) -> dict:
+        """Read/update the existing chat controls, including per-clip duration."""
+        from .video_plan import _number, update_chat_settings
+        from .video_settings import normalize_video_chat_settings, h3_timing, VIDEO_RESOLUTION_SHORT_EDGES
+
+        if set(changes) - {"duration", "steps", "resolution", "fast"}:
+            raise ValueError("Video settings: duration, steps, resolution, fast")
+        if "duration" in changes:
+            value = _number(changes["duration"], "duration", 1, 15)
+            if value * 2 != round(value * 2):
+                raise ValueError("duration must use 0.5 second increments")
+        if "steps" in changes and (type(changes["steps"]) is not int or not 1 <= changes["steps"] <= 50):
+            raise ValueError("steps must be an integer between 1 and 50")
+        if "resolution" in changes and changes["resolution"] not in VIDEO_RESOLUTION_SHORT_EDGES:
+            raise ValueError("resolution must be 480, 720, 1080 or 2k")
+        if "fast" in changes and type(changes["fast"]) is not bool:
+            raise ValueError("fast must be a boolean")
+
+        async def mutate(settings, session):
+            keys = {"duration": "video_duration", "steps": "video_steps", "resolution": "video_resolution", "fast": "video_quick_mode"}
+            settings.update({keys[key]: value for key, value in changes.items()})
+            result = normalize_video_chat_settings(settings)
+            controls = {key: result[key] for key in ("fast", "steps", "resolution")}
+            plan = settings.get("_video_plan")
+            if set(changes) & {"fast", "steps", "resolution"} and plan and controls != plan.get("settings"):
+                plan.update(settings=controls, authorized_key=None, outputs={})
+            return {**result, **h3_timing(result["duration"])}
+
+        return await update_chat_settings(self.session, self.chat_id, mutate)
+
+    async def video_plan(self, plan: dict | None = None) -> dict | None:
+        """Persist preparation; only user responses can approve assets/start."""
+        from .video_plan import normalize_plan, preparation_errors, update_chat_settings, validate_assets
+        from .video_settings import h3_timing
+        from .video_settings import normalize_video_chat_settings
+
+        async def mutate(settings, session):
+            if plan is not None:
+                current = normalize_video_chat_settings(settings)
+                prepared = normalize_plan(plan, settings.get("_video_plan"), controls={key: current[key] for key in ("fast", "steps", "resolution")})
+                await validate_assets(session, prepared)
+                settings["_video_plan"] = prepared
+            prepared = settings.get("_video_plan")
+            if not prepared:
+                return None
+            return {**prepared, "pending": preparation_errors(prepared), "clip_timing": {clip["id"]: h3_timing(clip["duration"]) for clip in prepared["clips"]}}
+
+        return await update_chat_settings(self.session, self.chat_id, mutate)
+
+    async def generate_video_plan(self) -> list[ToolResult]:
+        """Execute the user's approved series in order, displaying each output."""
+        from .video_plan import plan_key, update_chat_settings, validate_dispatch, validate_assets
+
+        if self._video_plan_running:
+            raise RuntimeError("The video series is already running")
+        self._video_plan_running = True
+        sequence_stack = AsyncExitStack()
+        try:
+            plan = await self.video_plan()
+            if not plan:
+                raise ValueError("Prepare a plan with await stimma.video_plan({...}) first")
+            if self.project_id is not None and not self._shot_contract:
+                raise ValueError("Resolve the project shot contract with get_world_state before video generation")
+            if self._shot_contract and len(plan["clips"]) > 1:
+                raise ValueError("A project shot contract applies to one shot; use the project production workflow for multiple shots")
+            key = plan_key(plan)
+            remaining = [clip for clip in plan["clips"] if clip["id"] not in plan["outputs"]]
+            if not remaining:
+                return []
+            first = remaining[0]
+            current = await self.video_settings()
+            validate_dispatch(
+                {"_video_plan": plan}, clip_id=first["id"], key=key,
+                tool_id=first["tool_id"], parameters=first["parameters"],
+                effective_duration=first["duration"],
+                controls={name: current[name] for name in ("fast", "steps", "resolution")},
+            )
+            # Resolve all tools and their permissions before the first GPU
+            # launch, so a new adapter cannot pause an already warm series.
+            from providers.registry import ProviderRegistry
+            from .tool_permission_gate import ensure_tool_permission
+            from sqlalchemy.ext.asyncio import async_sessionmaker
+            async with async_sessionmaker(self.session.bind, expire_on_commit=False)() as fresh:
+                await validate_assets(fresh, plan)
+            registry = ProviderRegistry.get_instance()
+            from agent.tools.stp_utils import _get_allowed_dimensions
+            from .video_settings import apply_video_chat_preferences
+            for clip in remaining:
+                provider_tool = registry.get_tool(clip["tool_id"])
+                if not provider_tool:
+                    raise ValueError(f"Prepared tool {clip['tool_id']} is unavailable; no video was launched")
+                descriptor = provider_tool[1]
+                schema = descriptor.parameter_schema or {}
+                props = schema.get("properties", {})
+                unknown = set(clip["parameters"]) - set(props)
+                missing = [name for name in schema.get("required", []) if name not in clip["parameters"] and "default" not in props.get(name, {})]
+                if unknown or missing:
+                    raise ValueError(f"Invalid prepared parameters for {clip['id']}: unknown={sorted(unknown)}, missing={missing}")
+                effective = dict(clip["parameters"])
+                width = effective.get("width", props.get("width", {}).get("default", 1024))
+                height = effective.get("height", props.get("height", {}).get("default", 1024))
+                apply_video_chat_preferences(effective, width, height, props, {
+                    "video_duration": clip["duration"], "video_steps": current["steps"],
+                    "video_resolution": current["resolution"], "video_quick_mode": current["fast"],
+                }, _get_allowed_dimensions(descriptor))
+                for name in ("steps", "width", "height"):
+                    if name in clip["parameters"] and effective.get(name) != clip["parameters"][name]:
+                        raise ValueError(f"Prepared {name} differs from chat controls for {clip['id']}; update the plan before launch")
+                await ensure_tool_permission(chat_id=self.chat_id, tool_id=clip["tool_id"], kwargs=clip["parameters"], task_type=None, run_cache=self._tool_perm_cache, session_maker=async_sessionmaker(self.session.bind, expire_on_commit=False))
+            results = []
+            sequence_ids = {}
+            if len(remaining) > 1:
+                for clip in remaining:
+                    provider = registry.get_tool(clip["tool_id"])[0]
+                    provider_id = getattr(provider, "provider_id", "")
+                    if provider_id.startswith("comfyui-modal-h3") and provider_id not in sequence_ids:
+                        sequence_ids[provider_id] = await sequence_stack.enter_async_context(provider.video_sequence())
+            for clip in self.progress(plan["clips"], desc="Generating prepared videos"):
+                if clip["id"] in plan["outputs"]:
+                    continue
+                if callable(self.interrupt_checker) and self.interrupt_checker():
+                    raise RuntimeError("Video series interrupted")
+                validate_dispatch({"_video_plan": plan}, clip_id=clip["id"], key=key, tool_id=clip["tool_id"], parameters=clip["parameters"], effective_duration=clip["duration"])
+                await self.video_settings(duration=clip["duration"])
+                provider = registry.get_tool(clip["tool_id"])[0]
+                result = await self._dispatch_tool(clip["tool_id"], _video_plan_clip=clip["id"], _video_plan_key=key, _video_sequence_id=sequence_ids.get(getattr(provider, "provider_id", "")), **clip["parameters"])
+
+                async def record(settings, session):
+                    from shot_continuity_service import validate_shot_output
+                    media = await session.get(MediaItem, result.media_id)
+                    if not media or media.duration is None:
+                        raise RuntimeError(f"Video output metadata is incomplete for {clip['id']}; the series stopped")
+                    errors = await validate_shot_output(session, contract={"expected_duration": clip["duration"]}, media_id=result.media_id)
+                    if errors:
+                        raise RuntimeError("Video output validation failed; the series stopped: " + "; ".join(errors))
+                    current = settings.get("_video_plan")
+                    if current and plan_key(current) == key:
+                        current["outputs"][clip["id"]] = result.media_id
+                    return None
+
+                await update_chat_settings(self.session, self.chat_id, record)
+                plan["outputs"][clip["id"]] = result.media_id
+                results.append(result)
+                self.show(result, role="final", title=clip["id"])
+                await self.flush()
+            return results
+        finally:
+            try:
+                await sequence_stack.aclose()
+            finally:
+                self._video_plan_running = False
 
     def adjust(self, image, **kwargs) -> Image.Image:
         """Apply image adjustments, filters, and effects. Sync — no await needed."""
@@ -1109,6 +1274,9 @@ class StimmaSDK:
         # tools via `from stimma.tools.<task> import <tool>; await <tool>(...)`,
         # whose bindings (tool_fs.build_tools_namespace) route here. Kept private
         # so there is exactly one public way to call a tool.
+        video_plan_clip = kwargs.pop("_video_plan_clip", None)
+        video_plan_key = kwargs.pop("_video_plan_key", None)
+        video_sequence_id = kwargs.pop("_video_sequence_id", None)
         if _params_dict is not None:
             if not isinstance(_params_dict, dict):
                 raise TypeError(
@@ -1206,6 +1374,9 @@ class StimmaSDK:
                 project_id=self.project_id,
                 shot_contract=self._shot_contract,
                 session_media_ids=self._session_media_ids,
+                video_plan_clip=video_plan_clip,
+                video_plan_key=video_plan_key,
+                video_sequence_id=video_sequence_id,
             )
         except Exception as e:
             self._tool_failures.append({
@@ -2317,10 +2488,13 @@ async def run_code_in_sandbox(
         return _original_import(name, globals, locals, fromlist, level)
     builtins["__import__"] = _import_with_extras
 
+    from .sdk_help import get_sdk_method_help
+
     globals_dict: dict[str, Any] = {
         "__builtins__": builtins,
         "__name__": "__stimma_run_code__",
         "stimma": sdk_instance,
+        "sdk_help": get_sdk_method_help,
         "ControlNetInput": ControlNetInput,
         "tqdm": _BoundTqdm,
         "asyncio": _patched_asyncio,

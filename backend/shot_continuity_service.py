@@ -336,7 +336,12 @@ async def validate_shot_output(
             f"got {media.width}x{media.height}"
         )
     expected_duration = contract.get("expected_duration")
-    if expected_duration is not None and media.duration is not None and abs(float(media.duration) - float(expected_duration)) > 0.26:
+    tolerance = 0.26
+    if expected_duration is not None and "minimax_h3" in str(media.tool_id or "").lower().replace("-", "_"):
+        from agent.v2.video_settings import h3_timing
+        expected_duration = h3_timing(float(expected_duration))["effective_duration"]
+        tolerance = 1 / 24
+    if expected_duration is not None and media.duration is not None and abs(float(media.duration) - float(expected_duration)) > tolerance:
         errors.append(
             f"output duration mismatch: expected {expected_duration:g}s, got {float(media.duration):.2f}s"
         )

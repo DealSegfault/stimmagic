@@ -28,7 +28,7 @@ from agent.tools.stp_utils import (
     _get_allowed_dimensions,
     _snap_to_allowed,
 )
-from ..video_settings import apply_video_chat_preferences, normalize_video_chat_settings
+from ..video_settings import apply_video_chat_preferences, normalize_video_chat_settings, h3_timing
 from shot_continuity_service import validate_generation_request
 
 log = get_logger(__name__)
@@ -782,6 +782,7 @@ async def execute_call_tool(
     # width/height, seed, loras and every tool-specific knob live together in one
     # dict keyed by name (matching the tool's parameter_schema).
     params: Dict[str, Any] = _json_safe_pathlikes(dict(parameters or {}))
+    reviewed_parameters = dict(params)
     # This is an explicit one-shot escape hatch used only after the user has
     # confirmed a reference warning. It must never reach a provider or flow.
     confirm_reference_mismatch = bool(params.pop("confirm_reference_mismatch", False))
@@ -1313,6 +1314,29 @@ async def execute_call_tool(
                 + "\n- ".join(validation_errors)
                 + "\nResolve the World State contract and retry; no generation job was queued."
             )
+    if "video" in str(task_type).lower():
+        # Record the effective dispatch values after every override, including
+        # a project shot contract. H3 durations snap upward to valid frames.
+        metadata = job_params.setdefault("prompt_metadata", {})
+        metadata["video_duration"] = job_params.get("duration")
+        metadata["video_steps"] = job_params.get("steps")
+        if "minimax_h3" in tool_id.lower().replace("-", "_") and job_params.get("duration") is not None:
+            metadata.update(h3_timing(float(job_params["duration"])))
+        from ..video_plan import validate_dispatch, validate_assets
+        validate_dispatch(
+            video_chat_settings,
+            clip_id=kwargs.get("video_plan_clip"),
+            key=kwargs.get("video_plan_key"),
+            tool_id=tool_id,
+            parameters=reviewed_parameters,
+            effective_duration=job_params.get("duration"),
+            controls={key: normalized_video_settings[key] for key in ("fast", "steps", "resolution")},
+            effective_parameters=job_params,
+        )
+        if video_chat_settings.get("_video_plan"):
+            await validate_assets(session, video_chat_settings["_video_plan"])
+        if kwargs.get("video_sequence_id"):
+            job_params["_modal_video_sequence"] = kwargs["video_sequence_id"]
     disposition_kwargs = {}
     if kwargs.get("output_disposition") is not None:
         disposition_kwargs = {
@@ -1467,7 +1491,7 @@ async def execute_call_tool(
     # internal controlnet lineage keys so the metadata shape stays stable.
     _INPUT_POSITION_KEYS = {"prompt", "input_images", "width", "height", "seed", "input_media_ids"}
     recorded_params = {
-        k: v for k, v in final_params.items()
+        k: v for k, v in {**final_params, **job_params}.items()
         if k not in _INPUT_POSITION_KEYS and not k.startswith("_")
     }
 

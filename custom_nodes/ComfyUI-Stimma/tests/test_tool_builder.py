@@ -328,79 +328,64 @@ class TestReferenceToVideoWorkflow(unittest.TestCase):
 
 
 class TestMiniMaxH3TurboWorkflows(unittest.TestCase):
-    def test_turbo_variants_use_the_fixed_four_step_path(self):
-        workflow_dir = Path(ROOT) / "workflows"
-        paths = sorted(workflow_dir.glob("Stimma-MiniMax-H3-*-Turbo.json"))
-        self.assertEqual(len(paths), 3)
+    def test_turbo_audio_outputs_remain_connected_to_the_audio_decoder(self):
+        for path in (Path(ROOT) / "workflows").glob("Stimma-MiniMax-H3-*-Turbo.json"):
+            with self.subTest(workflow=path.name):
+                workflow = json.loads(path.read_text())
+                for graph in [workflow] + workflow.get("definitions", {}).get("subgraphs", []):
+                    ids = [link[0] if isinstance(link, list) else link["id"] for link in graph["links"]]
+                    self.assertEqual(len(ids), len(set(ids)), "duplicate graph link IDs")
+                prompt = _convert_ui_to_api(workflow, object_info=None)
+                output = next(node for node in prompt.values() if node["class_type"] == "StimmaVideoOutput")
+                audio_source, audio_slot = output["inputs"]["audio"]
+                self.assertEqual(prompt[audio_source]["class_type"], "VAEDecodeAudio")
+                self.assertEqual(audio_slot, 0)
 
+    def test_turbo_variants_use_lightx_with_conservative_native_sol(self):
+        paths = sorted((Path(ROOT) / "workflows").glob("Stimma-MiniMax-H3-*-Turbo.json"))
+        self.assertEqual(len(paths), 3)
         for path in paths:
             with self.subTest(workflow=path.name):
                 workflow = json.loads(path.read_text())
-                tool_info = next(
-                    node for node in workflow["nodes"]
-                    if node["type"] == "StimmaToolInfo"
-                )
-                self.assertTrue(tool_info["widgets_values"][0].endswith("-turbo"))
-                self.assertTrue(tool_info["widgets_values"][1].endswith(" ⚡"))
-                self.assertNotIn("Turbo", tool_info["widgets_values"][1])
-
                 parameters = {
-                    node["widgets_values"][0]: node
+                    node["widgets_values"][0]: node["widgets_values"]
                     for node in workflow["nodes"]
-                    if node["type"] in {
-                        "StimmaBoolParam",
-                        "StimmaDropdownParam",
-                        "StimmaFloatParam",
-                        "StimmaIntParam",
-                    }
+                    if node["type"].endswith("Param") and node.get("widgets_values")
                 }
-                self.assertNotIn("sampler", parameters)
-                self.assertEqual(parameters["steps"]["widgets_values"][1:3], [4, 4])
+                self.assertEqual(parameters["steps"][1], 8)
+                self.assertEqual(parameters["sampler"][1], "euler")
+                self.assertEqual(parameters["scheduler"][1], "simple")
+                self.assertEqual(parameters["sol_sparsity"][1], 1.0)
+                self.assertEqual(parameters["sol_start"][1], 0.2)
+                self.assertEqual(parameters["sol_end"][1], 0.9)
+                self.assertFalse(any(str(name).startswith("spectrum") for name in parameters))
+                graphs = [workflow] + workflow.get("definitions", {}).get("subgraphs", [])
+                graph = next(g for g in graphs if any(n["type"] == "BlockSparseAttention" for n in g["nodes"]))
+                nodes = {n["id"]: n for n in graph["nodes"]}
+                types_in_graph = {n["type"] for n in graph["nodes"]}
+                self.assertFalse(types_in_graph & {"MiniMaxH3TurboLoRA", "MiniMaxH3TurboSampler", "StimmaMiniMaxH3SageAttention"})
+                adapter = next(n for n in graph["nodes"] if n["type"] == "LoraLoaderModelOnly")
+                mode = "ref2v" if "-R2V-" in path.name else "fl2v"
+                self.assertEqual(adapter["widgets_values"], [f"minimax_h3_{mode}_turbo_8step_v1.0_768p_comfyui_bf16.safetensors", 1.0])
+                sol = next(n for n in graph["nodes"] if n["type"] == "BlockSparseAttention")
+                self.assertEqual(sol["widgets_values"], ["sol-attn", 1.0, 0.2, 0.9, "0, 49", 0, 256, "exact_kv_and_rows", False])
+                shift = next(n for n in graph["nodes"] if n["type"] == "MiniMaxH3SigmaShift")
+                self.assertEqual(shift["widgets_values"], [6.0, 3.0])
+                loaders = {"StimmaMiniMaxH3ModelLoader", "StimmaMiniMaxH3ReferenceModelLoader"}
+                self.assertEqual(len(types_in_graph & loaders), 1)
+                links = {}
+                for link in graph["links"]:
+                    parsed = link if isinstance(link, list) else [link["id"], link["origin_id"], link["origin_slot"], link["target_id"], link["target_slot"], link["type"]]
+                    links[parsed[0]] = parsed
+                    if parsed[1] in nodes:
+                        self.assertIn(parsed[0], nodes[parsed[1]]["outputs"][parsed[2]]["links"])
+                    if parsed[3] in nodes:
+                        self.assertEqual(nodes[parsed[3]]["inputs"][parsed[4]]["link"], parsed[0])
+                source = links[adapter["inputs"][0]["link"]][1]
+                self.assertEqual(nodes[source]["type"], "StimmaLoraLoader")
+                if "-I2V-" in path.name:
+                    self.assertEqual(sum(n["type"] == "StimmaOptionalImageCoverCrop" for n in graph["nodes"]), 2)
 
-                graphs = [workflow]
-                graphs.extend(workflow.get("definitions", {}).get("subgraphs", []))
-                graph = next(
-                    item for item in graphs
-                    if any(node["type"] == "MiniMaxH3TurboLoRA" for node in item["nodes"])
-                )
-                nodes = {node["id"]: node for node in graph["nodes"]}
-                generic_lora = next(
-                    node for node in graph["nodes"]
-                    if node["type"] == "StimmaLoraLoader"
-                )
-                turbo_lora = next(
-                    node for node in graph["nodes"]
-                    if node["type"] == "MiniMaxH3TurboLoRA"
-                )
-                sage = next(
-                    node for node in graph["nodes"]
-                    if node["type"] == "StimmaMiniMaxH3SageAttention"
-                )
-                self.assertEqual(
-                    turbo_lora["widgets_values"],
-                    ["minimax_h3_turbo_v4_step600_ema.safetensors", 1, False],
-                )
-                self.assertTrue(any(
-                    node["type"] == "MiniMaxH3TurboSampler"
-                    for node in graph["nodes"]
-                ))
-
-                if graph["links"] and isinstance(graph["links"][0], list):
-                    links = {link[0]: link for link in graph["links"]}
-                    turbo_input = links[turbo_lora["inputs"][0]["link"]]
-                    sage_input = links[sage["inputs"][0]["link"]]
-                    self.assertEqual(nodes[turbo_input[1]]["id"], generic_lora["id"])
-                    self.assertEqual(turbo_input[3], turbo_lora["id"])
-                    self.assertEqual(sage_input[1], turbo_lora["id"])
-                    self.assertEqual(sage_input[3], sage["id"])
-                else:
-                    links = {link["id"]: link for link in graph["links"]}
-                    turbo_input = links[turbo_lora["inputs"][0]["link"]]
-                    sage_input = links[sage["inputs"][0]["link"]]
-                    self.assertEqual(turbo_input["origin_id"], generic_lora["id"])
-                    self.assertEqual(turbo_input["target_id"], turbo_lora["id"])
-                    self.assertEqual(sage_input["origin_id"], turbo_lora["id"])
-                    self.assertEqual(sage_input["target_id"], sage["id"])
 
 
 class TestLTXLoraWorkflows(unittest.TestCase):

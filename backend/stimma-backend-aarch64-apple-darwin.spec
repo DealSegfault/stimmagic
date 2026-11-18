@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('alembic', 'alembic'), ('alembic.ini', '.'), ('../prompts.yaml', '.')]
+datas = [('alembic', 'alembic'), ('alembic.ini', '.'), ('../prompts.yaml', '.'), ('data/h3_examples', 'data/h3_examples')]
 binaries = []
 hiddenimports = ['uvicorn.logging', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.http.h11_impl', 'uvicorn.protocols.http.httptools_impl', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.protocols.websockets.websockets_impl', 'uvicorn.protocols.websockets.wsproto_impl', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off', 'aiosqlite', 'sqlalchemy.dialects.sqlite', 'websockets.client', 'websockets.exceptions', 'websockets.frames', 'websockets.protocol', 'websockets.legacy', 'websockets.legacy.client']
 datas += collect_data_files('open_clip')

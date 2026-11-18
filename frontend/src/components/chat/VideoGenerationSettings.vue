@@ -57,7 +57,7 @@
               class="w-full rounded-md border border-edge bg-surface-raised px-2.5 py-2 text-xs text-content outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
               @change="emit('update:steps', Number($event.target.value))"
             >
-              <option v-for="option in STEP_OPTIONS" :key="option" :value="option">{{ option }} steps</option>
+              <option v-for="option in stepOptions" :key="option" :value="option">{{ option }} steps</option>
             </select>
             <span v-if="fast" class="mt-1 block text-[10px] text-accent">Fast impose automatiquement 8 steps.</span>
           </label>
@@ -85,8 +85,9 @@
               class="w-full rounded-md border border-edge bg-surface-raised px-2.5 py-2 text-xs text-content outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:opacity-60"
               @change="emit('update:duration', Number($event.target.value))"
             >
-              <option v-for="option in DURATION_OPTIONS" :key="option" :value="option">{{ option }} secondes</option>
+              <option v-for="option in DURATION_OPTIONS" :key="option" :value="option">{{ option }} {{ option === 1 ? 'seconde' : 'secondes' }}</option>
             </select>
+            <span class="mt-1 block text-[10px] text-content-muted">Durée par clip, distincte de la durée du montage.</span>
           </label>
         </div>
       </div>
@@ -118,9 +119,10 @@ const RESOLUTION_OPTIONS = [
   { value: '1080', label: '1080p' },
   { value: '2k', label: '2K' },
 ]
-const DURATION_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15]
+const DURATION_OPTIONS = Array.from({ length: 29 }, (_, index) => 1 + index / 2)
 
 const effectiveSteps = computed(() => props.fast ? 8 : props.steps)
+const stepOptions = computed(() => [...new Set([...STEP_OPTIONS, effectiveSteps.value])].sort((a, b) => a - b))
 const hasCustomSettings = computed(() => (
   props.steps !== 20 || props.resolution !== '720' || props.duration !== 5 || props.fast
 ))

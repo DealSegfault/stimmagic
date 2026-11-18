@@ -12,10 +12,11 @@ from ..tools_registry import tool, ToolParameter
         "Execute Python code in a restricted workspace sandbox with a pre-injected `stimma` SDK. "
         "Code already runs inside `async def` — use `await` directly at the top level. Do NOT wrap in `async def main()` or use `asyncio.run()`. "
         "`stimma` is already available — no import needed (it has .show, .library, .llm, etc.). "
+        "Read focused SDK docs inside this sandbox with `print(sdk_help('video_plan'))` (or any SDK method/group name); `print(sdk_help())` lists groups. "
         "Generation/transformation tools are imported by their REAL name from the catalog: read .stimma/tools/<category>/ first "
         "(ls/cat) to get the exact function name, then `from stimma.tools.<category> import <name_from_catalog>` "
         "and `r = await <name_from_catalog>(...)` — the awaited result is a ToolResult (.media_id, .path, .seed). "
-        "When generating multiple images, ALWAYS use asyncio.gather() to run them in parallel — this enables the progress display and is significantly faster. "
+        "Use asyncio.gather() for independent image batches; storyboard assets are generated/shown one at a time, then reviewed together once ready. "
         "Batch: import the tool once, then `results = await asyncio.gather(*[<tool>(prompt=p) for p in prompts]); stimma.show(results, role='final')` "
         "If run_code already called stimma.show(), do NOT call the show tool again afterward — images are already visible. "
         + ALLOWED_MODULES_PROMPT_DESCRIPTION
@@ -51,7 +52,12 @@ async def run_code(code: str, **kwargs) -> str:
     # sandbox allow-list error ("Import ... is not allowed") and made it look as
     # if the requested adapter did not exist. Preflight the explicit H3 request
     # and report the actionable provider state before entering the sandbox.
-    if "minimax_h3" in code.casefold():
+    h3_imports = [
+        (module, name) for module, name in re.findall(
+            r"from\s+stimma\.tools\.([A-Za-z0-9_]+)\s+import\s+([A-Za-z_][A-Za-z0-9_]*)", code
+        ) if "minimax_h3" in name.casefold()
+    ]
+    if h3_imports:
         from providers.registry import ProviderRegistry
         from ..tool_fs import ensure_task_tools
 
@@ -70,15 +76,9 @@ async def run_code(code: str, **kwargs) -> str:
                 "Reconnect the configured H3/ComfyUI provider, then resend the same prompt; "
                 "the attached clipboard assets are already materialized and will be reused."
             )
-        requested_import = re.search(
-            r"from\s+stimma\.tools\.([A-Za-z0-9_]+)\s+import\s+([A-Za-z_][A-Za-z0-9_]*)",
-            code,
-        )
-        if requested_import:
-            from ..tool_fs import build_manifest
-
-            module_name, function_name = requested_import.groups()
-            manifest = build_manifest(registry)
+        from ..tool_fs import build_manifest
+        manifest = build_manifest(registry)
+        for module_name, function_name in h3_imports:
             available_functions = manifest.by_module.get(module_name, {})
             if function_name not in available_functions:
                 available = ", ".join(sorted(available_functions)) or "none"

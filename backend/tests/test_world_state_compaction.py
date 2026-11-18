@@ -141,3 +141,15 @@ def test_compact_world_state_keeps_ids_and_bounds_scene_context():
     assert len(json.dumps(compact["scenes"][0])) < 1_500
     assert len(compact["current_scene"]["prompt"]) < 6_000
     assert len(compact["current_scene"]["context"]["continuity"]) < 4_000
+
+
+def test_directing_compaction_keeps_later_shots_and_nested_evidence():
+    notes = {f"shot:{i}": {"planned": {"action": "continue moving"}} for i in range(45)}
+    notes["shot:44"]["observed"] = [{
+        "media_id": 123,
+        "timecode": "00:02.4",
+        "events": [{"event": "release", "before": "fall"}],
+        "unverified": ["sound"],
+    }]
+    compact = compact_world_state_for_agent({"current_scene": {"id": 1, "context": {"directing": notes}}})
+    assert compact["current_scene"]["context"]["directing"] == notes

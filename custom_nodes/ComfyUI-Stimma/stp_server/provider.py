@@ -6,7 +6,7 @@ import os
 from typing import Optional, Dict, Any, List
 
 from stimma_tools_protocol.provider import Provider, ProviderConfig
-from stimma_tools_protocol.protocol import JsonRpcResponse
+from stimma_tools_protocol.protocol import JsonRpcError, JsonRpcResponse
 from stimma_tools_protocol.tool import ToolRegistry
 from stimma_tools_protocol.transport import Transport
 
@@ -43,6 +43,7 @@ class StimmaPluginProvider(Provider):
 
         self._plugin_config = config
         self._comfy_client = comfy_client
+        transport._on_clients_disconnected = comfy_client.end_video_sequences
         self._object_info: Optional[Dict[str, Any]] = None
         # Fingerprint of models/custom_nodes at the time _object_info was last
         # fetched. /object_info is tens of MB and ComfyUI rebuilds it by
@@ -102,7 +103,10 @@ class StimmaPluginProvider(Provider):
                 await self._object_info_task
             except asyncio.CancelledError:
                 pass
-        await super().stop()
+        try:
+            await super().stop()
+        finally:
+            await self._comfy_client.end_video_sequences()
 
     async def discover_and_register_tools(self, force: bool = False):
         """Scan for workflows, build tools, and register them.
@@ -443,7 +447,19 @@ class StimmaPluginProvider(Provider):
 
     async def _handle_request(self, request):
         """Override to intercept upload methods before base class routing."""
-        if request.method == "tools.upload":
+        if request.method == "tools.video_sequence":
+            params = request.params or {}
+            try:
+                if params.get("active") is True:
+                    self._comfy_client.begin_video_sequence(params.get("id"))
+                elif params.get("active") is False:
+                    await self._comfy_client.end_video_sequence(params.get("id"))
+                else:
+                    raise ValueError("active must be a boolean")
+                return JsonRpcResponse.success(request.id, {"ok": True})
+            except (TypeError, ValueError) as exc:
+                return JsonRpcResponse.failure(request.id, JsonRpcError(code=-32602, message=str(exc)))
+        elif request.method == "tools.upload":
             return await self._handle_tools_upload(request)
         elif request.method == "tools.upload_complete":
             return await self._handle_tools_upload_complete(request)

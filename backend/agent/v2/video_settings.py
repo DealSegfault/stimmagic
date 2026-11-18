@@ -16,6 +16,13 @@ VIDEO_DEFAULT_RESOLUTION = "720"
 VIDEO_DEFAULT_DURATION = 5.0
 VIDEO_FAST_STEPS = 8
 
+
+def h3_timing(duration: float) -> dict[str, Any]:
+    """Match the installed H3 workflow's 24 fps, 17n+5 frame grid."""
+    frames = max(5, round(duration * 24))
+    frames += (5 - frames % 17) % 17
+    return {"fps": 24, "frame_count": frames, "effective_duration": frames / 24}
+
 # Resolution is expressed as the requested short edge.  H3's native canvas or
 # a provider's x-allowed-dimensions can clamp the final pair when necessary.
 VIDEO_RESOLUTION_SHORT_EDGES = {

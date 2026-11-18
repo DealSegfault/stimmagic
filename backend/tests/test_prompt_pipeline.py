@@ -35,6 +35,17 @@ class TestVerbatim:
     def test_unwrap(self):
         assert pp.unwrap_verbatim("a [red car] here") == "a red car here"
 
+    def test_reference_task_prefix_is_protocol_but_user_brackets_stay_verbatim(self):
+        prompt = (
+            "subject_definitions: <Picture 1> is the subject.\n"
+            "summary: [reference generation + audio reference] A subject moves.\n"
+            "detailed_description: [Shot 1] Use [my exact detail]."
+        )
+        processed, segments = pp.extract_verbatim(prompt, preserve_h3_structure=True)
+        assert "[reference generation + audio reference]" in processed
+        assert "[Shot 1]" in processed
+        assert [segment["original"] for segment in segments] == ["my exact detail"]
+
 
 class TestComments:
     def test_strips_comment_lines_and_collapses_blanks(self):
@@ -88,7 +99,10 @@ class TestH3ReferenceContextValidation:
             {"label": "Audio 2", "kind": "audio"},
         ]
         complete = (
-            "integrated_multimodal_description: <Picture 1> supplies the subject; "
+            "subject_definitions: <Picture 1> supplies the subject.\n"
+            "summary: [reference generation] A subject moves.\n"
+            "retention_analysis: <Picture 1> fully_preserved.\n"
+            "detailed_description: <Picture 1> supplies the subject; "
             "<Audio 1> supplies the voice; <Video 1> supplies the movement; "
             "<Audio 2> supplies the score.\n"
             "overall_soundscape: Use the referenced voice.\n"
@@ -96,6 +110,11 @@ class TestH3ReferenceContextValidation:
         )
 
         assert pp._valid_h3_context_ir(complete, "ref2va", 8, manifest)
+        assert not pp._valid_h3_context_ir(complete.replace("retention_analysis:", "retention:"), "ref2va", 8, manifest)
+        assert not pp._valid_h3_context_ir(
+            "integrated_multimodal_description: <Picture 1> <Audio 1> <Video 1> <Audio 2>\n"
+            "overall_soundscape: N/A\nnon_diegetic_music: N/A", "ref2va", 8, manifest,
+        )
         assert not pp._valid_h3_context_ir(
             complete.replace("<Video 1>", "the video"),
             "ref2va",
@@ -237,15 +256,17 @@ class TestRunPromptPipeline:
         import routes.prompt_enhancement as pe
 
         attempts = []
+        source = (
+            "subject_definitions: <Picture 1> supplies the subject; <Picture 2> supplies the environment.\n"
+            "summary: [reference generation] The subject walks.\n"
+            "retention_analysis: <Picture 1> fully_preserved; <Picture 2> weak_reference.\n"
+            "detailed_description: [Shot 1] Keep the subject identity and composition.\n"
+            "overall_soundscape: Wind.\nnon_diegetic_music: N/A"
+        )
 
         async def fake_translate(request):
             attempts.append(request)
-            translated = (
-                "integrated_multimodal_description: "
-                "<Picture 1> 保持角色身份；<Picture 2> 保持环境与构图。"
-                "\n\noverall_soundscape: 风声。\n\n"
-                "non_diegetic_music: N/A"
-            )
+            translated = request.prompt.replace("Keep the subject identity and composition.", "保持角色身份和构图。")
             if len(attempts) == 1:
                 translated = translated.replace("保持角色身份", "保持角色身份 15秒")
             return pe.TranslatePromptResponse(
@@ -256,9 +277,7 @@ class TestRunPromptPipeline:
 
         out = await pp.run_prompt_pipeline(
             _db(generation_db_session),
-            "integrated_multimodal_description: <Picture 1> Keep the subject identity; "
-            "<Picture 2> keep the environment and composition.\n\n"
-            "overall_soundscape: Wind.\n\nnon_diegetic_music: N/A",
+            source,
             {"translate": {"enabled": True, "language": "zh-Hans"}},
             model="minimax-h3-r2v-turbo",
             is_video=True,
@@ -272,8 +291,37 @@ class TestRunPromptPipeline:
 
         assert "<Picture 1>" in out and "<Picture 2>" in out
         assert "保持角色身份" in out
-        assert out.startswith("integrated_multimodal_description:")
+        assert out.startswith("subject_definitions:")
+        assert "[reference generation]" in out and "[Shot 1]" in out
         assert len(attempts) == 2
+
+    async def test_r2v_rewrite_keeps_six_section_protocol_brackets(
+        self, generation_app, generation_db_session, monkeypatch
+    ):
+        import routes.prompt_enhancement as pe
+
+        attempts = []
+
+        async def fake_improve(request, session):
+            attempts.append(request)
+            return pe.ImprovePromptResponse(improved_prompt=request.prompt)
+
+        monkeypatch.setattr(pe, "improve_prompt", fake_improve)
+        prompt = (
+            "subject_definitions: <Picture 1> supplies the subject.\n"
+            "summary: [reference generation] The subject walks.\n"
+            "retention_analysis: <Picture 1> fully_preserved.\n"
+            "detailed_description: [Shot 1] The subject walks.\n"
+            "overall_soundscape: N/A\nnon_diegetic_music: N/A"
+        )
+        out = await pp.run_prompt_pipeline(
+            _db(generation_db_session), prompt, {"autoImprove": {"enabled": True}},
+            model="minimax-h3-r2v-turbo", is_video=True, h3_task="ref2va", h3_duration=6,
+            h3_reference_manifest=[{"label": "Picture 1", "kind": "image"}],
+        )
+        assert out == prompt
+        assert attempts[0].prompt == prompt
+        assert len(attempts) == 1
 
     async def test_h3_retries_when_context_ir_shape_is_missing(
         self, generation_app, generation_db_session, monkeypatch

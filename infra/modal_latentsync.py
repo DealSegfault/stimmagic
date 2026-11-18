@@ -88,7 +88,7 @@ def download_models() -> dict:
 
 @app.function(
     image=image,
-    gpu="RTX-PRO-6000",
+    gpu="L4",
     volumes={CHECKPOINTS: checkpoints, HF_CACHE: hf_cache},
     min_containers=0,
     max_containers=1,
@@ -96,7 +96,7 @@ def download_models() -> dict:
     scaledown_window=2,
     timeout=30 * 60,
     startup_timeout=15 * 60,
-    memory=32768,
+    memory=16384,
 )
 def lipsync(
     video_bytes: bytes,
@@ -128,6 +128,7 @@ def lipsync(
                 str(inference_steps),
                 "--guidance_scale",
                 str(guidance_scale),
+                "--enable_deepcache",
                 "--video_path",
                 str(source_video),
                 "--audio_path",

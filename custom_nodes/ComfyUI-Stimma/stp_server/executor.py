@@ -9,6 +9,7 @@ import random
 import shutil
 import tempfile
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 
@@ -360,7 +361,8 @@ async def execute_workflow(
         # Acquire a ComfyUI instance for the full job lifecycle. The worker
         # holds the instance until output capture completes, so the next job
         # only lands here once the GPU is actually idle.
-        async with provider.comfy_client.acquire(parameters) as instance:
+        sequence_id = parameters.get("_modal_video_sequence")
+        async with provider.comfy_client.acquire(parameters) as instance, (provider.comfy_client.video_sequence_job(sequence_id, instance) if sequence_id else nullcontext()):
             route_started = time.perf_counter()
             logger.info(f"Acquired ComfyUI instance {instance.addr} for job")
 
@@ -1727,6 +1729,7 @@ def _schedule_ws_close(ws) -> None:
 async def _monitor_execution(ws, prompt_id: str, context: "ExecutionContext"):
     """Monitor ComfyUI execution progress via websocket."""
     import aiohttp
+    _previews_enabled = getattr(context, "preview_frames", True)
 
     # Throttle progress forwarding. ComfyUI emits progress dozens of times per
     # second; forwarding every one (each an awaited ws send to the client) lets

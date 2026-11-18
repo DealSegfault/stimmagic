@@ -334,6 +334,9 @@ def test_provider_http_error_message_never_contains_supplier_details():
 
 
 class _FakeSession:
+    async def refresh(self, value):
+        pass
+
     def __init__(self):
         self.added = []
 

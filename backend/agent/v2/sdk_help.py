@@ -16,6 +16,40 @@ class SDKMethodHelp:
 
 
 SDK_HELP: dict[str, SDKMethodHelp] = {
+    "video_settings": SDKMethodHelp(
+        name="video_settings",
+        signature="await stimma.video_settings(duration=None, steps=None, resolution=None, fast=None) -> dict",
+        summary="Read/update the existing visible video controls (pass only settings to change).",
+        details="Duration is a clip request, 1–15 seconds in 0.5s increments. The result includes H3 fps, frame_count and effective_duration (24 fps, 17n+5 frames). Steps: integer 1–50; resolution: '480', '720', '1080', '2k'; fast: boolean. No arguments reads current settings. Changes preserve unrelated chat settings and update the UI immediately.",
+        group="video",
+        is_async=True,
+    ),
+    "video_plan": SDKMethodHelp(
+        name="video_plan",
+        signature="await stimma.video_plan(plan=None) -> dict | None",
+        summary="Read/persist interactive video preparation; generation waits for recorded user reviews/start.",
+        details="""Create the plan at the start of interactive preparation, then update it as assets/prompts become ready.
+Input keys are exactly target_duration, assets, clips. Resolution/steps/fast are set separately with await stimma.video_settings(...).
+Schema: {"target_duration": 30, "assets": [{"name": "Character", "media_id": 42}, {"name": "Opening keyframe", "media_id": null}], "clips": [{"id": "Shot 1", "tool_id": "REAL provider-qualified ID from the catalog", "duration": 5, "edit_duration": 5, "parameters": {"prompt": "...", "input_images": [42]}}]}.
+Start preparation before clip references exist with this Python example:
+plan = await stimma.video_plan({"target_duration": 30, "assets": [{"name": "Opening keyframe", "media_id": None}], "clips": []})
+Fill exact clip tool_ids and reference media IDs as assets become available. Each clip uses only id, tool_id, duration, edit_duration, parameters; id can be a descriptive shot name.
+target_duration is the final edit duration; each generation duration is 1–15s in 0.5s increments. edit_duration is on the 24fps edit grid, cannot exceed the generated clip's frame-aligned duration, and all edit durations must sum to the target before launch. Clips may initially be empty and prompts incomplete.
+List ALL required assets/keyframes, using null for missing media. Bind exact immutable media IDs in every reference array. Use T2V for no references, I2V for one starting frame, R2V for multiple/semantic references. Keep Picture N tags in the input_images order. Prepare sound and transition prompts as part of each clip.
+Generate planned missing stills one at a time, reuse established references and show each result, then continue to the next asset. Ask permission/approval per image only when the user explicitly requests those checkpoints. When the complete asset set is ready, present it for one collective review via ask_user(video_review={"media_ids": [42, 43, 44]}), listing the exact pending asset versions. Only the user's explicit approve button records approval. Replacing a media ID requires a fresh review, which may be included in the next collective review. Assets already approved in this plan keep their approvals.
+When every asset and prompt is ready/reviewed, show the final plan and request ask_user(video_review={"start": true}); only the user's explicit launch button authorizes videos. Changes to the plan invalidate launch authorization. After approval: await stimma.generate_video_plan(). Do not use gather for this series.
+The returned plan includes pending preparation/review issues, clip_timing, approved_media_ids and outputs; these are read-only server fields, not setter arguments. To update a returned plan, pass only its target_duration/assets/clips. No arguments reads it. Project shot contracts remain authoritative and apply to one shot at a time.""",
+        group="video",
+        is_async=True,
+    ),
+    "generate_video_plan": SDKMethodHelp(
+        name="generate_video_plan",
+        signature="await stimma.generate_video_plan() -> list[ToolResult]",
+        summary="Run the user's approved clips sequentially, updating duration and displaying each output.",
+        details="Prompts and references are prepared before the first GPU job. The helper reads the persisted plan, skips completed clips on resume, updates the existing duration control for each clip, awaits each job, checks output duration metadata against the H3 frame grid, then shows/flushes each result before starting the next. Errors/interruption stop the sequence; there is no automatic paid retry. A user interruption revokes start authorization. For multiple remaining clips, it explicitly keeps the executing Modal route warm and releases it on completion, error, or interruption. Single generations keep the default 2s idle shutdown; no global scaling settings are changed. The scoped hold expires after 60s without a job if the caller disappears. Keep the same route/configuration to reuse its loaded model. Multi-shot project production uses its own per-shot contract workflow.",
+        group="video",
+        is_async=True,
+    ),
     "generated_tools": SDKMethodHelp(
         name="generated_tools",
         signature="from stimma.tools.<category> import <tool_name>",
@@ -85,6 +119,29 @@ Example:
   stimma.show_grid(results, cols=3, role="final", title="Prompt sweep")""",
         group="display",
         is_async=False,
+    ),
+    "library.prompt_examples": SDKMethodHelp(
+        name="library.prompt_examples",
+        signature='await stimma.library.prompt_examples(query="", *, example_id="", style="", topic="", similar_to="", limit=6)',
+        summary="Explore H3 styles with real clips, original prompts and similar examples.",
+        details="""\
+Search the read-only H3 Atlas/ostris catalogue with English scene words. Search
+returns compact items with id, style_label, excerpt, dimensions, duration and
+chat_link. Read example_id for the original T2VA prompt, soundscape, music and
+credits. Similarity uses style, subject tags and prompt words.
+
+Present a small number of relevant examples as [your descriptive label](stimma-h3:000128).
+The chat renders a thumbnail, hover preview and clickable details. A style
+selection is inspiration, not an input_images reference: adapt the look/camera
+and requested sound to the user's scene, actual duration and H3 mode; preserve
+their identity, actions and dialogue. These clips do not become user Assets.
+
+Example:
+  examples = await stimma.library.prompt_examples("black white gangster cigar", limit=3)
+  print(examples)
+  example = await stimma.library.prompt_examples(example_id="000128")""",
+        group="library",
+        is_async=True,
     ),
     "library.search": SDKMethodHelp(
         name="library.search",
@@ -272,8 +329,9 @@ Example:
 }
 
 
-_GROUP_ORDER = ["core", "display", "library", "image", "ai"]
+_GROUP_ORDER = ["core", "display", "library", "image", "ai", "video"]
 _GROUP_LABELS = {
+    "video": "Video preparation",
     "core": "Core",
     "display": "Display",
     "library": "Library",
@@ -281,6 +339,7 @@ _GROUP_LABELS = {
     "ai": "AI",
 }
 _GROUP_DESCRIPTIONS = {
+    "video": "visible settings, reviewed preparation, sequential generation",
     "core": "generated tools, parallel batches, progress, shared project paths",
     "display": "show, show_grid",
     "library": "search, browse, get, save, lineage, regeneration",
@@ -290,7 +349,7 @@ _GROUP_DESCRIPTIONS = {
 
 
 def get_sdk_overview() -> str:
-    """Compact group index for the retired sdk_help wrapper."""
+    """Compact group index for the sandbox's sdk_help function."""
     lines = ["stimma SDK - available method groups:", ""]
     for group in _GROUP_ORDER:
         label = _GROUP_LABELS[group]
@@ -315,8 +374,10 @@ def get_sdk_group_help(group: str, methods: list[SDKMethodHelp]) -> str:
     return "\n".join(lines)
 
 
-def get_sdk_method_help(name: str) -> str:
+def get_sdk_method_help(name: str | None = None) -> str:
     """Return help for a method, group, or namespace prefix."""
+    if name is None:
+        return get_sdk_overview()
     if name in SDK_HELP:
         method = SDK_HELP[name]
         return f"{method.signature}\n\n{method.details}"
@@ -339,6 +400,7 @@ def get_sdk_quick_ref() -> str:
     """Minimal SDK reference appended to run_code errors for self-correction."""
     return """\
 stimma quick reference (inside run_code / run_file):
+  Read SDK documentation with print(sdk_help("video_plan")) (or "video_settings", "library", etc.).
   Generation tools are imported by their REAL function name from the catalog.
   First read .stimma/tools/<category>/ (ls/cat) to get the exact name, then:
     from stimma.tools.<category> import <name_from_catalog>

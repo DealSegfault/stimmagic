@@ -33,6 +33,12 @@ from ..tools_registry import tool, ToolParameter
             },
         ),
         ToolParameter(
+            name="video_review",
+            type="object",
+            description="Review the complete video-plan asset set collectively: {media_ids: [all pending IDs]} after showing it. Per-image checkpoints are used only when the user requests them. Separately request {start: true} to launch the fully prepared/reviewed series. The server supplies explicit approve/modify buttons and records only the user's choice.",
+            required=False,
+        ),
+        ToolParameter(
             name="question_index",
             type="integer",
             description="Optional 1-based index of this question within a planned multi-question clarification sequence.",

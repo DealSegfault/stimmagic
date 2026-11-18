@@ -17,11 +17,11 @@ APP_NAME = "comfyui-minimax-h3"
 VOLUME_NAME = "comfyui-minimax-h3-models"
 MODEL_ROOT = Path("/root/ComfyUI/models")
 
-COMFYUI_REVISION = "0f1fa67ad8a68b62c65ebc97a7bf485df2459c3a"
+COMFYUI_REVISION = "b0b743566f65daafc423b4fea8a2fbda94b3384a"  # ComfyUI v0.39.0, native Sol attention
 STIMMA_REVISION = "a301a1f3f411a1cd10327b888398c5835078c22c"
 TURBO_NODE_REVISION = "4274783a23afcfdbea3b4876cb79effd6c510785"
 H3_REVISION = "d07f69bc8fa09c9717e1e47180034f9322e0e54d"
-TURBO_REVISION = "43a74557ac3f6539db8e0f2a959d03feb7a81480"
+TURBO_REVISION = "3ec17a324ced54151364f24f8b5fb6bf7e26414f"
 MUSIC_REVISION = "6332b49584554162b85fd71f2a4cdd8eeb1fc42d"
 
 H3_FILES = (
@@ -41,7 +41,10 @@ H3_FULL_BF16_FILES = (
     "diffusion_models/minimax_h3_ref2va_bf16.safetensors",
     "text_encoders/qwen3vl_32b_minimax_h3_bf16.safetensors",
 )
-TURBO_FILE = "minimax_h3_turbo_v4_step600_ema.safetensors"
+TURBO_FILES = (
+    "minimax_h3_fl2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+    "minimax_h3_ref2v_turbo_8step_v1.0_768p_comfyui_bf16.safetensors",
+)
 MUSIC_FILES = (
     "diffusion_models/minimax_music3_dit_int8_convrot.safetensors",
     "text_encoders/minimax_music3_text_encoder_pruned_int8_convrot.safetensors",
@@ -79,13 +82,6 @@ comfy_image = (
         "/root/ComfyUI/custom_nodes/ComfyUI-MiniMax-H3-Turbo",
         "git -C /root/ComfyUI/custom_nodes/ComfyUI-MiniMax-H3-Turbo checkout "
         f"{TURBO_NODE_REVISION}",
-        # The pinned Stimma workflows still name the first-generation Turbo
-        # checkpoint.  Keep their graph wiring, but select the current v4-600
-        # EMA checkpoint recommended for static and slow architectural motion.
-        "sed -i 's/minimax_h3_turbo_4step_ema_ckpt850.safetensors/"
-        "minimax_h3_turbo_v4_step600_ema.safetensors/g' "
-        "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/"
-        "Stimma-MiniMax-H3-*-Turbo.json",
         "python -m pip install --upgrade pip",
         "python -m pip install -r /root/ComfyUI/requirements.txt",
         "python -m pip install -r "
@@ -126,6 +122,11 @@ comfy_image = (
         copy=True,
     )
     .add_local_file(
+        str(PLUGIN_ROOT / "nodes/image_crop.py"),
+        "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/image_crop.py",
+        copy=True,
+    )
+    .add_local_file(
         str(PLUGIN_ROOT / "nodes/minimax_h3_sage.py"),
         "/root/ComfyUI/custom_nodes/ComfyUI-Stimma/nodes/minimax_h3_sage.py",
         copy=True,
@@ -147,6 +148,15 @@ comfy_image = (
     )
 )
 
+# Keep the locally served Turbo graphs identical to those deployed on Modal.
+for mode in ("I2V", "T2V", "R2V"):
+    workflow_name = f"Stimma-MiniMax-H3-{mode}-Turbo.json"
+    comfy_image = comfy_image.add_local_file(
+        str(PLUGIN_ROOT / "workflows" / workflow_name),
+        f"/root/ComfyUI/custom_nodes/ComfyUI-Stimma/workflows/{workflow_name}",
+        copy=True,
+    )
+
 
 @app.function(
     image=download_image,
@@ -161,9 +171,7 @@ def download_models(include_reference: bool = True, include_turbo: bool = True) 
 
     selected = list(H3_FILES)
     if not include_reference:
-        selected.remove(
-            "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors"
-        )
+        selected = [filename for filename in selected if "minimax_h3_ref2va" not in filename]
 
     downloaded = []
     for filename in selected:
@@ -178,20 +186,14 @@ def download_models(include_reference: bool = True, include_turbo: bool = True) 
     if include_turbo:
         lora_dir = MODEL_ROOT / "loras"
         lora_dir.mkdir(parents=True, exist_ok=True)
-        hf_hub_download(
-            repo_id="larryvrh/MiniMax-H3-Turbo-Lora",
-            filename=TURBO_FILE,
-            revision=TURBO_REVISION,
-            local_dir=lora_dir,
-        )
-        old_turbo = lora_dir / "minimax-h3" / TURBO_FILE
-        if old_turbo.exists():
-            old_turbo.unlink()
-            try:
-                old_turbo.parent.rmdir()
-            except OSError:
-                pass
-        downloaded.append(f"loras/{TURBO_FILE}")
+        for filename in TURBO_FILES if include_reference else TURBO_FILES[:1]:
+            hf_hub_download(
+                repo_id="lightx2v/Minimax-h3-Turbo",
+                filename=filename,
+                revision=TURBO_REVISION,
+                local_dir=lora_dir,
+            )
+            downloaded.append(f"loras/{filename}")
 
     models.commit()
     return {"downloaded": downloaded, "model_root": str(MODEL_ROOT)}
@@ -263,6 +265,8 @@ def download_music_models() -> dict:
     min_containers=0,
     max_containers=1,
     buffer_containers=0,
+    # Standalone jobs release quickly. Prepared series hold a scoped WebSocket
+    # instead of changing this global idle shutdown setting.
     scaledown_window=2,
     timeout=60 * 60,
     startup_timeout=20 * 60,
@@ -306,12 +310,11 @@ def comfyui() -> None:
     # encoder. Give the B300 worker enough host RAM for load/offload spikes.
     memory=131072,
 )
-# One H3 job needs a live progress WebSocket and concurrent HTTP calls
-# (/prompt, /history, /view). A single Modal input slot deadlocks that pair:
-# the WebSocket occupies the slot while /prompt waits forever. The local STP
-# provider serializes HD jobs, so two slots are enough without enabling
-# concurrent B300 generations.
-@modal.concurrent(max_inputs=2)
+# A prepared series adds one scoped warm-hold WebSocket alongside the
+# job's progress WebSocket and HTTP calls (/prompt, /history, /view).
+# Three request slots avoid deadlocks; the local STP pool still serializes
+# B300 generations. This does not change scale-to-zero or GPU concurrency.
+@modal.concurrent(max_inputs=3)
 @modal.web_server(
     8188,
     startup_timeout=30 * 60,

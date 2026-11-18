@@ -330,7 +330,7 @@ class SingleComfy:
         except aiohttp.ClientError:
             return False
 
-    async def connect_ws(self, preview_frames: bool = True):
+    async def connect_ws(self, preview_frames: bool = True, client_id: Optional[str] = None):
         """Create a websocket connection for progress monitoring.
 
         preview_frames: declare supports_preview_metadata so ComfyUI streams
@@ -341,7 +341,7 @@ class SingleComfy:
         session = aiohttp.ClientSession()
         try:
             ws = await session.ws_connect(
-                f"http://{self.addr}/ws?clientId={self.client_id}",
+                f"http://{self.addr}/ws?clientId={client_id or self.client_id}",
                 compress=0,
                 heartbeat=30.0,
             )
@@ -350,7 +350,7 @@ class SingleComfy:
                 await ws.send_json(
                     {"type": "feature_flags", "data": {"supports_preview_metadata": True}}
                 )
-        except Exception:
+        except BaseException:
             await session.close()
             raise
         ws._session = session  # attach so we can close it later
@@ -377,6 +377,7 @@ class Comfy:
         account_hd_addresses: Optional[Dict[str, str]] = None,
     ):
         self.addresses = parse_addresses(addresses)
+        self._video_sequences = {}
         self.account_addresses = {
             str(account_id): addr
             for account_id, addr in (account_addresses or {}).items()
@@ -458,6 +459,99 @@ class Comfy:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def begin_video_sequence(self, sequence_id: str) -> None:
+        if not isinstance(sequence_id, str) or len(sequence_id) != 32 or any(c not in "0123456789abcdef" for c in sequence_id):
+            raise ValueError("Invalid video sequence ID")
+        if sequence_id in self._video_sequences:
+            raise ValueError("Video sequence already exists")
+        # ponytail: one prepared series per provider; allow concurrent series
+        # only when there is demand for multiple simultaneous productions.
+        if self._video_sequences:
+            raise ValueError("Another video sequence is running; wait for it to finish")
+        state = {"instance": None, "ws": None, "reader": None, "timer": None, "busy": False, "task": None}
+        self._video_sequences[sequence_id] = state
+        self._expire_video_sequence(sequence_id, state)
+
+    def _expire_video_sequence(self, sequence_id, state):
+        # Crash fallback, scoped to the series. Running jobs never expire.
+        state["timer"] = asyncio.get_running_loop().call_later(
+            60, lambda: asyncio.create_task(self.end_video_sequence(sequence_id))
+        )
+
+    @staticmethod
+    async def _close_video_pin(state):
+        task = state.get("task")
+        if not state.get("ws") and state["busy"] and task is not None and task is not asyncio.current_task():
+            # Closing the series during a cold handshake must cancel that
+            # connection too, before it can start/leave an abandoned worker.
+            task.cancel()
+        reader = state.pop("reader", None)
+        if reader:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+        ws = state.pop("ws", None)
+        if ws:
+            try:
+                await asyncio.wait_for(ws.close(), timeout=3)
+            except Exception:
+                logger.debug("Warm-hold socket close failed; closing its session", exc_info=True)
+            finally:
+                session = getattr(ws, "_session", None)
+                if session:
+                    await session.close()
+
+    async def end_video_sequence(self, sequence_id: str) -> None:
+        state = self._video_sequences.pop(sequence_id, None)
+        if state:
+            if state["timer"]:
+                state["timer"].cancel()
+            await self._close_video_pin(state)
+
+    async def end_video_sequences(self) -> None:
+        for sequence_id in list(self._video_sequences):
+            await self.end_video_sequence(sequence_id)
+
+    @asynccontextmanager
+    async def video_sequence_job(self, sequence_id, instance):
+        if not sequence_id:
+            yield
+            return
+        state = self._video_sequences.get(sequence_id)
+        if state is None or state["busy"]:
+            raise ValueError("Video sequence expired, ended, or already generating")
+        state["timer"].cancel()
+        state["busy"] = True
+        state["task"] = asyncio.current_task()
+        try:
+            # Respect the existing account/HD router. If it selects another
+            # route, release the old pin instead of paying for two idle GPUs.
+            if state["instance"] is not instance:
+                await self._close_video_pin(state)
+                state["instance"] = instance
+            if not state.get("ws") or state["ws"].closed:
+                await self._close_video_pin(state)
+                ws = await instance.connect_ws(preview_frames=False, client_id=f"sequence-{sequence_id}")
+                state["ws"] = ws
+                if self._video_sequences.get(sequence_id) is not state:
+                    raise RuntimeError("Video sequence ended while connecting")
+
+                async def drain():
+                    # Receive heartbeats/status without competing with the
+                    # job's progress socket or accumulating preview frames.
+                    async for _ in ws:
+                        pass
+
+                state["reader"] = asyncio.create_task(drain())
+            yield
+        except BaseException:
+            await self.end_video_sequence(sequence_id)
+            await self._close_video_pin(state)
+            raise
+        finally:
+            state["busy"] = False
+            if self._video_sequences.get(sequence_id) is state:
+                self._expire_video_sequence(sequence_id, state)
 
     def is_hd_request(self, parameters: Optional[Dict[str, Any]]) -> bool:
         """Return whether a job belongs on the dedicated B300 HD worker."""

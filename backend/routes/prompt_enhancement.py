@@ -149,15 +149,18 @@ def _h3_task_guidance(
         mapping = "\n".join(entries) or "- No references were supplied (invalid request)."
         return (
             "This is REF2VA. Do not write first-frame, last-frame, or timeline-alignment instructions. "
-            "Begin directly with integrated_multimodal_description. Below are available reference labels "
+            "Begin directly with subject_definitions. Below are available reference labels "
             "for this request; use only tags already present in the source prompt and never invent, infer, "
             "rename, renumber, swap, or reorder <Picture N>, <Video N>, or <Audio N>.\n"
             f"{mapping}\n"
             "If <Picture N>, <Video N>, and <Audio N> tags are not present in the source prompt, do not add them. "
             "Do not infer reference tags from plain words like video, audio, soundtrack, speaking, singing, etc. "
             "If tags are present, state concretely what identity, appearance, style, motion, camera behavior, or voice each "
-            "reference controls. A paired <Audio N> appears immediately before its matching <Video N> in the model input, "
-            "but they remain distinct tags and should be assigned distinct audio/video roles."
+            "reference controls, and which incidental attributes (background, wardrobe, pose, camera or soundtrack) "
+            "must not transfer. A paired <Audio N> appears immediately before its matching <Video N> in the model input, "
+            "but they remain distinct tags and should be assigned distinct audio/video roles. "
+            "For audio, distinguish copying the actual content (fully_copy/partially_copy) from borrowing voice "
+            "timbre or instrumentation (reference); preserve the user's own words when only timbre is borrowed."
         )
     if task == "i2va":
         return (
@@ -192,6 +195,29 @@ def _h3_task_guidance(
     )
 
 
+def _h3_output_structure(task: Optional[str]) -> str:
+    if task == "ref2va":
+        return (
+            "Output exactly these six sections in this order:\n"
+            "subject_definitions: Define tracked <Subject N> labels and cite their physical source labels.\n\n"
+            "summary: Begin with a bracketed task-type prefix such as [reference generation]. "
+            "Choose actual roles, combining them with + when needed: reference generation, "
+            "keyframe completion, video editing, video continuation, audio reuse or audio reference. "
+            "State the requested scene and reference relationships.\n\n"
+            "retention_analysis: For each label, state what transfers and what is excluded. "
+            "Visual labels use fully_preserved, partially_preserved, attribute_transfer or weak_reference; "
+            "audio labels use fully_copy, partially_copy, reference or weak_reference.\n\n"
+            "detailed_description: [Shot 1] ...\n\n"
+            "overall_soundscape: ...\n\n"
+            "non_diegetic_music: ..."
+        )
+    return (
+        "After any required alignment instruction, output exactly these three fields in this order:\n"
+        "integrated_multimodal_description: [Shot 1] ...\n\n"
+        "overall_soundscape: ...\n\nnon_diegetic_music: ..."
+    )
+
+
 def _h3_audio_guidance(generate_audio: bool) -> str:
     if generate_audio:
         return (
@@ -199,7 +225,7 @@ def _h3_audio_guidance(generate_audio: bool) -> str:
             "ambience, physical sounds, and score in their proper sections. Do not invent dialogue or music."
         )
     return (
-        "Audio generation is disabled. Keep the three required fields, but write overall_soundscape: N/A "
+        "Audio generation is disabled. Keep the required sections for the selected mode, but write overall_soundscape: N/A "
         "and non_diegetic_music: N/A. Describe visible speaking or sound-causing actions only as visible "
         "motion; do not invent audio content."
     )
@@ -870,6 +896,9 @@ async def improve_prompt(request: ImprovePromptRequest, session: AsyncSession = 
         "{h3_task_guidance}", _h3_task_guidance(
             request.h3_task, request.h3_duration, request.h3_reference_manifest
         )
+    )
+    system_prompt = system_prompt.replace(
+        "{h3_output_structure}", _h3_output_structure(request.h3_task)
     )
     system_prompt = system_prompt.replace(
         "{h3_audio_guidance}", _h3_audio_guidance(request.h3_generate_audio)

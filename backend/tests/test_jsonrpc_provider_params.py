@@ -1,11 +1,27 @@
 """Regression tests for STP JSON-RPC outbound parameter shaping."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from providers.base import ProviderStatus, ToolDescriptor
 from providers.jsonrpc import JsonRpcProvider, StdioProviderConfig, _strip_undeclared_parameters
+
+
+@pytest.mark.asyncio
+async def test_scoped_video_sequence_releases_on_failure_and_cancellation():
+    provider = JsonRpcProvider(StdioProviderConfig(id="comfyui-modal-h3", command="noop"))
+    provider._send_request = AsyncMock(return_value={"ok": True})
+    for failure in (RuntimeError("failed generation"), asyncio.CancelledError()):
+        with pytest.raises(type(failure)):
+            async with provider.video_sequence() as sequence_id:
+                assert len(sequence_id) == 32
+                assert _strip_undeclared_parameters({"_modal_video_sequence": sequence_id}, {"properties": {}}) == {"_modal_video_sequence": sequence_id}
+                raise failure
+        calls = provider._send_request.await_args_list[-2:]
+        assert calls[0].args == ("tools.video_sequence", {"id": sequence_id, "active": True})
+        assert calls[1].args == ("tools.video_sequence", {"id": sequence_id, "active": False})
 
 
 @pytest.mark.asyncio

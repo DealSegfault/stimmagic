@@ -52,6 +52,7 @@ def extract_verbatim(
         if preserve_h3_structure and (
             re.fullmatch(r"Shot\s+\d+", match.group(1), re.IGNORECASE)
             or prompt[max(0, match.start() - 3):match.start()] == "<d>"
+            or re.search(r"(?:^|\n)summary:\s*$", prompt[:match.start()])
         ):
             return match.group(0)
         placeholder = f"__VERBATIM_{chr(65 + len(segments))}__"  # A, B, C, ...
@@ -198,9 +199,7 @@ async def _improve_with_verbatim_protection(
 
     prompt_with_placeholders, segments = extract_verbatim(
         prompt,
-        preserve_h3_structure=(
-            h3_task is not None and "integrated_multimodal_description:" in prompt
-        ),
+        preserve_h3_structure=h3_task is not None,
     )
 
     last_candidate: Optional[str] = None
@@ -258,14 +257,16 @@ def _valid_h3_context_ir(
     *,
     source_prompt: Optional[str] = None,
 ) -> bool:
-    """Cheap structural guardrail for the official H3 Base prompt schema."""
+    """Existing enhancement guardrail, using the schema of the selected H3 mode."""
     fields = (
-        "integrated_multimodal_description:",
+        ("subject_definitions:", "summary:", "retention_analysis:", "detailed_description:")
+        if task == "ref2va" else ("integrated_multimodal_description:",)
+    ) + (
         "overall_soundscape:",
         "non_diegetic_music:",
     )
     positions = [prompt.find(field) for field in fields]
-    if positions[0] < 0 or positions != sorted(positions):
+    if any(position < 0 for position in positions) or positions != sorted(positions):
         return False
     if source_prompt is not None and not _h3_dialogue_is_grounded(prompt, source_prompt):
         return False
@@ -318,8 +319,7 @@ _H3_SCHEMA_FIELDS = {
     "integrated_multimodal_description",
     "overall_soundscape",
     "non_diegetic_music",
-    # Keep these too when a user supplies a Seedance-style prompt before the
-    # H3 enhancer is run. Translation must not silently reshape that input.
+    # Ref2VA uses its own six-section schema.
     "subject_definitions",
     "summary",
     "retention_analysis",
@@ -378,9 +378,9 @@ def _h3_translation_is_structurally_preserved(
     ) and candidate_sig["first_line"] != source_first_line:
         return False
     if task == "ref2va" and source_first_line.startswith(
-        "integrated_multimodal_description:"
+        "subject_definitions:"
     ) and not candidate_sig["first_line"].startswith(
-        "integrated_multimodal_description:"
+        "subject_definitions:"
     ):
         return False
 

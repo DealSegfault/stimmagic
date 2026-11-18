@@ -7,7 +7,7 @@ RUNTIME_ROOT="${STIMMA_RUNTIME_DIR:-$INFRA_ROOT/.runtime}"
 COMFY_ROOT="$RUNTIME_ROOT/ComfyUI"
 PLUGIN_LINK="$COMFY_ROOT/custom_nodes/ComfyUI-Stimma"
 PLUGIN_SOURCE="$REPO_ROOT/custom_nodes/ComfyUI-Stimma"
-COMFY_REVISION="0f1fa67ad8a68b62c65ebc97a7bf485df2459c3a"
+COMFY_REVISION="b0b743566f65daafc423b4fea8a2fbda94b3384a"
 
 fail() {
   echo "Erreur : $1" >&2

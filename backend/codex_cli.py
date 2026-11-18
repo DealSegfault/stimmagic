@@ -213,8 +213,10 @@ def _output_schema(tool_names: List[str]) -> Dict[str, Any]:
                         "id": {"type": "string"},
                         "name": name_schema,
                         "arguments_json": {"type": "string"},
+                        "code": {"type": "string"},
+                        "label": {"type": "string"},
                     },
-                    "required": ["id", "name", "arguments_json"],
+                    "required": ["id", "name", "arguments_json", "code", "label"],
                     "additionalProperties": False,
                 },
             },
@@ -243,8 +245,10 @@ def _planner_prompt(
         "will execute any requested tool and return its result in the next call.\n\n"
         "Return exactly one structured next step matching the supplied output "
         "schema. If a Stimma tool is required, set finish_reason to tool_calls, "
-        "use its exact name, and put a valid JSON object encoded as a string in "
-        "arguments_json. Otherwise answer the user in content and set "
+        "use its exact name. For run_code, put Python directly in code, a short "
+        "description in label, and '{}' in arguments_json. For every other tool, "
+        "put a valid JSON object encoded as a string in arguments_json and set "
+        "code and label to empty strings. Otherwise answer the user in content and set "
         "finish_reason to stop. Do not invent tool results. System messages in "
         "the conversation are authoritative.\n\n"
         "STIMMA IMAGE ROUTING RULES:\n"
@@ -304,34 +308,41 @@ def _parse_completion(text: str, allowed_tools: set[str]) -> CodexCLICompletion:
         name = call.get("name")
         if not isinstance(name, str) or name not in allowed_tools:
             raise CodexCLIError(f"Codex CLI requested unknown Stimma tool: {name!r}.")
-        arguments = call.get("arguments_json")
-        if not isinstance(arguments, str):
-            raise CodexCLIError("Codex CLI tool arguments must be a JSON string.")
-        try:
-            decoded_arguments = json.loads(arguments, strict=False)
-        except json.JSONDecodeError as exc:
-            # Luna occasionally appends a short non-JSON suffix after the
-            # structured arguments object. Recover the first complete JSON
-            # value in that case; the tool schema has already constrained the
-            # object itself, and the suffix is not executable tool input.
-            if exc.msg == "Extra data":
-                try:
-                    decoder = json.JSONDecoder(strict=False)
-                    stripped = arguments.lstrip()
-                    decoded_arguments, end = decoder.raw_decode(stripped)
-                    if stripped[end:].strip():
-                        log.warning(
-                            "Ignoring trailing text after Codex tool arguments",
-                            tool=name,
-                        )
-                except json.JSONDecodeError:
+        code = call.get("code")
+        if name == "run_code" and isinstance(code, str) and code:
+            label = call.get("label")
+            if not isinstance(label, str):
+                raise CodexCLIError("Codex CLI run_code label must be a string.")
+            decoded_arguments = {"code": code, "label": label}
+        else:
+            arguments = call.get("arguments_json")
+            if not isinstance(arguments, str):
+                raise CodexCLIError("Codex CLI tool arguments must be a JSON string.")
+            try:
+                decoded_arguments = json.loads(arguments, strict=False)
+            except json.JSONDecodeError as exc:
+                # Luna occasionally appends a short non-JSON suffix after the
+                # structured arguments object. Recover the first complete JSON
+                # value in that case; the tool schema has already constrained the
+                # object itself, and the suffix is not executable tool input.
+                if exc.msg == "Extra data":
+                    try:
+                        decoder = json.JSONDecoder(strict=False)
+                        stripped = arguments.lstrip()
+                        decoded_arguments, end = decoder.raw_decode(stripped)
+                        if stripped[end:].strip():
+                            log.warning(
+                                "Ignoring trailing text after Codex tool arguments",
+                                tool=name,
+                            )
+                    except json.JSONDecodeError:
+                        raise CodexCLIError(
+                            f"Codex CLI returned invalid arguments for tool {name!r}: {exc}"
+                        ) from exc
+                else:
                     raise CodexCLIError(
                         f"Codex CLI returned invalid arguments for tool {name!r}: {exc}"
                     ) from exc
-            else:
-                raise CodexCLIError(
-                    f"Codex CLI returned invalid arguments for tool {name!r}: {exc}"
-                ) from exc
         if not isinstance(decoded_arguments, dict):
             raise CodexCLIError(f"Codex CLI arguments for tool {name!r} must be an object.")
         call_id = str(call.get("id") or f"call_{uuid.uuid4().hex[:12]}")

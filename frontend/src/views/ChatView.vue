@@ -67,6 +67,7 @@
         <!-- Main chat area -->
         <div class="flex-1 flex flex-col min-w-0">
     <!-- Chat Messages Area -->
+    <ChatHistory>
     <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 space-y-4 custom-scrollbar sm:p-4" ref="messagesContainer">
       <!-- Connection Error -->
       <ConnectionError
@@ -568,6 +569,9 @@
                   />
                 </div>
                 <!-- Message text (or inline editor) -->
+                <div v-if="parsedUserMessage(item).styleRefs.length" class="mb-2 flex flex-wrap gap-1.5">
+                  <H3ExampleChip v-for="reference in parsedUserMessage(item).styleRefs" :key="reference.id" :id="reference.id" :label="reference.label" @open="openH3Example" />
+                </div>
                 <div v-if="getMessageBodyText(item)">
                   <!-- Inline editor when editing this item -->
                   <textarea v-no-autocorrect
@@ -685,6 +689,7 @@
                   <template v-else>
                     <template v-for="(seg, segIdx) in parseMarkdownSegments(getDisplayText(item))" :key="segIdx">
                       <span v-if="seg.type === 'html'" v-html="seg.content"></span>
+                      <H3ExampleChip v-else-if="seg.type === 'h3-example'" :id="seg.id" :label="seg.label" @open="openH3Example" />
                       <MediaImage
                         v-else-if="seg.type === 'media'"
                         :media-id="seg.mediaId"
@@ -1216,6 +1221,8 @@
       </template>
     </div>
 
+    </ChatHistory>
+
     <!-- Queued Messages (when agent is busy) -->
     <div v-if="messageQueue.length > 0" class="border-t border-edge/50 px-3 py-2 flex flex-col gap-2 sm:px-4">
       <div
@@ -1285,6 +1292,9 @@
               />
             </div>
             <span v-if="stripQueuedRefs(queuedMsg.text)">{{ stripQueuedRefs(queuedMsg.text) }}</span>
+            <div v-if="parseQueuedH3Refs(queuedMsg.text).length" class="flex flex-wrap gap-1.5">
+              <H3ExampleChip v-for="reference in parseQueuedH3Refs(queuedMsg.text)" :key="reference.id" :id="reference.id" :label="reference.label" @open="openH3Example" />
+            </div>
             <span v-else-if="!queuedMsg.text && queuedMsg.attachments.length > 0" class="italic text-content-muted">Image only</span>
             <span v-else-if="!stripQueuedRefs(queuedMsg.text) && (parseQueuedRefs(queuedMsg.text).length > 0 || parseQueuedElementRefs(queuedMsg.text).length > 0)" class="italic text-content-muted">(references only)</span>
           </div>
@@ -1359,6 +1369,7 @@
       >
         <template #context-header>
           <slot name="context-header" />
+          <H3StyleReferencesTray :references="pendingStyleRefs.items.value" @remove="pendingStyleRefs.remove" @open="openH3Example" />
           <ElementReferencesTray
             :elements="pendingElementRefs.items.value"
             @remove="removeElementReference"
@@ -1369,6 +1380,9 @@
             :active-index="mentionActiveIndex"
             @select="selectElementReference"
           />
+        </template>
+        <template #asset-picker-extra="{ close }">
+          <Button variant="ghost" size="sm" @click="openH3Browser(close)">Explorer les styles vidéo</Button>
         </template>
         <template #toolbar-extra>
           <ProjectElementsButton
@@ -1445,7 +1459,7 @@
           <button
             v-else
             @click="sendMessage()"
-            :disabled="(!messageInput.trim() && inputAttachments.length === 0 && pendingElementRefs.count.value === 0) || sending || isChatModelUnavailable || Boolean(imageUnsupportedMessage)"
+            :disabled="(!messageInput.trim() && inputAttachments.length === 0 && pendingElementRefs.count.value === 0 && pendingStyleRefs.items.value.length === 0) || sending || isChatModelUnavailable || Boolean(imageUnsupportedMessage)"
             class="w-8 h-8 flex items-center justify-center rounded-full bg-content text-surface transition-colors disabled:opacity-30"
             :title="modelUnavailableMessage || 'Send'"
           >
@@ -1458,6 +1472,7 @@
     </div>
 
     <!-- Delete Confirmation Modal -->
+    <H3ExamplesModal :show="showH3Examples" :example-id="h3ExampleId" @close="showH3Examples = false" @select="selectH3Style" />
     <ConfirmModal
       :show="showDeleteModal"
       title="Delete Chat"
@@ -1570,6 +1585,12 @@ import ElementReferencesTray from '../components/chat/ElementReferencesTray.vue'
 import ElementReferenceChip from '../components/chat/ElementReferenceChip.vue'
 import ElementAssetPreview from '../components/chat/ElementAssetPreview.vue'
 import AssistantElementReference from '../components/chat/AssistantElementReference.vue'
+import H3ExampleChip from '../components/chat/H3ExampleChip.vue'
+import H3ExamplesModal from '../components/chat/H3ExamplesModal.vue'
+import H3StyleReferencesTray from '../components/chat/H3StyleReferencesTray.vue'
+import Button from '../components/ui/Button.vue'
+import { useH3StyleReferences } from '../composables/useH3Examples'
+import { formatH3References, parseH3References, parseH3ExampleHref, splitChatMarkdown, type H3ExampleReference } from '../utils/h3Examples'
 import FlowRefChip from '../components/flow/FlowRefChip.vue'
 import { useFlowReferences, formatReferencesForMessage, parseMessageReferences, type FlowReference } from '../composables/useFlowReferences'
 import { useProjectElementsApi, type ProjectElement } from '../composables/useProjectElementsApi'
@@ -1633,6 +1654,7 @@ import {
   FilmIcon,
 } from '@heroicons/vue/24/outline'
 import ChatItemWrapper from '../components/chat/ChatItemWrapper.vue'
+import ChatHistory from '../components/chat/ChatHistory.js'
 import ChatErrorDisclosure from '../components/chat/ChatErrorDisclosure.vue'
 import ProjectRequirementsDrawer from '../components/chat/ProjectRequirementsDrawer.vue'
 import { useMediaApi } from '../composables/useMediaApi'
@@ -1681,6 +1703,23 @@ const projectElements = ref<ProjectElement[]>([])
 const projectElementsLoading = ref(false)
 const elementProjectName = ref('')
 const pendingElementRefs = useElementReferences(chatId as any)
+const pendingStyleRefs = useH3StyleReferences(chatId)
+const showH3Examples = ref(false)
+const h3ExampleId = ref<string | null>(null)
+function openH3Example(id: string) {
+  h3ExampleId.value = id
+  showH3Examples.value = true
+}
+async function openH3Browser(close: () => void) {
+  close()
+  await nextTick()
+  h3ExampleId.value = null
+  showH3Examples.value = true
+}
+function selectH3Style(reference: H3ExampleReference) {
+  pendingStyleRefs.add(reference)
+  nextTick(() => { chatInputBoxRef.value?.focus() })
+}
 const mentionActiveIndex = ref(0)
 const assistantElementPreviewRefs = reactive<Record<string, string>>({})
 // Artifact stage: standalone chats only (see props.embedded guard in template
@@ -3582,7 +3621,7 @@ function queueMessage() {
   const hasMessage = messageInput.value.trim()
   const hasAttachments = inputAttachments.value.length > 0
 
-  if (!hasMessage && !hasAttachments) return
+  if (!hasMessage && !hasAttachments && !pendingElementRefs.count.value && !pendingStyleRefs.items.value.length) return
 
   const userMessage = messageInput.value.trim()
 
@@ -3618,6 +3657,7 @@ function queueMessage() {
   const headers = [
     refs.length > 0 ? formatReferencesForMessage(refs) : '',
     elementRefs.length > 0 ? formatElementReferencesForMessage(elementRefs) : '',
+    formatH3References(pendingStyleRefs.items.value),
   ].filter(Boolean)
   const header = headers.join('\n\n')
   const message = header
@@ -3625,6 +3665,7 @@ function queueMessage() {
     : userMessage
   if (refs.length > 0) refsApi.clear()
   if (elementRefs.length > 0) elementRefsApi.clear()
+  pendingStyleRefs.clear()
 
   // Add to queue
   messageQueue.value.push({
@@ -3920,8 +3961,9 @@ async function sendMessage(queuedMessage = null) {
     const hasMessage = messageInput.value.trim()
     const hasAttachments = inputAttachments.value.length > 0
     const hasElementRefs = elementRefsApi.items.value.length > 0
+    const hasStyleRefs = pendingStyleRefs.items.value.length > 0
 
-    if (!hasMessage && !hasAttachments && !hasElementRefs) return
+    if (!hasMessage && !hasAttachments && !hasElementRefs && !hasStyleRefs) return
 
     // If agent is busy or we're already sending, queue instead
     if (((agentRunning.value || agentPlanning.value) && !hasActiveHITLRequest.value) || sending.value) {
@@ -3952,6 +3994,7 @@ async function sendMessage(queuedMessage = null) {
     const headers = [
       refs.length > 0 ? formatReferencesForMessage(refs) : '',
       elementRefs.length > 0 ? formatElementReferencesForMessage(elementRefs) : '',
+      formatH3References(pendingStyleRefs.items.value),
     ].filter(Boolean)
     if (headers.length > 0) {
       const header = headers.join('\n\n')
@@ -3986,7 +4029,10 @@ async function sendMessage(queuedMessage = null) {
   let clearedAttachments = []
   let clearedRefs = []
   let clearedElementRefs: ProjectElement[] = []
+  let clearedStyleRefs: H3ExampleReference[] = []
   if (!queuedMessage) {
+    clearedStyleRefs = [...pendingStyleRefs.items.value]
+    pendingStyleRefs.clear()
     clearedElementRefs = [...elementRefsApi.items.value]
     messageInput.value = ''
     clearedAttachments = [...inputAttachments.value]
@@ -4086,6 +4132,7 @@ async function sendMessage(queuedMessage = null) {
       inputAttachments.value = clearedAttachments
       for (const r of clearedRefs) refsApi.add(r)
       for (const element of clearedElementRefs) elementRefsApi.add(element)
+      for (const reference of clearedStyleRefs) pendingStyleRefs.add(reference)
     }
   } finally {
     sending.value = false
@@ -4410,18 +4457,22 @@ function getMessageAttachments(item) {
 // Cached parse of a user_message's flow-reference header, so the chip row
 // and the remaining-text block don't redo the regex scan three times per
 // render. Keyed by item id + message_text so edits invalidate.
-const parsedMessageCache = new Map<string, { refs: FlowReference[]; elementRefs: ProjectElement[]; text: string }>()
-function parsedUserMessage(item: any): { refs: FlowReference[]; elementRefs: ProjectElement[]; text: string } {
-  const key = `${item?.id ?? ''}:${(item?.message_text ?? '').length}`
+const parsedMessageCache = new Map<string, { source: string; refs: FlowReference[]; elementRefs: ProjectElement[]; styleRefs: H3ExampleReference[]; text: string }>()
+function parsedUserMessage(item: any) {
+  const key = String(item?.id ?? '')
+  const source = item?.message_text ?? ''
   let cached = parsedMessageCache.get(key)
-  if (!cached || parsedMessageCache.size > 1000) {
+  if (!cached || cached.source !== source || parsedMessageCache.size > 1000) {
     if (parsedMessageCache.size > 1000) parsedMessageCache.clear()
     const flowParsed = parseMessageReferences(item?.message_text)
     const elementParsed = parseElementReferences(flowParsed.text)
+    const stylesParsed = parseH3References(elementParsed.text)
     cached = {
+      source,
       refs: flowParsed.refs,
       elementRefs: elementParsed.refs,
-      text: elementParsed.text,
+      styleRefs: stylesParsed.refs,
+      text: stylesParsed.text,
     }
     parsedMessageCache.set(key, cached)
   }
@@ -4489,7 +4540,11 @@ function parseQueuedElementRefs(text: string | null | undefined): ProjectElement
 }
 function stripQueuedRefs(text: string | null | undefined): string {
   const flowParsed = parseMessageReferences(text)
-  return parseElementReferences(flowParsed.text).text
+  return parseH3References(parseElementReferences(flowParsed.text).text).text
+}
+function parseQueuedH3Refs(text: string | null | undefined): H3ExampleReference[] {
+  const flowParsed = parseMessageReferences(text)
+  return parseH3References(parseElementReferences(flowParsed.text).text).refs
 }
 
 // Check if a media ID is broken/deleted
@@ -4613,7 +4668,6 @@ function renderHighlightedCode(code, language = 'text') {
 // Render markdown to HTML, with media placeholders for inline media references
 const MEDIA_PLACEHOLDER_PREFIX = '<!--STIMMA_MEDIA:'
 const MEDIA_PLACEHOLDER_SUFFIX = '-->'
-const MEDIA_PLACEHOLDER_RE = /<!--STIMMA_MEDIA:(\d+)-->/g
 
 function parseMediaIdFromHref(href) {
   if (!href) return null
@@ -4648,6 +4702,11 @@ function renderMarkdown(text) {
   }
   renderer.link = (token) => {
     const href = typeof token === 'string' ? token : (token?.href || '')
+    const h3Id = parseH3ExampleHref(href)
+    if (h3Id) {
+      const label = typeof token === 'string' ? `H3 ${h3Id}` : (token?.text || `H3 ${h3Id}`)
+      return `<button type="button" data-stimma-h3="${h3Id}" data-h3-label="${encodeURIComponent(label)}">${escapeHtml(label)}</button>`
+    }
     const shotMediaId = parseShotReferenceFromHref(href)
     if (shotMediaId) {
       const rawLabel = typeof token === 'string' ? 'Sélectionner cette génération' : (token?.text || 'Sélectionner cette génération')
@@ -4676,23 +4735,7 @@ function renderMarkdown(text) {
 
 // Split rendered markdown into segments of html and media references
 function parseMarkdownSegments(text) {
-  if (!text) return [{ type: 'html', content: '' }]
-  const html = renderMarkdown(text)
-  const segments = []
-  let lastIndex = 0
-  let match
-  MEDIA_PLACEHOLDER_RE.lastIndex = 0
-  while ((match = MEDIA_PLACEHOLDER_RE.exec(html)) !== null) {
-    if (match.index > lastIndex) {
-      segments.push({ type: 'html', content: html.slice(lastIndex, match.index) })
-    }
-    segments.push({ type: 'media', mediaId: parseInt(match[1], 10) })
-    lastIndex = match.index + match[0].length
-  }
-  if (lastIndex < html.length) {
-    segments.push({ type: 'html', content: html.slice(lastIndex) })
-  }
-  return segments.length ? segments : [{ type: 'html', content: html }]
+  return splitChatMarkdown(renderMarkdown(text))
 }
 
 // Open slideshow at a specific media ID
@@ -4927,8 +4970,9 @@ async function replayFromHere(item) {
 
   const flowParsed = parseMessageReferences(item.message_text)
   const elementParsed = parseElementReferences(flowParsed.text)
-  const message = flowParsed.refs.length > 0 || elementParsed.refs.length > 0
-    ? elementParsed.text
+  const stylesParsed = parseH3References(elementParsed.text)
+  const message = flowParsed.refs.length > 0 || elementParsed.refs.length > 0 || stylesParsed.refs.length > 0
+    ? stylesParsed.text
     : item.message_text
   // Copy — getMessageAttachments returns the stored item's metadata array by
   // reference, and we must not alias it into the composer (composer edits would
@@ -4951,6 +4995,7 @@ async function replayFromHere(item) {
   for (const ref of flowParsed.refs) flowRefsApi.add(ref)
   const elementRefsApi = useElementReferences(chatId.value)
   for (const element of elementParsed.refs) elementRefsApi.add(element)
+  for (const reference of stylesParsed.refs) pendingStyleRefs.add(reference)
   await nextTick()
   await sendMessage()
 }
@@ -4973,7 +5018,7 @@ function startEditing(item) {
   // edits their own text only. The references were transport metadata, not
   // content; re-attaching would be done via the composer, not the editor.
   const flowParsed = parseMessageReferences(item.message_text)
-  editingText.value = parseElementReferences(flowParsed.text).text || item.message_text
+  editingText.value = parseH3References(parseElementReferences(flowParsed.text).text).text
   nextTick(() => {
     // Find the textarea by data attribute (more reliable than ref in v-for)
     const textarea = document.querySelector('[data-edit-input]')
@@ -5011,6 +5056,7 @@ async function submitEditedMessage(item) {
   }
 
   const newMessage = editingText.value
+  const styleRefs = parsedUserMessage(item).styleRefs
   // Copy — see replayFromHere: don't alias the stored message's metadata array.
   const attachments = getMessageAttachments(item).map(a => ({ ...a }))
 
@@ -5025,6 +5071,7 @@ async function submitEditedMessage(item) {
 
   // Set the message input and attachments, then send
   messageInput.value = newMessage
+  for (const reference of styleRefs) pendingStyleRefs.add(reference)
   inputAttachments.value = attachments
   await nextTick()
   await sendMessage()
@@ -5888,6 +5935,7 @@ function setupWebSocketSubscriptions() {
   wsUnsubscribes.push(onWsEvent('chat_updated', (data) => {
     if (data.chat_id !== chatId.value) return
     chat.value = data.chat
+    hydrateChatGenerationModes()
     // If settings changed, we could refresh tool parameters here if needed
     if (data.settings_changed) {
       console.log('Chat settings updated via WebSocket')

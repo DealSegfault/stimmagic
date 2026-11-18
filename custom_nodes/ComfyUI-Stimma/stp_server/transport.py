@@ -29,6 +29,7 @@ class ComfyUITransport(Transport):
         self._write_lock = asyncio.Lock()
         self._first_client_connected: asyncio.Event = asyncio.Event()
         self._on_client_connected: Optional[Callable[[], Awaitable[None]]] = None
+        self._on_clients_disconnected: Optional[Callable[[], Awaitable[None]]] = None
 
         # Add WebSocket route immediately (before app starts / freezes router)
         app.router.add_get(ws_path, self._websocket_handler)
@@ -152,5 +153,7 @@ class ComfyUITransport(Transport):
         finally:
             self._clients.discard(ws)
             logger.info(f"STP client disconnected: {client_addr}")
+            if not self._clients and self._on_clients_disconnected:
+                await self._on_clients_disconnected()
 
         return ws

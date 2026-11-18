@@ -353,19 +353,19 @@ def _agent_text(value: Any, limit: int) -> str:
     return text if len(text) <= limit else f"{text[:limit]}… [truncated]"
 
 
-def _compact_agent_json(value: Any, *, limit: int, depth: int = 0) -> Any:
+def _compact_agent_json(value: Any, *, limit: int, depth: int = 0, max_depth: int = 4) -> Any:
     """Keep structured continuity context useful without flooding the LLM."""
-    if depth > 4:
+    if depth > max_depth:
         return "[depth limit]"
     if isinstance(value, dict):
         items = list(value.items())[:40]
         return {
-            str(key): _compact_agent_json(item, limit=limit, depth=depth + 1)
+            str(key): _compact_agent_json(item, limit=limit, depth=depth + 1, max_depth=max_depth)
             for key, item in items
         }
     if isinstance(value, list):
         return [
-            _compact_agent_json(item, limit=limit, depth=depth + 1)
+            _compact_agent_json(item, limit=limit, depth=depth + 1, max_depth=max_depth)
             for item in value[:40]
         ]
     if isinstance(value, str):
@@ -409,6 +409,14 @@ def _compact_agent_scene(scene: dict[str, Any], *, include_context: bool = False
         compact["context"] = _compact_agent_json(
             scene.get("context") or {}, limit=_AGENT_TEXT_LIMITS["scene_context"]
         )
+        directing = (scene.get("context") or {}).get("directing")
+        if isinstance(directing, dict):
+            # Notes are bounded on write. Compact each entry from its own root
+            # so evidence/timecodes survive nesting and later shots are kept.
+            compact["context"]["directing"] = {
+                key: _compact_agent_json(value, limit=1500, max_depth=6)
+                for key, value in directing.items()
+            }
         compact["dependencies"] = (scene.get("dependencies") or [])[:20]
         compact["blockers"] = (scene.get("blockers") or [])[:20]
     if scene.get("shots"):

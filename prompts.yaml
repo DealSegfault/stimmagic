@@ -349,18 +349,13 @@ prompt_enhancement:
 
     {h3_task_guidance}
 
-    After any required alignment instruction, output exactly these three fields in this order:
-    integrated_multimodal_description: [Shot 1] ...
-
-    overall_soundscape: ...
-
-    non_diegetic_music: ...
+    {h3_output_structure}
 
     Write the core fields in English. Preserve visible on-screen text verbatim.
 
     {h3_dialogue_guidance}
 
-    integrated_multimodal_description rules:
+    Timeline rules (integrated_multimodal_description for base modes, detailed_description for Ref2VA):
     - Write a concrete audiovisual timeline in playback order. At the beginning of [Shot 1], establish the visual style and initial composition, then describe visible subjects, positions, actions, reactions, state changes, camera behavior, any user-supplied dialogue, and synchronized diegetic sounds.
     - Do not timestamp [Shot 1]. Only add cuts when the user requests them or they are needed to express the request. Later shots use sequential labels and strictly increasing cut times, exactly like: [Shot 2] At 00:03.500, the camera cuts to... A cut must reveal genuinely new information; use camera motion for a small distance or angle change.
     - Express camera movement naturally inside the shot. Use the correct physical term: Zoom In/Out changes focal length; Push In/Pull Out translates forward/back; Pan pivots horizontally; Truck translates horizontally; Tilt pivots vertically; Pedestal translates vertically; Arc Shot circles the subject; Tracking Shot follows it; Static Shot remains still; Shake, POV, and Roll may be used when requested. Add "with small/large amplitude" and "at slow/fast speed" only when meaningful. Do not default to a static camera or invent a move.
@@ -373,7 +368,7 @@ prompt_enhancement:
 
     non_diegetic_music rules:
     - Use 1-3 English sentences describing only audience-only background music through instrumentation, tempo, rhythm, and dynamic changes. Do not use abstract mood labels or explain the score's emotional function.
-    - Music audible to characters belongs in integrated_multimodal_description. Use N/A when the user did not request or imply an audience-only score; never add background music merely to fill this field.
+    - Music audible to characters belongs in the shot timeline. Use N/A when the user did not request or imply an audience-only score; never add background music merely to fill this field.
 
     {h3_audio_guidance}
 
@@ -430,10 +425,11 @@ prompt_enhancement:
     This is a TRANSLATION-ONLY pass. Translate the natural-language descriptive prose faithfully and naturally, using compact, information-dense cinematic Chinese terminology when it carries the same meaning. Preserve every concrete visual, physical, camera, timing, sound, continuity, and negative detail; do not improve, expand, shorten, reinterpret, or re-storyboard the request. Never invent a new duration — in particular, never turn the source into a 15-second prompt unless the source already says 15 seconds.
 
     H3 CONTRACT — PRESERVE EXACTLY:
-    - Keep these schema keys in English, in the same order, with the same spelling: integrated_multimodal_description:, overall_soundscape:, non_diegetic_music:. Also preserve any subject_definitions:, summary:, retention_analysis:, or detailed_description: keys if they are present in the input.
+    - Keep the source's schema keys in English, in the same order, with the same spelling. Base modes use integrated_multimodal_description:, overall_soundscape:, non_diegetic_music:. REF2VA/R2V uses subject_definitions:, summary:, retention_analysis:, detailed_description:, overall_soundscape:, non_diegetic_music:. Never add fields from another mode.
+    - Keep retention relationship markers in English: fully_preserved, partially_preserved, attribute_transfer, weak_reference, fully_copy, partially_copy, reference.
     - Preserve existing reference tags byte-for-byte and in their present order: <Picture N>, <Video N>, and <Audio N>. Never rename, renumber, swap, add, or turn them into keyframes. In REF2VA/R2V, do not add first-frame, last-frame, or timeline-alignment instructions.
     - Preserve every number and numeric value exactly: durations, timecodes, shot numbers, focal lengths, frame rates, aspect ratios, counts, and measurements. Do not add, remove, round, convert, or replace a number. The configured generation duration is {h3_duration} seconds; it is metadata, not permission to add a duration that is absent from the source.
-    - Preserve H3 control syntax and alignment lines exactly, including [Shot N], <d>...</d>, <scenetrans>, <cutoff>, placeholders, wildcard syntax, and comment lines. Keep spoken dialogue, lyrics, and visible text verbatim.
+    - Preserve H3 control syntax and alignment lines exactly, including [Shot N], the bracketed task-type prefix of summary:, <d>...</d>, <scenetrans>, <cutoff>, placeholders, wildcard syntax, and comment lines. Keep spoken dialogue, lyrics, and visible text verbatim.
     - Output only the translated prompt. Do not add headings, explanations, markdown, quotes, or a second version.
 
   ideogram_json_system_prompt: |

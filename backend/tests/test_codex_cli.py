@@ -22,6 +22,7 @@ def test_output_schema_restricts_tool_names():
     schema = _output_schema(["lookup_weather", "finish"])
     name_schema = schema["properties"]["tool_calls"]["items"]["properties"]["name"]
     assert name_schema["enum"] == ["finish", "lookup_weather"]
+    assert {"code", "label"} <= set(schema["properties"]["tool_calls"]["items"]["required"])
 
 
 def test_planner_prompt_contains_history_and_tools_without_inline_binary():
@@ -103,6 +104,24 @@ def test_parse_completion_normalizes_arguments():
         "finish_reason": "tool_calls",
     }), {"lookup_weather"})
     assert result.tool_calls[0].arguments == '{"city":"Paris"}'
+
+
+def test_parse_completion_run_code_accepts_direct_code():
+    code = 'prompt = """look toward the door"""\nprint(prompt)'
+    result = _parse_completion(json.dumps({
+        "content": "",
+        "tool_calls": [{
+            "id": "call_1",
+            "name": "run_code",
+            "arguments_json": '{"code": "unescaped "quote""}',
+            "code": code,
+            "label": "Preparing prompts",
+        }],
+        "finish_reason": "tool_calls",
+    }), {"run_code"})
+    assert json.loads(result.tool_calls[0].arguments) == {
+        "code": code, "label": "Preparing prompts",
+    }
 
 
 def test_parse_completion_drops_duplicate_tool_call_ids():
